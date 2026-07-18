@@ -23,7 +23,7 @@
     {# ─── Steps summary (collapsed) ─── #}
     {% if last.steps %}
     <details class="steps-details">
-      <summary class="steps-summary mono small">▸ Backtest adımları ({{ last.steps|length }})</summary>
+      <summary class="steps-summary mono small">▸ Backtest steps ({{ last.steps|length }})</summary>
       <div class="progress-steps" style="margin-top:8px;">
         {% for step in last.steps %}
           <div class="step-row done">
@@ -36,12 +36,12 @@
     </details>
     {% endif %}
 
-    {# ─── Hero: Realized PnL + destekleyici metrikler ─── #}
+    {# ─── Hero: Realized PnL + supporting metrics ─── #}
     <div class="result-hero">
       <div class="hero-main {{ last.pnl_dir }}">
         <div class="hero-label">Realized PnL</div>
         <div class="hero-value">{{ last.pnl_fmt }}</div>
-        <div class="hero-sub">{{ last.pnl_pct_fmt }} · başlangıç {{ last.starting_cash_fmt }}</div>
+        <div class="hero-sub">{{ last.pnl_pct_fmt }} · start {{ last.starting_cash_fmt }}</div>
       </div>
       <div class="hero-side">
         <div class="hero-side-cell">
@@ -55,7 +55,7 @@
       </div>
     </div>
 
-    {# ─── Grup: Risk oranları ─── #}
+    {# ─── Group: Risk ratios ─── #}
     <div class="metric-section">
       <div class="metric-section-title">Risk</div>
       <div class="metric-grid">
@@ -78,9 +78,9 @@
       </div>
     </div>
 
-    {# ─── Grup: İşlem istatistikleri ─── #}
+    {# ─── Group: Trade statistics ─── #}
     <div class="metric-section">
-      <div class="metric-section-title">İşlemler</div>
+      <div class="metric-section-title">Trades</div>
       <div class="metric-grid">
         <div class="metric">
           <div class="label">Trades</div>
@@ -105,9 +105,9 @@
       </div>
     </div>
 
-    {# ─── Grup: İşlem başına P&L + maliyetler ─── #}
+    {# ─── Group: Per-trade P&L + costs ─── #}
     <div class="metric-section">
-      <div class="metric-section-title">P&amp;L / Maliyet</div>
+      <div class="metric-section-title">P&amp;L / Cost</div>
       <div class="metric-grid">
         <div class="metric">
           <div class="label">Avg Win</div>
@@ -136,7 +136,7 @@
       </div>
     </div>
 
-    {# ─── Backtest Summary (TradingView-tarzı) ─── #}
+    {# ─── Backtest Summary (TradingView-style) ─── #}
     {% if last.equity_curve and last.equity_curve|length > 1 %}
     <div style="margin-top:16px;border-top:1px solid #242424;padding-top:14px;">
       <div style="display:flex;align-items:baseline;gap:10px;margin-bottom:12px;">
@@ -148,7 +148,7 @@
         {% endif %}
       </div>
 
-      {# Tek satır özet KPI şeridi #}
+      {# Single-line summary KPI strip #}
       <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:20px;margin-bottom:14px;">
         <div>
           <div class="label" style="font-size:10px;letter-spacing:0.5px;">NET PROFIT</div>
@@ -174,9 +174,9 @@
         </div>
       </div>
 
-      {# Yeşil dolgulu equity area — L19: bar-MTM serisi varsa ONU çiz
-         (raporlanan max_dd bu seriden gelir; realized basamak-eğrisi
-         pozisyon-içi dipleri göstermiyordu) #}
+      {# Green-filled equity area — L19: if a bar-MTM series exists, draw THAT
+         (the reported max_dd comes from this series; the realized step-curve
+         did not show intra-position troughs) #}
       <div id="equity-data"
            data-pts='{{ last.equity_curve|tojson }}'
            data-dates='{{ (last.equity_dates or [])|tojson }}'
@@ -188,11 +188,11 @@
         <canvas id="equity-single"></canvas>
       </div>
 
-      {# Drawdown alt-grafiği #}
+      {# Drawdown sub-chart #}
       <div style="font-size:9px;letter-spacing:.16em;text-transform:uppercase;color:var(--text-muted);margin:10px 0 4px;">Drawdown</div>
       <div class="chart-wrap" style="height:70px;"><canvas id="dd-single"></canvas></div>
 
-      {# Aylık getiri ısı haritası #}
+      {# Monthly return heatmap #}
       <div style="font-size:9px;letter-spacing:.16em;text-transform:uppercase;color:var(--text-muted);margin:14px 0 6px;">Monthly Returns</div>
       <div id="monthly-heatmap" style="overflow-x:auto;"></div>
     </div>
@@ -204,8 +204,8 @@
         let pts   = JSON.parse(el.dataset.pts   || "[]");
         let dates = JSON.parse(el.dataset.dates || "[]");
         const pnl   = parseFloat(el.dataset.pnl || "0");
-        // L19: MTM serisi [(iso_ts, eq)] varsa onu tercih et — max_dd'nin
-        // hesaplandığı gerçek bar-çözünürlüklü eğri.
+        // L19: if an MTM series [(iso_ts, eq)] exists, prefer it — the real
+        // bar-resolution curve from which max_dd is computed.
         let mtm = [];
         try { mtm = JSON.parse(el.dataset.mtm || "[]"); } catch (e) {}
         const mtmBadge = document.getElementById("equity-mtm-badge");
@@ -220,7 +220,7 @@
         if (window.__eq && typeof window.__eq.destroy === "function") {
           window.__eq.destroy(); window.__eq = null;
         }
-        // Kâr yeşil, zarar kırmızı ton
+        // Profit green, loss red tone
         const up = pnl >= 0;
         const line = up ? "#4ade80" : "#f87171";
         const fill = up ? "rgba(74,222,128,0.18)" : "rgba(248,113,113,0.15)";
@@ -276,14 +276,14 @@
         const canvas = document.getElementById("dd-single");
         if (!el || !canvas) return;
         let pts = JSON.parse(el.dataset.pts || "[]");
-        // L19: DD alt-grafiği de MTM serisini tercih etsin — raporlanan Max DD
-        // (max_dd_mtm) bu bar-çözünürlüklü eğriden gelir; realized basamak
-        // eğrisi pozisyon-içi dipleri göstermezdi (KPI ile çelişirdi).
+        // L19: the DD sub-chart should also prefer the MTM series — the reported Max DD
+        // (max_dd_mtm) comes from this bar-resolution curve; the realized step
+        // curve did not show intra-position troughs (would conflict with the KPI).
         let _mtm = [];
         try { _mtm = JSON.parse(el.dataset.mtm || "[]"); } catch (e) {}
         if (_mtm.length > 1) pts = _mtm.map(p => p[1]);
         if (pts.length < 2) return;
-        // Drawdown = (equity - running peak) / peak  (yüzde, ≤0)
+        // Drawdown = (equity - running peak) / peak  (percent, ≤0)
         let peak = pts[0];
         const dd = pts.map(v => { peak = Math.max(peak, v); return peak > 0 ? (v - peak) / peak * 100 : 0; });
         if (window.__dd && typeof window.__dd.destroy === "function") { window.__dd.destroy(); window.__dd = null; }
@@ -318,7 +318,7 @@
         const pts   = JSON.parse(el.dataset.pts   || "[]");
         const dates = JSON.parse(el.dataset.dates || "[]");
         if (pts.length < 2) { host.innerHTML = ""; return; }
-        // Tarih başına equity; ay bazında ilk→son % getiri
+        // Equity per date; per-month first→last % return
         const monthly = {};  // "YYYY-M" → {first, last}
         for (let i = 0; i < pts.length; i++) {
           const d = dates[i];
@@ -329,7 +329,7 @@
           if (!(key in monthly)) monthly[key] = { first: pts[i], last: pts[i] };
           monthly[key].last = pts[i];
         }
-        const ret = {};  // key → % getiri
+        const ret = {};  // key → % return
         for (const k in monthly) {
           const m = monthly[k];
           ret[k] = m.first > 0 ? (m.last - m.first) / m.first * 100 : 0;
@@ -363,7 +363,7 @@
       buildMonthlyHeatmap();
       const _resultEl = document.getElementById("result");
       if (_resultEl && !_resultEl._chartsBound) {
-        _resultEl._chartsBound = true;  // idempotent — her fragment swap'ında yeni listener eklenmesin
+        _resultEl._chartsBound = true;  // idempotent — don't add a new listener on every fragment swap
         _resultEl.addEventListener("htmx:afterSettle", function() {
           buildEquityChart(); buildDrawdownChart(); buildMonthlyHeatmap();
         });
@@ -371,11 +371,11 @@
     </script>
     {% endif %}
 
-    {# ─── Price Chart + Trade Listesi (yan yana) ─── #}
+    {# ─── Price Chart + Trade List (side by side) ─── #}
     {% if last.chart_url or (last.trades and last.trades|length > 0) %}
     <div class="chart-trades-layout" style="display:flex;gap:14px;align-items:flex-start;flex-wrap:wrap;">
 
-      {# ── Sol: fiyat grafiği ── #}
+      {# ── Left: price chart ── #}
       {% if last.chart_url %}
       {% set chart_url = last.chart_url %}
       {% set chart_symbol = last.chart_symbol %}
@@ -386,20 +386,20 @@
       </div>
       {% endif %}
 
-      {# ── Sağ: işlemler paneli (dikey scroll) ── #}
+      {# ── Right: trades panel (vertical scroll) ── #}
       {% if last.trades and last.trades|length > 0 %}
       <div class="panel trades-side-panel" style="flex:0 1 396px;min-width:300px;margin-top:14px;display:flex;flex-direction:column;max-height:614px;">
         <div class="panel-header" style="flex-wrap:wrap;gap:6px;">
           <div class="panel-title" style="font-size:14px;">
-            İşlemler (<span id="trade-count">{{ last.trades|length }}</span>)
+            Trades (<span id="trade-count">{{ last.trades|length }}</span>)
           </div>
         </div>
-        {# Filtreler #}
+        {# Filters #}
         <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;padding:8px 16px 0;">
           <select id="trade-filter-result" onchange="filterTrades()" style="font-size:10px;padding:2px 6px;background:var(--inset);border:1px solid #242424;color:var(--text-primary);border-radius:4px;">
-            <option value="all">Tümü</option>
-            <option value="win">Kazanan</option>
-            <option value="loss">Kaybeden</option>
+            <option value="all">All</option>
+            <option value="win">Winner</option>
+            <option value="loss">Losing</option>
           </select>
           <select id="trade-filter-side" onchange="filterTrades()" style="font-size:10px;padding:2px 6px;background:var(--inset);border:1px solid #242424;color:var(--text-primary);border-radius:4px;">
             <option value="all">Long+Short</option>
@@ -412,7 +412,7 @@
             style="width:68px;font-size:10px;padding:2px 6px;background:var(--inset);border:1px solid #242424;color:var(--text-primary);border-radius:4px;">
           <span style="font-size:10px;color:var(--text-muted);">TF:</span>
           <select id="trade-hover-tf" style="font-size:10px;padding:2px 6px;background:var(--inset);border:1px solid #242424;color:var(--text-primary);border-radius:4px;">
-            <option value="auto">Otomatik</option>
+            <option value="auto">Automatic</option>
             <option value="1">1m</option>
             <option value="5">5m</option>
             <option value="15">15m</option>
@@ -421,17 +421,17 @@
             <option value="D">1d</option>
           </select>
         </div>
-        <div class="text-muted" style="font-size:10px;padding:6px 16px 0;">tıkla → grafikte göster · tekrar tıkla → temizle</div>
+        <div class="text-muted" style="font-size:10px;padding:6px 16px 0;">click → show on chart · click again → clear</div>
         <div style="overflow:auto;margin-top:6px;flex:1;">
         <table class="trade-table" id="trade-table">
           <thead>
             <tr>
               <th>#</th>
-              <th>Giriş</th>
-              <th>Taraf</th>
-              <th>Fiyat</th>
+              <th>Entry</th>
+              <th>Side</th>
+              <th>Price</th>
               <th>PnL</th>
-              <th>Çıkış</th>
+              <th>Exit</th>
             </tr>
           </thead>
           <tbody>
@@ -444,7 +444,7 @@
                 data-pnl="{{ t.pnl }}"
                 data-side="{{ t.side }}"
                 data-idx="{{ loop.index0 }}"
-                title="Çıkış: {{ t.exit_time|int|datetimefmt }} · ${{ '%.1f'|format(t.exit_price) }} · Süre: {{ t.dur_min }}m{% if t.entry_reason %}&#10;Giriş: {{ t.entry_reason }}{% endif %}{% if t.exit_reason %}&#10;Çıkış: {{ t.exit_reason }}{% endif %}">
+                title="Exit: {{ t.exit_time|int|datetimefmt }} · ${{ '%.1f'|format(t.exit_price) }} · Duration: {{ t.dur_min }}m{% if t.entry_reason %}&#10;Entry: {{ t.entry_reason }}{% endif %}{% if t.exit_reason %}&#10;Exit: {{ t.exit_reason }}{% endif %}">
               <td class="mono text-muted">{{ loop.index }}</td>
               <td class="mono small">{{ t.entry_time|int|datetimefmt }}</td>
               <td><span class="chip {% if t.side == 'BUY' %}chip-good{% else %}chip-bad{% endif %}">{{ t.side }}</span></td>
@@ -456,9 +456,9 @@
                 {% set k = t.exit_kind %}
                 {% if k == 'sl' %}<span class="chip chip-bad" title="{{ t.exit_reason }}">SL</span>
                 {% elif k == 'tp' %}<span class="chip chip-good" title="{{ t.exit_reason }}">TP</span>
-                {% elif k == 'signal' %}<span class="chip" style="background:rgba(96,165,250,0.18);color:#60a5fa;" title="{{ t.exit_reason }}">Sinyal</span>
+                {% elif k == 'signal' %}<span class="chip" style="background:rgba(96,165,250,0.18);color:#60a5fa;" title="{{ t.exit_reason }}">Signal</span>
                 {% elif k == 'flip' %}<span class="chip" style="background:rgba(251,191,36,0.18);color:#fbbf24;" title="{{ t.exit_reason }}">Flip</span>
-                {% elif k == 'eob' %}<span class="chip" title="{{ t.exit_reason }}">Son</span>
+                {% elif k == 'eob' %}<span class="chip" title="{{ t.exit_reason }}">Last</span>
                 {% else %}<span class="text-muted">—</span>{% endif %}
               </td>
             </tr>
@@ -501,7 +501,7 @@
       const rows = document.querySelectorAll("#trade-table .trade-row");
       rows.forEach(function(row) {
         row.addEventListener("click", function() {
-          // Aynı satıra tekrar tıklanırsa temizle
+          // Clear if the same row is clicked again
           if (_activeRow === row) {
             row.style.outline = "";
             _activeRow = null;
@@ -531,11 +531,11 @@
   </div>
 </div>
 
-{# Robustness panelini göster ve form alanlarını güncelle (OOB) #}
+{# Show robustness panel and update form fields (OOB) #}
 {% if last.bars_info and last.bars_info.get('symbol') %}
 <div id="robustness-section" hx-swap-oob="outerHTML" class="panel">
   <div class="panel-header">
-    <div class="panel-title">Robustness Analizi</div>
+    <div class="panel-title">Robustness Analysis</div>
     <div class="panel-meta text-muted mono small">WFO · Monte Carlo · In/Out-of-Sample</div>
   </div>
   <div class="panel-body">
@@ -570,10 +570,10 @@
           {% endfor %}
         </select>
       </label>
-      <label class="field">Train (ay)
+      <label class="field">Train (month)
         <input type="number" name="train_months" value="3" min="1" max="24">
       </label>
-      <label class="field">Test (ay)
+      <label class="field">Test (month)
         <input type="number" name="test_months" value="1" min="1" max="12">
       </label>
       <label class="field">Monte Carlo N
@@ -583,11 +583,11 @@
         <input type="number" name="split_pct" value="0.7" min="0.5" max="0.9" step="0.05">
       </label>
       <div>
-        <button class="btn btn-primary" type="submit" style="width:100%;">▶ Analiz Çalıştır</button>
+        <button class="btn btn-primary" type="submit" style="width:100%;">▶ Run Analysis</button>
       </div>
     </form>
     <div class="text-muted mono" style="font-size:10px;margin-top:6px;">
-      Farklı sembol/kategori/interval seçerek stratejinin başka enstrümanlarda da sağlam olup olmadığını test edin.
+      Test whether the strategy is also robust on other instruments by selecting a different symbol/category/interval.
     </div>
     <div id="robustness-result" style="margin-top:12px;"></div>
   </div>

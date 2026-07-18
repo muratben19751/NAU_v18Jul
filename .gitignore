@@ -30,3 +30,6 @@ env/
 
 # Design source archives (extracted content lives in design_handoff_nautilus_lab/)
 *.zip
+
+# Local QQQ data downloads (198MB — not versioned)
+data_downloads/

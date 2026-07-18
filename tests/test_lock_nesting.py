@@ -1,14 +1,14 @@
-"""Re-entrant lock deadlock regresyonu (2026-07-14 canlı olayı).
+"""Re-entrant lock deadlock regression (2026-07-14 live incident).
 
-`_agent_worker`'daki stop-check, `with _AGENT_LOCK:` bloğu İÇİNDEN
-`_add_step` çağırıyordu; `_add_step` de aynı kilidi aldığından worker kendini
-kilitledi — kilidi tutarak. Ardından diğer worker'lar ve `/agent/run`
-endpoint'i (event loop!) aynı kilitte sonsuza dek bekledi → sunucu tamamen
-dondu ("pipeline başlatılıyor deyip durdu").
+The stop-check in `_agent_worker` was calling `_add_step` from INSIDE the
+`with _AGENT_LOCK:` block; since `_add_step` acquires the same lock, the worker
+locked itself — while holding the lock. Then the other workers and the
+`/agent/run` endpoint (event loop!) waited forever on the same lock → the
+server froze completely (said "starting pipeline" and stopped).
 
-Bu test AST ile dosyanın TAMAMINI tarar: `_AGENT_LOCK` (veya `_LOCK`) ile
-açılan her `with` bloğunun gövdesinde, aynı kilidi yeniden almaya çalışan
-bilinen helper'ların çağrısı YASAKTIR.
+This test scans the ENTIRE file with AST: inside the body of every `with`
+block opened with `_AGENT_LOCK` (or `_LOCK`), calling any known helper that
+tries to re-acquire the same lock is FORBIDDEN.
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 
-# Dosya → (kilit adları, o kilidi kendi içinde alan helper'lar)
+# File → (lock names, helpers that acquire that lock internally)
 _TARGETS = {
     "web/routes/agent_backtest.py": (
         {"_AGENT_LOCK"},
@@ -69,7 +69,7 @@ class TestNoLockReacquireInsideLockBlock:
                     continue
                 if not (_lock_names(node) & locks):
                     continue
-                # with gövdesi (context_expr hariç) içindeki çağrılar
+                # calls inside the with body (excluding context_expr)
                 body_calls = set()
                 for stmt in node.body:
                     body_calls |= _called_names(stmt)
@@ -77,17 +77,17 @@ class TestNoLockReacquireInsideLockBlock:
                 if bad:
                     violations.append(f"{rel}:{node.lineno} → {sorted(bad)}")
         assert not violations, (
-            "Kilit bloğu içinde aynı kilidi alan helper çağrısı (re-entrant "
-            f"deadlock riski): {violations}"
+            "Helper call that acquires the same lock inside a lock block "
+            f"(re-entrant deadlock risk): {violations}"
         )
 
     def test_stop_check_still_breaks_loop(self):
-        """Fix davranışı korumalı: stop_requested → _add_step + break kilit
-        DIŞINDA, kaynakta mevcut."""
+        """Fix behavior preserved: stop_requested → _add_step + break exist in
+        the source OUTSIDE the lock."""
         src = (ROOT / "web/routes/agent_backtest.py").read_text(encoding="utf-8")
-        i = src.find("Durdurma sinyali alındı")
-        assert i != -1, "stop-check adım mesajı kayboldu"
-        # Mesajın bulunduğu satırdan geriye bak: aynı girinti düzeyinde
-        # önce `if stop_hit:` gelmeli (with bloğunun içinde değil).
+        i = src.find("Stop signal received")
+        assert i != -1, "stop-check step message disappeared"
+        # Look back from the line where the message is: at the same indentation
+        # level, `if stop_hit:` must come first (not inside the with block).
         window = src[max(0, i - 400) : i]
-        assert "if stop_hit:" in window, "stop-check kilit dışına taşınmamış"
+        assert "if stop_hit:" in window, "stop-check not moved outside the lock"

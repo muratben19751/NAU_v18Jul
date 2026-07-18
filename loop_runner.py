@@ -7,7 +7,7 @@ Wiki References
 ---------------
 Bkz: [[crash_only_design]]
 
-Idempotent per-iteration reset (state resettable, engine yeniden yaratılır); [[crash_only_design]]'ın webapp'e yansıması: her iterasyon yeni process gibi davranır.
+Idempotent per-iteration reset (state resettable, engine recreated); [[crash_only_design]]'s reflection onto the webapp: each iteration behaves like a new process.
 """
 
 from __future__ import annotations
@@ -93,8 +93,8 @@ def run_loop(
                 state.set_status(f"iter {iter_id}: composed {spec.name}")
                 _bt_t0 = time.perf_counter()
                 try:
-                    # Killable child: Nautilus backtest GIL'i tutar; loop
-                    # thread'inde in-process koşarsa sunucu donar (agent bug'ı).
+                    # Killable child: Nautilus backtest holds the GIL; if it
+                    # runs in-process on the loop thread the server freezes (agent bug).
                     r = run_backtest_guarded(
                         spec,
                         bars_df,

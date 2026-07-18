@@ -75,15 +75,15 @@
     <span>Allow SHORT entries (SELL on down-direction blocks; venue must support MARGIN account type)</span>
   </label>
 
-  <div class="section-title" style="margin:8px 0 0;">Multi-timeframe trend filtresi</div>
+  <div class="section-title" style="margin:8px 0 0;">Multi-timeframe trend filter</div>
   <label class="check-row">
     <input type="checkbox" name="trend_filter" form="save-form" id="trend-filter-cb"
            {% if options.trend_filter %}checked{% endif %}>
-    <span>Üst zaman diliminde trend onayı — ana TF'de işlem açar, seçilen TF'nin
-      EMA'sı yönünde değilse girişi bastırır (30dk işlem + 1d trend gibi).</span>
+    <span>Trend confirmation on the higher timeframe — opens a Trade on the main TF, suppresses the Entry
+      if it is not in the direction of the selected TF's EMA (like 30m Trade + 1d trend).</span>
   </label>
   <div class="row" style="gap:10px;flex-wrap:wrap;margin-top:6px;">
-    <label class="field">Trend TF (ana TF'den YÜKSEK olmalı)
+    <label class="field">Trend TF (must be HIGHER than the main TF)
       <select name="trend_interval" form="save-form">
         <option value="15"  {% if options.trend_interval == "15"  %}selected{% endif %}>15m</option>
         <option value="60"  {% if options.trend_interval == "60"  %}selected{% endif %}>1h</option>
@@ -91,27 +91,27 @@
         <option value="D"   {% if options.trend_interval == "D"   %}selected{% endif %}>1d</option>
       </select>
     </label>
-    <label class="field">Trend EMA periyodu
+    <label class="field">Trend EMA period
       <input type="number" name="trend_ema_period" form="save-form" min="5" max="400" step="1"
              value="{{ options.trend_ema_period }}">
     </label>
   </div>
   <div class="text-muted" style="font-size:11px;margin-top:2px;">
-    Not: trend TF ana backtest TF'sinden yüksek olmalı; aynı/düşükse motor filtreyi
-    atlar. Look-ahead güvenli — üst-TF barı yalnız kapandığında değerlendirilir.
+    Note: the trend TF must be higher than the main backtest TF; if it is the same/lower the engine skips
+    the filter. Look-ahead safe — the higher-TF bar is evaluated only when it closes.
   </div>
 
   <div class="section-title" style="margin:8px 0 0;">Position sizing</div>
   <label class="field">Sizing mode
     <select name="trade_size_mode" form="save-form">
-      <option value="fixed_usdt"     {% if options.trade_size_mode == "fixed_usdt" %}selected{% endif %}>fixed USDT (yukarıdaki Trade size — dolar)</option>
-      <option value="fixed"          {% if options.trade_size_mode == "fixed" %}selected{% endif %}>fixed BTC (sabit coin miktarı: {{ options.get('trade_size_btc', 0.1) }})</option>
+      <option value="fixed_usdt"     {% if options.trade_size_mode == "fixed_usdt" %}selected{% endif %}>fixed USDT (Trade size above — dollars)</option>
+      <option value="fixed"          {% if options.trade_size_mode == "fixed" %}selected{% endif %}>fixed BTC (fixed coin amount: {{ options.get('trade_size_btc', 0.1) }})</option>
       <option value="percent_equity" {% if options.trade_size_mode == "percent_equity" %}selected{% endif %}>percent of equity</option>
       <option value="atr_target"     {% if options.trade_size_mode == "atr_target" %}selected{% endif %}>ATR-target risk</option>
     </select>
   </label>
   <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;">
-    <label class="field">Coin miktarı (fixed BTC modu)
+    <label class="field">Coin amount (fixed BTC mode)
       <input type="number" name="trade_size" form="save-form"
              value="{{ options.get('trade_size_btc', 0.1) }}" step="0.01" min="0.001" max="10">
     </label>

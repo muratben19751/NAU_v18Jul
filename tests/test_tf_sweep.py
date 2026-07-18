@@ -1,8 +1,8 @@
-"""/backtest/sweep — aynı stratejiyi birden çok TF'de koş → karşılaştırma.
+"""/backtest/sweep — run the same strategy on multiple TFs → comparison.
 
-run_backtest_guarded + load_bybit_bars + _bybit_cache_path mock'lanır. Doğrulanan:
-cache-yok TF atlanır, motor hatası satırda yakalanır, en-iyi sütun vurgulanır,
-<2 TF reddedilir.
+run_backtest_guarded + load_bybit_bars + _bybit_cache_path are mocked. Verified:
+cache-less TF is skipped, engine error is caught in the row, best column is highlighted,
+<2 TF is rejected.
 """
 
 from __future__ import annotations
@@ -41,7 +41,7 @@ def wired(monkeypatch):
     monkeypatch.setattr(bt, "load_catalog", lambda: [spec])
 
     made: list[str] = []
-    # '1m' (kod "1") cache yok; kalanı var.
+    # '1m' (code "1") has no cache; the rest do.
     monkeypatch.setattr(
         data,
         "_bybit_cache_path",
@@ -106,10 +106,10 @@ def _client():
 def _poll(c, sid, tries=80):
     for _ in range(tries):
         p = c.get(f"/backtest/sweep/progress/{sid}")
-        if "✓ bitti" in p.text or "empty-state" in p.text:
+        if "✓ done" in p.text or "empty-state" in p.text:
             return p
         time.sleep(0.1)
-    raise AssertionError("tarama bitmedi")
+    raise AssertionError("scan did not finish")
 
 
 class TestTFSweep:
@@ -128,13 +128,13 @@ class TestTFSweep:
         sid = re.search(r"sweep/progress/([0-9a-f]+)", r.text).group(1)
         page = _poll(c, sid)
 
-        # '1' (1m) cache yok → koşulmaz; kalan 3 koşar.
+        # '1' (1m) has no cache → not run; the remaining 3 run.
         # Sweep runs intervals concurrently → completion order is nondeterministic
         # (display rows stay in interval order). Assert the SET of runs.
         assert sorted(wired["made"]) == ["15", "240", "D"]
-        assert "cache yok" in page.text  # 1m satırı
-        assert "engine crashed on D" in page.text  # D motor hatası satırda
-        # En iyi PnL 15m (%20) ve 4h (%5) tabloda.
+        assert "no cache" in page.text  # 1m row
+        assert "engine crashed on D" in page.text  # D engine error in the row
+        # Best PnL 15m (20%) and 4h (5%) in the table.
         assert "+20.00" in page.text and "+5.00" in page.text
 
     def test_requires_at_least_two_timeframes(self, wired):
@@ -143,7 +143,7 @@ class TestTFSweep:
         assert r.status_code == 400
 
     def test_intervals_csv_fallback(self, wired):
-        # describe→sweep zinciri intervals'ı csv olarak taşır; liste boşken csv okunur.
+        # the describe→sweep chain carries intervals as csv; csv is read when the list is empty.
         c = _client()
         r = c.post(
             "/backtest/sweep",
@@ -160,6 +160,6 @@ class TestTFSweep:
         c = _client()
         r = c.post(
             "/backtest/sweep",
-            data={"spec_id": "yok", "intervals": ["15", "60"]},
+            data={"spec_id": "unknown", "intervals": ["15", "60"]},
         )
         assert r.status_code == 404

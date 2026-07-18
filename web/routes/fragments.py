@@ -2,9 +2,9 @@
 
 Wiki References
 ---------------
-_(app-spesifik — wiki scope dışı)_
+_(app-specific — outside wiki scope)_
 
-Sunum katmanı.
+Presentation layer.
 """
 
 from __future__ import annotations

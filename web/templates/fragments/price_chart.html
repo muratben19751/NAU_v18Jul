@@ -3,7 +3,7 @@
   <div class="panel-header" style="align-items:center;">
     <div style="display:flex;align-items:center;gap:10px;">
       <span class="panel-title" style="font-size:15px;font-weight:600;">
-        {{ last.spec_name if last is defined and last.spec_name else "Strateji" }}
+        {{ last.spec_name if last is defined and last.spec_name else "Strategy" }}
       </span>
       <span class="chip" style="background:rgba(247,147,26,0.12);color:#f7931a;font-size:11px;padding:2px 8px;border-radius:10px;">
         ● {{ chart_symbol }}
@@ -22,8 +22,8 @@
     </div>
   </div>
   <div class="panel-body" style="padding:8px;">
-    {# forceescape şart: tojson Markup(safe) döndürür, |e no-op kalır ve ham
-       çift tırnak attribute'u ilk '"'de keserdi (data-blocks'taki canlı bug) #}
+    {# forceescape required: tojson returns Markup(safe), |e stays a no-op and the raw
+       double quote would cut the attribute at the first '"' (the live bug in data-blocks) #}
     <div id="{{ chart_dom_id | default('price-chart-container') }}"
          data-price-chart="{{ chart_url|replace('&', '__AMP__') }}"
          data-price-symbol="{{ chart_symbol }}"
@@ -34,18 +34,18 @@
          style="width:100%; height:560px; border-radius:4px; overflow:hidden;">
     </div>
     <div style="display:flex;gap:16px;margin-top:6px;font-size:10px;font-family:var(--mono);color:var(--text-muted);">
-      <span class="text-muted">Stratejinin gerçek indikatörleri ·</span>
+      <span class="text-muted">Strategy's actual indicators ·</span>
       <span><span style="color:#4ade80;">▲</span> Buy</span>
       <span><span style="color:#f87171;">▼</span> Sell</span>
-      <span><span style="color:rgba(74,222,128,0.7);">─</span> Kârlı</span>
-      <span><span style="color:rgba(248,113,113,0.6);">─</span> Zararlı</span>
+      <span><span style="color:rgba(74,222,128,0.7);">─</span> Profitable</span>
+      <span><span style="color:rgba(248,113,113,0.6);">─</span> Losing</span>
     </div>
   </div>
 </div>
 <script>
 function chartChangeTF(btn) {
-  // Panel-scoped: /reports'ta aynı sayfada birden çok grafik olabilir —
-  // sabit id yerine butonun ait olduğu panelin container'ı bulunur.
+  // Panel-scoped: /reports may have multiple charts on the same page —
+  // instead of a fixed id, find the container of the panel the button belongs to.
   const panel = btn.closest(".panel");
   const el = panel && panel.querySelector("[data-price-chart]");
   if (!el) return;
@@ -61,9 +61,9 @@ function chartChangeTF(btn) {
   btn.style.color = "#f2f2f2";
   const lbl = panel.querySelector(".chart-tf-label");
   if (lbl) lbl.textContent = tf;
-  // URL güncelle — spec_id'yi VE backtest zaman penceresini (start_ts/end_ts)
-  // koru: pencere düşerse grafik "son 2000 bar"a atlar ve trade'ler
-  // görünümden çıkar (rapor detayındaki asıl kullanım kırılırdı).
+  // Update URL — keep the spec_id AND the backtest time window (start_ts/end_ts):
+  // if the window is dropped the chart jumps to the "last 2000 bars" and trades
+  // fall out of view (the primary use in the report detail would break).
   const cur = el.getAttribute("data-price-chart") || "";
   const mS = cur.match(/start_ts=(\d+)/);
   const mE = cur.match(/end_ts=(\d+)/);

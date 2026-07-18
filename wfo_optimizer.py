@@ -1,43 +1,43 @@
-"""Walk-Forward Optimization — train-only parametre araması (hafif GA).
+"""Walk-Forward Optimization — train-only parameter search (lightweight GA).
 
-Gerçek WFO, strateji parametrelerini in-sample (train) penceresinde optimize
-eder ve *seçilen* parametreleri out-of-sample (test) penceresine uygular. Bu
-modül eksik parçaları sağlar:
+Real WFO optimizes strategy parameters on the in-sample (train) window and
+applies the *chosen* parameters to the out-of-sample (test) window. This
+module provides the missing pieces:
 
-  - ``build_param_space``  : hangi sayısal knob'lar ayarlanabilir, aralıkları ne
-    (``BLOCK_REGISTRY[...]["meta"]["params"]`` + strateji-seviyesi alanlar).
-  - ``mutate_spec``        : bir atamayı uygulayan YENİ bir spec üretir
-    (deep-copy; çağıranın spec'i asla değişmez).
-  - ``optimize_window``    : train barlarında hafif genetik arama (GA).
-    Jenerasyon 0 = mevcut spec değerleri + rastgele bireyler; sonraki
-    jenerasyonlar = elitizm(1) + turnuva(k=3) seçim + uniform crossover +
-    boyut-başına gaussian mutasyon. Her aday k-fold (embargo'lu) koşulur;
-    skor = mean − 0.5·std (NAU deseni). Tohumlu ``np.random.default_rng`` ile
-    tümüyle deterministtir (aynı seed → aynı kazanan).
+  - ``build_param_space``  : which numeric knobs are tunable, and their ranges
+    (``BLOCK_REGISTRY[...]["meta"]["params"]`` + strategy-level fields).
+  - ``mutate_spec``        : produces a NEW spec applying an assignment
+    (deep-copy; the caller's spec is never modified).
+  - ``optimize_window``    : lightweight genetic search (GA) on train candles.
+    Generation 0 = current spec values + random individuals; subsequent
+    generations = elitism(1) + tournament(k=3) selection + uniform crossover +
+    per-dimension gaussian mutation. Each candidate is run k-fold (embargoed);
+    score = mean − 0.5·std (NAU pattern). Fully deterministic via seeded
+    ``np.random.default_rng`` (same seed → same winner).
 
-Yalnız SAYISAL parametreler optimize edilir. Enum'lar (direction/cross/side,
-entry/exit mantığı, order/sl/tp tipi, sizing modu, trend_filter) *stratejinin
-ne olduğunu* tanımlar — onları taramak model seçimi olur, kalibrasyon değil;
-arama uzayını da patlatır.
+Only NUMERIC parameters are optimized. Enums (direction/cross/side,
+entry/exit logic, order/sl/tp type, sizing mode, trend_filter) define *what the
+strategy is* — sweeping them becomes model selection, not calibration; it also
+explodes the search space.
 
-Maliyet sınırı
---------------
-Pencere başına toplam backtest sayısı = POP × GEN × FOLD.
+Cost limit
+----------
+Total backtest count per window = POP × GEN × FOLD.
 
   - POP  = ``WFO_POP_SIZE``  (default 8,  env: ``NAUTILUS_WFO_POP_SIZE``)
-  - GEN  = max(1, round(n_samples / POP))  — ``n_samples`` çağırandan gelir
-    (WFO'da ``n_optimize``); ör. n_samples=20 → GEN=3 → 8×3 = 24 aday.
+  - GEN  = max(1, round(n_samples / POP))  — ``n_samples`` comes from the caller
+    (``n_optimize`` in WFO); e.g. n_samples=20 → GEN=3 → 8×3 = 24 candidates.
   - FOLD = ``WF_FOLDS``      (default 3,  env: ``NAUTILUS_WF_FOLDS``)
 
-Örnek: n_samples=20 defaults ile → 24 aday × 3 fold = 72 eval/pencere.
-Bütçeyi kısmak için env sabitlerini düşürün (örn. POP=4, FOLD=2) ya da
-``n_optimize``'ı küçültün.
+Example: n_samples=20 with defaults → 24 candidates × 3 folds = 72 eval/window.
+To reduce the budget, lower the env constants (e.g. POP=4, FOLD=2) or
+shrink ``n_optimize``.
 
-Metrik uyarısı (M35)
+Metric warning (M35)
 --------------------
-``objective``, Engine yolunun BAR-FREKANSLI Sharpe'ı üzerinde koşar; çapraz
-runner (BacktestNode) ya da NAU kıyası için ``sharpe_nautilus`` /
-``sharpe_per_trade`` kullanın — ölçekler farklıdır, doğrudan kıyaslanmaz.
+``objective`` runs on the Engine path's BAR-FREQUENCY Sharpe; for the cross
+runner (BacktestNode) or NAU comparison, use ``sharpe_nautilus`` /
+``sharpe_per_trade`` — the scales differ and are not directly comparable.
 """
 
 from __future__ import annotations
@@ -62,19 +62,19 @@ def _env_float(name: str, default: float) -> float:
         return default
 
 
-# ── GA / fold bütçesi (env-override'lı modül sabitleri) ─────────────────────
-# Pencere başına maliyet = WFO_POP_SIZE × GEN × WF_FOLDS backtest (bkz. modül
-# docstring'i). Testler bu sabitleri monkeypatch'leyebilir; fonksiyonlar
-# değerleri çağrı anında modül global'inden okur.
+# ── GA / fold budget (env-overridable module constants) ─────────────────────
+# Cost per window = WFO_POP_SIZE × GEN × WF_FOLDS backtests (see module
+# docstring). Tests may monkeypatch these constants; functions read the
+# values from the module global at call time.
 WFO_POP_SIZE = max(1, _env_int("NAUTILUS_WFO_POP_SIZE", 8))
 WF_FOLDS = max(1, _env_int("NAUTILUS_WF_FOLDS", 3))
-# NAU güven sönümü sabiti: skor *= n / (n + K). K=20 → 5 işlemde ×0.2,
-# 20 işlemde ×0.5, 100 işlemde ×0.83 — az işlemle şişen skorlar bastırılır.
+# NAU confidence-damping constant: score *= n / (n + K). K=20 → ×0.2 at 5 trades,
+# ×0.5 at 20 trades, ×0.83 at 100 trades — scores inflated by few trades are suppressed.
 WFO_TRADE_CONF_K = max(0, _env_int("NAUTILUS_WFO_TRADE_CONF_K", 20))
 
-# M236: NAU calmar korumaları. DD_FLOOR (kesir; NAU %1 = 0.01) mikro-drawdown
-# şişmesini önler; CALMAR_CAP calmar'ı ±10'a kırpar. STARTING_CASH pnl_pct
-# türetiminde fallback taban.
+# M236: NAU calmar guards. DD_FLOOR (fraction; NAU 1% = 0.01) prevents micro-drawdown
+# inflation; CALMAR_CAP clips calmar to ±10. STARTING_CASH is the fallback base in
+# pnl_pct derivation.
 _DD_FLOOR = 0.01
 _CALMAR_CAP = 10.0
 try:
@@ -82,13 +82,14 @@ try:
 except Exception:  # pragma: no cover
     _STARTING_CASH = 10_000.0
 
-# M462: NAU geçerli-fold oranı — 3 fold'un 2'si geçerliyse (>=0.6) aday yaşar;
-# TEK -inf fold adayı tümden reddetmesin (seyrek-işlemli sağlam adayları korur).
+# M462: NAU valid-fold fraction — if 2 of 3 folds are valid (>=0.6) the candidate
+# survives; a SINGLE -inf fold should not reject the candidate outright (preserves
+# robust sparse-trade candidates).
 WF_MIN_VALID_FOLDS_FRAC = _env_float("NAUTILUS_WF_MIN_VALID_FOLDS_FRAC", 0.6)
 
-# GA iç ayarları (davranış sabitleri; determinizm rng'den gelir).
+# GA internal settings (behavior constants; determinism comes from rng).
 GA_TOURNAMENT_K = 3
-GA_MUT_SIGMA = 0.15  # gaussian mutasyon std'si, boyut aralığının kesri
+GA_MUT_SIGMA = 0.15  # gaussian mutation std, as a fraction of the dimension range
 
 
 def _isnan(x) -> bool:
@@ -229,14 +230,14 @@ def values_to_dict(space, values) -> dict:
 
 
 def objective_value(result, objective: str = "sharpe", min_trades: int = 5) -> float:
-    """Bir backtest sonucunu skorlar. Hatalı / az-işlemli koşular -inf döner —
-    böylece 0-1 işlem alıp devasa/NaN Sharpe raporlayan overfit tuzağı asla
-    kazanamaz (sert eşik: ``n < min_trades`` → -inf, default 5).
+    """Scores a backtest result. Errored / low-trade runs return -inf —
+    so the overfit trap that takes 0-1 trades and reports a huge/NaN Sharpe can
+    never win (hard threshold: ``n < min_trades`` → -inf, default 5).
 
-    Eşiği GEÇEN adaylara NAU tarzı işlem-sayısı güven sönümü uygulanır:
-    ``val *= n / (n + WFO_TRADE_CONF_K)`` — az işlemle şişen skorlar
-    (çoklu-test şişmesi) bastırılır, n büyüdükçe çarpan 1'e yaklaşır.
-    NaN-fallback zincirindeki değerlere de aynı sönüm uygulanır.
+    Candidates that PASS the threshold get NAU-style trade-count confidence
+    damping: ``val *= n / (n + WFO_TRADE_CONF_K)`` — scores inflated by few trades
+    (multiple-testing inflation) are suppressed, and the multiplier approaches 1
+    as n grows. The same damping is applied to values in the NaN-fallback chain.
     """
     if result is None or getattr(result, "error", None):
         return float("-inf")
@@ -247,10 +248,10 @@ def objective_value(result, objective: str = "sharpe", min_trades: int = 5) -> f
     conf = n / (n + WFO_TRADE_CONF_K) if (n + WFO_TRADE_CONF_K) > 0 else 1.0
 
     def _calmar() -> float | None:
-        # M236: NAU DD_FLOOR (%1) + CALMAR_CAP (±10) korumaları — mikro-drawdown'lu
-        # (dd=-0.0001) bir fold sınırsız skor alıp GA turnuvasını domine
-        # ediyordu. pnl_pct kullan (mutlak USDT değil — M234), NEGATİF-kesir
-        # max_dd için abs (L41), taban 0.01 (=%1), sonuç ±10'a kırp.
+        # M236: NAU DD_FLOOR (1%) + CALMAR_CAP (±10) guards — a fold with a
+        # micro-drawdown (dd=-0.0001) would get an unbounded score and dominate
+        # the GA tournament. Use pnl_pct (not absolute USDT — M234), abs for
+        # the NEGATIVE-fraction max_dd (L41), floor 0.01 (=1%), clip result to ±10.
         pnl_pct = m.get("pnl_pct")
         if pnl_pct is None:
             pnl = m.get("pnl", 0.0) or 0.0
@@ -266,19 +267,19 @@ def objective_value(result, objective: str = "sharpe", min_trades: int = 5) -> f
     elif objective in ("calmar", "return_dd"):
         val = _calmar()
     else:  # sharpe (default)
-        # NAU paritesi: per-trade sharpe ((mean/std)×√n), annualized 252-gün DEĞİL.
-        # NAU fold_quality composite'i de per-trade sharpe okur. Geriye-uyum:
-        # sharpe_per_trade yoksa (eski/stub metrics) annualized 'sharpe'e düş.
+        # NAU parity: per-trade sharpe ((mean/std)×√n), NOT annualized 252-day.
+        # NAU's fold_quality composite also reads per-trade sharpe. Backward-compat:
+        # if sharpe_per_trade is missing (old/stub metrics) fall back to annualized 'sharpe'.
         val = m.get("sharpe_per_trade")
         if val is None:
             val = m.get("sharpe")
 
     if val is None or _isnan(val):
-        # M240: fallback zinciri OLÇEK KARIŞTIRMASIN — sharpe/sortino ~O(1)
-        # iken pnl/|dd| ~O(1e4) idi; tek dejenere fold (sharpe NaN) adayın
-        # penalized skorunu katlarca şişirip GA kazananını bozuyordu. NaN
-        # sortino'ya (aynı ölçek) düş; o da yoksa CAPLİ calmar (±10, aynı
-        # mertebe) — sınırsız ham oran DEĞİL.
+        # M240: the fallback chain must NOT MIX SCALES — sharpe/sortino are ~O(1)
+        # while pnl/|dd| was ~O(1e4); a single degenerate fold (sharpe NaN) would
+        # inflate the candidate's penalized score by orders of magnitude and corrupt
+        # the GA winner. Fall back to NaN sortino (same scale); if that's missing too,
+        # CAPPED calmar (±10, same order of magnitude) — NOT an unbounded raw ratio.
         alt = m.get("sortino")
         if alt is not None and not _isnan(alt):
             return float(alt) * conf
@@ -290,16 +291,16 @@ def objective_value(result, objective: str = "sharpe", min_trades: int = 5) -> f
 
 
 # ---------------------------------------------------------------------------
-# Hafif GA — popülasyon üretimi (H10)
+# Lightweight GA — population generation (H10)
 # ---------------------------------------------------------------------------
 
 
 def ga_plan(space, n_samples: int) -> tuple[int, int]:
-    """(pop_size, n_generations) bütçe eşlemesi.
+    """(pop_size, n_generations) budget mapping.
 
-    GEN = max(1, round(n_samples / POP)) — yarım YUKARI yuvarlanır
-    (n_samples=20, POP=8 → GEN=3). Boş uzayda arama anlamsız → (1, 1):
-    tek (mevcut) aday koşulur, eski n_samples×özdeş-koşu israfı yok.
+    GEN = max(1, round(n_samples / POP)) — rounds half UP
+    (n_samples=20, POP=8 → GEN=3). Searching an empty space is meaningless → (1, 1):
+    a single (current) candidate is run, no wasteful old n_samples×identical-run.
     """
     if not space:
         return 1, 1
@@ -308,10 +309,10 @@ def ga_plan(space, n_samples: int) -> tuple[int, int]:
 
 
 def ga_initial_population(spec, space, rng, pop_size: int) -> list[list]:
-    """Jenerasyon 0: birey 0 = spec'in MEVCUT değerleri, kalanı rastgele.
+    """Generation 0: individual 0 = spec's CURRENT values, the rest random.
 
-    rng parent'ta kalır (paralel yol worker'lara rastgelelik sızdırmaz);
-    aynı rng durumu → aynı popülasyon (determinizm sözleşmesi).
+    rng stays in the parent (the parallel path does not leak randomness to
+    workers); same rng state → same population (determinism contract).
     """
     population: list[list] = [_current_values(spec, space)]
     for _ in range(max(0, pop_size - 1)):
@@ -320,8 +321,8 @@ def ga_initial_population(spec, space, rng, pop_size: int) -> list[list]:
 
 
 def _tournament_idx(rng, scores: list[float], k: int = GA_TOURNAMENT_K) -> int:
-    """Turnuva seçimi: k rastgele birey; en yüksek skor kazanır
-    (eşitlikte düşük indeks — determinist kıyas)."""
+    """Tournament selection: k random individuals; the highest score wins
+    (ties broken by lower index — deterministic comparison)."""
     n = len(scores)
     idxs = rng.integers(0, n, size=min(k, n))
     best = int(idxs[0])
@@ -335,11 +336,12 @@ def _tournament_idx(rng, scores: list[float], k: int = GA_TOURNAMENT_K) -> int:
 def ga_next_population(
     rng, space, population: list[list], scores: list[float], pop_size: int
 ) -> list[list]:
-    """Sonraki jenerasyon: elitizm(1) + turnuva(k=3) + uniform crossover +
-    boyut-başına gaussian mutasyon (int'e yuvarla, [lo, hi] clamp).
+    """Next generation: elitism(1) + tournament(k=3) + uniform crossover +
+    per-dimension gaussian mutation (round to int, clamp to [lo, hi]).
 
-    Elit, kesin-büyük kuralıyla seçilir (eşitlikte düşük indeks) — sıralı ve
-    paralel yol aynı kazananı üretir. Tüm rastgelelik ``rng``'den gelir.
+    The elite is chosen with a strict-greater rule (ties broken by lower index) —
+    the sequential and parallel paths produce the same winner. All randomness
+    comes from ``rng``.
     """
     elite_idx = max(range(len(population)), key=lambda i: (scores[i], -i))
     new_pop: list[list] = [list(population[elite_idx])]
@@ -357,21 +359,23 @@ def ga_next_population(
 
 
 # ---------------------------------------------------------------------------
-# K-fold train değerlendirmesi (L35)
+# K-fold train evaluation (L35)
 # ---------------------------------------------------------------------------
 
 
 def build_fold_bounds(train_bars, n_folds=None, embargo_days=None) -> list[tuple]:
-    """Train barlarını k bitişik fold'a böler; fold'lar arasına embargo (purge)
-    boşluğu koyar — bir fold'un sonunda açılıp diğerinde kapanan işlem sızmasın.
+    """Splits train candles into k contiguous folds; puts an embargo (purge)
+    gap between folds — so a trade opened at the end of one fold and closed in
+    another does not leak.
 
-    Döner: [(start, end), ...] — ``pd.Timestamp`` çiftleri, ``end`` EXCLUSIVE
-    (son fold son barı da kapsar). Saf bir train_bars fonksiyonudur: sıralı ve
-    paralel yol aynı DataFrame'den AYNI sınırları üretir (parite sözleşmesi).
+    Returns: [(start, end), ...] — ``pd.Timestamp`` pairs, ``end`` EXCLUSIVE
+    (the last fold also covers the last candle). It is a pure function of
+    train_bars: the sequential and parallel paths produce the SAME bounds from
+    the same DataFrame (parity contract).
 
-    Fallback'ler: train_bars None/boş → ``[]`` (çağıran tüm-pencere tek koşuya
-    düşer); embargo toplam süreyi yiyorsa ya da herhangi bir fold boş kalıyorsa
-    → tek fold (tüm pencere).
+    Fallbacks: train_bars None/empty → ``[]`` (the caller falls back to a
+    single full-window run); if embargo eats the total duration or any fold ends
+    up empty → single fold (whole window).
     """
     import pandas as pd
 
@@ -385,7 +389,7 @@ def build_fold_bounds(train_bars, n_folds=None, embargo_days=None) -> list[tuple
             return []
         idx = train_bars.index
         t0 = pd.Timestamp(idx[0])
-        # end exclusive: son barın damgası + 1ns → son bar dahil.
+        # end exclusive: last candle's timestamp + 1ns → last candle included.
         t_end = pd.Timestamp(idx[-1]) + pd.Timedelta(1, "ns")
     except (TypeError, AttributeError):
         return []
@@ -396,7 +400,7 @@ def build_fold_bounds(train_bars, n_folds=None, embargo_days=None) -> list[tuple
     embargo = pd.Timedelta(days=float(embargo_days))
     inner = (t_end - t0) - embargo * (n_folds - 1)
     if inner <= pd.Timedelta(0):
-        return [(t0, t_end)]  # pencere embargo'lu k-fold için çok kısa
+        return [(t0, t_end)]  # window too short for embargoed k-fold
 
     seg = inner / n_folds
     bounds: list[tuple] = []
@@ -407,8 +411,8 @@ def build_fold_bounds(train_bars, n_folds=None, embargo_days=None) -> list[tuple
         bounds.append((fs, fe))
         cursor = fe + embargo
 
-    # Herhangi bir fold boş kalıyorsa (veri boşlukları) tek fold'a düş —
-    # boş dilim backtest'i her adayı -inf'e çekerdi.
+    # If any fold ends up empty (data gaps) fall back to a single fold —
+    # a backtest on an empty slice would drag every candidate to -inf.
     for fs, fe in bounds:
         if not ((idx >= fs) & (idx < fe)).any():
             return [(t0, t_end)]
@@ -416,8 +420,8 @@ def build_fold_bounds(train_bars, n_folds=None, embargo_days=None) -> list[tuple
 
 
 def penalized_score(fold_objs: list[float]) -> float:
-    """Fold skorlarını tek skora indirger: mean − 0.5·std (NAU deseni) —
-    yalnızca tek fold'da parlayan aday cezalandırılır. Boş liste → -inf."""
+    """Reduces fold scores to a single score: mean − 0.5·std (NAU pattern) —
+    a candidate that shines in only one fold is penalized. Empty list → -inf."""
     if not fold_objs:
         return float("-inf")
     arr = np.asarray(fold_objs, dtype=float)
@@ -425,7 +429,7 @@ def penalized_score(fold_objs: list[float]) -> float:
 
 
 # ---------------------------------------------------------------------------
-# Pencere optimizasyonu (sıralı yol)
+# Window optimization (sequential path)
 # ---------------------------------------------------------------------------
 
 
@@ -444,19 +448,19 @@ def optimize_window(
     run_fn=None,
     iteration_id: int = 0,
 ) -> dict:
-    """TRAIN penceresinde hafif GA araması (sıralı yol).
+    """Lightweight GA search on the TRAIN window (sequential path).
 
-    Jenerasyon 0 = mevcut spec değerleri + (POP−1) rastgele birey; sonraki
-    jenerasyonlar ``ga_next_population`` ile evrilir. Her geçerli aday
-    ``build_fold_bounds`` fold'larında koşulur; herhangi bir fold -inf ise aday
-    reddedilir, aksi halde skor = mean − 0.5·std. Geçersiz adaylar (örn.
-    slow<=fast, ``spec.validate()`` yakalar) koşturulmaz (skor -inf).
+    Generation 0 = current spec values + (POP−1) random individuals; subsequent
+    generations evolve via ``ga_next_population``. Each valid candidate is run
+    over ``build_fold_bounds`` folds; if any fold is -inf the candidate is
+    rejected, otherwise score = mean − 0.5·std. Invalid candidates (e.g.
+    slow<=fast, caught by ``spec.validate()``) are not run (score -inf).
 
-    Determinizm: tüm rastgelelik ``np.random.default_rng(seed)``'den gelir —
-    aynı seed + aynı veri → aynı kazanan. Döner:
+    Determinism: all randomness comes from ``np.random.default_rng(seed)`` —
+    same seed + same data → same winner. Returns:
     ``{values, params, objective, spec, metrics, n_evaluated}``.
 
-    Maliyet: bkz. modül docstring'i (POP × GEN × FOLD backtest/pencere).
+    Cost: see module docstring (POP × GEN × FOLD backtests/window).
     """
     if run_fn is None:
         from backtest import run_composed_backtest as run_fn  # type: ignore
@@ -478,10 +482,10 @@ def optimize_window(
             _folds = fold_bounds or [None]
             fold_objs: list[float] = []
             last_metrics: dict = {}
-            # M462: eskiden İLK -inf fold'da aday tümden reddediliyordu; NAU
-            # geçerli-fold oranı (>=0.6) ile 3 fold'un 2'si geçerliyse aday
-            # yaşar (seyrek-işlemli sağlam adayları korur). TÜM fold'ları koştur,
-            # geçerli olanları topla.
+            # M462: previously the candidate was rejected outright on the FIRST
+            # -inf fold; with the NAU valid-fold fraction (>=0.6), if 2 of 3
+            # folds are valid the candidate survives (preserves robust
+            # sparse-trade candidates). Run ALL folds and collect the valid ones.
             for fb in _folds:
                 fold_bars = (
                     train_bars
@@ -522,7 +526,7 @@ def optimize_window(
             population = ga_next_population(rng, space, population, scores, pop_size)
 
     if best is None:
-        # Hiçbir aday geçerli skor üretemedi — naive spec'e düş.
+        # No candidate produced a valid score — fall back to the naive spec.
         cur = _current_values(spec, space)
         best = {
             "values": cur,

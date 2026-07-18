@@ -1,4 +1,4 @@
-"""Faz 2 — robustness methodology: Monte Carlo, WFO, runner parity."""
+"""Phase 2 — robustness methodology: Monte Carlo, WFO, runner parity."""
 
 from types import SimpleNamespace
 
@@ -119,7 +119,7 @@ class TestObjectiveGuards:
         assert W.objective_value(res) == float("-inf")
 
     def test_nan_sharpe_falls_back_to_sortino(self):
-        # M29/M36: NAU güven sönümü n/(n+20) fallback zincirine de uygulanır
+        # M29/M36: NAU confidence damping n/(n+20) is also applied to the fallback chain
         # → 1.5 × 10/(10+20) = 0.5.
         res = SimpleNamespace(
             error=None, metrics={"sharpe": float("nan"), "sortino": 1.5, "n_trades": 10}
@@ -141,8 +141,8 @@ class TestOptimizeWindow:
         best = W.optimize_window(
             spec, None, space, None, None, None, n_samples=40, seed=1, run_fn=self._stub
         )
-        # M29/M36: skor = sharpe × n/(n+20) güven sönümü (stub n_trades=10 →
-        # ×1/3); tek fold'da penalized_score = değerin kendisi.
+        # M29/M36: score = sharpe × n/(n+20) confidence damping (stub n_trades=10 →
+        # ×1/3); in a single fold, penalized_score = the value itself.
         assert best["objective"] == pytest.approx(
             float(best["params"]["ma_cross[0].fast"]) * 10 / 30
         )

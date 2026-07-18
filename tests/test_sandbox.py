@@ -1,4 +1,4 @@
-"""Faz 3a — custom-code sandbox: load-time re-validation + killable subprocess."""
+"""Phase 3a — custom-code sandbox: load-time re-validation + killable subprocess."""
 
 import time
 
@@ -99,7 +99,7 @@ class TestExternalRecipe:
             }
         )
         assert type(inst).__name__ == "Equity"
-        assert int(inst.size_precision) == 0  # tam sayı hisse
+        assert int(inst.size_precision) == 0  # integer shares
         assert str(bt) == "QQQ.NASDAQ-1-DAY-LAST-EXTERNAL"
 
     def test_unknown_external_instrument_raises(self):

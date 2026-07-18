@@ -1,9 +1,9 @@
-"""Performans optimizasyonu sonuç-birebir guard'ları.
+"""Performance optimization result-identical guards.
 
-deque→list buffer + _current_equity hızlı yolu + fills dict lookup'ının
-SONUCU DEĞİŞTİRMEDİĞİNİ sabitler. Altın değerler optimizasyon ÖNCESİ koddan
-alındı (perf parite koşusu, sabit seed=42 sentetik veri) — bu test bozulursa
-determinizm bozulmuş demektir; optimizasyon geri alınmalı.
+Pins that the deque→list buffer + _current_equity fast path + fills dict lookup
+DO NOT CHANGE THE RESULT. Golden values were taken from the code BEFORE the
+optimization (perf parity run, fixed seed=42 synthetic data) — if this test
+breaks, determinism is broken; the optimization must be reverted.
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ _RECIPE = {"symbol": "BTCUSDT", "interval": "60", "category": "linear"}
 
 
 def _synth_bars(n: int) -> pd.DataFrame:
-    """perf_parity.py ile birebir aynı üreteç (seed=42)."""
+    """Identical generator to perf_parity.py (seed=42)."""
     idx = pd.date_range("2023-01-01", periods=n, freq="1h", tz="UTC")
     t = np.arange(n)
     rng = np.random.default_rng(42)
@@ -68,12 +68,12 @@ def _trades_sha(trades) -> str:
 
 
 class TestGoldenParity:
-    """Altın değerler (20k bar, seed=42).
+    """Golden values (20k bars, seed=42).
 
-    L13 (2026-07): delay_fill artık ÇIKIŞLARA da uygulanıyor (giriş simetrisi).
-    M5 (2026-07): Bybit komisyonları AÇILDI (maker/taker + MakerTakerFeeModel)
-    — PnL artık net-komisyon. İki bilinçli davranış değişikliği; altın değerler
-    yeniden üretildi.
+    L13 (2026-07): delay_fill is now also applied to EXITS (entry symmetry).
+    M5 (2026-07): Bybit commissions were ENABLED (maker/taker + MakerTakerFeeModel)
+    — PnL is now net-of-commission. Two intentional behavior changes; golden values
+    were regenerated.
     """
 
     def test_ma_cross_golden(self):
@@ -154,16 +154,16 @@ class TestGoldenParity:
         )
         r = _run(spec, _synth_bars(20_000))
         assert r.error is None
-        # H6 (2026-07): rsi_threshold artık RSI'yı 0-100 ölçeğine çekiyor —
-        # eskiden exit bloğu ÖLÜ koddu (n_trades=1, sona kadar tut); şimdi
-        # gerçekten ateşliyor (106 çıkış). Golden yeniden üretildi.
+        # H6 (2026-07): rsi_threshold now scales RSI to the 0-100 range —
+        # the exit block used to be DEAD code (n_trades=1, hold to the end); now it
+        # actually fires (106 exits). Golden regenerated.
         assert round(r.metrics["pnl"], 3) == 360.482
         assert r.metrics["n_trades"] == 106
         assert _trades_sha(r.trades).startswith("77080483ec85")
 
 
 class TestCustomAdapterIsolation:
-    """Adaptör kullanıcı koduna pencere-KOPYASI vermeli (buffer sızmasın)."""
+    """Adapter must give user code a window-COPY (buffer must not leak)."""
 
     def test_window_capped_and_isolated(self, tmp_path, monkeypatch):
         import custom_block_store as cbs
@@ -176,7 +176,7 @@ class TestCustomAdapterIsolation:
             "def evaluate(state, block, closes, indicators, portfolio):\n"
             "    state['n_closes'] = len(closes)\n"
             "    state['n_vols'] = len(indicators.get('volumes') or [])\n"
-            "    closes.append(-1.0)  # mutasyon buffer'a SIZMAMALI\n"
+            "    closes.append(-1.0)  # mutation must NOT LEAK into the buffer\n"
             "    (indicators.get('volumes') or []).append(-1.0)\n"
             "    return None\n"
         )
@@ -199,10 +199,10 @@ class TestCustomAdapterIsolation:
             block = SimpleNamespace(params={}, role="entry", type=name)
             entry["eval"](strat, 0, block, strat._closes)
             state = strat._prev_state["custom_state_0"]
-            # Pencere eski deque genişliğiyle sınırlı
+            # Window limited to the old deque width
             assert state["n_closes"] == buf_cap
             assert state["n_vols"] == buf_cap
-            # Mutasyon buffer'lara sızmadı
+            # Mutation did not leak into the buffers
             assert len(strat._closes) == 50 and strat._closes[-1] == 49.0
             assert len(strat._volumes) == 50 and strat._volumes[-1] == 49.0
         finally:

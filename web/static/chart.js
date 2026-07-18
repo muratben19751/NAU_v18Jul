@@ -2,10 +2,10 @@
 
 /* ─── Indicators ─────────────────────────────────────────────────────────── */
 
-// İstemci-tarafı indikatör hesapları KALDIRILDI — indikatörler artık
-// /chart/data'dan (d.indicators) sunucu-kanonik olarak geliyor
-// (chart_indicators.py). Bu kopyalar hiçbir yerden çağrılmıyordu ve NAU
-// parite kütüphanesiyle drift riski taşıyordu.
+// Client-side indicator calculations REMOVED — indicators now come
+// server-canonical from /chart/data (d.indicators)
+// (chart_indicators.py). These copies were not called from anywhere and
+// carried drift risk against the NAU parity library.
 
 /* ─── Chart factory ──────────────────────────────────────────────────────── */
 
@@ -15,7 +15,7 @@ window.initPriceChart = function(containerId, candles, trades, opts) {
   const container = document.getElementById(containerId);
   if (!container) return;
 
-  // Eski chart'ları + observer'ları HER ZAMAN temizle (empty check'ten ÖNCE) — #15, #6
+  // ALWAYS clean up old charts + observers (BEFORE the empty check) — #15, #6
   if (container.__lwCharts) {
     container.__lwCharts.forEach(c => { try { c.remove(); } catch(e) {} });
     container.__lwCharts = null;
@@ -24,15 +24,15 @@ window.initPriceChart = function(containerId, candles, trades, opts) {
     try { container.__resizeObserver.disconnect(); } catch(e) {}
     container.__resizeObserver = null;
   }
-  // Eski trade highlight handler'larını temizle (kaldırılmış chart'a bağlı kalmasın) — #15
+  // Clean up old trade highlight handlers (don't leave them bound to the removed chart) — #15
   window._priceChartHighlight = null;
   window._priceChartClearHighlight = null;
   window._drawTradeOnChart = null;
   window._priceChartZoom = null;
-  container.__chartApi = null;  // #11: bayat api disposed chart'a bağlı kalmasın (erken dönüşlerde de temizlen)
+  container.__chartApi = null;  // #11: don't leave a stale api bound to a disposed chart (clean up on early returns too)
 
   if (!candles || candles.length === 0) {
-    container.innerHTML = '<div class="empty-state" style="padding:40px;">Veri yok</div>';
+    container.innerHTML = '<div class="empty-state" style="padding:40px;">No data</div>';
     return;
   }
   container.innerHTML = "";
@@ -43,10 +43,10 @@ window.initPriceChart = function(containerId, candles, trades, opts) {
   const closes = candles.map(c => c.close);
   const times  = candles.map(c => c.time);
 
-  // ── Trade markers + giriş/çıkış arası çizgiler (TradingView-tarzı) ───────
-  // Çok trade'li grafikte (>120) marker METİNLERİ bastırılır — 600+ etiket
-  // grafiği okunmaz kılıyor; oklar + PnL-renkli çizgiler kalır, detay trade
-  // tablosundan (tıkla → vurgula) alınır.
+  // ── Trade markers + entry/exit lines (TradingView-style) ───────
+  // On charts with many trades (>120) marker TEXT is suppressed — 600+ labels
+  // make the chart unreadable; arrows + PnL-colored lines remain, detail is
+  // taken from the trade table (click → highlight).
   const showText = (trades || []).length <= 120;
   const markers = [];
   (trades || []).forEach(t => {
@@ -61,7 +61,7 @@ window.initPriceChart = function(containerId, candles, trades, opts) {
     });
     if (t.exit_time) {
       const pnlStr = t.pnl != null ? ((t.pnl >= 0 ? "+" : "") + t.pnl.toFixed(0) + "$") : "";
-      // Çıkış sebebi eki: sl/tp/signal/flip/eob (varsa)
+      // Exit reason suffix: sl/tp/signal/flip/eob (if present)
       const kindStr = { sl: " [SL]", tp: " [TP]", signal: " [EXIT]", flip: " [FLIP]", eob: " [EOB]" }[t.exit_kind] || "";
       markers.push({
         time: t.exit_time,
@@ -75,7 +75,7 @@ window.initPriceChart = function(containerId, candles, trades, opts) {
   });
   markers.sort((a, b) => a.time - b.time);
 
-  // ── Layout: 1 ana panel + spec'in gerektirdiği kadar alt panel ──────────
+  // ── Layout: 1 main panel + as many sub-panels as the spec requires ──────────
   const overlays = indicators.overlays || [];
   const panes    = indicators.panes || [];
   const nSub     = panes.length;
@@ -106,7 +106,7 @@ window.initPriceChart = function(containerId, candles, trades, opts) {
     div.appendChild(el);
   };
 
-  // ── Ana panel (mum) ──────────────────────────────────────────────────────
+  // ── Main panel (candles) ──────────────────────────────────────────────────
   const mainDiv = makeDiv(mainH, false);
   const mainChart = LW.createChart(mainDiv, {
     ...darkBase,
@@ -123,7 +123,7 @@ window.initPriceChart = function(containerId, candles, trades, opts) {
   candleSeries.setData(candles);
   if (markers.length) candleSeries.setMarkers(markers);
 
-  // Giriş-çıkış arası yatay çizgiler
+  // Horizontal lines between entry and exit
   (trades || []).forEach(t => {
     if (!t.entry_time || !t.exit_time || !t.entry_price || !t.exit_price) return;
     const color = t.pnl >= 0 ? "rgba(74,222,128,0.55)" : "rgba(248,113,113,0.55)";
@@ -137,7 +137,7 @@ window.initPriceChart = function(containerId, candles, trades, opts) {
     ]);
   });
 
-  // ── Overlay indikatörleri (fiyat panelinde) — stratejinin gerçek çizgileri ─
+  // ── Overlay indicators (on the price panel) — the strategy's actual lines ─
   const overlayNames = [];
   overlays.forEach(ov => {
     if (!ov.data || !ov.data.length) return;
@@ -151,7 +151,7 @@ window.initPriceChart = function(containerId, candles, trades, opts) {
   });
   if (overlayNames.length) addLabel(mainDiv, overlayNames.join(" · "));
 
-  // ── Alt paneller (RSI vb.) — stratejinin gerçek osilatörleri ─────────────
+  // ── Sub-panels (RSI etc.) — the strategy's actual oscillators ─────────────
   const addRef = (chart, val, col) => {
     if (!times.length) return;
     const s = chart.addLineSeries({ color: col, lineWidth: 1, lineStyle: 2, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false });
@@ -177,7 +177,7 @@ window.initPriceChart = function(containerId, candles, trades, opts) {
     subCharts.push(chart);
   });
 
-  // ── Zaman eksenlerini senkronize et ──────────────────────────────────────
+  // ── Synchronize the time axes ──────────────────────────────────────────────
   const allCharts = [mainChart, ...subCharts];
   let syncing = false;
   allCharts.forEach((src, si) => {
@@ -196,7 +196,7 @@ window.initPriceChart = function(containerId, candles, trades, opts) {
   });
   ro.observe(container);
   container.__lwCharts = allCharts;
-  container.__resizeObserver = ro;  // sonraki render'da disconnect edilecek (#6)
+  container.__resizeObserver = ro;  // will be disconnected on the next render (#6)
 
   // ── Trade hover highlight ─────────────────────────────────────────────────
   let _highlightSeries = null;
@@ -204,11 +204,11 @@ window.initPriceChart = function(containerId, candles, trades, opts) {
   const _chartTimeMax = candles.length ? candles[candles.length-1].time : 0;
 
   function _reloadForTrade(entryTime, exitTime, entryPrice, exitPrice, pnl, tf) {
-    const el = container;  // closure — /reports'ta birden çok grafik olabilir
+    const el = container;  // closure — /reports can have multiple charts
     if (!el) return;
     const sym = el.dataset.priceSymbol || "BTCUSDT";
     const cat = el.dataset.priceCategory || "linear";
-    // tf seçimi
+    // tf selection
     let interval = tf;
     if (!interval || interval === "auto") {
       const durMins = Math.round((exitTime - entryTime) / 60);
@@ -221,18 +221,18 @@ window.initPriceChart = function(containerId, candles, trades, opts) {
     el.setAttribute("data-price-chart", newSrc);
     el.setAttribute("data-price-interval", interval);
     el._chartDone = false;
-    // TF buton güncelle (kendi panelindekiler)
+    // Update TF buttons (the ones in this panel)
     const _panel = container.closest(".panel") || document;
     _panel.querySelectorAll(".chart-tf-btn").forEach(b => {
       b.style.background = b.dataset.tf === interval ? "rgba(255,255,255,0.12)" : "";
       b.style.color      = b.dataset.tf === interval ? "#f2f2f2" : "";
     });
-    // Chart yükle, sonra highlight çiz (async reload sonrası _afterLoad tetiklenir)
+    // Load chart, then draw highlight (_afterLoad fires after the async reload)
     el._afterLoad = function() {
       if (entryPrice || exitPrice) {
         if (window._drawTradeOnChart) window._drawTradeOnChart(entryTime, exitTime, entryPrice, exitPrice, pnl);
       } else {
-        // #10: zoom yolu (fiyat 0,0) — highlight çizme, yalnız görünür aralığı ayarla
+        // #10: zoom path (price 0,0) — don't draw highlight, just set the visible range
         const _m = Math.round((exitTime - entryTime) * 3);
         if (container.__lwCharts) container.__lwCharts.forEach(c => { try { c.timeScale().setVisibleRange({ from: entryTime - _m, to: exitTime + _m }); } catch (e) {} });
       }
@@ -240,7 +240,7 @@ window.initPriceChart = function(containerId, candles, trades, opts) {
     _loadPriceChart(el);
   }
 
-  // Giriş-çıkış çizgisini ve highlight'ı çiz
+  // Draw the entry-exit line and the highlight
   window._drawTradeOnChart = function(entryTime, exitTime, entryPrice, exitPrice, pnl) {
     if (_highlightSeries) {
       try { mainChart.removeSeries(_highlightSeries); } catch(e) {}
@@ -261,7 +261,7 @@ window.initPriceChart = function(containerId, candles, trades, opts) {
       { time: entryTime, value: entryPrice },
       { time: exitTime,  value: exitPrice  },
     ]);
-    // Çizginin orta noktasına PnL marker ekle
+    // Add a PnL marker at the midpoint of the line
     const midTime = Math.round((entryTime + exitTime) / 2);
     const midPrice = (entryPrice + exitPrice) / 2;
     _highlightSeries.setMarkers([{
@@ -278,7 +278,7 @@ window.initPriceChart = function(containerId, candles, trades, opts) {
   };
 
   window._priceChartHighlight = function(entryTime, exitTime, entryPrice, exitPrice, pnl, tf) {
-    // Trade chart aralığında değilse reload
+    // Reload if the trade is not within the chart range
     if (entryTime < _chartTimeMin || exitTime > _chartTimeMax || (tf && tf !== "auto" && tf !== container.dataset?.priceInterval)) {
       _reloadForTrade(entryTime, exitTime, entryPrice, exitPrice, pnl, tf || "auto");
       return;
@@ -303,11 +303,11 @@ window.initPriceChart = function(containerId, candles, trades, opts) {
     allCharts.forEach(c => { try { c.timeScale().setVisibleRange({ from: entryTime - margin, to: exitTime + margin }); } catch(e) {} });
   };
 
-  // M10: panel-scoped API — window global'leri SON init edilen grafiği
-  // işaret ediyordu; iki rapor detayı açıkken ilk tablodaki trade tıklaması
-  // İKİNCİ grafiği oynatıyordu (yanlış highlight/zoom + yanlış pencereye
-  // reload). Tüketiciler grafiği kendi fragment kökünden __chartApi ile
-  // çözer; window alias'ları tek-grafik sayfalar için geriye-uyum kalır.
+  // M10: panel-scoped API — the window globals pointed at the LAST-initialized
+  // chart; with two report details open, clicking a trade in the first table
+  // moved the SECOND chart (wrong highlight/zoom + reload into the wrong
+  // window). Consumers resolve the chart via __chartApi from their own fragment
+  // root; the window aliases remain for backward-compat on single-chart pages.
   container.__chartApi = {
     draw: window._drawTradeOnChart,
     highlight: window._priceChartHighlight,
@@ -315,7 +315,7 @@ window.initPriceChart = function(containerId, candles, trades, opts) {
     zoom: window._priceChartZoom,
   };
 
-  // _afterLoad callback (reload sonrası highlight)
+  // _afterLoad callback (highlight after reload)
   const _el = container;
   if (_el && _el._afterLoad) {
     const cb = _el._afterLoad;
@@ -331,7 +331,7 @@ function _loadPriceChart(el) {
     .replace(/__AMP__/g, "&").replace(/&amp;/g, "&");
   if (!src) return;
   el._chartDone = true;
-  const _seq = (el._loadSeq = (el._loadSeq || 0) + 1);  // #12: yarış jetonu
+  const _seq = (el._loadSeq = (el._loadSeq || 0) + 1);  // #12: race token
   let trades = [];
   try {
     const raw = (el.getAttribute("data-price-trades") || "[]")
@@ -341,12 +341,12 @@ function _loadPriceChart(el) {
   fetch(src)
     .then(r => r.json())
     .then(d => {
-      if (_seq !== el._loadSeq) return;  // #12: geç dönen eski istek — yoksay
-      if (!el.isConnected) { el._chartDone = false; el._afterLoad = null; return; }  // #13: satır kapandıysa reopen'da yeniden yüklensin
+      if (_seq !== el._loadSeq) return;  // #12: late-returning stale request — ignore
+      if (!el.isConnected) { el._chartDone = false; el._afterLoad = null; return; }  // #13: if the row closed, reload on reopen
       if (d.error && (!d.candles || !d.candles.length)) {
-        // Örn. pencere/TF fizibilite reddi — kullanıcıya nedenini söyle
+        // E.g. window/TF feasibility rejection — tell the user why
         el._chartDone = false;
-        el._afterLoad = null;  // #11: hatada bayat highlight callback'ini temizle
+        el._afterLoad = null;  // #11: clean up the stale highlight callback on error
         el.innerHTML = '<div class="empty-state" style="padding:40px;">⚠ ' + d.error + '</div>';
         return;
       }
@@ -359,7 +359,7 @@ function _initAllCharts() {
   document.querySelectorAll("[data-price-chart]").forEach(_loadPriceChart);
 }
 
-// MutationObserver — DOM'a [data-price-chart] eklenince anında çalışır
+// MutationObserver — runs immediately when [data-price-chart] is added to the DOM
 const _chartObserver = new MutationObserver(function(mutations) {
   mutations.forEach(function(m) {
     m.addedNodes.forEach(function(node) {

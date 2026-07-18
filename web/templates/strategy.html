@@ -16,9 +16,9 @@
     {% if request.query_params.get("saved_block") %}
       <div class="panel" style="border-color: rgba(74,222,128,0.35);">
         <div class="panel-body">
-          <span class="badge running">✓ YENİ BLOK</span>
+          <span class="badge running">✓ NEW BLOCK</span>
           <span class="mono" style="margin-left:8px;">{{ request.query_params.get("saved_block") }}</span>
-          <span class="text-muted" style="margin-left:8px;">→ Add Signal Block dropdown'ında görünüyor</span>
+          <span class="text-muted" style="margin-left:8px;">→ appears in the Add Signal Block dropdown</span>
         </div>
       </div>
     {% endif %}
@@ -31,16 +31,16 @@
       </div>
     {% endif %}
 
-    {# 0. Claude öner ---- #}
+    {# 0. Claude suggest ---- #}
     <div class="panel pulse-border">
       <div class="panel-body row">
         <div style="flex:1;">
           <div class="section-title" style="margin:0 0 4px">🧠 AI Strategy Designer</div>
-          <div class="text-muted">Claude Fable 5 geçmiş backtest sonuçlarına ve mevcut kataloğa bakarak sana yeni bir strateji önerir — bloklar, roller, parametreler ve isim dahil.</div>
+          <div class="text-muted">Claude Fable 5 looks at past backtest results and the current catalog to suggest a new strategy for you — including blocks, roles, parameters and name.</div>
         </div>
         <form hx-post="/strategy/suggest" hx-target="#drafts" hx-swap="outerHTML" hx-indicator="#suggest-spinner">
-          <button class="btn btn-primary" type="submit">🧠 Claude'a önerttir</button>
-          <span class="htmx-indicator text-muted mono" id="suggest-spinner" style="font-size:11px;margin-left:8px;">Claude düşünüyor…</span>
+          <button class="btn btn-primary" type="submit">🧠 Ask Claude to suggest</button>
+          <span class="htmx-indicator text-muted mono" id="suggest-spinner" style="font-size:11px;margin-left:8px;">Claude is thinking…</span>
         </form>
       </div>
     </div>
@@ -70,7 +70,7 @@
       <div class="panel-header">
         <div class="panel-title">02 · Add Signal Block</div>
         <div class="spacer"></div>
-        <span class="text-muted text-mono">kombine mantık: Advanced Options</span>
+        <span class="text-muted text-mono">combined logic: Advanced Options</span>
       </div>
       <div class="panel-body">
         <div id="add-block-form-wrapper">
@@ -154,19 +154,19 @@
       </div>
     </div>
 
-    {# 6. Custom Blocks (Beta) — Claude yeni blok tipi üretir ---- #}
+    {# 6. Custom Blocks (Beta) — Claude generates a new block type ---- #}
     <div class="panel">
       <details>
         <summary class="panel-header" style="cursor:pointer;list-style:none;">
           <div class="panel-title">06 · Custom Blocks <span class="badge beta">BETA</span></div>
           <div class="spacer"></div>
-          <span class="text-muted text-mono">Claude üretir · AST doğrulanır · disk-persistent</span>
+          <span class="text-muted text-mono">Claude generates · AST validated · disk-persistent</span>
         </summary>
         <div class="panel-body stack" style="gap:12px;">
           <div class="text-muted" style="font-size:12px;">
-            Doğal dille yeni bir sinyal bloğu tarif edin. Claude Fable 5 bunu Python koduna çevirir,
-            AST doğrulaması geçerse kaydedebilirsiniz. Yeni blok anında <b>02 · Add Signal Block</b>
-            dropdown'ında görünür.
+            Describe a new signal block in natural language. Claude Fable 5 turns it into Python code,
+            and if AST validation passes you can save it. The new block appears instantly in the <b>02 · Add Signal Block</b>
+            dropdown.
           </div>
 
           <form hx-post="/strategy/blocks/generate"
@@ -174,31 +174,31 @@
                 hx-swap="innerHTML"
                 hx-indicator="#custom-spinner"
                 class="stack">
-            <label class="field">Label (kısa isim)
-              <input type="text" name="label" placeholder="örn: SMA200 breakout" required>
+            <label class="field">Label (short name)
+              <input type="text" name="label" placeholder="e.g.: SMA200 breakout" required>
             </label>
-            <label class="field">Ne yapsın? (doğal dil)
+            <label class="field">What should it do? (natural language)
               <textarea name="description" rows="3" required
-                        placeholder="örn: close 200-günlük SMA'nın yukarısına geçerse LONG entry"></textarea>
+                        placeholder="e.g.: LONG entry when close crosses above the 200-day SMA"></textarea>
             </label>
-            <label class="field">Rol
+            <label class="field">Role
               <select name="role_hint">
-                <option value="entry" selected>entry (long/short sinyali)</option>
+                <option value="entry" selected>entry (long/short signal)</option>
                 <option value="exit">exit</option>
-                <option value="both">her ikisi</option>
+                <option value="both">both</option>
               </select>
             </label>
             <div class="row" style="gap:8px;">
-              <button class="btn btn-primary" type="submit">🧠 Claude'a yazdır</button>
+              <button class="btn btn-primary" type="submit">🧠 Ask Claude to write it</button>
               <span class="htmx-indicator text-muted mono" id="custom-spinner"
-                    style="font-size:11px;">Claude düşünüyor…</span>
+                    style="font-size:11px;">Claude is thinking…</span>
             </div>
           </form>
 
           <div id="custom-generated"></div>
 
           <div>
-            <div class="section-title" style="margin:8px 0 6px;">Kayıtlı Custom Bloklar</div>
+            <div class="section-title" style="margin:8px 0 6px;">Saved Custom Blocks</div>
             <div id="custom-blocks-list">
               {% include "fragments/custom_blocks_list.html" %}
             </div>

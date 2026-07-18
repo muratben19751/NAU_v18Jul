@@ -1,12 +1,12 @@
-"""Backtest Reports — tüm geçmiş çalışmaları raporlar.
+"""Backtest Reports — reports all past runs.
 
-backtest_log.jsonl'yi okur; manual backtest + Strategy Lab + otonom agent
-çalışmalarını tek tabloda gösterir. robustness_log.jsonl ile spec_id üzerinden join.
+Reads backtest_log.jsonl; shows manual backtest + Strategy Lab + autonomous agent
+runs in a single table. Joins with robustness_log.jsonl via spec_id.
 
 Endpoints
 ---------
-GET  /reports               Ana sayfa
-GET  /reports/export.csv    Filtrelenmiş CSV indir
+GET  /reports               Main page
+GET  /reports/export.csv    Download filtered CSV
 """
 
 from __future__ import annotations
@@ -35,10 +35,10 @@ REPORTS_LAYOUT = Path.home() / ".cache" / "nautilus_web_app" / "reports_layout.j
 
 
 def _view_state_fields(data: dict) -> dict:
-    """order/hidden dışındaki görünüm durumu: sort + kolon filtreleri + varyant.
+    """view state other than order/hidden: sort + column filters + variant.
 
-    Bilinmeyen/yanlış tipli alanlar sessizce atılır — dosya elle bozulsa bile
-    sayfa varsayılanla açılır.
+    Unknown/wrong-typed fields are silently dropped — even if the file is
+    manually corrupted, the page opens with defaults.
     """
     out: dict = {}
     sort = data.get("sort")
@@ -59,16 +59,16 @@ def _view_state_fields(data: dict) -> dict:
     page_size = data.get("pageSize")
     if isinstance(page_size, (int, float)) and not isinstance(page_size, bool):
         page_size = int(page_size)
-        if 0 <= page_size <= 100_000:  # 0 = Tümü
+        if 0 <= page_size <= 100_000:  # 0 = All
             out["pageSize"] = page_size
     return out
 
 
 def _load_layout() -> dict:
-    """Kaydedilmiş görünüm durumunu oku.
+    """Read saved view state.
 
     {'order': [...], 'hidden': [...], 'sort': {key, asc},
-     'filters': {key: expr}, 'variant': str} — sort/filters/variant opsiyonel.
+     'filters': {key: expr}, 'variant': str} — sort/filters/variant optional.
     """
     if not REPORTS_LAYOUT.exists():
         return {}
@@ -87,7 +87,7 @@ def _load_layout() -> dict:
 
 
 def _save_layout(data: dict) -> None:
-    """Görünüm durumunu atomik olarak diske yaz (.tmp → replace)."""
+    """Write view state to disk atomically (.tmp → replace)."""
     REPORTS_LAYOUT.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "order": [str(k) for k in (data.get("order") or [])],
@@ -127,13 +127,13 @@ def _runner_label(rationale: str) -> str:
 
 
 def _fmt_test_period(start: str, end: str) -> str:
-    """bars.start → bars.end farkını insan-okur süreye çevir (ör. '6.1y', '14ay')."""
+    """Convert bars.start → bars.end difference to human-readable duration (e.g. '6.1y', '14month')."""
     from datetime import datetime as _dt
 
     if not start or not end:
         return "—"
     try:
-        # Log formatı: "2020-03-25 10:00:00+00:00" veya "2020-03-25"
+        # Log format: "2020-03-25 10:00:00+00:00" or "2020-03-25"
         s = _dt.fromisoformat(str(start).replace(" ", "T", 1)[:25])
         e = _dt.fromisoformat(str(end).replace(" ", "T", 1)[:25])
     except Exception:
@@ -142,16 +142,16 @@ def _fmt_test_period(start: str, end: str) -> str:
     if days <= 0:
         return "—"
     if days < 1:
-        return f"{days * 24:.0f}sa"
+        return f"{days * 24:.0f}h"
     if days < 60:
-        return f"{days:.0f}g"
+        return f"{days:.0f}d"
     if days < 730:
-        return f"{days / 30.44:.1f}ay"
+        return f"{days / 30.44:.1f}month"
     return f"{days / 365.25:.1f}y"
 
 
 def _fmt_elapsed(sec: float | None) -> str:
-    """Backtest wall-clock çalışma süresi → okunur (ör. '0.8sn', '2.4dk')."""
+    """Backtest wall-clock run time → readable (e.g. '0.8s', '2.4min')."""
     if sec is None:
         return "—"
     try:
@@ -161,17 +161,18 @@ def _fmt_elapsed(sec: float | None) -> str:
     if sec < 1:
         return f"{sec * 1000:.0f}ms"
     if sec < 60:
-        return f"{sec:.1f}sn"
-    return f"{sec / 60:.1f}dk"
+        return f"{sec:.1f}s"
+    return f"{sec / 60:.1f}min"
 
 
 def _load_robustness_index() -> dict:
-    """Robustness kayıt indeksi.
+    """Robustness record index.
 
-    Birincil anahtar bileşik: ``(spec_id, symbol, interval)`` — aynı spec'in
-    farklı sembol/TF koşuları artık ezişmez. Eski kayıtlar (kimlik alanları
-    yok) ve geriye uyumluluk için tekli ``spec_id`` / ``spec_name`` anahtarları
-    da tutulur (son-yazan-kazanır, yalnız fallback olarak kullanılır).
+    Primary composite key: ``(spec_id, symbol, interval)`` — different
+    symbol/TF runs of the same spec no longer overwrite each other. For legacy
+    records (no identity fields) and backward compatibility, single
+    ``spec_id`` / ``spec_name`` keys are also kept (last-writer-wins, used only
+    as a fallback).
     """
     if not ROBUSTNESS_LOG.exists():
         return {}
@@ -200,7 +201,7 @@ def _load_robustness_index() -> dict:
 
 
 def _rob_fields(rob: dict | None) -> dict:
-    """Robustness kaydından reports row'una eklenecek formatlanmış alanlar."""
+    """Formatted fields from a robustness record to add to a reports row."""
     if not rob:
         return {
             "rob_label": "—",
@@ -225,7 +226,7 @@ def _rob_fields(rob: dict | None) -> dict:
     mc_median = mc.get("median_final")
     mc_dd_p95 = mc.get("max_dd_p95")
 
-    # Walk-forward pass rate: kaç pencerede test PnL > 0
+    # Walk-forward pass rate: in how many windows test PnL > 0
     wf_total = len(wf)
     wf_pass = sum(1 for w in wf if (w.get("test_metrics") or {}).get("pnl", 0) > 0)
     if wf_total > 0:
@@ -251,8 +252,8 @@ def _rob_fields(rob: dict | None) -> dict:
     }
 
 
-# H6: (mtime_ns, size) anahtarlı parse cache'i — log değişmediyse ~3.6k
-# json.loads tekrarlanmaz; her ziyaret tam maliyeti yeniden ödemesin.
+# H6: parse cache keyed by (mtime_ns, size) — if the log hasn't changed, ~3.6k
+# json.loads calls aren't repeated; each visit shouldn't re-pay the full cost.
 _PARSE_CACHE: dict[str, tuple[tuple, list]] = {}
 
 
@@ -307,9 +308,9 @@ def _load_rows(
                 continue
             if capital:
                 cash = m.get("starting_cash")
-                # "10000" gibi tam değer eşleşmesi (float toleransıyla).
-                # Sayısal olmayan capital → filtreyi yok say (tüm satırları
-                # eleyip sessizce boş tablo döndürmek yerine).
+                # exact value match like "10000" (with float tolerance).
+                # Non-numeric capital → ignore the filter (instead of
+                # eliminating all rows and silently returning an empty table).
                 try:
                     cap_val = float(capital)
                 except (TypeError, ValueError):
@@ -336,8 +337,8 @@ def _load_rows(
             spec_id = spec.get("id", "")
             spec_name = spec.get("name", "—")
 
-            # Önce bileşik anahtar (spec+sembol+TF); eski kayıtlar için tekli
-            # spec_id/spec_name fallback'i (son-yazan-kazanır) korunur.
+            # First the composite key (spec+symbol+TF); for legacy records the
+            # single spec_id/spec_name fallback (last-writer-wins) is kept.
             bars_bi = rec.get("bars") or {}
             _sym = (
                 bars_bi.get("symbol")
@@ -351,11 +352,11 @@ def _load_rows(
                 or rob_index.get(spec_id)
                 or rob_index.get(spec_name)
             )
-            # L8: fallback kimlik-uyum guard'ı — düz spec_id/spec_name
-            # anahtarı son-yazan-kazanır olduğundan BAŞKA sembol/TF'nin
-            # robustness'ı satıra yapışabiliyordu. Kayıtta kimlik alanları
-            # VARSA ve satırınkiyle çelişiyorsa fallback reddedilir
-            # (kimlik-alansız legacy kayıtlar koşulsuz geçer).
+            # L8: fallback identity-consistency guard — since the plain
+            # spec_id/spec_name key is last-writer-wins, ANOTHER symbol/TF's
+            # robustness could stick to the row. If the record HAS identity
+            # fields AND they conflict with the row's, the fallback is rejected
+            # (identity-less legacy records pass unconditionally).
             if rob is not None:
                 _r_sym = rob.get("symbol") or ""
                 _r_iv = rob.get("interval") or ""
@@ -368,7 +369,7 @@ def _load_rows(
             row = {
                 # identity — ts converted to local time for display
                 "ts": _utc_to_local(rec.get("ts", "")),
-                # ham UTC ts: /reports/detail log satırını bununla bulur
+                # raw UTC ts: /reports/detail finds the log line with this
                 "ts_raw": rec.get("ts", ""),
                 "spec_id": spec_id,
                 "spec_name": spec_name,
@@ -415,7 +416,7 @@ def _load_rows(
 
 
 def _all_symbols() -> list[str]:
-    # H6: parse cache'inden — logun ek tam taraması yok.
+    # H6: from the parse cache — no extra full scan of the log.
     if not BACKTEST_LOG.exists():
         return []
     symbols: set[str] = set()
@@ -428,9 +429,9 @@ def _all_symbols() -> list[str]:
 
 
 def _all_capitals() -> list[float]:
-    """Log'daki distinct starting_cash değerleri (filtre dropdown'ı için).
+    """Distinct starting_cash values in the log (for the filter dropdown).
 
-    H6: parse cache'inden — logun ek tam taraması yok.
+    H6: from the parse cache — no extra full scan of the log.
     """
     if not BACKTEST_LOG.exists():
         return []
@@ -448,10 +449,10 @@ def _all_capitals() -> list[float]:
 def _page_data(
     runner: str, symbol: str, errors_only: bool, capital: str
 ) -> tuple[list, list, list]:
-    """H6: rows + symbols + capitals TEK senkron fonksiyonda — event loop'u
-    bloklamadan asyncio.to_thread ile koşulur. (Eski yol: async handler
-    içinde 3 tam log taraması loop thread'inde → 20MB'a yaklaşan loglarda
-    sunucu-çapı donma; 1sn'lik HTMX poll'ları dahil her istek beklerdi.)
+    """H6: rows + symbols + capitals in a SINGLE synchronous function — run
+    via asyncio.to_thread without blocking the event loop. (Old way: 3 full
+    log scans on the loop thread inside an async handler → server-wide freeze
+    on logs approaching 20MB; every request, including 1s HTMX polls, waited.)
     """
     rows = _load_rows(
         runner=runner, symbol=symbol, errors_only=errors_only, capital=capital
@@ -492,12 +493,12 @@ async def page(request: Request):
     )
 
 
-_DETAIL_CACHE: dict[str, dict] = {}  # raw ts → render bağlamı (cap: 8, FIFO)
+_DETAIL_CACHE: dict[str, dict] = {}  # raw ts → render context (cap: 8, FIFO)
 _DETAIL_CACHE_MAX = 8
 
 
 def _find_log_record(ts: str) -> dict | None:
-    """backtest_log.jsonl'de ham UTC ts'e sahip satırı bul (aktif dosya)."""
+    """Find the line with the raw UTC ts in backtest_log.jsonl (active file)."""
     if not BACKTEST_LOG.exists():
         return None
     with open(BACKTEST_LOG, encoding="utf-8") as f:
@@ -515,9 +516,9 @@ def _find_log_record(ts: str) -> dict | None:
 
 
 def _detail_error(msg: str) -> HTMLResponse:
-    # L7: çağıranlar ham exception/spec-doğrulama metni geçirir — escapesiz
-    # basmak DOM'u bozar / LLM-kaynaklı metinde enjeksiyona açılırdı. Tek
-    # boğum noktası olduğu için tüm çağıranlar burada birden düzelir.
+    # L7: callers pass raw exception / spec-validation text — printing it
+    # unescaped would break the DOM / open injection in LLM-sourced text. Since
+    # it's a single choke point, all callers are fixed here at once.
     from markupsafe import escape
 
     return HTMLResponse(f"<div class='empty-state'>{escape(msg)}</div>")
@@ -525,11 +526,11 @@ def _detail_error(msg: str) -> HTMLResponse:
 
 @router.get("/detail", response_class=HTMLResponse)
 async def detail(request: Request, ts: str):
-    """Rapor satırının trade detayı: deterministik yeniden-koşum + grafik.
+    """Trade detail of a report row: deterministic re-run + chart.
 
-    Log satırındaki tam spec + veri kimliği (symbol/interval/start/end) ile
-    backtest killable sandbox child'ında aynen tekrarlanır; sonuçtaki
-    sebepli trade listesi + fiyat grafiği fragment olarak döner.
+    Using the full spec + data identity (symbol/interval/start/end) in the log
+    line, it is replayed exactly in the backtest killable sandbox child; the
+    resulting reasoned trade list + price chart is returned as a fragment.
     """
     import asyncio
 
@@ -540,20 +541,20 @@ async def detail(request: Request, ts: str):
             request, "fragments/report_detail.html", _DETAIL_CACHE[ts]
         )
 
-    # H6: tam log taraması thread'de — loop bloklanmaz.
+    # H6: full log scan in a thread — loop is not blocked.
     rec = await asyncio.to_thread(_find_log_record, ts)
     if rec is None:
         return _detail_error(
-            "Kayıt bulunamadı — log rotasyona uğramış olabilir (.jsonl.1 arşivi)."
+            "Record not found — the log may have been rotated (.jsonl.1 archive)."
         )
     if rec.get("error"):
-        return _detail_error(f"Bu koşum hatayla bitmişti: {rec['error'][:200]}")
+        return _detail_error(f"This run had ended with an error: {rec['error'][:200]}")
     bi = rec.get("bars") or {}
     symbol = bi.get("symbol")
     if not symbol:
         return _detail_error(
-            "Grafik detayı şimdilik yalnız Bybit koşuları için kullanılabilir "
-            "(External/Index kayıtları desteklenmiyor)."
+            "Chart detail is currently only available for Bybit runs "
+            "(External/Index records are not supported)."
         )
 
     from composer import ComposedStrategySpec
@@ -561,11 +562,11 @@ async def detail(request: Request, ts: str):
     try:
         spec = ComposedStrategySpec.from_dict(rec.get("spec") or {})
     except Exception as e:
-        return _detail_error(f"Spec log kaydından kurulamadı: {e}")
+        return _detail_error(f"Spec could not be built from the log record: {e}")
     verr = spec.validate()
     if verr:
         return _detail_error(
-            f"Spec artık çalıştırılamıyor: {verr} (silinmiş custom blok olabilir)."
+            f"Spec can no longer be run: {verr} (may be a deleted custom block)."
         )
 
     category = bi.get("category", "linear")
@@ -587,7 +588,7 @@ async def detail(request: Request, ts: str):
             end=end,
         )
         if bars.empty:
-            raise RuntimeError("Veri cache'te yok — Data sayfasından fetch edin.")
+            raise RuntimeError("Data is not in the cache — fetch it from the Data page.")
         return run_backtest_guarded(
             spec,
             bars,
@@ -600,12 +601,12 @@ async def detail(request: Request, ts: str):
     try:
         result = await asyncio.get_event_loop().run_in_executor(None, _rerun)
     except Exception as e:
-        return _detail_error(f"Yeniden koşum başarısız: {type(e).__name__}: {e}")
+        return _detail_error(f"Re-run failed: {type(e).__name__}: {e}")
     if result.error:
-        return _detail_error(f"Yeniden koşum hatası: {result.error}")
+        return _detail_error(f"Re-run error: {result.error}")
 
-    # Sadakat: log'daki metriklerle birebir mi? (Eski kayıtlar eksik spec
-    # alanlarını varsayılanla doldurur — sapma normaldir, işaretlenir.)
+    # Fidelity: exactly matches the metrics in the log? (Legacy records fill
+    # missing spec fields with defaults — deviation is normal, it is flagged.)
     old_m = rec.get("metrics") or {}
     new_m = result.metrics or {}
     old_n, new_n = old_m.get("n_trades"), new_m.get("n_trades")
@@ -620,8 +621,8 @@ async def detail(request: Request, ts: str):
     from web.shared import chart_url as _chart_url
 
     chart_url = _chart_url(result.bars_info or bi, spec.id)
-    # _chart_url uzun aralıkta TF'i otomatik büyütür (örn. 6y → D) —
-    # buton vurgusu grafikte GERÇEKTE çizilen TF'i göstersin
+    # _chart_url automatically increases the TF over a long range (e.g. 6y → D) —
+    # let the button highlight show the TF ACTUALLY drawn on the chart
     m = re.search(r"[?&]interval=([^&]+)", chart_url)
     chart_tf = m.group(1) if m else interval
 
@@ -654,13 +655,13 @@ async def detail(request: Request, ts: str):
 
 @router.get("/layout", response_class=JSONResponse)
 async def get_layout():
-    """Kaydedilmiş sütun düzenini döndür (yoksa boş dict)."""
+    """Return the saved column layout (empty dict if none)."""
     return _load_layout()
 
 
 @router.post("/layout", response_class=JSONResponse)
 async def post_layout(request: Request):
-    """Sütun düzenini (order + hidden) kalıcı olarak kaydet."""
+    """Persist the column layout (order + hidden)."""
     try:
         body = await request.json()
     except Exception:
@@ -678,7 +679,7 @@ async def export_csv(request: Request):
     errors_only = request.query_params.get("errors_only", "") == "1"
     capital_filter = request.query_params.get("capital", "")
 
-    # H6: tam log taraması thread'de — loop bloklanmaz.
+    # H6: full log scan in a thread — loop is not blocked.
     rows = await asyncio.to_thread(
         _load_rows,
         runner=runner_filter,
@@ -691,14 +692,14 @@ async def export_csv(request: Request):
     writer = csv.writer(output)
     writer.writerow(
         [
-            "Tarih",
-            "Test Periyodu",
-            "Strateji",
-            "Sembol",
-            "Sermaye",
-            "Kategori",
+            "Date",
+            "Test Period",
+            "Strategy",
+            "Symbol",
+            "Capital",
+            "Category",
             "Interval",
-            "Çalıştıran",
+            "Runner",
             "PnL (USDT)",
             "PnL (%)",
             "Max DD",
@@ -711,14 +712,14 @@ async def export_csv(request: Request):
             "N Losses",
             "Avg Duration",
             "Volatility",
-            "Komisyon",
+            "Commission",
             "Overfitting",
             "OOS Sharpe",
             "OOS PnL",
             "MC Median",
             "MC DD p95",
             "WF Pass",
-            "Hata",
+            "Error",
         ]
     )
     for r in rows:

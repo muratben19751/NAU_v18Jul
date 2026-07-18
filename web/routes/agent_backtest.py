@@ -1,17 +1,17 @@
-"""Otonom Backtest Ajanı — araştırma döngüsü.
+"""Autonomous Backtest Agent — research loop.
 
 Pipeline:
-  0. Veri yükle (cache'den tam aralık)
-  1. Strateji üret (Claude → ComposedStrategySpec)
-  2. N × (backtest → Claude iyileştirme)
-  3. Sıralama (Sharpe + PnL + WinRate skoru)
-  4. Robustness tarama (sırayla: IS/OOS + WFO + MC)
-  5. Kazananı kaydet (catalog + log)
+  0. Load data (full range from cache)
+  1. Generate strategy (Claude → ComposedStrategySpec)
+  2. N × (backtest → Claude refinement)
+  3. Ranking (Sharpe + PnL + WinRate score)
+  4. Robustness scan (in order: IS/OOS + WFO + MC)
+  5. Save the winner (catalog + log)
 
 Endpoints:
-    GET  /agent               Sayfa
-    POST /agent/run           Pipeline başlat (hemen döner)
-    GET  /agent/progress/{id} Durum polling (HTMX every 1s)
+    GET  /agent               Page
+    POST /agent/run           Start pipeline (returns immediately)
+    GET  /agent/progress/{id} Status polling (HTMX every 1s)
 """
 
 from __future__ import annotations
@@ -41,36 +41,38 @@ from web.shared import log_robustness as _log_robustness  # noqa: E402
 _AGENT_STORE = ProgressStore(50)
 _AGENT_PROGRESS = _AGENT_STORE.raw()
 _AGENT_LOCK = _AGENT_STORE.lock
-# İstatistiksel olarak güvenilir sayılması için minimum trade sayısı. Bunun
-# altındaki koşular _score'da -inf ile elenir (kazanan olamaz). Değer NAU_ev
-# backtest optimizer'ının JUNK_MIN_TRADES=20 eşiğiyle hizalı (bkz. NAU wiki
-# backtest-optimizer.md: "trade < 20 → elenir + saklanmaz").
-# L28: AGENT_MIN_TRADES env var ile ayarlanabilir; default 20 → davranış aynı.
+# Minimum number of trades to be considered statistically reliable. Runs below
+# this are eliminated with -inf in _score (cannot be a winner). The value is
+# aligned with the NAU_ev backtest optimizer's JUNK_MIN_TRADES=20 threshold (see
+# NAU wiki backtest-optimizer.md: "trade < 20 → eliminated + not stored").
+# L28: adjustable via AGENT_MIN_TRADES env var; default 20 → behavior unchanged.
 _MIN_TRADES = int(os.environ.get("AGENT_MIN_TRADES", "20"))
 
-# L2: Monte Carlo medyan drawdown limiti (%). Hem _robustness_passed kıyası hem
-# kullanıcıya gösterilen açıklama metni bu TEK sabitten türetilir.
+# L2: Monte Carlo median drawdown limit (%). Both the _robustness_passed
+# comparison and the explanation text shown to the user derive from this SINGLE
+# constant.
 _MC_DD_LIMIT = -25.0
 
-# L32: Mühürlü holdout — verinin son N günü iterasyon + robustness fazlarından
-# tamamen saklanır; yalnız kazanan ilan edildikten SONRA bir kez test edilir.
-# Sonuç karara BAĞLANMAZ, yalnız bilgi amaçlı gösterilir.
+# L32: Sealed holdout — the last N days of data are completely withheld from the
+# iteration + robustness phases; tested exactly once only AFTER the winner is
+# declared. The result is NOT BOUND to the decision, shown for information only.
 OOS_HOLDOUT_DAYS = 60
 
-# M22 ek devre kesicisi: ardışık kazanansız tur sayısı eşiği (sürekli mod).
-# Kazanan çıkınca sayaç sıfırlanır. 0 = kapalı; default 25.
+# M22 extra circuit breaker: threshold of consecutive winnerless rounds
+# (continuous mode). Counter resets when a winner appears. 0 = off; default 25.
 _WINLESS_ROUND_LIMIT = int(os.environ.get("AGENT_WINLESS_ROUND_LIMIT", "25"))
 
-# L38: model → ($/MTok input, output, cache_read, cache_write). agent.MODEL'e
-# göre seçilir; bilinmeyen model Sonnet oranlarına düşer. Backend claude-cli /
-# OAuth (abonelik) ise token başına fatura YOK → maliyet None (UI gizler).
+# L38: model → ($/MTok input, output, cache_read, cache_write). Selected by
+# agent.MODEL; unknown model falls back to Sonnet rates. If the backend is
+# claude-cli / OAuth (subscription), there is NO per-token billing → cost None
+# (UI hides it).
 _MODEL_PRICING: dict[str, tuple[float, float, float, float]] = {
     "claude-fable-5": (10.0, 50.0, 1.00, 12.50),
     "claude-sonnet-4-6": (3.0, 15.0, 0.30, 3.75),
 }
 _DEFAULT_PRICING_MODEL = "claude-sonnet-4-6"
 
-# L26: kazanan + robustness anlarının hafif SQLite indeksi (best-effort).
+# L26: lightweight best-effort SQLite index of winner + robustness moments.
 _AGENT_INDEX_DB = Path.home() / ".cache" / "nautilus_web_app" / "agent_index.db"
 
 # When this module runs inside a sandbox child process (robustness offloaded to
@@ -85,11 +87,11 @@ _SESSION_LOG_META: threading.Lock = threading.Lock()  # guards _SESSION_LOG_LOCK
 
 
 def _json_safe(obj):
-    """NaN/Inf float'ları None'a indirger (rekürsif) — json.dumps'un standart
-    dışı ``NaN``/``Infinity`` literal'leri üretmesini engeller (L33 payı).
-    Küçük, bu dosyaya özel yardımcı; reports'unkinden bağımsız.
+    """Reduces NaN/Inf floats to None (recursive) — prevents json.dumps from
+    producing non-standard ``NaN``/``Infinity`` literals (part of L33).
+    Small helper specific to this file; independent of the one in reports.
     """
-    if isinstance(obj, float):  # np.float64 da float alt sınıfı
+    if isinstance(obj, float):  # np.float64 is also a float subclass
         return obj if math.isfinite(obj) else None
     if isinstance(obj, dict):
         return {k: _json_safe(v) for k, v in obj.items()}
@@ -129,12 +131,12 @@ def _cleanup_all_agent_blocks() -> None:
 
 
 _PHASES = [
-    "Veri yükleniyor",
-    "Strateji üretiliyor",
-    "Backtest döngüsü",
-    "Sıralama",
-    "Robustness tarama",
-    "Tamamlandı",
+    "Loading data",
+    "Generating strategy",
+    "Backtest loop",
+    "Ranking",
+    "Robustness scan",
+    "Completed",
 ]
 
 
@@ -213,12 +215,13 @@ def _add_step(run_id: str, msg: str) -> None:
 
 
 # ── Timeline (Gantt) span track ───────────────────────────────────────────────
-# Her anlamlı işlem (veri yükleme, LLM çağrısı, backtest #i, robustness adayı ve
-# alt-aşamaları) bir "span" olarak kaydedilir; /agent ekranındaki SVG zaman
-# çizelgesi ve /sessions replay'i bu track'ten beslenir. Epoch float'lar payload
-# içinde taşınır — asla `ts=` kwarg'ı ile değil (_session_log'un ISO ts'ini ezer).
+# Every meaningful operation (data loading, LLM call, backtest #i, robustness
+# candidate and its sub-phases) is recorded as a "span"; the SVG timeline on the
+# /agent screen and the /sessions replay are fed from this track. Epoch floats
+# are carried inside the payload — never via the `ts=` kwarg (which would
+# overwrite _session_log's ISO ts).
 
-_TL_MAX_SPANS = 400  # continuous-mode bellek tavanı (500-step cap ile aynı ruh)
+_TL_MAX_SPANS = 400  # continuous-mode memory ceiling (same spirit as 500-step cap)
 _TL_LANES = ("data", "llm", "backtest", "robustness")
 
 
@@ -232,8 +235,8 @@ def _tl_begin(
     round_num: int = 1,
     **meta,
 ) -> None:
-    """Zaman çizelgesinde bir span aç. Sandbox child içinde no-op (_IPC_Q set) —
-    child alt-aşamaları parent tarafında step marker'larından türetilir."""
+    """Open a span in the timeline. No-op inside a sandbox child (_IPC_Q set) —
+    child sub-phases are derived on the parent side from step markers."""
     if _IPC_Q is not None:
         return
     t0 = datetime.now(UTC).timestamp()
@@ -254,7 +257,7 @@ def _tl_begin(
             tl = s.setdefault("timeline", [])
             tl.append(span)
             if len(tl) > _TL_MAX_SPANS:
-                # En eski KAPALI span'ları düşür; açıklar (running) korunur.
+                # Drop the oldest CLOSED spans; open (running) ones are kept.
                 closed_idx = next(
                     (i for i, sp in enumerate(tl) if sp["t1"] is not None), None
                 )
@@ -277,7 +280,7 @@ def _tl_begin(
 
 
 def _tl_end(run_id: str, key: str, *, status: str = "ok", **meta) -> None:
-    """`key`'li en son açık span'ı kapat. Bilinmeyen/kapalı key → no-op."""
+    """Close the most recent open span with `key`. Unknown/closed key → no-op."""
     if _IPC_Q is not None:
         return
     t1 = datetime.now(UTC).timestamp()
@@ -300,7 +303,7 @@ def _tl_end(run_id: str, key: str, *, status: str = "ok", **meta) -> None:
 
 
 def _tl_close_open(run_id: str, *, status: str = "fail") -> None:
-    """Açık kalan tüm span'ları kapat (hata / stop / tur sonu temizliği)."""
+    """Close all spans left open (error / stop / end-of-round cleanup)."""
     if _IPC_Q is not None:
         return
     t1 = datetime.now(UTC).timestamp()
@@ -319,9 +322,9 @@ def _tl_close_open(run_id: str, *, status: str = "fail") -> None:
         )
 
 
-# Robustness alt-aşama marker'ları — _run_full_robustness'taki _add_step
-# mesajlarının SABİT ön-glyph'leri. Glyph'leri değiştirmeyin: _make_rob_progress
-# bunları parse ederek sub-span açar/kapar.
+# Robustness sub-phase markers — the FIXED leading glyphs of the _add_step
+# messages in _run_full_robustness. Do not change the glyphs: _make_rob_progress
+# parses them to open/close sub-spans.
 _TL_ROB_MARKERS = {
     "🌐": ("ms", "Multi-Symbol"),
     "📊": ("isoos", "IS/OOS"),
@@ -331,14 +334,14 @@ _TL_ROB_MARKERS = {
 
 
 def _make_rob_progress(run_id: str, cand_idx: int, round_num: int):
-    """Robustness child'ının progress relay'i için step + sub-span köprüsü.
+    """Step + sub-span bridge for the robustness child's progress relay.
 
-    Dönen fonksiyon her mesajı _add_step'e iletir; 4 sabit aşama glyph'inde
-    (🌐 📊 📈 🎲) bir sub-span açar (öncekini ok ile kapatır); "  →" ile
-    başlayan sonuç satırı aktif sub'ı ok, "  ⚠ Monte Carlo atlandı" mc'yi
-    warn kapatır.
+    The returned function forwards each message to _add_step; on the 4 fixed
+    phase glyphs (🌐 📊 📈 🎲) it opens a sub-span (closing the previous one with
+    ok); a result line starting with "  →" closes the active sub with ok, and
+    "  ⚠ Monte Carlo skipped" closes mc with warn.
     """
-    state = {"open": None}  # aktif sub-span key'i
+    state = {"open": None}  # active sub-span key
 
     def _close(status: str = "ok") -> None:
         if state["open"]:
@@ -363,15 +366,15 @@ def _make_rob_progress(run_id: str, cand_idx: int, round_num: int):
             state["open"] = key
         elif msg.startswith("  →"):
             _close("ok")
-        elif msg.startswith("  ⚠ Monte Carlo atlandı"):
+        elif msg.startswith("  ⚠ Monte Carlo skipped"):
             _close("warn")
 
-    progress.close_open = _close  # aday kapanışında çağrılır
+    progress.close_open = _close  # called at candidate close
     return progress
 
 
 def _add_tokens(run_id: str, usage: dict | None) -> None:
-    """Claude API usage dict'inden token sayaçlarını biriktir."""
+    """Accumulate token counters from the Claude API usage dict."""
     if not usage:
         return
     with _AGENT_LOCK:
@@ -436,10 +439,10 @@ _PNL_FALLBACK_WARNED = False
 
 
 def _starting_cash() -> float:
-    """STARTING_CASH sabitini lazy getir (modül import'u hafif kalsın).
+    """Lazily fetch the STARTING_CASH constant (keep the module import light).
 
-    Sözleşme: önce ``app_constants`` (paralel refaktor bu modülü oluşturuyor),
-    ImportError'da mevcut ``backtest`` kaynağına düşülür.
+    Contract: try ``app_constants`` first (a parallel refactor is creating this
+    module); on ImportError fall back to the existing ``backtest`` source.
     """
     global _STARTING_CASH
     if _STARTING_CASH is None:
@@ -452,29 +455,33 @@ def _starting_cash() -> float:
 
 
 def _score(result) -> float:
-    """NAU kompozit sıralama skoru (H9/M30/M32):
+    """NAU composite ranking score (H9/M30/M32):
 
         calmar = clamp(pnl_pct / max(|max_dd|, 0.01), -10, 10)
         base   = 0.7 × calmar + 0.3 × clamp(sharpe_per_trade, -10, 10)
-        score  = base × n_trades / (n_trades + 20)      ← güven çarpanı
+        score  = base × n_trades / (n_trades + 20)      ← confidence multiplier
 
-    NAU paritesi: sharpe terimi PER-TRADE sharpe ((mean/std)×√n, NAU
-    backtest.py:89) — annualized 252-gün Sharpe DEĞİL. NAU fold_quality composite'i
-    de m['sharpe']'i per-trade tabanında okur; bizde annualized 'sharpe' ayrı
-    alandır, o yüzden burada açıkça sharpe_per_trade kullanılır.
+    NAU parity: the sharpe term is PER-TRADE sharpe ((mean/std)×√n, NAU
+    backtest.py:89) — NOT the annualized 252-day Sharpe. NAU's fold_quality
+    composite also reads m['sharpe'] on a per-trade basis; here the annualized
+    'sharpe' is a separate field, so sharpe_per_trade is used explicitly here.
 
-    - pnl_pct ve max_dd KESİR konvansiyonunda (0.1 = %10; max_dd < 0 sağlıklı).
-    - Eski WinRate×0.2 terimi ve 0.1'lik sabit confidence bonus'u KALDIRILDI:
-      WR bilgisi zaten PnL/Calmar'a gömülü, sabit bonus sıralamayı bozuyordu.
-    - Overtrading log-cezası BİLİNÇLİ olarak korunuyor: n_trades > 2000 ise
-      score'a -0.3×log10(n/2000) eklenir (komisyon-ağır gürültü stratejilerini
-      bastırır; güven çarpanı büyük n'de 1'e doyduğu için ayrıca gerekli).
+    - pnl_pct and max_dd are in the FRACTION convention (0.1 = 10%; max_dd < 0 is
+      healthy).
+    - The old WinRate×0.2 term and the fixed 0.1 confidence bonus are REMOVED:
+      WR info is already embedded in PnL/Calmar, and the fixed bonus was
+      distorting the ranking.
+    - The overtrading log-penalty is DELIBERATELY kept: if n_trades > 2000,
+      -0.3×log10(n/2000) is added to the score (suppresses commission-heavy
+      noise strategies; also necessary because the confidence multiplier
+      saturates to 1 at large n).
 
-    JUNK elemesi → -inf (NAU backtest optimizer'ıyla hizalı):
-    hata VEYA < _MIN_TRADES trade VEYA dejenere drawdown. NAU kuralı
-    ``trade < 20 VEYA max_drawdown <= 0 → elenir``. Bu projede max_dd negatif
-    konvansiyonda (sağlıklı = <0); 0/NaN/eksik = gerçek drawdown yok = veri/
-    hesap dejenerasyonu, o yüzden ``max_dd >= 0`` NAU'nun ``<= 0``'ının aynası.
+    JUNK elimination → -inf (aligned with the NAU backtest optimizer):
+    error OR < _MIN_TRADES trades OR degenerate drawdown. The NAU rule is
+    ``trade < 20 OR max_drawdown <= 0 → eliminated``. In this project max_dd is
+    in the negative convention (healthy = <0); 0/NaN/missing = no real drawdown =
+    data/computation degeneration, so ``max_dd >= 0`` is the mirror of NAU's
+    ``<= 0``.
     """
     global _PNL_FALLBACK_WARNED
     if result.error:
@@ -483,29 +490,30 @@ def _score(result) -> float:
     if not m or (m.get("n_trades") or 0) < _MIN_TRADES:
         return float("-inf")
     max_dd = m.get("max_dd")
-    # NAU: max_drawdown <= 0 → junk (dejenere). M1: NaN da dejenere sayılır.
+    # NAU: max_drawdown <= 0 → junk (degenerate). M1: NaN is also degenerate.
     if max_dd is None or math.isnan(max_dd) or max_dd >= 0:
         return float("-inf")
     n_trades = m.get("n_trades") or 0
-    # NAU paritesi: composite'in 0.3 terimi PER-TRADE sharpe. Annualized 'sharpe'
-    # (252-gün) farklı ölçekte; NAU per-trade ((mean/std)×√n) kullanır.
+    # NAU parity: the composite's 0.3 term is PER-TRADE sharpe. Annualized
+    # 'sharpe' (252-day) is on a different scale; NAU uses per-trade
+    # ((mean/std)×√n).
     sharpe = m.get("sharpe_per_trade")
     if sharpe is None:
-        sharpe = m.get("sharpe") or 0.0  # geriye-uyum (eski metrics dict'leri)
+        sharpe = m.get("sharpe") or 0.0  # backward-compat (old metrics dicts)
     # Use explicit None check to avoid treating pnl_pct=0.0 (break-even) as missing
     _pnl_pct = m.get("pnl_pct")
     if _pnl_pct is not None:
         pnl_pct = _pnl_pct
     else:
-        # M12+L1: pnl mutlak USDT — STARTING_CASH'e bölerek kesire çevir
-        # (ölçek-doğru fallback). Bir kez uyar: pnl_pct'in eksik olması
-        # metrics üreticisinde bir gerilemeye işaret eder.
+        # M12+L1: pnl is absolute USDT — divide by STARTING_CASH to convert to
+        # fraction (scale-correct fallback). Warn once: a missing pnl_pct
+        # indicates a regression in the metrics producer.
         pnl_pct = (m.get("pnl") or 0.0) / _starting_cash()
         if not _PNL_FALLBACK_WARNED:
             _PNL_FALLBACK_WARNED = True
             logging.warning(
-                "_score: metrics'te pnl_pct yok — pnl/STARTING_CASH "
-                "fallback'i kullanıldı (bir kez loglanır)"
+                "_score: no pnl_pct in metrics — used pnl/STARTING_CASH "
+                "fallback (logged once)"
             )
     if math.isnan(sharpe) or math.isinf(sharpe):
         sharpe = 0.0
@@ -514,10 +522,10 @@ def _score(result) -> float:
     calmar = pnl_pct / max(abs(max_dd), 0.01)
     calmar = max(-10.0, min(10.0, calmar))
     base = 0.7 * calmar + 0.3 * max(-10.0, min(10.0, sharpe))
-    # Güven çarpanı: az trade'li sonuçların skorunu sürekli biçimde kısar
-    # (n=20 → ×0.5, n=180 → ×0.9); eski basamaklı 0.1 bonus'un yerini alır.
+    # Confidence multiplier: continuously reduces the score of low-trade results
+    # (n=20 → ×0.5, n=180 → ×0.9); replaces the old stepwise 0.1 bonus.
     score = base * (n_trades / (n_trades + 20))
-    # Belgeli istisna: aşırı-trade log cezası (bkz. docstring).
+    # Documented exception: overtrading log penalty (see docstring).
     if n_trades > 2000:
         score += -0.3 * math.log10(n_trades / 2000)
     return score
@@ -528,8 +536,8 @@ def _rank_results(results: list[tuple]) -> list[tuple]:
     return sorted(results, key=lambda x: _score(x[1]), reverse=True)
 
 
-# Harici (US equity) koşularda multi-symbol robustness için likit eş sepeti.
-# Katalogdaki gerçek instrument id'leri — SPY/IWM ARCA venue'lu, NASDAQ değil.
+# Liquid peer basket for multi-symbol robustness on external (US equity) runs.
+# Real instrument ids from the catalog — SPY/IWM are on the ARCA venue, not NASDAQ.
 EXTERNAL_PEER_BASKET = [
     "SPY.ARCA",
     "QQQ.NASDAQ",
@@ -540,10 +548,10 @@ EXTERNAL_PEER_BASKET = [
 
 
 def _clamp_spec_trade_size(spec):
-    """Equity (size_precision=0) tam sayı hisse ister — agent'ın ürettiği
-    kesirli kripto trade_size (0.01) 0 hisseye yuvarlanıp 0 trade üretir.
-    Spec taze bir nesne olduğundan yerinde mutasyon güvenli; robustness fazı
-    da aynı nesneyi kullandığı için tek noktada düzeltmek her tüketiciyi kapsar.
+    """Equity (size_precision=0) requires integer shares — the fractional crypto
+    trade_size the agent produces (0.01) rounds to 0 shares and yields 0 trades.
+    Since spec is a fresh object, in-place mutation is safe; the robustness phase
+    uses the same object too, so fixing it at a single point covers every consumer.
     """
     if float(spec.trade_size) < 1:
         spec.trade_size = 1.0
@@ -553,43 +561,46 @@ def _clamp_spec_trade_size(spec):
 def _robustness_passed(
     rob: dict, strict: bool = True, run_id: str | None = None
 ) -> bool:
-    """Robustness kararı — değerlendirilen-kriter sayaçlı (H4+L18).
+    """Robustness decision — with an evaluated-criteria counter (H4+L18).
 
-    4 kriter (IS/OOS, WFO, Multi-Symbol, Monte Carlo) tek tek
-    ``evaluated | failed | skipped`` olarak sınıflanır. Eski sürüm eksik/hatalı
-    bölümleri sessizce "geçti" sayıyordu; artık:
+    The 4 criteria (IS/OOS, WFO, Multi-Symbol, Monte Carlo) are each classified
+    one by one as ``evaluated | failed | skipped``. The old version silently
+    counted missing/faulty sections as "passed"; now:
 
-    - strict:  en az 3 kriter GERÇEKTEN değerlendirilmiş olmalı ve hiçbiri
-      failed olmamalı.
-    - relaxed: en az 2 kriter değerlendirilmiş olmalı, hiçbiri failed olmamalı
-      ('⚠' etiketler her iki modda da kabul — failed sayılmaz).
+    - strict:  at least 3 criteria must be ACTUALLY evaluated and none may be
+      failed.
+    - relaxed: at least 2 criteria must be evaluated, none failed
+      ('⚠' labels accepted in both modes — not counted as failed).
 
-    Atlanan her kriter için (run_id verilmişse) adım günlüğüne
-    '⚠ <kriter> değerlendirilemedi: <neden>' uyarısı düşülür.
+    For each skipped criterion (if run_id is given) a warning
+    '⚠ <criterion> could not be evaluated: <reason>' is added to the step log.
     """
     if not rob or rob.get("error"):
         return False
 
     def _skip(name: str, why: str) -> None:
         if run_id:
-            _add_step(run_id, f"⚠ {name} değerlendirilemedi: {why}")
+            _add_step(run_id, f"⚠ {name} could not be evaluated: {why}")
 
     evaluated = 0
     failed = 0
 
-    # 1) IS/OOS overfitting kriteri
+    # 1) IS/OOS overfitting criterion
     split = rob.get("split") or {}
     split_label = split.get("overfitting_label", "")
     if split.get("error") or not split_label:
-        _skip("IS/OOS", str(split.get("error") or "etiket yok"))
+        _skip("IS/OOS", str(split.get("error") or "no label"))
     else:
         evaluated += 1
-        # '✓ Sağlam' ve '⚠ Dikkat' kabul; '✗' veya 'yetersiz' → failed
+        # The "robust" and "caution" labels are accepted; a '✗' or the
+        # 'yetersiz' (insufficient) marker → failed. NOTE: the label substrings
+        # are produced by backtest_robustness.py (out of scope) and matched
+        # verbatim here — do not translate the "yetersiz" literal below.
         if "✗" in split_label or "yetersiz" in split_label:
             failed += 1
 
-    # 2) Walk-Forward: ≥%50 geçerli pencerede pozitif test PnL.
-    # <3 test trade'li pencereler istatistiksel olarak güvenilmez → geçersiz.
+    # 2) Walk-Forward: ≥50% valid windows with positive test PnL.
+    # Windows with <3 test trades are statistically unreliable → invalid.
     wfo = rob.get("wfo_windows") or []
     valid_windows = [
         w
@@ -600,14 +611,15 @@ def _robustness_passed(
     if not wfo or not valid_windows:
         _skip(
             "Walk-Forward",
-            "pencere yok" if not wfo else "≥3 trade'li geçerli pencere yok",
+            "no windows" if not wfo else "no valid window with ≥3 trades",
         )
     else:
         evaluated += 1
-        # M28/M594: NAU dağılım-cezalı OOS Sharpe (mean − 0.5·std). Manuel
-        # suite bunu wfo_aggregate'te üretir; ajan yolu (_run_full_robustness)
-        # wfo_aggregate'i çağırmadığından alan boştu ve bu dal ölü koddu —
-        # burada wfo_windows'tan INLINE hesapla. Yoksa pozitif-pencere oranı.
+        # M28/M594: NAU dispersion-penalized OOS Sharpe (mean − 0.5·std). The
+        # manual suite produces this in wfo_aggregate; the agent path
+        # (_run_full_robustness) does not call wfo_aggregate, so the field was
+        # empty and this branch was dead code — compute it INLINE from
+        # wfo_windows here. Otherwise fall back to the positive-window ratio.
         pen = rob.get("oos_sharpe_penalized")
         if pen is None:
             _sh = [
@@ -640,20 +652,21 @@ def _robustness_passed(
         if wfo_failed:
             failed += 1
 
-    # 3) Multi-symbol genellenebilirlik
+    # 3) Multi-symbol generalizability
     ms = rob.get("multi_symbol") or {}
     ms_label = ms.get("generalization_label", "")
+    # 'yetersiz' substring is produced by backtest_robustness.py; kept verbatim.
     if not ms or not ms_label or ("yetersiz" in ms_label and "✗" not in ms_label):
-        _skip("Multi-Symbol", "bölüm yok" if not ms else "yetersiz veri")
+        _skip("Multi-Symbol", "no section" if not ms else "insufficient data")
     else:
         evaluated += 1
-        if "✗" in ms_label:  # sembol-spesifik strateji kabul edilmez
+        if "✗" in ms_label:  # symbol-specific strategy is not accepted
             failed += 1
 
-    # 4) Monte Carlo: medyan drawdown kontrolü
+    # 4) Monte Carlo: median drawdown check
     mc = rob.get("mc") or {}
     if not mc or mc.get("error"):
-        _skip("Monte Carlo", str(mc.get("error") or "bölüm yok"))
+        _skip("Monte Carlo", str(mc.get("error") or "no section"))
     else:
         evaluated += 1
         dd_p50 = mc.get("max_dd_p50")
@@ -667,32 +680,33 @@ def _robustness_passed(
         if run_id:
             _add_step(
                 run_id,
-                f"⚠ Yalnız {evaluated}/4 kriter değerlendirilebildi "
-                f"(gereken ≥{min_required}) — aday geçemez",
+                f"⚠ Only {evaluated}/4 criteria could be evaluated "
+                f"(need ≥{min_required}) — candidate cannot pass",
             )
         return False
     return True
 
 
 def _ms_score_factor(rob: dict | None) -> float:
-    """M26+M31: multi-symbol pass_rate'ten etkin-skor çarpanı ∈ [0.15, 1.0].
+    """M26+M31: effective-score multiplier ∈ [0.15, 1.0] from multi-symbol pass_rate.
 
-    x = pass_rate - 0.5 (pass_rate yoksa x=0 → nötr 0.575);
+    x = pass_rate - 0.5 (if pass_rate missing, x=0 → neutral 0.575);
     factor = 0.15 + (clamp(x, -0.5, 0.5) + 0.5) × 0.85.
     """
     ms = (rob or {}).get("multi_symbol") or {}
     pr = ms.get("pass_rate")
-    # M653: run_multi_symbol yetersiz veride pass_rate=0.0 + etiket
-    # '— (yetersiz veri)' döndürür — bu GERÇEK 0 değil, DEĞERLENDİRİLEMEDİ
-    # demek. 0.0'ı çarpan hesabına sokmak nötr (0.575) yerine minimum 0.15
-    # cezası uyguluyordu: MS'i hiç ölçülememiş aday, tüm sembollerde batmış
-    # gibi %85 kırpılıp geçenler-arası seçimi kaybediyordu. Yetersiz-veriyi
-    # nötr say.
+    # M653: on insufficient data run_multi_symbol returns pass_rate=0.0 + the
+    # label '— (yetersiz veri)' — this is NOT a real 0, it means COULD NOT BE
+    # EVALUATED. Feeding 0.0 into the factor computation applied the minimum
+    # 0.15 penalty instead of neutral (0.575): a candidate whose MS was never
+    # measured got clipped by 85% as if it lost on all symbols, losing the
+    # among-passers selection. Treat insufficient-data as neutral.
+    # ('yetersiz' substring is produced by backtest_robustness.py; kept verbatim.)
     ms_label = ms.get("generalization_label", "") or ""
     insufficient = ("yetersiz" in ms_label) or ms.get("n_valid", 1) == 0
     try:
         if pr is None or insufficient:
-            x = 0.0  # nötr → factor 0.575
+            x = 0.0  # neutral → factor 0.575
         else:
             x = float(pr) - 0.5
         if not math.isfinite(x):
@@ -704,10 +718,11 @@ def _ms_score_factor(rob: dict | None) -> float:
 
 
 def _split_holdout(df, min_bars: int = 200):
-    """L32: son OOS_HOLDOUT_DAYS günü mühürlü dilim olarak ayır.
+    """L32: seal off the last OOS_HOLDOUT_DAYS days as a sealed slice.
 
-    Returns ``(trimmed_df, holdout_df | None)``. Kalan (kırpılmış) veri
-    ``min_bars``'ın altına düşerse holdout ATLANIR ve tam df aynen döner.
+    Returns ``(trimmed_df, holdout_df | None)``. If the remaining (trimmed) data
+    falls below ``min_bars``, the holdout is SKIPPED and the full df is returned
+    unchanged.
     """
     import pandas as pd
 
@@ -716,9 +731,9 @@ def _split_holdout(df, min_bars: int = 200):
     if df is None or len(df) == 0:
         return df, None
     cutoff = df.index[-1] - pd.Timedelta(days=OOS_HOLDOUT_DAYS)
-    # M674: train ile holdout arasına NAU purge boşluğu (WF_EMBARGO_DAYS) —
-    # cutoff civarında öğrenilen desen/lookback holdout'un ilk günlerine
-    # sızmasın (NAU fit_end = oos_start − WF_EMBARGO_DAYS).
+    # M674: NAU purge gap (WF_EMBARGO_DAYS) between train and holdout — so
+    # patterns/lookback learned around the cutoff don't leak into the first days
+    # of the holdout (NAU fit_end = oos_start − WF_EMBARGO_DAYS).
     train_end = cutoff - pd.Timedelta(days=WF_EMBARGO_DAYS)
     trimmed = df[df.index < train_end]
     if len(trimmed) < min_bars:
@@ -739,9 +754,10 @@ def _index_insert(
     symbol: str,
     interval: str,
 ) -> None:
-    """L26: kazanan + robustness anlarında best-effort SQLite indeksi.
+    """L26: best-effort SQLite index at winner + robustness moments.
 
-    Hata worker'ı asla kırmaz: ilk hata bir kez loglanır, sonrakiler yutulur.
+    An error never breaks the worker: the first error is logged once, later ones
+    are swallowed.
     """
     global _INDEX_DB_WARNED
     try:
@@ -783,18 +799,18 @@ def _index_insert(
     except Exception:
         if not _INDEX_DB_WARNED:
             _INDEX_DB_WARNED = True
-            logging.warning("agent_index.db yazılamadı (bir kez loglanır)")
+            logging.warning("could not write agent_index.db (logged once)")
 
 
 def _llm_cost_usd(ti: int, to: int, tcr: int, tcw: int) -> tuple[str, float | None]:
-    """L38: (pricing_model, tahmini maliyet USD) döndürür.
+    """L38: returns (pricing_model, estimated cost USD).
 
-    Model agent.MODEL'den okunur; fiyat _MODEL_PRICING'den (bilinmeyen model →
-    Sonnet oranları). Backend claude-cli / OAuth aboneliği ise token başına
-    fatura YOK → maliyet None (UI cost satırını gizler). Backend tespiti
-    agent._build_client'ın aynası: NAUTILUS_LLM_BACKEND=api → API;
-    =claude-cli → CLI; auto → ANTHROPIC_API_KEY (veya ~/.nautilus_proxy_key)
-    varsa API, yoksa CLI.
+    The model is read from agent.MODEL; the price from _MODEL_PRICING (unknown
+    model → Sonnet rates). If the backend is claude-cli / OAuth subscription,
+    there is NO per-token billing → cost None (UI hides the cost line). Backend
+    detection mirrors agent._build_client: NAUTILUS_LLM_BACKEND=api → API;
+    =claude-cli → CLI; auto → API if ANTHROPIC_API_KEY (or ~/.nautilus_proxy_key)
+    exists, otherwise CLI.
     """
     try:
         from agent import MODEL as model
@@ -811,7 +827,7 @@ def _llm_cost_usd(ti: int, to: int, tcr: int, tcw: int) -> tuple[str, float | No
                 has_key = (Path.home() / ".nautilus_proxy_key").exists()
             except Exception:
                 has_key = False
-        if not has_key:  # auto → key yok → claude CLI (abonelik)
+        if not has_key:  # auto → no key → claude CLI (subscription)
             return model, None
     return model, (ti * pi + to * po + tcr * pcr + tcw * pcw) / 1_000_000
 
@@ -829,16 +845,17 @@ def _run_full_robustness(
     category: str = "linear",
     source: str = "bybit",
 ) -> dict:
-    """Run Multi-Symbol → IS/OOS → WFO → MC sıralamasıyla robustness.
+    """Run robustness in the order Multi-Symbol → IS/OOS → WFO → MC.
 
-    ``source="external"``: ``symbol`` harici katalog instrument id'sidir
-    (örn. "QQQ.NASDAQ"), ``interval`` katalog DSL'idir ("1-DAY"); multi-symbol
-    evreni EXTERNAL_PEER_BASKET'ten seçilir.
+    ``source="external"``: ``symbol`` is an external catalog instrument id
+    (e.g. "QQQ.NASDAQ"), ``interval`` is the catalog DSL ("1-DAY"); the
+    multi-symbol universe is chosen from EXTERNAL_PEER_BASKET.
 
-    NAUTILUS_PARALLEL=1 (varsayılan) iken bağımsız backtest birimleri
-    (multi-symbol, IS/OOS çifti, WFO pencere×aday) bir süreç havuzuna dağıtılır;
-    havuz kurulamaz ya da bir aşama havuzda patlarsa o aşama dokunulmamış sıralı
-    yolla yeniden koşulur. NAUTILUS_PARALLEL=0 → tamamen sıralı (eski davranış).
+    When NAUTILUS_PARALLEL=1 (default), independent backtest units
+    (multi-symbol, IS/OOS pair, WFO window×candidate) are distributed to a
+    process pool; if the pool can't be set up or a stage blows up in the pool,
+    that stage is re-run on the untouched sequential path. NAUTILUS_PARALLEL=0 →
+    fully sequential (old behavior).
     """
     import shutil as _shutil
 
@@ -852,7 +869,7 @@ def _run_full_robustness(
 
     pf = lambda m: _add_step(run_id, m)  # noqa: E731
 
-    # ── Paralel havuz (opsiyonel) ─────────────────────────────────────────────
+    # ── Parallel pool (optional) ──────────────────────────────────────────────
     pool = None
     run_many = None
     snapshot_path = None
@@ -865,8 +882,8 @@ def _run_full_robustness(
         )
 
         if parallel_enabled():
-            # Trend-filter cache'ini fan-out ÖNCESİ ısıt: soğuk cache'te birden
-            # çok worker aynı parquet'e yazmaya yarışır (data.py to_parquet).
+            # Warm the trend-filter cache BEFORE fan-out: on a cold cache multiple
+            # workers race to write the same parquet (data.py to_parquet).
             if getattr(spec, "trend_filter", False):
                 try:
                     if source == "external":
@@ -886,7 +903,7 @@ def _run_full_robustness(
                             end=bars_df.index[-1].to_pydatetime(),
                         )
                 except Exception as warm_exc:
-                    _add_step(run_id, f"  ⚠ Trend cache ısıtılamadı: {warm_exc}")
+                    _add_step(run_id, f"  ⚠ Could not warm trend cache: {warm_exc}")
             snapshot_path = make_snapshot(bars_df)
             pool_recipe = (
                 {"source": "external", "instrument_id": symbol, "granularity": interval}
@@ -901,51 +918,51 @@ def _run_full_robustness(
             run_many = pool.run_units
             _add_step(
                 run_id,
-                f"⚡ Paralel mod: {pool.max_workers} işçi süreç "
-                "(NAUTILUS_PARALLEL=0 ile kapatılabilir)",
+                f"⚡ Parallel mode: {pool.max_workers} worker processes "
+                "(can be disabled with NAUTILUS_PARALLEL=0)",
             )
     except Exception as pool_exc:
-        _add_step(run_id, f"⚠ Paralel havuz kurulamadı ({pool_exc}) — sıralı mod")
+        _add_step(run_id, f"⚠ Could not set up parallel pool ({pool_exc}) — sequential mode")
         run_many = None
 
     def _stage(label, fn, /, *args, **kwargs):
-        """Bir robustness aşamasını (varsa) havuzla koş; havuz hatasında aynı
-        aşamayı sıralı yolla yeniden dene. Sıralı yol her zaman ayakta."""
+        """Run a robustness stage with the pool (if any); on a pool error re-run
+        the same stage on the sequential path. The sequential path is always up."""
         if run_many is not None:
             try:
                 return fn(*args, run_many=run_many, **kwargs)
             except Exception as par_exc:
                 _add_step(
                     run_id,
-                    f"  ⚠ {label} paralel aşaması düştü "
-                    f"({type(par_exc).__name__}) — sıralı yeniden çalışıyor",
+                    f"  ⚠ {label} parallel stage failed "
+                    f"({type(par_exc).__name__}) — re-running sequentially",
                 )
         return fn(*args, **kwargs)
 
     try:
-        # 1) Multi-Symbol — en ucuz test, hızlı eler (önceden IS/OOS ve WFO zamanını kurtarır)
+        # 1) Multi-Symbol — cheapest test, eliminates fast (saves IS/OOS and WFO time up front)
         if source == "external":
             from data import _external_bar_dir
 
-            # Once bu granularity'de verisi OLAN esleri filtrele, SONRA 3'e kirp
-            # (skorlama zaten toleransli). Ters sira ilk 3 esin verisi yoksa
-            # 4./5. esi hic denemiyordu.
+            # First filter peers that HAVE data at this granularity, THEN clip to
+            # 3 (scoring is already tolerant). The reverse order used to never try
+            # the 4th/5th peer if the first 3 peers had no data.
             other_symbols = [
                 p
                 for p in EXTERNAL_PEER_BASKET
                 if p != symbol and _external_bar_dir(p, interval) is not None
             ][:3]
-            # 365 takvim günü ≈ 252 hisse barı — _MIN_TRADES eşiği için az; 730 kullan.
+            # 365 calendar days ≈ 252 equity bars — too few for the _MIN_TRADES threshold; use 730.
             ms_days = 730
         else:
             other_symbols = [
                 s for s in ("BTCUSDT", "ETHUSDT", "SOLUSDT") if s != symbol
             ]
-            ms_days = 365  # 180→365: daha fazla trade → istatistiksel güvenilirlik
+            ms_days = 365  # 180→365: more trades → statistical reliability
         _add_step(
             run_id,
-            f"🌐 Multi-Symbol — strateji {', '.join(other_symbols)} sembollerinde de test ediliyor. "
-            "Genellenebilir mi yoksa sadece bu sembole mi özgü?",
+            f"🌐 Multi-Symbol — the strategy is also being tested on {', '.join(other_symbols)}. "
+            "Is it generalizable or specific only to this symbol?",
         )
         ms = _stage(
             "Multi-Symbol",
@@ -961,15 +978,15 @@ def _run_full_robustness(
         )
         _add_step(
             run_id,
-            f"  → {ms.get('symbols_positive', 0)}/{ms.get('symbols_valid', 0)} sembolde pozitif · "
+            f"  → positive on {ms.get('symbols_positive', 0)}/{ms.get('symbols_valid', 0)} symbols · "
             f"{ms.get('generalization_label', '?')}",
         )
 
         # 2) IS/OOS Split
         _add_step(
             run_id,
-            "📊 IS/OOS Split — verinin %70'i eğitim, %30'u gerçek OOS testi. "
-            "OOS/IS Sharpe oranı overfitting'i ölçer (≥0.7 = sağlam).",
+            "📊 IS/OOS Split — 70% of data for training, 30% real OOS test. "
+            "The OOS/IS Sharpe ratio measures overfitting (≥0.7 = robust).",
         )
         split = _stage(
             "IS/OOS",
@@ -987,20 +1004,20 @@ def _run_full_robustness(
         oos_m = sp.get("oos_metrics") or {}
         _add_step(
             run_id,
-            f"  IS sonucu: PnL={is_m.get('pnl', 0):+.2f} · "
+            f"  IS result: PnL={is_m.get('pnl', 0):+.2f} · "
             f"Sharpe={is_m.get('sharpe', float('nan')):.2f} · "
             f"{is_m.get('n_trades', 0)} trade | "
-            f"OOS sonucu: PnL={oos_m.get('pnl', 0):+.2f} · "
+            f"OOS result: PnL={oos_m.get('pnl', 0):+.2f} · "
             f"Sharpe={oos_m.get('sharpe', float('nan')):.2f} · "
             f"{oos_m.get('n_trades', 0)} trade",
         )
-        _add_step(run_id, f"  → Overfitting skoru: {sp.get('overfitting_label', '?')}")
+        _add_step(run_id, f"  → Overfitting score: {sp.get('overfitting_label', '?')}")
 
         # 3) Walk-Forward
         _add_step(
             run_id,
-            "📈 Walk-Forward — kayan pencere OOS testi. Her pencerede 6 ay eğitim + 2 ay test. "
-            "≥%50 pencerede pozitif PnL gerekli.",
+            "📈 Walk-Forward — rolling-window OOS test. Each window has 6 months training + 2 months test. "
+            "≥50% of windows must have positive PnL.",
         )
         wfo = _stage(
             "Walk-Forward",
@@ -1012,7 +1029,7 @@ def _run_full_robustness(
             venue,
             train_months=6,
             test_months=2,
-            step_months=3,  # 2→3: 35 yerine ~24 pencere, %30 daha hızlı
+            step_months=3,  # 2→3: ~24 windows instead of 35, 30% faster
             progress_fn=pf,
         )
         if wfo:
@@ -1022,16 +1039,16 @@ def _run_full_robustness(
             ) / len(wfo)
             _add_step(
                 run_id,
-                f"  → {pos}/{len(wfo)} pencere pozitif · ortalama test PnL={avg_pnl:+.2f} USDT",
+                f"  → {pos}/{len(wfo)} windows positive · average test PnL={avg_pnl:+.2f} USDT",
             )
 
-        # 4) Monte Carlo (zaten vektörize numpy — havuza gerek yok)
-        mc: dict = {"error": "Trade verisi yok."}
+        # 4) Monte Carlo (already vectorized numpy — no pool needed)
+        mc: dict = {"error": "No trade data."}
         if trades:
             _add_step(
                 run_id,
-                f"🎲 Monte Carlo — {len(trades)} trade sırasını {300} kez karıştırarak "
-                f"şans faktörünü ölçer. Medyan DD < {_MC_DD_LIMIT:.0f}% ise riskli.",
+                f"🎲 Monte Carlo — shuffles the sequence of {len(trades)} trades {300} times to "
+                f"measure the luck factor. Median DD < {_MC_DD_LIMIT:.0f}% is risky.",
             )
             mc = run_monte_carlo(
                 trades,
@@ -1042,13 +1059,13 @@ def _run_full_robustness(
             if not mc.get("error"):
                 _add_step(
                     run_id,
-                    f"  → Medyan final: ${mc.get('median_final', 0):,.0f} · "
-                    f"p5 senaryo: ${mc.get('p5_final', 0):,.0f} · "
-                    f"Medyan max DD: {mc.get('max_dd_p50', 0):.1f}%",
+                    f"  → Median final: ${mc.get('median_final', 0):,.0f} · "
+                    f"p5 scenario: ${mc.get('p5_final', 0):,.0f} · "
+                    f"Median max DD: {mc.get('max_dd_p50', 0):.1f}%",
                 )
         else:
             _add_step(
-                run_id, "  ⚠ Monte Carlo atlandı — backtest'te hiç trade açılmadı"
+                run_id, "  ⚠ Monte Carlo skipped — no trades were opened in the backtest"
             )
 
         return {"split": split, "wfo_windows": wfo, "mc": mc, "multi_symbol": ms}
@@ -1087,7 +1104,7 @@ def _agent_worker(
     from sandbox import run_backtest_guarded, run_robustness_guarded
 
     is_external = source == "external"
-    # LLM'e geçen pazar bağlamı — Bybit'te None (mevcut prompt bayt-bayt korunur).
+    # Market context passed to the LLM — None on Bybit (existing prompt preserved byte-for-byte).
     market = (
         f"US equity {instrument_id} ({'/'.join(intervals)} bars, USD cash account)"
         if is_external
@@ -1095,7 +1112,7 @@ def _agent_worker(
     )
 
     def _recipe(iv: str) -> dict:
-        """Sandbox/robustness child'ın instrument'ı yeniden kurduğu string recipe."""
+        """String recipe from which the sandbox/robustness child rebuilds the instrument."""
         if is_external:
             return {
                 "source": "external",
@@ -1104,7 +1121,7 @@ def _agent_worker(
             }
         return {"symbol": symbol, "interval": iv, "category": category}
 
-    # Session başlangıcını logla
+    # Log the session start
     _session_log(
         run_id,
         "session_start",
@@ -1125,25 +1142,28 @@ def _agent_worker(
     )
 
     run_number = 0
-    # 0 = SINIRSIZ (kullanıcı tercihi): sürekli mod yalnız durdur butonu VEYA
-    # devre kesici ile durur. Güvenli bir tavan istenirse pozitif bir sayı yeter.
+    # 0 = UNLIMITED (user preference): continuous mode stops only via the stop
+    # button OR the circuit breaker. If a safe ceiling is wanted, any positive
+    # number suffices.
     _MAX_CONTINUOUS_ROUNDS = 0
-    # Devre kesici: aynı hata metni ardışık N tur → dur. Sınırsız modda TEK
-    # otomatik güvenlik ağı budur (886f439b oturumu kalıcı bir "Cache çok az
-    # veri" hatasını boşa döngüde denemişti — bu onu kesiyor).
+    # Circuit breaker: the same error text N consecutive rounds → stop. In
+    # unlimited mode this is the ONLY automatic safety net (the 886f439b session
+    # kept retrying a persistent "Cache too little data" error in a useless loop
+    # — this cuts that off).
     _CONSEC_ERR_LIMIT = 3
     _last_err_str: str | None = None
     _consec_err = 0
-    # M22: opsiyonel bütçe tavanları (0 = sınırsız) + kazanansız-tur kesicisi.
+    # M22: optional budget ceilings (0 = unlimited) + winnerless-round breaker.
     _worker_t0 = time.monotonic()
     _winless_rounds = 0
 
     def _winless_bump() -> bool:
-        """Kazanansız tur sayacını artırır; limit aşıldıysa True döner.
+        """Increment the winnerless-round counter; returns True if the limit is exceeded.
 
-        M22: eskiden yalnız 'hiç uygun aday yok' dalında artıyordu; 'adaylar
-        var ama robustness geçemedi' dalı sayacı atlayarak sonsuz döngü riski
-        bırakıyordu. Artık iki kazanansız dal da bunu çağırır.
+        M22: previously it only incremented in the 'no eligible candidate' branch;
+        the 'candidates exist but none passed robustness' branch skipped the
+        counter, leaving an infinite-loop risk. Now both winnerless branches call
+        this.
         """
         nonlocal _winless_rounds
         _winless_rounds += 1
@@ -1152,8 +1172,8 @@ def _agent_worker(
     def _winless_stop() -> None:
         _add_step(
             run_id,
-            f"⏹ {_WINLESS_ROUND_LIMIT} ardışık kazanansız tur — "
-            "devre kesici sürekli modu durduruyor.",
+            f"⏹ {_WINLESS_ROUND_LIMIT} consecutive winnerless rounds — "
+            "circuit breaker stopping continuous mode.",
         )
         _tl_close_open(run_id, status="warn")
         with _AGENT_LOCK:
@@ -1177,11 +1197,11 @@ def _agent_worker(
         ):
             _add_step(
                 run_id,
-                f"Sürekli mod: maksimum {_MAX_CONTINUOUS_ROUNDS} tura ulaşıldı, durduruluyor.",
+                f"Continuous mode: maximum of {_MAX_CONTINUOUS_ROUNDS} rounds reached, stopping.",
             )
             break
 
-        # M22: tur başında bütçe kontrolü — süre/token tavanı aşıldıysa nazikçe bitir.
+        # M22: budget check at round start — if the time/token ceiling is exceeded, finish gracefully.
         _elapsed_h = (time.monotonic() - _worker_t0) / 3600.0
         with _AGENT_LOCK:
             _bs = _AGENT_PROGRESS.get(run_id) or {}
@@ -1196,15 +1216,15 @@ def _agent_worker(
             )
         _budget_reason = None
         if max_hours and max_hours > 0 and _elapsed_h >= max_hours:
-            _budget_reason = f"süre tavanı ({max_hours:g} saat) doldu"
+            _budget_reason = f"time ceiling ({max_hours:g} hours) reached"
         elif (
             max_total_tokens and max_total_tokens > 0 and _tok_total >= max_total_tokens
         ):
-            _budget_reason = f"token tavanı ({max_total_tokens:,}) aşıldı"
+            _budget_reason = f"token ceiling ({max_total_tokens:,}) exceeded"
         if _budget_reason:
             _add_step(
                 run_id,
-                f"⏹ Bütçe: {_budget_reason} — koşu nazikçe sonlandırılıyor.",
+                f"⏹ Budget: {_budget_reason} — ending the run gracefully.",
             )
             _tl_close_open(run_id, status="warn")
             with _AGENT_LOCK:
@@ -1232,36 +1252,37 @@ def _agent_worker(
                 s["winner_spec_id"] = ""
                 s["winner_rob"] = None
                 s["winner_holdout"] = None
-                s["winner_narrative"] = None  # M2625: yeni tur → taze narrative
+                s["winner_narrative"] = None  # M2625: new round → fresh narrative
                 s["rob_scan_log"] = []
                 s["backtest_results"] = []
                 for p in s["phases"]:
                     p["status"] = "pending"
                     p["detail"] = ""
-            # Timeline: önceki turun açık span'ları warn ile kapanır; span'lar
-            # SİLİNMEZ (round etiketiyle kalır) — canlı görünüm aktif tura filtreler.
+            # Timeline: the previous round's open spans are closed with warn; spans
+            # are NOT DELETED (they remain with the round tag) — the live view
+            # filters to the active round.
             _tl_close_open(run_id, status="warn")
-            _add_step(run_id, f"━━━ Sürekli mod: tur {run_number} başlıyor ━━━")
+            _add_step(run_id, f"━━━ Continuous mode: round {run_number} starting ━━━")
 
         try:
-            # ── Faz 0: Veri ──────────────────────────────────────────────────────
-            # Multi-TF: her TF için lazy-load cache. İlk TF'yi burada önceden yükle.
-            # L32: tf_cache KIRPILMIŞ veriyi tutar (mühürlü holdout hariç);
-            # holdout dilimi holdout_cache'te saklanır ve YALNIZ kazanan ilan
-            # edildikten sonra tek bir doğrulama koşusunda kullanılır.
+            # ── Phase 0: Data ────────────────────────────────────────────────────
+            # Multi-TF: lazy-load cache per TF. Pre-load the first TF here.
+            # L32: tf_cache holds the TRIMMED data (excluding the sealed holdout);
+            # the holdout slice is stored in holdout_cache and used ONLY in a
+            # single validation run after the winner is declared.
             tf_cache: dict[str, pd.DataFrame] = {}  # interval → trimmed_df
             holdout_cache: dict[str, pd.DataFrame | None] = {}  # interval → sealed df
 
             def _load_tf(iv: str) -> pd.DataFrame:
                 if iv in tf_cache:
                     return tf_cache[iv]
-                # Timeline: cache-miss yüklemesi bir "data" span'ı olarak izlenir.
+                # Timeline: cache-miss load is tracked as a "data" span.
                 _tl_key = f"data-{iv}-r{run_number}"
                 _tl_begin(
                     run_id,
                     "data",
                     _tl_key,
-                    f"Veri: {instrument_id if is_external else symbol} {iv}",
+                    f"Data: {instrument_id if is_external else symbol} {iv}",
                     round_num=run_number,
                 )
                 try:
@@ -1269,23 +1290,23 @@ def _agent_worker(
                 except Exception:
                     _tl_end(run_id, _tl_key, status="fail")
                     raise
-                # L32: mühürlü holdout — son OOS_HOLDOUT_DAYS gün iterasyon +
-                # robustness fazlarından saklanır. Kalan veri < 200 bar ise atla.
+                # L32: sealed holdout — the last OOS_HOLDOUT_DAYS days are withheld
+                # from the iteration + robustness phases. Skip if remaining data < 200 bars.
                 trimmed, hold_df = _split_holdout(df)
                 if hold_df is not None:
                     df = trimmed
                     tf_cache[iv] = df
                     _add_step(
                         run_id,
-                        f"🔒 Mühürlü holdout ayrıldı ({iv}): son "
-                        f"{OOS_HOLDOUT_DAYS} gün ({len(hold_df):,} bar) kazanan "
-                        f"ilan edilene dek saklanacak — kalan {len(df):,} bar",
+                        f"🔒 Sealed holdout separated ({iv}): the last "
+                        f"{OOS_HOLDOUT_DAYS} days ({len(hold_df):,} bars) will be "
+                        f"withheld until a winner is declared — {len(df):,} bars remaining",
                     )
                 else:
                     tf_cache[iv] = df
                     _add_step(
                         run_id,
-                        f"⚠ holdout için veri yetersiz ({iv}) — mühürlü OOS atlandı",
+                        f"⚠ insufficient data for holdout ({iv}) — sealed OOS skipped",
                     )
                 holdout_cache[iv] = hold_df
                 _tl_end(run_id, _tl_key, status="ok", n_bars=len(df))
@@ -1301,20 +1322,20 @@ def _agent_worker(
 
                     _add_step(
                         run_id,
-                        f"Katalog verisi yükleniyor ({instrument_id}, {iv})…",
+                        f"Loading catalog data ({instrument_id}, {iv})…",
                     )
-                    df = load_external_bars(instrument_id, iv)  # tüm katalog aralığı
+                    df = load_external_bars(instrument_id, iv)  # full catalog range
                     if len(df) < 100:
                         raise RuntimeError(
-                            f"Yetersiz veri ({len(df)} bar, {instrument_id} {iv})."
+                            f"Insufficient data ({len(df)} bars, {instrument_id} {iv})."
                         )
-                    # 1-MINUTE guard: ~23 yıl >2M bar — motoru duyarlı tutmak için
-                    # son 2 yıla kırp (Bybit 1m guard'ının aynası).
+                    # 1-MINUTE guard: ~23 years >2M bars — crop to the last 2 years
+                    # to keep the engine responsive (mirror of the Bybit 1m guard).
                     if iv == "1-MINUTE" and len(df) > 1_000_000:
                         cutoff = df.index[-1] - pd.Timedelta(days=730)
                         df = df[df.index >= cutoff]
                         _add_step(
-                            run_id, f"1-MINUTE son 2 yıla kırpıldı ({len(df):,} bar)"
+                            run_id, f"1-MINUTE cropped to the last 2 years ({len(df):,} bars)"
                         )
                     tf_cache[iv] = df
                     return df
@@ -1331,7 +1352,7 @@ def _agent_worker(
                 start_dt = end_dt - timedelta(days=lookback_days)
                 _add_step(
                     run_id,
-                    f"En geniş aralık yükleniyor ({iv}, ~{lookback_days}g)…",
+                    f"Loading widest range ({iv}, ~{lookback_days}d)…",
                 )
                 try:
                     df = load_bybit_bars(
@@ -1345,28 +1366,28 @@ def _agent_worker(
                     # Network hiccup — fall back to whatever is already cached.
                     if not cache_path.exists():
                         raise RuntimeError(
-                            f"{symbol}/{category}/{iv} verisi yüklenemedi: {fetch_exc}"
+                            f"Could not load {symbol}/{category}/{iv} data: {fetch_exc}"
                         ) from fetch_exc
                     _add_step(
-                        run_id, f"Fetch hatası ({iv}), cache'e düşülüyor: {fetch_exc}"
+                        run_id, f"Fetch error ({iv}), falling back to cache: {fetch_exc}"
                     )
                     df = pd.read_parquet(cache_path)
 
                 if len(df) < 100:
                     raise RuntimeError(
-                        f"Yetersiz veri ({len(df)} bar, {iv}). "
-                        "Data sayfasından fetch edin."
+                        f"Insufficient data ({len(df)} bars, {iv}). "
+                        "Fetch it from the Data page."
                     )
                 # 1m guard: cap at last 2 years so backtests stay responsive.
                 if iv == "1" and len(df) > 1_000_000:
                     cutoff = df.index[-1] - pd.Timedelta(days=730)
                     df = df[df.index >= cutoff]
-                    _add_step(run_id, f"1m son 2 yıla kırpıldı ({len(df):,} bar)")
+                    _add_step(run_id, f"1m cropped to the last 2 years ({len(df):,} bars)")
                 tf_cache[iv] = df
                 return df
 
             if is_external:
-                # Enstrümanın gerçekten sahip olduğu zaman dilimlerine daralt.
+                # Narrow down to the timeframes the instrument actually has.
                 from data import _external_bar_dir
 
                 avail = [
@@ -1378,12 +1399,12 @@ def _agent_worker(
                 if skipped:
                     _add_step(
                         run_id,
-                        f"⚠ {instrument_id} için eksik TF atlandı: {', '.join(skipped)}",
+                        f"⚠ missing TF skipped for {instrument_id}: {', '.join(skipped)}",
                     )
                 if not avail:
                     raise RuntimeError(
-                        f"{instrument_id} için seçilen zaman dilimlerinde "
-                        "katalog verisi yok"
+                        f"No catalog data for {instrument_id} in the "
+                        "selected timeframes"
                     )
                 intervals = avail
 
@@ -1392,11 +1413,11 @@ def _agent_worker(
                 run_id,
                 0,
                 (
-                    f"Katalog okunuyor: {instrument_id}/{first_iv}"
+                    f"Reading catalog: {instrument_id}/{first_iv}"
                     if is_external
-                    else f"Cache okunuyor: {symbol}/{category}/{first_iv}"
+                    else f"Reading cache: {symbol}/{category}/{first_iv}"
                 )
-                + (f" + {len(intervals) - 1} TF daha" if len(intervals) > 1 else ""),
+                + (f" + {len(intervals) - 1} more TF" if len(intervals) > 1 else ""),
             )
             first_df = _load_tf(first_iv)
             date_start = first_df.index[0].date()
@@ -1411,9 +1432,9 @@ def _agent_worker(
             )
 
             if is_external:
-                # Index konvansiyonu: "symbol" anahtarı YOK — Bybit'e özel grafik
-                # ve robustness OOB panelleri bars_info["symbol"] üzerinden
-                # tetiklendiğinden harici koşularda güvenle devre dışı kalır.
+                # Index convention: NO "symbol" key — Bybit-specific chart and
+                # robustness OOB panels are triggered via bars_info["symbol"], so
+                # they safely stay disabled on external runs.
                 bars_info = {
                     "ticker": instrument_id,
                     "granularity": first_iv,
@@ -1431,19 +1452,19 @@ def _agent_worker(
                     "end": str(date_end),
                 }
 
-            # ── Faz 1: İlk strateji ──────────────────────────────────────────────
-            _set_phase(run_id, 1, "Claude strateji üretiyor…")
+            # ── Phase 1: Initial strategy ────────────────────────────────────────
+            _set_phase(run_id, 1, "Claude is generating a strategy…")
 
             catalog = load_catalog()
             dummy_history: list = []
 
             if web_research:
-                _add_step(run_id, "🌐 Web araştırması yapılıyor…")
+                _add_step(run_id, "🌐 Running web research…")
             _tl_begin(
                 run_id,
                 "llm",
                 f"llm-propose-r{run_number}",
-                "İlk strateji (Claude)",
+                "Initial strategy (Claude)",
                 round_num=run_number,
             )
             proposal, _usage1 = propose_composed_strategy(
@@ -1480,29 +1501,29 @@ def _agent_worker(
                 if run_id in _AGENT_PROGRESS:
                     _AGENT_PROGRESS[run_id]["strategy_name"] = spec.name
 
-            # ── Faz 2: Backtest döngüsü ──────────────────────────────────────────
+            # ── Phase 2: Backtest loop ───────────────────────────────────────────
             # Backtests run in killable child processes (sandbox); the child
             # rebuilds the instrument/bar_type from the recipe, so the worker
             # thread never touches Nautilus objects (nor the GIL) directly.
-            _set_phase(run_id, 2, f"0/{n_iterations} tamamlandı")
+            _set_phase(run_id, 2, f"0/{n_iterations} completed")
 
             history: list = []
             results: list[tuple] = []  # (spec, result, iter_iv)
-            used_concepts: list[str] = []  # custom blok label'ları biriktir
+            used_concepts: list[str] = []  # accumulate custom block labels
 
             for i in range(n_iterations):
                 # Check stop signal between iterations in continuous mode.
-                # _add_step KİLİDİN DIŞINDA: kendisi de _AGENT_LOCK alır;
-                # blok içinden çağırmak re-entrant deadlock'tu (tüm sunucuyu
-                # donduran 2026-07-14 canlı olayı).
+                # _add_step OUTSIDE THE LOCK: it also acquires _AGENT_LOCK;
+                # calling it from inside the block was a re-entrant deadlock (the
+                # 2026-07-14 live incident that froze the whole server).
                 with _AGENT_LOCK:
                     s = _AGENT_PROGRESS.get(run_id)
                     stop_hit = bool(s is not None and s.get("stop_requested"))
                 if stop_hit:
-                    _add_step(run_id, "  ⏹ Durdurma sinyali alındı — döngü kesiliyor")
+                    _add_step(run_id, "  ⏹ Stop signal received — breaking the loop")
                     break
 
-                # Round-robin TF seçimi
+                # Round-robin TF selection
                 iter_iv = intervals[i % len(intervals)]
                 iter_df = _load_tf(iter_iv)
                 if is_external:
@@ -1554,7 +1575,7 @@ def _agent_worker(
                     force_subprocess=True,
                 )
                 _bt_elapsed = time.perf_counter() - _bt_t0
-                # strategy alanına block type listesini ekle → Claude bu bilgiyi görür
+                # Add the block type list to the strategy field → Claude sees this info
                 block_types_str = "+".join(b.type for b in spec.blocks)
                 r.strategy = f"composed:{spec.name} [{block_types_str}]"
                 history.append(r)
@@ -1568,10 +1589,10 @@ def _agent_worker(
                         elapsed_sec=_bt_elapsed,
                     )
                 except Exception as log_exc:
-                    _add_step(run_id, f"  ⚠ Log yazılamadı: {log_exc}")
+                    _add_step(run_id, f"  ⚠ Could not write log: {log_exc}")
 
                 sc = _score(r)
-                # Canlı backtest tablosu için state'e ekle
+                # Add to state for the live backtest table
                 m_bt = r.metrics or {}
                 with _AGENT_LOCK:
                     s = _AGENT_PROGRESS.get(run_id)
@@ -1593,7 +1614,7 @@ def _agent_worker(
                                 "error": r.error,
                             }
                         )
-                # Session log: backtest sonucu (equity_curve dahil)
+                # Session log: backtest result (including equity_curve)
                 _session_log(
                     run_id,
                     "backtest_result",
@@ -1615,7 +1636,7 @@ def _agent_worker(
                     error=r.error,
                 )
                 if r.error:
-                    _add_step(run_id, f"  ✗ Hata: {r.error[:80]}")
+                    _add_step(run_id, f"  ✗ Error: {r.error[:80]}")
                     _tl_end(run_id, f"bt-r{run_number}-i{i + 1}", status="fail")
                 else:
                     m = r.metrics or {}
@@ -1623,7 +1644,7 @@ def _agent_worker(
                         run_id,
                         f"  ✓ PnL={m.get('pnl', 0):+.2f} · "
                         f"Sharpe={m.get('sharpe', float('nan')):.2f} · "
-                        f"Trades={m.get('n_trades', 0)} · Skor={sc:.3f}",
+                        f"Trades={m.get('n_trades', 0)} · Score={sc:.3f}",
                     )
                     _tl_end(
                         run_id,
@@ -1633,7 +1654,7 @@ def _agent_worker(
                         score=round(sc, 4) if sc > float("-inf") else None,
                     )
 
-                _set_phase(run_id, 2, f"{i + 1}/{n_iterations} tamamlandı")
+                _set_phase(run_id, 2, f"{i + 1}/{n_iterations} completed")
 
                 if i < n_iterations - 1:
                     next_i = i + 1
@@ -1642,9 +1663,9 @@ def _agent_worker(
                         run_id,
                         f"[{next_i + 1}/{n_iterations}] "
                         + (
-                            "Custom blok üretiliyor…"
+                            "Generating custom block…"
                             if use_custom
-                            else "Claude yeni strateji üretiyor…"
+                            else "Claude is generating a new strategy…"
                         ),
                     )
                     _tl_begin(
@@ -1652,9 +1673,9 @@ def _agent_worker(
                         "llm",
                         f"llm-refine-r{run_number}-i{next_i + 1}",
                         (
-                            "Custom blok üretimi"
+                            "Custom block generation"
                             if use_custom
-                            else "Claude yeni strateji"
+                            else "Claude new strategy"
                         ),
                         round_num=run_number,
                         iter=next_i + 1,
@@ -1672,7 +1693,7 @@ def _agent_worker(
                             )
                             if custom_spec is not None:
                                 spec = custom_spec
-                                # Üretilen blok label'larını biriktir
+                                # Accumulate the generated block labels
                                 for b in spec.blocks:
                                     used_concepts.append(b.type)
                                 _add_step(run_id, f"  → {spec.name} (custom)")
@@ -1708,11 +1729,11 @@ def _agent_worker(
                                 usage=_u,
                             )
                             _add_step(run_id, f"  → {spec.name}")
-                        # H9: trend_filter/trend_interval yalnız ilk (faz 1)
-                        # spec'e uygulanıyordu; refine'de üretilen HER spec
-                        # composer default'u (trend_filter=False) ile kalıp
-                        # iterasyonlar arası kıyası tutarsız yapıyordu ve
-                        # kazanan filtresiz kaydediliyordu. Her spec'e uygula.
+                        # H9: trend_filter/trend_interval was only applied to the
+                        # first (phase 1) spec; EVERY spec generated in refine
+                        # kept the composer default (trend_filter=False), making
+                        # inter-iteration comparison inconsistent and saving the
+                        # winner without a filter. Apply it to every spec.
                         spec.trend_filter = trend_filter
                         spec.trend_interval = trend_interval
                         if is_external:
@@ -1729,7 +1750,7 @@ def _agent_worker(
                     except Exception as e:
                         _add_step(
                             run_id,
-                            f"  ⚠ Öneri alınamadı: {e} — önceki strateji devam ediyor",
+                            f"  ⚠ Could not get proposal: {e} — continuing with previous strategy",
                         )
                         _tl_end(
                             run_id,
@@ -1737,15 +1758,15 @@ def _agent_worker(
                             status="warn",
                         )
 
-            _done_phase(run_id, 2, f"✓ {n_iterations} iterasyon tamamlandı")
+            _done_phase(run_id, 2, f"✓ {n_iterations} iterations completed")
 
-            # ── Faz 3: Sıralama ──────────────────────────────────────────────────
-            _set_phase(run_id, 3, "Sonuçlar sıralanıyor…")
+            # ── Phase 3: Ranking ─────────────────────────────────────────────────
+            _set_phase(run_id, 3, "Ranking results…")
             _tl_begin(
                 run_id,
                 "backtest",
                 f"rank-r{run_number}",
-                "Sıralama",
+                "Ranking",
                 round_num=run_number,
             )
             ranked = _rank_results(results)
@@ -1753,37 +1774,37 @@ def _agent_worker(
 
             _add_step(
                 run_id,
-                f"{len(eligible)}/{len(results)} sonuç uygun (≥{_MIN_TRADES} trade, hata yok)",
+                f"{len(eligible)}/{len(results)} results qualify (≥{_MIN_TRADES} trades, no error)",
             )
             for rank_i, (s, r, iv) in enumerate(ranked[:5]):
                 sc = _score(r)
                 m = r.metrics or {}
                 _add_step(
                     run_id,
-                    f"  #{rank_i + 1} {s.name} [{iv}] · skor={sc:.3f} · "
+                    f"  #{rank_i + 1} {s.name} [{iv}] · score={sc:.3f} · "
                     f"PnL={m.get('pnl', 0):+.2f} · "
                     f"Sharpe={m.get('sharpe', float('nan')):.2f}",
                 )
 
             if not eligible:
                 _tl_end(run_id, f"rank-r{run_number}", status="warn")
-                _done_phase(run_id, 3, "⚠ Uygun sonuç yok — tüm iterasyonlar başarısız")
+                _done_phase(run_id, 3, "⚠ No eligible result — all iterations failed")
                 if not continuous_mode:
                     with _AGENT_LOCK:
                         if run_id in _AGENT_PROGRESS:
                             _AGENT_PROGRESS[run_id]["done"] = True
                     return
-                _consec_err = 0  # tur istisnasız bitti — hata serisi kırıldı
+                _consec_err = 0  # round ended without exception — error streak broken
                 _last_err_str = None
                 if _winless_bump():
                     _winless_stop()
                     return
                 continue
             _tl_end(run_id, f"rank-r{run_number}", status="ok")
-            _done_phase(run_id, 3, f"✓ {len(eligible)} aday sıralandı")
+            _done_phase(run_id, 3, f"✓ {len(eligible)} candidates ranked")
 
-            # ── Faz 4: Robustness tarama ─────────────────────────────────────────
-            _set_phase(run_id, 4, f"0/{len(eligible)} deneniyor")
+            # ── Phase 4: Robustness scan ─────────────────────────────────────────
+            _set_phase(run_id, 4, f"0/{len(eligible)} trying")
             _set_robustness_scan(run_id, 0, len(eligible))
 
             winner_spec = None
@@ -1791,24 +1812,25 @@ def _agent_worker(
             winner_rob = None
             winner_iv = None
             rob_scan_log: list[dict] = []
-            # M26+M31: "ilk geçen kazanır" yerine geçen ilk EN FAZLA 3 adayı
-            # topla; kazanan multi-symbol pass_rate faktörüyle ağırlıklı
-            # etkin skora göre seçilir. 3 geçen bulunamadan liste biterse
-            # eldekiyle karar verilir.
+            # M26+M31: instead of "first passer wins", collect at most the first 3
+            # candidates that pass; the winner is chosen by the effective score
+            # weighted by the multi-symbol pass_rate factor. If the list ends
+            # before 3 passers are found, decide with what's on hand.
             _MAX_PASSERS = 3
             passers: list[dict] = []
 
             for rank_i, (cand_spec, cand_result, cand_iv) in enumerate(eligible):
-                # Durdurma sinyali robustness taramasi ICINDE de kontrol edilir:
-                # aksi halde iterasyon donguesu 'stop' ile kesilse bile akis aday
-                # basina dakikalarca suren tam robustness taramasina giriyordu.
+                # The stop signal is also checked INSIDE the robustness scan:
+                # otherwise, even if the iteration loop is cut by 'stop', the flow
+                # would enter the full robustness scan that takes minutes per
+                # candidate.
                 with _AGENT_LOCK:
                     _rs = _AGENT_PROGRESS.get(run_id)
                     _rob_stop = bool(_rs is not None and _rs.get("stop_requested"))
                 if _rob_stop:
                     _add_step(
                         run_id,
-                        "  ⏹ Durdurma sinyali — robustness taramasi kesiliyor",
+                        "  ⏹ Stop signal — breaking the robustness scan",
                     )
                     break
                 _set_robustness_scan(run_id, rank_i + 1, len(eligible))
@@ -1819,7 +1841,7 @@ def _agent_worker(
                 _set_phase(
                     run_id,
                     4,
-                    f"{rank_i + 1}/{len(eligible)} deneniyor: {cand_spec.name}",
+                    f"{rank_i + 1}/{len(eligible)} trying: {cand_spec.name}",
                 )
 
                 cand_df = _load_tf(cand_iv)
@@ -1849,14 +1871,14 @@ def _agent_worker(
                 except Exception as rob_exc:
                     _rob_progress.close_open("fail")
                     _tl_end(run_id, _rob_key, status="fail")
-                    _add_step(run_id, f"  ⚠ Robustness hatası: {rob_exc} — atlanıyor")
+                    _add_step(run_id, f"  ⚠ Robustness error: {rob_exc} — skipping")
                     rob_scan_log.append(
                         {
                             "rank": rank_i + 1,
                             "name": cand_spec.name,
                             "score": round(_score(cand_result), 3),
                             "passed": False,
-                            "overfitting_label": f"hata: {type(rob_exc).__name__}",
+                            "overfitting_label": f"error: {type(rob_exc).__name__}",
                             "mc_dd_p50": None,
                             "wf_pass": "—",
                             "ms_label": "—",
@@ -1880,7 +1902,7 @@ def _agent_worker(
                     "generalization_label", "—"
                 )
 
-                # Session log: tam robustness sonucu (equity eğrileri + multi_symbol dahil)
+                # Session log: full robustness result (including equity curves + multi_symbol)
                 _session_log(
                     run_id,
                     "robustness_result",
@@ -1898,7 +1920,7 @@ def _agent_worker(
                     mc=rob.get("mc"),
                     multi_symbol=rob.get("multi_symbol"),
                 )
-                # L26: hafif SQLite indeksi (best-effort, hata yutulur)
+                # L26: lightweight SQLite index (best-effort, errors swallowed)
                 _index_insert(
                     run_id,
                     run_number,
@@ -1931,14 +1953,15 @@ def _agent_worker(
                 _rob_progress.close_open("ok")
                 if passed:
                     _tl_end(run_id, _rob_key, status="ok", name=cand_spec.name)
-                    # M26+M31: geçen aday havuza girer; etkin skor = _score ×
-                    # multi-symbol pass_rate faktörü (0.15…1.0).
+                    # M26+M31: a passing candidate enters the pool; effective
+                    # score = _score × multi-symbol pass_rate factor (0.15…1.0).
                     raw_score = _score(cand_result)
                     factor = _ms_score_factor(rob)
-                    # Isaret-guvenli MS cezasi: pozitif skorda raw*factor'a birebir
-                    # esit (raw - (1-factor)*raw), negatif skorda ise kucuk factor'un
-                    # skoru DAHA AZ negatif yapip siralamayi tersine cevirmesini onler
-                    # (ceza her zaman skoru ASAGI ceker).
+                    # Sign-safe MS penalty: for a positive score, exactly equals
+                    # raw*factor (raw - (1-factor)*raw); for a negative score, it
+                    # prevents a small factor from making the score LESS negative
+                    # and inverting the ranking (the penalty always pulls the
+                    # score DOWN).
                     effective = raw_score - (1.0 - factor) * abs(raw_score)
                     passers.append(
                         {
@@ -1953,19 +1976,19 @@ def _agent_worker(
                     )
                     _add_step(
                         run_id,
-                        f"  ✅ TÜM TESTLERİ GEÇTİ! "
+                        f"  ✅ ALL TESTS PASSED! "
                         f"IS/OOS: {split_label} · WFO: {wf_str} · Multi-symbol: {ms_label}",
                     )
                     _add_step(
                         run_id,
-                        f"  ⚖ Etkin skor: {raw_score:.3f} × MS-faktör "
+                        f"  ⚖ Effective score: {raw_score:.3f} × MS-factor "
                         f"{factor:.3f} = {effective:.3f} "
-                        f"({len(passers)}/{_MAX_PASSERS} geçen aday)",
+                        f"({len(passers)}/{_MAX_PASSERS} passing candidates)",
                     )
                     if len(passers) >= _MAX_PASSERS:
                         _add_step(
                             run_id,
-                            f"  {_MAX_PASSERS} geçen aday toplandı — tarama bitiyor",
+                            f"  {_MAX_PASSERS} passing candidates collected — scan ending",
                         )
                         break
                 else:
@@ -1973,16 +1996,16 @@ def _agent_worker(
                     _add_step(
                         run_id,
                         (
-                            f"  ❌ Geçemedi — IS/OOS: {split_label} · "
-                            f"WFO: {wf_str} · MC medyan DD: {mc_dd:.1f}% · Multi-symbol: {ms_label}"
+                            f"  ❌ Failed — IS/OOS: {split_label} · "
+                            f"WFO: {wf_str} · MC median DD: {mc_dd:.1f}% · Multi-symbol: {ms_label}"
                             if mc_dd is not None
-                            else f"  ❌ Geçemedi — IS/OOS: {split_label} · "
+                            else f"  ❌ Failed — IS/OOS: {split_label} · "
                             f"WFO: {wf_str} · Multi-symbol: {ms_label}"
                         ),
                     )
 
             if passers:
-                # Etkin skoru en yüksek geçen aday kazanır.
+                # The passing candidate with the highest effective score wins.
                 best = max(passers, key=lambda p: p["effective"])
                 winner_spec = best["spec"]
                 winner_result = best["result"]
@@ -1991,7 +2014,7 @@ def _agent_worker(
                 if len(passers) > 1:
                     _add_step(
                         run_id,
-                        "🏁 Geçenler arası seçim: "
+                        "🏁 Selection among passers: "
                         + " · ".join(
                             f"{p['spec'].name}={p['effective']:.3f}"
                             f" ({p['score']:.3f}×{p['factor']:.2f})"
@@ -2000,13 +2023,13 @@ def _agent_worker(
                     )
                 _add_step(
                     run_id,
-                    f"🏆 Kazanan: {winner_spec.name} "
-                    f"(etkin skor {best['effective']:.3f})",
+                    f"🏆 Winner: {winner_spec.name} "
+                    f"(effective score {best['effective']:.3f})",
                 )
-                # bars_info'yu kazananın gerçek TF'siyle güncelle — yalnız TF
-                # anahtarı değil n_bars/start/end de kazananın df'sinden yeniden
-                # kurulur (multi-TF'de ilk TF'nin aralığı chart URL penceresini ve
-                # winner session-log'unu yanlış aralığa kaydırıyordu).
+                # Update bars_info with the winner's actual TF — not only the TF
+                # key but also n_bars/start/end are rebuilt from the winner's df
+                # (in multi-TF the first TF's range was shifting the chart URL
+                # window and the winner session-log to the wrong range).
                 bars_info["granularity" if is_external else "interval"] = winner_iv
                 _win_df = _load_tf(winner_iv)
                 bars_info["n_bars"] = len(_win_df)
@@ -2014,7 +2037,7 @@ def _agent_worker(
                 bars_info["end"] = str(_win_df.index[-1].date())
 
             if winner_spec is None:
-                _done_phase(run_id, 4, f"✗ {len(eligible)} adaydan hiçbiri geçmedi")
+                _done_phase(run_id, 4, f"✗ None of the {len(eligible)} candidates passed")
                 if not continuous_mode:
                     with _AGENT_LOCK:
                         if run_id in _AGENT_PROGRESS:
@@ -2027,40 +2050,42 @@ def _agent_worker(
                         total_rounds=run_number,
                     )
                     return
-                _consec_err = 0  # tur istisnasız bitti — hata serisi kırıldı
+                _consec_err = 0  # round ended without exception — error streak broken
                 _last_err_str = None
-                # M22: 'adaylar var ama robustness geçemedi' de kazanansız tur —
-                # sayaç burada da artmalı (en yaygın sonsuz-döngü senaryosu).
+                # M22: 'candidates exist but none passed robustness' is also a
+                # winnerless round — the counter must increment here too (the most
+                # common infinite-loop scenario).
                 if _winless_bump():
                     _winless_stop()
                     return
-                _add_step(run_id, "Sürekli mod: yeni tur başlıyor…")
+                _add_step(run_id, "Continuous mode: new round starting…")
                 continue
 
-            _winless_rounds = 0  # M22: kazanan bulundu — kazanansız seri kırıldı
-            _done_phase(run_id, 4, f"✓ Kazanan: {winner_spec.name}")
+            _winless_rounds = 0  # M22: winner found — winnerless streak broken
+            _done_phase(run_id, 4, f"✓ Winner: {winner_spec.name}")
 
-            # ── Faz 5: Kaydet ────────────────────────────────────────────────────
-            _set_phase(run_id, 5, "Catalog'a kaydediliyor…")
+            # ── Phase 5: Save ────────────────────────────────────────────────────
+            _set_phase(run_id, 5, "Saving to catalog…")
             _tl_begin(
                 run_id,
                 "data",
                 f"save-r{run_number}",
-                "Kazanan kaydediliyor",
+                "Saving winner",
                 round_num=run_number,
                 name=winner_spec.name,
             )
-            # M14: kilitsiz load→append→save yerine kilitli append_to_catalog —
-            # eşzamanlı lab/strategy kaydıyla kazanan kaybolmasın.
+            # M14: locked append_to_catalog instead of lockless load→append→save —
+            # so the winner isn't lost due to a concurrent lab/strategy save.
             from composer import append_to_catalog
 
             append_to_catalog(winner_spec)
             _add_step(run_id, f"✓ {winner_spec.name} → strategy_catalog.json")
 
-            # H4/H8: kazanan farklı bir TF'de olabilir (winner_iv); cand_iv
-            # döngüden artakalan SON taranan adayın TF'sidir. Robustness logu
-            # ve mühürlü holdout kazananın KENDİ TF'siyle yapılmalı — yoksa
-            # log kimliği ezişir ve holdout yanlış dilim/recipe ile koşar.
+            # H4/H8: the winner may be on a different TF (winner_iv); cand_iv is
+            # the TF of the LAST scanned candidate left over from the loop. The
+            # robustness log and the sealed holdout must use the winner's OWN TF —
+            # otherwise the log identity is overwritten and the holdout runs with
+            # the wrong slice/recipe.
             _log_robustness(
                 winner_spec.id,
                 winner_spec.name,
@@ -2069,16 +2094,16 @@ def _agent_worker(
                 category=category,
                 interval=winner_iv,
             )
-            _add_step(run_id, "✓ Robustness sonucu → robustness_log.jsonl")
+            _add_step(run_id, "✓ Robustness result → robustness_log.jsonl")
             _tl_end(run_id, f"save-r{run_number}", status="ok")
-            _done_phase(run_id, 5, f"✓ {winner_spec.name} kaydedildi")
+            _done_phase(run_id, 5, f"✓ {winner_spec.name} saved")
 
-            # ── L32: mühürlü holdout — kazanan, seçime HİÇ girmemiş son
-            # OOS_HOLDOUT_DAYS günlük dilimde BİR KEZ koşulur. Sonuç yalnız
-            # raporlanır (tarafsız ileri-dönük tahmin + seçim-yanlılığı
-            # dedektörü); hiçbir karara bağlanmaz.
+            # ── L32: sealed holdout — the winner is run ONCE on the last
+            # OOS_HOLDOUT_DAYS-day slice that NEVER entered selection. The result
+            # is only reported (an unbiased forward-looking estimate +
+            # selection-bias detector); it is not bound to any decision.
             winner_holdout = None
-            _hold_df = holdout_cache.get(winner_iv)  # H4: kazananın TF'si
+            _hold_df = holdout_cache.get(winner_iv)  # H4: the winner's TF
             if _hold_df is not None and not _hold_df.empty:
                 try:
                     _hold_res = run_backtest_guarded(
@@ -2086,7 +2111,7 @@ def _agent_worker(
                         _hold_df,
                         _recipe(winner_iv),
                         iteration_id=999,
-                        rationale="mühürlü holdout (L32)",
+                        rationale="sealed holdout (L32)",
                         timeout_s=150.0,
                         force_subprocess=True,
                     )
@@ -2100,10 +2125,10 @@ def _agent_worker(
                         }
                         _add_step(
                             run_id,
-                            f"🔒 Mühürlü OOS ({OOS_HOLDOUT_DAYS}g): "
+                            f"🔒 Sealed OOS ({OOS_HOLDOUT_DAYS}d): "
                             f"Sharpe {_hm.get('sharpe', 0):.2f} · "
                             f"PnL {100 * (_hm.get('pnl_pct') or 0):.1f}% · "
-                            f"{_hm.get('n_trades', 0)} işlem (karara bağlanmaz)",
+                            f"{_hm.get('n_trades', 0)} trades (not bound to decision)",
                         )
                         _session_log(
                             run_id,
@@ -2115,14 +2140,14 @@ def _agent_worker(
                     else:
                         _add_step(
                             run_id,
-                            f"⚠ Mühürlü OOS koşusu hata verdi: {_hold_res.error}",
+                            f"⚠ Sealed OOS run returned an error: {_hold_res.error}",
                         )
                 except Exception as _hold_err:
-                    _add_step(run_id, f"⚠ Mühürlü OOS koşulamadı: {_hold_err}")
+                    _add_step(run_id, f"⚠ Could not run sealed OOS: {_hold_err}")
 
             with _AGENT_LOCK:
                 if run_id in _AGENT_PROGRESS:
-                    # bars_info'yu kazananın TF'siyle güncelle — chart URL için
+                    # Update bars_info with the winner's TF — for the chart URL
                     winner_result.bars_info = bars_info
                     _AGENT_PROGRESS[run_id]["winner_result"] = winner_result
                     _AGENT_PROGRESS[run_id]["winner_spec_name"] = winner_spec.name
@@ -2133,7 +2158,7 @@ def _agent_worker(
                         True  # always set so polling shows result
                     )
 
-            # Session log: kazanan
+            # Session log: winner
             _session_log(
                 run_id,
                 "winner",
@@ -2147,13 +2172,13 @@ def _agent_worker(
                 else [],
                 bars_info=bars_info,
             )
-            _consec_err = 0  # tur başarıyla bitti — hata serisi kırıldı
+            _consec_err = 0  # round finished successfully — error streak broken
             _last_err_str = None
 
             if not continuous_mode:
-                # Terminal olay: diğer tüm çıkış yolları (no_winner/error/stopped)
-                # session_end yazıyor; kazanan yolu da yazsın ki dış izleyiciler
-                # ve /sessions özeti oturumun bittiğini görebilsin.
+                # Terminal event: all other exit paths (no_winner/error/stopped)
+                # write session_end; let the winner path write it too, so external
+                # watchers and the /sessions summary can see the session ended.
                 _session_log(
                     run_id,
                     "session_end",
@@ -2168,7 +2193,7 @@ def _agent_worker(
 
             _time.sleep(3)  # give polling a chance to render the result
             _add_step(
-                run_id, f"Sürekli mod: tur {run_number} tamamlandı, devam ediliyor…"
+                run_id, f"Continuous mode: round {run_number} completed, continuing…"
             )
 
         except Exception as e:
@@ -2188,30 +2213,30 @@ def _agent_worker(
             )
             if not continuous_mode:
                 break
-            # Devre kesici: aynı hata ardışık _CONSEC_ERR_LIMIT tur → kalıcı
-            # sorun (eksik veri, konfig) — yeniden denemek anlamsız, dur.
+            # Circuit breaker: the same error _CONSEC_ERR_LIMIT consecutive rounds
+            # → persistent problem (missing data, config) — retrying is pointless, stop.
             _consec_err = _consec_err + 1 if err_str == _last_err_str else 1
             _last_err_str = err_str
             if _consec_err >= _CONSEC_ERR_LIMIT:
                 _add_step(
                     run_id,
-                    f"⏹ {_CONSEC_ERR_LIMIT} ardışık aynı hata — sürekli mod "
-                    f"durduruluyor: {err_str[:100]}",
+                    f"⏹ {_CONSEC_ERR_LIMIT} consecutive identical errors — stopping "
+                    f"continuous mode: {err_str[:100]}",
                 )
                 with _AGENT_LOCK:
                     if run_id in _AGENT_PROGRESS:
                         _AGENT_PROGRESS[run_id]["done"] = True
                 break
-            _add_step(run_id, f"⚠ Tur {run_number} hata: {e} — yeniden başlıyor…")
+            _add_step(run_id, f"⚠ Round {run_number} error: {e} — restarting…")
         finally:
-            # Token snapshot + session_end her tur sonunda
+            # Token snapshot + session_end at the end of each round
             with _AGENT_LOCK:
                 s = _AGENT_PROGRESS.get(run_id) or {}
             _ti = s.get("tokens_in", 0) or 0
             _to = s.get("tokens_out", 0) or 0
             _tcr = s.get("tokens_cache_read", 0) or 0
             _tcw = s.get("tokens_cache_write", 0) or 0
-            # L38: model-bazlı tarife; abonelik CLI'da maliyet None.
+            # L38: model-based rates; on subscription CLI the cost is None.
             _model, _cost_usd = _llm_cost_usd(_ti, _to, _tcr, _tcw)
             _session_log(
                 run_id,
@@ -2226,19 +2251,19 @@ def _agent_worker(
                 cost_eur=round(_cost_usd * 0.91, 6) if _cost_usd is not None else None,
             )
 
-    # Continuous mode exited (stop/budget/winless/error — tüm break'ler buraya).
+    # Continuous mode exited (stop/budget/winless/error — all breaks land here).
     _tl_close_open(run_id, status="warn")
     with _AGENT_LOCK:
         if run_id in _AGENT_PROGRESS:
             _AGENT_PROGRESS[run_id]["done"] = True
-            # Kalıcı bitiş: progress route bunu görünce polling'i durdurur
-            # (ara-tur done=True penceresinden ayırt etmek için ayrı bayrak).
+            # Permanent end: the progress route stops polling when it sees this
+            # (a separate flag to distinguish it from the inter-round done=True window).
             _AGENT_PROGRESS[run_id]["continuous_finished"] = True
     _session_log(run_id, "session_end", outcome="stopped", total_rounds=run_number)
 
 
 def _pick_best_exit_from_history(history: list) -> str | None:
-    """Geçmişteki en yüksek skorlu stratejinin exit blok tipini döndür."""
+    """Return the exit block type of the highest-scoring strategy in history."""
     _EXIT_PRIORITY = [
         "momentum",
         "macd_cross",
@@ -2272,8 +2297,8 @@ def _generate_custom_spec(
     register them, and return a ComposedStrategySpec built from those blocks.
     Returns None if block generation fails (caller falls back to builtin).
 
-    ``market`` — opsiyonel pazar bağlamı (harici US equity koşuları); fikir
-    üreticisine iletilir, None ise kripto ifadesi korunur.
+    ``market`` — optional market context (external US equity runs); passed to the
+    idea generator, and if None the crypto phrasing is preserved.
     """
     from agent import (
         GeneratedCodeError,
@@ -2292,10 +2317,10 @@ def _generate_custom_spec(
         idea = _propose_agent_strategy_idea(
             hint, history, used_concepts=used_concepts, market=market
         )
-        # M1583: fikir + custom-blok LLM çağrılarının token'ları sayaçlara
-        # eklensin — eskiden yalnız builtin öneri sayılıyordu; custom üretim
-        # en token-yoğun çağrı olduğundan maliyet ve max_total_tokens bütçe
-        # kesicisi ciddi undercount ediyordu.
+        # M1583: the tokens from the idea + custom-block LLM calls should be
+        # added to the counters — previously only the builtin proposal was
+        # counted; since custom generation is the most token-heavy call, the cost
+        # and the max_total_tokens budget breaker were seriously undercounting.
         _add_tokens(run_id, idea.get("usage"))
         entry_label = idea.get("entry_label", "Agent Entry")
         exit_label = idea.get("exit_label", "Agent Exit")
@@ -2303,14 +2328,14 @@ def _generate_custom_spec(
         entry_name = f"agnt_e_{run_id}_{iter_idx}"
         exit_name = f"agnt_x_{run_id}_{iter_idx}"
 
-        _add_step(run_id, f"  ⚙ Custom entry block üretiliyor: {entry_label}…")
+        _add_step(run_id, f"  ⚙ Generating custom entry block: {entry_label}…")
         entry_block = propose_custom_block(entry_label, idea["entry_desc"], "entry")
         _add_tokens(run_id, entry_block.get("usage"))
         entry_block["name"] = entry_name
         save_custom(entry_name, entry_block["meta"], entry_block["code"], prompt=hint)
         register_custom_from_disk(entry_name)
-        _add_step(run_id, f"  ✓ Entry block kaydedildi: {entry_name}")
-        # Session log + kodu {run_id}_blocks/ altına kopyala
+        _add_step(run_id, f"  ✓ Entry block saved: {entry_name}")
+        # Session log + copy the code under {run_id}_blocks/
         _session_log(
             run_id,
             "custom_block_generated",
@@ -2329,8 +2354,8 @@ def _generate_custom_spec(
         except Exception:
             pass
 
-        # 50% ihtimalle history'deki en iyi builtin exit'i kullan (custom yerine)
-        # Bu, kanıtlanmış çıkış mekanizmasını yeni entry fikirleriyle birleştirir
+        # With 50% probability use the best builtin exit from history (instead of custom)
+        # This combines a proven exit mechanism with new entry ideas
         best_builtin_exit = _pick_best_exit_from_history(history)
         use_builtin_exit = (
             best_builtin_exit is not None and __import__("random").random() < 0.5
@@ -2354,7 +2379,7 @@ def _generate_custom_spec(
             )
             _add_step(
                 run_id,
-                f"  → Builtin exit kullanılıyor: {best_builtin_exit} (geçmişte başarılı)",
+                f"  → Using builtin exit: {best_builtin_exit} (successful in the past)",
             )
             spec = ComposedStrategySpec(
                 id=new_spec_id(),
@@ -2374,14 +2399,14 @@ def _generate_custom_spec(
                 exit_logic="OR",
             )
         else:
-            _add_step(run_id, f"  ⚙ Custom exit block üretiliyor: {exit_label}…")
+            _add_step(run_id, f"  ⚙ Generating custom exit block: {exit_label}…")
             exit_block = propose_custom_block(exit_label, idea["exit_desc"], "exit")
             _add_tokens(run_id, exit_block.get("usage"))  # M1583
             exit_block["name"] = exit_name
             save_custom(exit_name, exit_block["meta"], exit_block["code"], prompt=hint)
             register_custom_from_disk(exit_name)
-            _add_step(run_id, f"  ✓ Exit block kaydedildi: {exit_name}")
-            # Session log + kodu {run_id}_blocks/ altına kopyala
+            _add_step(run_id, f"  ✓ Exit block saved: {exit_name}")
+            # Session log + copy the code under {run_id}_blocks/
             _session_log(
                 run_id,
                 "custom_block_generated",
@@ -2423,11 +2448,11 @@ def _generate_custom_spec(
             )
         err = spec.validate()
         if err:
-            raise RuntimeError(f"Custom spec geçersiz: {err}")
+            raise RuntimeError(f"Custom spec invalid: {err}")
         return spec
 
     except (GeneratedCodeError, Exception) as e:
-        _add_step(run_id, f"  ⚠ Custom blok üretilemedi: {e} — builtin'e dönülüyor")
+        _add_step(run_id, f"  ⚠ Could not generate custom block: {e} — falling back to builtin")
         return None
 
 
@@ -2440,10 +2465,10 @@ def _cleanup_agent_blocks(run_id: str) -> None:
 async def page(request: Request):
     from server import get_market_info, templates
 
-    # Bitmemiş bir koşu varsa sayfayı ona OTOMATİK bağla — sunucu restart'ı /
-    # sekme yenileme sonrası kullanıcı çalışan koşuyu görsün (koşu API'den
-    # başlatılmış, yani bu tarayıcıdan başlatılmamış olsa bile). En yeni
-    # aktif run'ı seç (insertion-ordered dict'te tersten ilk done=False).
+    # If there is an unfinished run, AUTOMATICALLY bind the page to it — so after
+    # a server restart / tab refresh the user sees the running run (even if the
+    # run was started from the API, i.e. not from this browser). Pick the newest
+    # active run (first done=False from the end of the insertion-ordered dict).
     active_run_id = None
     with _AGENT_LOCK:
         for rid, st in reversed(_AGENT_PROGRESS.items()):
@@ -2456,7 +2481,7 @@ async def page(request: Request):
         "agent_backtest.html",
         {
             "active": "agent",
-            "page_title": "Otonom Backtest Ajanı",
+            "page_title": "Autonomous Backtest Agent",
             "market": get_market_info(),
             "active_run_id": active_run_id,
         },
@@ -2487,7 +2512,7 @@ async def run(
     from server import get_market_info, templates
 
     n_iterations = max(2, min(15, n_iterations))
-    # M22: opsiyonel bütçe tavanları (0 = sınırsız — varsayılan davranış aynı).
+    # M22: optional budget ceilings (0 = unlimited — default behavior unchanged).
     max_hours = max(0.0, max_hours)
     max_total_tokens = max(0, max_total_tokens)
     is_strict = strict_mode != "relaxed"
@@ -2500,12 +2525,12 @@ async def run(
 
     if is_external and not instrument_id:
         return HTMLResponse(
-            "<div class='empty-state'>Katalog kaynağı için enstrüman seçin.</div>",
+            "<div class='empty-state'>Select an instrument for the catalog source.</div>",
             status_code=400,
         )
 
-    # Multi-TF modunda denenecek interval'lar
-    # 15m çıkarıldı (6% başarı), Daily eklendi (temiz sinyal, az trade ama kaliteli)
+    # Intervals to try in Multi-TF mode
+    # 15m removed (6% success), Daily added (clean signal, few trades but quality)
     if is_external:
         intervals: list[str] = (
             ["1-HOUR", "4-HOUR", "1-DAY"] if is_multi_tf else [ext_interval]
@@ -2547,22 +2572,22 @@ async def run(
             "rob_scan_current": 0,
             "rob_scan_total": 0,
             "hint": hint.strip(),
-            # Token kullanımı (her Claude API çağrısından biriktirilir)
+            # Token usage (accumulated from each Claude API call)
             "tokens_in": 0,
             "tokens_out": 0,
             "tokens_cache_read": 0,
             "tokens_cache_write": 0,
-            # Canlı backtest sonuçları tablosu için (agent ekranı üst paneli)
+            # For the live backtest results table (agent screen top panel)
             "backtest_results": [],
-            # Zaman çizelgesi span'ları (SVG Gantt — bkz. _tl_begin/_tl_end)
+            # Timeline spans (SVG Gantt — see _tl_begin/_tl_end)
             "timeline": [],
         },
         on_evict=_release_session_lock,
     )
     if not created:
         return HTMLResponse(
-            "<div class='empty-state'>⚠ 50 aktif koşu sınırı — yeni koşu "
-            "başlatılamadı. Önce mevcut koşulardan birini durdurun.</div>",
+            "<div class='empty-state'>⚠ 50 active runs limit — could not start a "
+            "new run. Stop one of the existing runs first.</div>",
             status_code=429,
         )
 
@@ -2588,8 +2613,8 @@ async def run(
         daemon=True,
     ).start()
 
-    # /progress ile ayni kilitli-snapshot deseni: worker eszamanli mutate
-    # ederken canli dict'i template'e vermek yerine tutarli bir kopya render et.
+    # Same locked-snapshot pattern as /progress: render a consistent copy instead
+    # of handing the live dict to the template while the worker mutates it concurrently.
     with _AGENT_LOCK:
         _raw0 = _AGENT_PROGRESS[run_id]
         _initial_state = {
@@ -2615,39 +2640,39 @@ async def run(
 
 @router.post("/stop/{run_id}", response_class=HTMLResponse)
 async def stop(request: Request, run_id: str):
-    """Koşan agent'a durma sinyali gönder (sürekli mod VE tek koşu).
+    """Send a stop signal to the running agent (continuous mode AND single run).
 
-    stop_requested; iterasyon döngüsünde, tur başında ve robustness aday
-    taramasında kontrol edilir → mevcut adım bitince temiz durur. Düğme
-    fragments/agent_progress.html'de (koşu sırasında) ve agent_result.html'de
-    (sürekli mod, tur arası) render edilir.
+    stop_requested; checked in the iteration loop, at round start, and in the
+    robustness candidate scan → stops cleanly once the current step finishes. The
+    button is rendered in fragments/agent_progress.html (during the run) and in
+    agent_result.html (continuous mode, between rounds).
     """
     with _AGENT_LOCK:
         s = _AGENT_PROGRESS.get(run_id)
         if s:
             s["stop_requested"] = True
     if s is None:
-        # L16: state bellekte yok (restart/eviction) — sahte "sinyal gönderildi"
-        # rozeti yerine dürüst mesaj.
+        # L16: state not in memory (restart/eviction) — an honest message instead
+        # of a fake "signal sent" badge.
         return HTMLResponse(
             "<span class='badge' style='background:rgba(148,163,184,0.2);"
-            "color:#94a3b8;'>⚠ Koşu bellekte değil (sunucu yeniden başlatılmış "
-            "olabilir) — durdurulacak bir işlem yok</span>"
+            "color:#94a3b8;'>⚠ Run not in memory (the server may have been "
+            "restarted) — there is no operation to stop</span>"
         )
     return HTMLResponse(
         "<span class='badge' style='background:rgba(251,146,60,0.2);color:#fb923c;'>"
-        "⏹ Durdurma sinyali gönderildi — mevcut tur bittikten sonra duracak</span>"
+        "⏹ Stop signal sent — it will stop after the current round finishes</span>"
     )
 
 
 def _terminal_message(run_id: str) -> str:
-    """Bellekte olmayan run için dürüst mesaj.
+    """Honest message for a run not in memory.
 
-    Diskteki session logu son event'iyle ayırt eder: session_end görmüş bir
-    koşu gerçekten bitmiştir; log yarıda kesilmişse süreç ölmüştür (tipik
-    neden: sunucu yeniden başlatıldı) — koşu 'tamamlandı' değildir.
+    Distinguishes by the last event of the on-disk session log: a run that has
+    seen session_end really finished; if the log is cut off mid-way the process
+    died (typical cause: the server was restarted) — the run is not 'completed'.
     """
-    generic = "Çalışma tamamlandı veya süresi doldu."
+    generic = "The run completed or timed out."
     try:
         log_path = SESSION_LOG_DIR / f"{run_id}.jsonl"
         if not log_path.exists():
@@ -2659,14 +2684,14 @@ def _terminal_message(run_id: str) -> str:
         last = json.loads(tail[-1]) if tail else {}
         if last.get("event") == "session_end":
             return (
-                "Çalışma tamamlandı — geçmişi "
-                "<a href='/sessions'>Session Logları</a>'nda inceleyebilirsiniz."
+                "The run completed — you can review its history in the "
+                "<a href='/sessions'>Session Logs</a>."
             )
         return (
-            "⚠ Koşu yarıda kesildi (büyük olasılıkla sunucu yeniden "
-            "başlatıldı). Kaldığı yere kadarki adımlar "
-            "<a href='/sessions'>Session Logları</a>'nda; agent'ı yeniden "
-            "başlatabilirsiniz."
+            "⚠ The run was cut off mid-way (most likely the server was "
+            "restarted). The steps up to where it stopped are in the "
+            "<a href='/sessions'>Session Logs</a>; you can restart the "
+            "agent."
         )
     except Exception:
         return generic
@@ -2710,20 +2735,20 @@ async def progress(request: Request, run_id: str):
             "tokens_cache_read": raw.get("tokens_cache_read", 0),
             "tokens_cache_write": raw.get("tokens_cache_write", 0),
             "backtest_results": list(raw.get("backtest_results") or []),
-            # Shallow copies — worker eş zamanlı mutate ediyor.
+            # Shallow copies — the worker mutates concurrently.
             "timeline": [dict(sp) for sp in raw.get("timeline") or []],
         }
 
-    # Sürekli mod KALICI bittiyse polling'i durdur — aksi halde terminal
-    # sonuç fragmenti her 2 sn'de sonsuza dek yeniden render/chart-rebuild
-    # edilir (titreme + sürekli CPU/ağ). continuous_finished, worker döngüden
-    # temelli çıkınca set edilir; ara-tur (done=True + 3s uyku) penceresinde
-    # False kaldığı için sonraki tura geçiş korunur.
+    # If continuous mode has PERMANENTLY finished, stop polling — otherwise the
+    # terminal result fragment would be re-rendered/chart-rebuilt every 2s forever
+    # (flicker + constant CPU/network). continuous_finished is set when the worker
+    # leaves the loop for good; it stays False during the inter-round (done=True +
+    # 3s sleep) window, so the transition to the next round is preserved.
     is_continuous = state.get("continuous_mode", False) and not state.get(
         "continuous_finished"
     )
 
-    # Zaman çizelgesi render modeli (aktif tura filtreli) + span→adım eşlemesi.
+    # Timeline render model (filtered to the active round) + span→step mapping.
     from web.viewmodels import associate_steps, timeline_view
 
     _cur_round = max((sp.get("round", 1) for sp in state["timeline"]), default=1)
@@ -2736,9 +2761,9 @@ async def progress(request: Request, run_id: str):
         state["timeline"], state["steps"], round_num=_cur_round
     )
 
-    # L38: token kullanımı + model-bazlı TAHMİNİ maliyet (_MODEL_PRICING).
-    # claude-cli/OAuth aboneliğinde token başına fatura YOK → cost None
-    # (şablonlar satırı gizler; doluyken '≈ tahmini' etiketiyle gösterilir).
+    # L38: token usage + model-based ESTIMATED cost (_MODEL_PRICING).
+    # On a claude-cli/OAuth subscription there is NO per-token billing → cost None
+    # (templates hide the line; when filled it is shown with an '≈ estimated' label).
     _USD_EUR = 0.91
     _ti = state.get("tokens_in", 0) or 0
     _to = state.get("tokens_out", 0) or 0
@@ -2764,10 +2789,10 @@ async def progress(request: Request, run_id: str):
         last_row["equity_dates"] = result.equity_dates
         last_row["spec_name"] = state["winner_spec_name"]
         last_row["steps"] = state["steps"][-60:]  # cap to avoid huge DOM
-        # M2625: narrative'i bir kez üret, gerçek progress dict'inde cache'le.
-        # Eskiden done+winner doluyken HER poll (continuous'ta 2s'de bir) yeni
-        # bir LLM API çağrısı yapıp yanıtı blokluyordu; kazanan sabit olduğundan
-        # tek üretim yeter.
+        # M2625: generate the narrative once, cache it in the real progress dict.
+        # Previously, while done+winner was set, EVERY poll (every 2s in
+        # continuous) made a new LLM API call and blocked on the response; since
+        # the winner is fixed, a single generation is enough.
         with _AGENT_LOCK:
             _real = _AGENT_PROGRESS.get(run_id)
             _narr = _real.get("winner_narrative") if _real else None
@@ -2828,7 +2853,7 @@ async def progress(request: Request, run_id: str):
             },
         )
 
-    # Robustness bulunamadı ama done=True (winner_result=None, error=None)
+    # Robustness not found but done=True (winner_result=None, error=None)
     if state["done"]:
         return templates.TemplateResponse(
             request,
@@ -2838,7 +2863,7 @@ async def progress(request: Request, run_id: str):
                 "phases": _PHASES,
                 "state": state,
                 "done": True,
-                "error": "Robustness testini geçen strateji bulunamadı.",
+                "error": "No strategy passed the robustness test.",
                 "rob_scan_log": state["rob_scan_log"],
                 "market": get_market_info(),
                 "token_info": token_info,
@@ -2877,12 +2902,12 @@ def _winner_narrative(last_row: dict, state: dict) -> str:
                 {
                     "role": "user",
                     "content": (
-                        f"Otonom backtest ajanının bulduğu kazanan stratejiyi 2-3 cümleyle Türkçe özetle:\n"
-                        f"Strateji: {state['winner_spec_name']}\n"
+                        f"Summarize the winning strategy found by the autonomous backtest agent in 2-3 sentences in English:\n"
+                        f"Strategy: {state['winner_spec_name']}\n"
                         f"PnL: {m.get('pnl_fmt', '?')} · Sharpe: {m.get('sharpe_fmt', '?')} · "
                         f"Sortino: {m.get('sortino_fmt', '?')} · Max DD: {m.get('max_dd_fmt', '?')}\n"
                         f"Trades: {m.get('n_trades', 0)} · Win Rate: {m.get('win_rate_fmt', '?')}\n"
-                        "Başında 'Bu strateji' ile başla."
+                        "Begin with 'This strategy'."
                     ),
                 }
             ],
@@ -2891,7 +2916,8 @@ def _winner_narrative(last_row: dict, state: dict) -> str:
     except Exception:
         pnl = last_row.get("pnl") or 0
         return (
-            f"Bu strateji {state['winner_spec_name']} adıyla catalog'a kaydedildi. "
-            f"{last_row.get('n_trades', 0)} trade ile {last_row.get('pnl_fmt', '?')} "
-            f"{'kazandı' if pnl >= 0 else 'kaybetti'} ve robustness testini geçti."
+            f"This strategy was saved to the catalog as {state['winner_spec_name']}. "
+            f"With {last_row.get('n_trades', 0)} trades it "
+            f"{'gained' if pnl >= 0 else 'lost'} {last_row.get('pnl_fmt', '?')} "
+            f"and passed the robustness test."
         )

@@ -1,9 +1,9 @@
-"""OHLC (high/low) blok erişimi testleri.
+"""OHLC (high/low) block access tests.
 
-Kullanıcı ADX/ATR/WaveTrend gibi high/low gerektiren indikatörler istiyordu;
-bloklar yalnız closes+volumes görüyordu. Bu testler high/low serilerinin
-custom bloklara ulaştığını (izolasyonlu, closes ile hizalı) ve gerçek bir
-OHLC-tabanlı custom bloğun uçtan uca backtest'te trade açtığını sabitler.
+The user wanted high/low-requiring indicators like ADX/ATR/WaveTrend;
+blocks only saw closes+volumes. These tests pin that the high/low series
+reach custom blocks (isolated, aligned with closes) and that a real
+OHLC-based custom block opens a trade end-to-end in a backtest.
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ _RECIPE = {"symbol": "BTCUSDT", "interval": "60", "category": "linear"}
 
 
 class TestAdapterExposesHighLow:
-    """register_custom_from_disk sarmalayıcısı highs/lows'u izolasyonlu geçirir."""
+    """register_custom_from_disk wrapper passes highs/lows through isolated."""
 
     _CODE = (
         "def evaluate(state, block, closes, indicators, portfolio):\n"
@@ -29,7 +29,7 @@ class TestAdapterExposesHighLow:
         "    state['n_lo'] = len(lo)\n"
         "    state['hi_last'] = hi[-1] if hi else None\n"
         "    state['lo_last'] = lo[-1] if lo else None\n"
-        "    hi.append(-999.0)  # mutasyon buffer'a SIZMAMALI\n"
+        "    hi.append(-999.0)  # mutation must NOT LEAK into the buffer\n"
         "    lo.append(-999.0)\n"
         "    return None\n"
     )
@@ -59,10 +59,10 @@ class TestAdapterExposesHighLow:
             block = SimpleNamespace(params={}, role="entry", type=name)
             entry["eval"](strat, 0, block, strat._closes)
             st = strat._prev_state["custom_state_0"]
-            # Pencere buf_cap ile sınırlı, high>close>low hizalı
+            # Window bounded by buf_cap, high>close>low aligned
             assert st["n_hi"] == buf_cap and st["n_lo"] == buf_cap
             assert st["hi_last"] == 139.5 and st["lo_last"] == 138.5
-            # Mutasyon gerçek buffer'lara sızmadı
+            # Mutation did not leak into the real buffers
             assert strat._highs[-1] == 139.5 and len(strat._highs) == 40
             assert strat._lows[-1] == 138.5 and len(strat._lows) == 40
         finally:
@@ -70,12 +70,12 @@ class TestAdapterExposesHighLow:
 
 
 def _breakout_bars(n: int = 300) -> pd.DataFrame:
-    """Trend + belirgin bar-içi range: gerçek high/low kırılımı üretir."""
+    """Trend + pronounced intra-bar range: produces a real high/low breakout."""
     idx = pd.date_range("2024-01-01", periods=n, freq="1h", tz="UTC")
     t = np.arange(n)
     close = 30_000 + 3_000 * np.sin(t / 40.0) + t * 3.0
     open_ = np.concatenate([[close[0]], close[:-1]])
-    # Bar-içi salınım closes'tan büyük → high/low closes'a eşit DEĞİL
+    # Intra-bar swing bigger than closes → high/low NOT equal to closes
     high = np.maximum(open_, close) + 80 + 40 * np.abs(np.sin(t / 5.0))
     low = np.minimum(open_, close) - 80 - 40 * np.abs(np.cos(t / 5.0))
     return pd.DataFrame(
@@ -91,11 +91,11 @@ def _breakout_bars(n: int = 300) -> pd.DataFrame:
 
 
 class TestOhlcBlockBacktest:
-    """Gerçek OHLC custom bloğu (Stochastic %K — hem high hem low gerektirir) e2e.
+    """Real OHLC custom block (Stochastic %K — requires both high and low) e2e.
 
-    Stochastic yalnız closes'tan hesaplanamaz (en-yüksek-yüksek / en-düşük-düşük
-    penceresi high/low ister) — trade açması, iki serinin de bloğa gerçek
-    değerlerle ulaştığının kanıtıdır.
+    Stochastic cannot be computed from closes alone (the highest-high /
+    lowest-low window needs high/low) — opening a trade is proof that both
+    series reach the block with real values.
     """
 
     _STOCH = (
@@ -152,9 +152,9 @@ class TestOhlcBlockBacktest:
                 bar_type=bar_type,
                 venue=instrument.id.venue,
             )
-            assert r.error is None, f"OHLC blok backtest hatası: {r.error}"
+            assert r.error is None, f"OHLC block backtest error: {r.error}"
             assert (r.metrics or {}).get("n_trades", 0) > 0, (
-                "Stochastic hiç trade açmadı — high/low bloğa ulaşmıyor olabilir"
+                "Stochastic opened no trades — high/low may not be reaching the block"
             )
         finally:
             BLOCK_REGISTRY.pop(name, None)

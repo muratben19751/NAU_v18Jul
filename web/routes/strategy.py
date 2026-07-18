@@ -4,7 +4,7 @@ Wiki References
 ---------------
 Bkz: [[strategy_and_actor]], [[order_flow_pipeline]]
 
-Compose UI'sı [[strategy_and_actor]] hiyerarşisini reflect eder.
+The Compose UI reflects the [[strategy_and_actor]] hierarchy.
 """
 
 from __future__ import annotations
@@ -47,8 +47,8 @@ router = APIRouter(prefix="/strategy")
 _DRAFTS: dict[str, list[SignalBlock]] = {}
 COOKIE = "nautlab_sid"
 _COOKIE_MAX_AGE = 3600
-# _DRAFTS sınırsız büyümesin (her yeni sid bir giriş bırakır, hiç evict edilmezdi).
-# Insertion-order dict → en eski sid'i at (kaba LRU; taslaklar kısa ömürlü).
+# Do not let _DRAFTS grow unbounded (every new sid left an entry, never evicted).
+# Insertion-order dict → drop the oldest sid (rough LRU; drafts are short-lived).
 _MAX_DRAFT_SESSIONS = 500
 
 
@@ -56,8 +56,8 @@ def _sid(request: Request, response: Response | None = None) -> str:
     sid = request.cookies.get(COOKIE)
     if not sid:
         sid = uuid.uuid4().hex
-    # Cookie'yi HER yanıtta yenile (kayan süre) — eskiden yalnız ilk kez set
-    # ediliyordu, 1 saat sonra kompozisyon ortasında süre dolup taslak kayboluyordu.
+    # Refresh the cookie on EVERY response (sliding expiry) — previously it was
+    # set only the first time, so after 1 hour the draft would expire mid-composition.
     if response is not None:
         response.set_cookie(
             COOKIE, sid, httponly=True, samesite="lax", max_age=_COOKIE_MAX_AGE
@@ -67,7 +67,7 @@ def _sid(request: Request, response: Response | None = None) -> str:
 
 def _drafts(sid: str) -> list[SignalBlock]:
     if sid not in _DRAFTS and len(_DRAFTS) >= _MAX_DRAFT_SESSIONS:
-        # En eski oturumu at (insertion-order) — sınırsız bellek birikimi yok.
+        # Drop the oldest session (insertion-order) — no unbounded memory growth.
         _DRAFTS.pop(next(iter(_DRAFTS)), None)
     return _DRAFTS.setdefault(sid, [])
 
@@ -311,10 +311,10 @@ async def save(
         trade_size_atr_risk=float(trade_size_atr_risk),
         trade_size_usdt=float(trade_size_usdt),
         emulate=bool(emulate),
-        # Multi-timeframe: ana TF'de işlem + trend_interval TF'sinde EMA trend
-        # onayı (trend'e karşı girişler bastırılır). Motor ikincil bar feed'ini
-        # yalnız trend_filter=True iken yükler; look-ahead güvenli (Nautilus
-        # event-driven — ikincil bar yalnız KAPANDIĞINDA gelir).
+        # Multi-timeframe: trade on the main TF + EMA trend confirmation on the
+        # trend_interval TF (entries against the trend are suppressed). The engine
+        # loads the secondary bar feed only when trend_filter=True; look-ahead safe
+        # (Nautilus is event-driven — the secondary bar arrives only WHEN CLOSED).
         trend_filter=bool(trend_filter),
         trend_interval=(trend_interval or "60").strip(),
         trend_ema_period=int(trend_ema_period),
@@ -323,8 +323,8 @@ async def save(
     if err:
         return RedirectResponse(f"/strategy?error={err}", status_code=303)
 
-    # M14/H1(strategy): kilitsiz load→append→save eşzamanlı koşuyla strateji
-    # kaybettiriyordu — kilitli append_to_catalog kullan.
+    # M14/H1(strategy): a lockless load→append→save was losing strategies under
+    # concurrent runs — use the locked append_to_catalog.
     from composer import append_to_catalog
 
     append_to_catalog(spec)
@@ -349,7 +349,7 @@ async def generate_custom_block(request: Request):
 
     if not label or not description:
         return HTMLResponse(
-            "<div class='empty-state'>Label ve description zorunlu.</div>",
+            "<div class='empty-state'>Label and description are required.</div>",
             status_code=400,
         )
     if role_hint not in ("entry", "exit", "both"):
@@ -388,7 +388,7 @@ async def generate_custom_block(request: Request):
             request,
             "fragments/custom_block_generated.html",
             {
-                "error": f"Label '{label}' geçerli bir isme dönüştürülemedi. En az 2 harf içermeli.",
+                "error": f"Label '{label}' could not be converted into a valid name. It must contain at least 2 letters.",
                 "label": label,
                 "description": description,
                 "role_hint": role_hint,
@@ -405,7 +405,7 @@ async def generate_custom_block(request: Request):
             request,
             "fragments/custom_block_generated.html",
             {
-                "error": f"Bu isim ({proposal['name']}) zaten kullanımda. Farklı bir label seçin.",
+                "error": f"This name ({proposal['name']}) is already in use. Choose a different label.",
                 "label": label,
                 "description": description,
                 "role_hint": role_hint,
@@ -440,13 +440,13 @@ async def generate_custom_block(request: Request):
         from agent import _ALLOWED_BUILTINS, _has_builtin, _validate_generated_code
         from codegate import compile_with_loop_budget
 
-        # H490/M527: önizleme, üretim smoke/runtime ile PARİTE olmalıydı —
-        # eskiden çıplak fonksiyon adları (sqrt, mean...) enjekte ediyor,
-        # math.*/ind.*/OHLC okuyan bloklar sessizce hiç sinyal üretmiyordu; ve
-        # bütçesiz düz compile veri-bağımlı sonsuz döngüde sunucuyu (event loop)
-        # dondurabiliyordu. Şimdi: codegate ile doğrula → tam math/statistics/ind
-        # modülleri enjekte et → döngü-bütçeli derle → gerçek OHLCV ver.
-        _validate_generated_code(proposal["code"])  # dunder/import/döngü kapıları
+        # H490/M527: the preview must be at PARITY with the production smoke/runtime —
+        # previously it injected bare function names (sqrt, mean...), so blocks
+        # reading math.*/ind.*/OHLC silently produced no signals; and a budgetless
+        # plain compile could freeze the server (event loop) in a data-dependent
+        # infinite loop. Now: validate with codegate → inject full math/statistics/ind
+        # modules → compile with a loop budget → provide real OHLCV.
+        _validate_generated_code(proposal["code"])  # dunder/import/loop gates
         _ALLOWED: dict = {
             "__builtins__": {
                 k: getattr(_builtins_mod, k)
@@ -462,13 +462,13 @@ async def generate_custom_block(request: Request):
         for k, v in ns.items():
             if callable(v) and not k.startswith("_"):
                 _ALLOWED[k] = v
-        # M1084: bütçe preamble adları ns'e düştü; fonksiyonlar globals'ta arar.
+        # M1084: budget preamble names landed in ns; functions look them up in globals.
         for _bk in ("__budget", "__budget_tick"):
             if _bk in ns:
                 _ALLOWED[_bk] = ns[_bk]
         ev = ns.get("evaluate")
         if ev is None:
-            raise ValueError("evaluate() fonksiyonu bulunamadı")
+            raise ValueError("evaluate() function not found")
 
         class _Block:
             def __init__(self, params, role):
@@ -495,7 +495,7 @@ async def generate_custom_block(request: Request):
         start_i = max(0, len(closes) - WINDOW)
         signals = []
         for i in range(start_i, len(closes)):
-            # M527: indicators'a runtime'daki gibi highs/lows/volumes ver.
+            # M527: provide highs/lows/volumes to indicators like the runtime does.
             _ind_dict = {
                 "highs": highs[: i + 1],
                 "lows": lows[: i + 1],
@@ -547,12 +547,12 @@ async def save_custom_block(
 
     if name in BLOCK_REGISTRY:
         return HTMLResponse(
-            f"<div class='empty-state'>İsim '{name}' zaten kayıtlı.</div>",
+            f"<div class='empty-state'>Name '{name}' is already registered.</div>",
             status_code=409,
         )
     if not cbs.is_valid_name(name):
         return HTMLResponse(
-            f"<div class='empty-state'>Geçersiz isim: {name}. Küçük harf snake_case gerekli.</div>",
+            f"<div class='empty-state'>Invalid name: {name}. Lowercase snake_case required.</div>",
             status_code=400,
         )
 
@@ -560,19 +560,19 @@ async def save_custom_block(
         meta = _json.loads(meta_json)
     except Exception as e:
         return HTMLResponse(
-            f"<div class='empty-state'>meta JSON hatası: {e}</div>", status_code=400
+            f"<div class='empty-state'>meta JSON error: {e}</div>", status_code=400
         )
 
     # Re-validate defense-in-depth — form input could be tampered with.
-    # M591: require_max_lookback=True — üretim yolundaki M16 zorunluluğu tam da
-    # form üzerinden değiştirilmiş kodu yakalamak için bu katmanda da geçerli
-    # olmalı (default False ile deliniyordu).
+    # M591: require_max_lookback=True — the M16 requirement on the production path
+    # must also apply at this layer precisely to catch code tampered with via the
+    # form (it was being bypassed with the default False).
     try:
         _validate_generated_code(code)
         _test_execute_generated(code, meta=meta, require_max_lookback=True)
     except GeneratedCodeError as e:
         return HTMLResponse(
-            f"<div class='empty-state'>Kod reddedildi: {e}</div>", status_code=400
+            f"<div class='empty-state'>Code rejected: {e}</div>", status_code=400
         )
 
     try:
@@ -580,7 +580,7 @@ async def save_custom_block(
         register_custom_from_disk(name)
     except Exception as e:
         return HTMLResponse(
-            f"<div class='empty-state'>Kaydetme hatası: {type(e).__name__}: {e}</div>",
+            f"<div class='empty-state'>Save error: {type(e).__name__}: {e}</div>",
             status_code=500,
         )
 
@@ -597,12 +597,13 @@ async def delete_custom_block(request: Request, name: str):
 
     if name in BLOCK_REGISTRY and BLOCK_REGISTRY[name].get("builtin"):
         return HTMLResponse(
-            f"<div class='empty-state'>Built-in blok silinemez: {name}</div>",
+            f"<div class='empty-state'>Built-in block cannot be deleted: {name}</div>",
             status_code=400,
         )
-    # M621: blok silinince onu kullanan spec'ler bir sonraki load_catalog'da
-    # sessizce filtrelenip katalogdan KALICI siliniyordu. Bağımlı strateji
-    # varsa silmeyi reddet (force=1 ile açıkça istenmedikçe).
+    # M621: when a block was deleted, the specs using it were silently filtered
+    # out and PERMANENTLY removed from the catalog on the next load_catalog. If
+    # there is a dependent strategy, refuse to delete (unless explicitly requested
+    # with force=1).
     force = request.query_params.get("force") == "1"
     if not force:
         from composer import load_catalog
@@ -613,9 +614,9 @@ async def delete_custom_block(request: Request, name: str):
         if dependents:
             preview = ", ".join(dependents[:5]) + ("…" if len(dependents) > 5 else "")
             return HTMLResponse(
-                f"<div class='empty-state'>⚠ '{name}' bloğunu {len(dependents)} "
-                f"strateji kullanıyor ({preview}). Silmek o stratejileri de "
-                f"kalıcı siler. Yine de silmek için ?force=1 ekleyin.</div>",
+                f"<div class='empty-state'>⚠ {len(dependents)} strategies use the "
+                f"'{name}' block ({preview}). Deleting it also permanently deletes "
+                f"those strategies. To delete anyway, add ?force=1.</div>",
                 status_code=409,
             )
     cbs.delete_custom(name)
@@ -629,8 +630,8 @@ async def delete_custom_block(request: Request, name: str):
 
 @router.delete("/{spec_id}", response_class=HTMLResponse)
 async def delete_spec(request: Request, spec_id: str):
-    # M634: kilitsiz load→filter→save eşzamanlı append ile yarışıyordu —
-    # kilitli mutate_catalog kullan (silme atomik).
+    # M634: a lockless load→filter→save was racing with concurrent appends —
+    # use the locked mutate_catalog (deletion is atomic).
     from composer import mutate_catalog
     from server import templates
 

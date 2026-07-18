@@ -150,9 +150,10 @@ class TestDiscoverIndexTickersKwarg:
 
 
 class TestCurrentEquity:
-    """_current_equity GERÇEK metodunu sürer — eskiden mantığı elle kopyalayıp
-    shipping edilen composer.ComposedStrategy._current_equity'yi hiç çağırmıyordu
-    (para-kritik metotta sahte güven; suite analizi 2026-07 quick-win #6)."""
+    """Drives the ACTUAL _current_equity method — previously the logic was
+    hand-copied and the shipped composer.ComposedStrategy._current_equity was
+    never called (false confidence in a money-critical method; suite analysis
+    2026-07 quick-win #6)."""
 
     def _strat(self, portfolio, equity_mode=None):
         from types import SimpleNamespace
@@ -179,7 +180,7 @@ class TestCurrentEquity:
         account_mock.balances.return_value = {Currency.from_str("USDT"): bal_mock}
 
         portfolio_mock = MagicMock()
-        portfolio_mock.equity.return_value = None  # v2 native yol yok → bakiye tara
+        portfolio_mock.equity.return_value = None  # no v2 native path → scan balances
         portfolio_mock.account.return_value = account_mock
 
         assert self._call(self._strat(portfolio_mock)) == 500_000.0

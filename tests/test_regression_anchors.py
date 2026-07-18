@@ -1,10 +1,10 @@
-"""Regresyon çapaları — derin denetim dalgasının (fix(denetim*)/fix(wfo*))
-düzelttiği yüksek-blast-radius davranışlarını KİLİTLER.
+"""Regression anchors — LOCK the high-blast-radius behaviors fixed by the deep
+audit wave (fix(audit*)/fix(wfo*)).
 
-Bu testler olmadan, düzeltmelerin birini geri getiren bir değişiklik yeşil
-geçerdi (test-suite analizi, 2026-07: para/seçim/güvenlik dallarında sıfır
-kapsam). Her sınıf tek bir düzeltmeyi GERÇEK shipping edilen fonksiyon üzerinden
-sürer (elle kopyalanmış mantık değil).
+Without these tests, a change reintroducing one of the fixes would pass green
+(test-suite analysis, 2026-07: zero coverage on the money/selection/security
+branches). Each class drives a single fix through the REAL shipped function
+(not hand-copied logic).
 """
 
 from __future__ import annotations
@@ -17,13 +17,13 @@ import pytest
 
 
 # ---------------------------------------------------------------------------
-# #1 (critical) — codegate AST whitelist red-matrisi
-# LLM/kullanıcı kodunun in-process çalıştığı TÜM güvenlik sınırı. Her kaçış
-# denemesi GeneratedCodeError vermeli; _ALLOWED_ATTRS genişletmesi / alt-çizgi
-# guard'ının düşmesi `().__class__.__bases__[0].__subclasses__()` RCE'sini açar.
+# #1 (critical) — codegate AST whitelist rejection matrix
+# The security boundary for ALL in-process LLM/user code execution. Every escape
+# attempt must raise GeneratedCodeError; widening _ALLOWED_ATTRS / dropping the
+# underscore guard opens the `().__class__.__bases__[0].__subclasses__()` RCE.
 # ---------------------------------------------------------------------------
 def _ev(body: str) -> str:
-    """closes/... imzalı geçerli bir evaluate gövdesine tek satır sar."""
+    """Wrap a single line into a valid evaluate body with the closes/... signature."""
     return "def evaluate(state, block, closes, indicators, portfolio):\n    " + body
 
 
@@ -78,12 +78,12 @@ class TestCodegateRejectionMatrix:
 
         with pytest.raises(GeneratedCodeError) as exc:
             validate_generated_code(src)
-        assert needle in str(exc.value), f"beklenen ret sebebi yok: {exc.value!r}"
+        assert needle in str(exc.value), f"expected rejection reason missing: {exc.value!r}"
 
     def test_the_classic_rce_chain_is_blocked(self):
         from codegate import GeneratedCodeError, validate_generated_code
 
-        # `().__class__.__bases__[0].__subclasses__()` — sandbox-kaçış klasiği.
+        # `().__class__.__bases__[0].__subclasses__()` — classic sandbox escape.
         with pytest.raises(GeneratedCodeError):
             validate_generated_code(
                 _ev("return ().__class__.__bases__[0].__subclasses__()")
@@ -102,8 +102,8 @@ class TestCodegateRejectionMatrix:
         validate_generated_code(src)  # must not raise
 
     def test_valid_block_passes(self):
-        # Pozitif kontrol: whitelist içi kod (builtin + ind.* + container ops)
-        # AST döndürmeli — red-matrisinin fazla-geniş olmadığının kanıtı.
+        # Positive control: whitelisted code (builtin + ind.* + container ops)
+        # must return an AST — proof the rejection matrix is not over-broad.
         from codegate import validate_generated_code
 
         src = (
@@ -165,9 +165,9 @@ class TestBybitCachePathTraversal:
 
 
 # ---------------------------------------------------------------------------
-# #2 (critical) — composer._compute_qty: 4 sizing modu (3'ü hiçbir e2e'de
-# çağrılmıyor; her golden spec 'fixed'). Direkt para matematiği → notional → PnL.
-# GERÇEK metodu sahte-self ile çağırır (unbound function).
+# #2 (critical) — composer._compute_qty: 4 sizing modes (3 of which are never
+# called in any e2e; every golden spec is 'fixed'). Direct money math → notional
+# → PnL. Calls the REAL method with a fake-self (unbound function).
 # ---------------------------------------------------------------------------
 def _qty_self(
     mode,
@@ -228,9 +228,9 @@ class TestComputeQty:
 
 
 # ---------------------------------------------------------------------------
-# #3 (critical) — wfo objective_value / _calmar (M236/M240): calmar GA seçim
-# kriteri. DD_FLOOR(%1) + CALMAR_CAP(±10) + in-scale NaN-fallback. Ham pnl/|dd|'ye
-# dönüş (O(1e4)) her seçilen parametre setini sessizce bozar.
+# #3 (critical) — wfo objective_value / _calmar (M236/M240): calmar GA selection
+# criterion. DD_FLOOR(1%) + CALMAR_CAP(±10) + in-scale NaN-fallback. Reverting to
+# raw pnl/|dd| (O(1e4)) silently corrupts every selected parameter set.
 # ---------------------------------------------------------------------------
 def _res(**metrics):
     return SimpleNamespace(error=None, metrics=metrics)
@@ -246,16 +246,16 @@ class TestObjectiveCalmar:
     def test_calmar_cap_clamps_micro_dd(self):
         from wfo_optimizer import _CALMAR_CAP, objective_value
 
-        # pnl_pct 1.0 / max(|-0.001|, 0.01)=0.01 → 100 → CAP 10 (5000 DEĞİL)
+        # pnl_pct 1.0 / max(|-0.001|, 0.01)=0.01 → 100 → CAP 10 (NOT 5000)
         v = objective_value(_res(n_trades=100, pnl_pct=1.0, max_dd=-0.001), "calmar")
         assert v == pytest.approx(_CALMAR_CAP * _conf(100))
-        assert v < 100  # sınırsız oran O(1e3-1e4) olurdu
+        assert v < 100  # an unbounded ratio would be O(1e3-1e4)
 
     def test_dd_floor_engages(self):
         from wfo_optimizer import objective_value
 
-        # pnl_pct 0.05 / max(|-0.0001|, DD_FLOOR=0.01)=0.01 → 5 (CAP altında)
-        # floor olmadan 0.05/0.0001 = 500 olurdu.
+        # pnl_pct 0.05 / max(|-0.0001|, DD_FLOOR=0.01)=0.01 → 5 (below CAP)
+        # without the floor it would be 0.05/0.0001 = 500.
         v = objective_value(_res(n_trades=100, pnl_pct=0.05, max_dd=-0.0001), "calmar")
         assert v == pytest.approx(5.0 * _conf(100))
 
@@ -263,7 +263,7 @@ class TestObjectiveCalmar:
         from app_constants import STARTING_CASH
         from wfo_optimizer import objective_value
 
-        # pnl_pct yok → pnl / STARTING_CASH = 5000/10000 = 0.5 ; /max(0.5,0.01)=1.0
+        # pnl_pct missing → pnl / STARTING_CASH = 5000/10000 = 0.5 ; /max(0.5,0.01)=1.0
         v = objective_value(_res(n_trades=100, pnl=5000.0, max_dd=-0.5), "calmar")
         assert STARTING_CASH == 10_000.0
         assert v == pytest.approx(1.0 * _conf(100))
@@ -271,8 +271,8 @@ class TestObjectiveCalmar:
     def test_nan_fallback_stays_capped_not_unbounded(self):
         from wfo_optimizer import _CALMAR_CAP, objective_value
 
-        # M240: sharpe NaN & sortino NaN → CAPLİ calmar (±10), sınırsız pnl/|dd| DEĞİL.
-        # pnl_pct 1.0 / 0.01 = 100 → CAP 10. (unbounded 1.0/0.0001 = 10000 olurdu.)
+        # M240: sharpe NaN & sortino NaN → CAPPED calmar (±10), NOT unbounded pnl/|dd|.
+        # pnl_pct 1.0 / 0.01 = 100 → CAP 10. (unbounded would be 1.0/0.0001 = 10000.)
         v = objective_value(
             _res(
                 n_trades=100,
@@ -300,8 +300,8 @@ class TestObjectiveCalmar:
 
 
 # ---------------------------------------------------------------------------
-# #9 (critical) — _wfo_window_bounds M62 non-positive guard (sonsuz döngü/DoS)
-# + M28 embargo boşluğu (test_start = train_end + WF_EMBARGO_DAYS).
+# #9 (critical) — _wfo_window_bounds M62 non-positive guard (infinite loop/DoS)
+# + M28 embargo gap (test_start = train_end + WF_EMBARGO_DAYS).
 # ---------------------------------------------------------------------------
 class TestWfoWindowBounds:
     def _bounds(self, train, test, step):
@@ -314,8 +314,9 @@ class TestWfoWindowBounds:
         return _wfo_window_bounds(start, end, train, test, step)
 
     def test_nonpositive_months_return_empty(self):
-        # M62: step/train/test <= 0 → [] (yoksa cursor ilerlemez → sonsuz döngü,
-        # sınırsız bounds listesi, sandbox child global timeout'a dek CPU yakar).
+        # M62: step/train/test <= 0 → [] (otherwise the cursor never advances →
+        # infinite loop, unbounded bounds list, burns CPU until the sandbox
+        # child hits the global timeout).
         assert self._bounds(6, 1, 0) == []
         assert self._bounds(0, 1, 1) == []
         assert self._bounds(6, 0, 1) == []
@@ -326,15 +327,15 @@ class TestWfoWindowBounds:
         from backtest_robustness import WF_EMBARGO_DAYS
 
         bounds = self._bounds(6, 1, 1)
-        assert bounds, "pozitif parametreler pencere üretmeli"
+        assert bounds, "positive parameters must produce windows"
         for _n, _tr_s, train_end, test_start, _te in bounds:
-            # M28: test train_end'den WF_EMBARGO_DAYS gün SONRA başlar (leakage guard)
+            # M28: test starts WF_EMBARGO_DAYS days AFTER train_end (leakage guard)
             assert test_start == train_end + timedelta(days=WF_EMBARGO_DAYS)
 
 
 # ---------------------------------------------------------------------------
-# #7a (critical) — state.AppState.append best-selection: "şimdiye dek en iyi"nin
-# tek doğruluk kaynağı. pnl kıyas, eksik-pnl→-inf, error-asla-kazanmaz.
+# #7a (critical) — state.AppState.append best-selection: the single source of
+# truth for "best so far". pnl comparison, missing-pnl→-inf, error-never-wins.
 # ---------------------------------------------------------------------------
 class TestAppStateAppend:
     def _res(self, rid, pnl=None, error=None):
@@ -362,7 +363,7 @@ class TestAppStateAppend:
         assert st.best.id == 1
         st.append(self._res(2, pnl=50.0))
         assert st.best.id == 2
-        st.append(self._res(3, pnl=20.0))  # düşük → değişmez
+        st.append(self._res(3, pnl=20.0))  # lower → unchanged
         assert st.best.id == 2
 
     def test_errored_iteration_never_wins(self):
@@ -370,23 +371,24 @@ class TestAppStateAppend:
 
         st = AppState()
         st.append(self._res(1, pnl=10.0))
-        st.append(self._res(2, pnl=999.0, error="boom"))  # hata → best OLAMAZ
+        st.append(self._res(2, pnl=999.0, error="boom"))  # error → CANNOT be best
         assert st.best.id == 1
 
     def test_missing_pnl_is_neg_inf(self):
         from state import AppState
 
         st = AppState()
-        st.append(self._res(1))  # pnl yok → -inf, -inf > -inf değil → best None
+        st.append(self._res(1))  # no pnl → -inf, -inf > -inf is False → best None
         assert st.best is None
-        st.append(self._res(2, pnl=5.0))  # gerçek pnl kazanır
+        st.append(self._res(2, pnl=5.0))  # real pnl wins
         assert st.best.id == 2
 
 
 # ---------------------------------------------------------------------------
-# #8 (critical) — agent.propose_custom_block retry döngüsü + _acc_usage token
-# defteri: usage HER denemede toplanmalı; 2 başarısız deneme → GeneratedCodeError.
-# GERÇEK propose_custom_block'u sahte client ile sürer (mock messages.create).
+# #8 (critical) — agent.propose_custom_block retry loop + _acc_usage token
+# ledger: usage must accumulate on EVERY attempt; 2 failed attempts →
+# GeneratedCodeError. Drives the REAL propose_custom_block with a fake client
+# (mock messages.create).
 # ---------------------------------------------------------------------------
 class TestProposeCustomBlockRetry:
     def _resp(self, text, i, o):
@@ -417,7 +419,7 @@ class TestProposeCustomBlockRetry:
 
         import agent
 
-        bad = json.dumps({"name": "x"})  # geçerli JSON ama şema eksik → retry
+        bad = json.dumps({"name": "x"})  # valid JSON but schema missing → retry
         good = json.dumps(
             {
                 "name": "blk",
@@ -430,7 +432,7 @@ class TestProposeCustomBlockRetry:
 
         out = agent.propose_custom_block("blk", "desc", "entry")
         assert out["name"] == "blk"
-        # M1583: iki denemenin token'ları da toplanmalı (10+20, 5+7)
+        # M1583: the tokens of both attempts must sum (10+20, 5+7)
         assert out["usage"]["input_tokens"] == 30
         assert out["usage"]["output_tokens"] == 12
 
@@ -449,9 +451,10 @@ class TestProposeCustomBlockRetry:
 
 
 # ---------------------------------------------------------------------------
-# #7b (critical) — loop M29: /loop/start çalışıyorken ikinci POST no-op olmalı
-# (senkron running=True-under-lock guard). Regresyon flag'i thread gövdesine
-# geri taşırsa çift loop thread'i başlar (paylaşılan state / çift token).
+# #7b (critical) — loop M29: while /loop/start is running a second POST must be a
+# no-op (synchronous running=True-under-lock guard). If a regression moves the
+# flag back into the thread body, a double loop thread starts (shared state /
+# double token).
 # ---------------------------------------------------------------------------
 class TestLoopDoubleStart:
     def test_second_start_while_running_is_noop(self, monkeypatch):
@@ -467,7 +470,7 @@ class TestLoopDoubleStart:
 
         def fake_run_loop(state, bars, mode, **kw):
             calls.append(1)
-            time.sleep(0.3)  # meşgul kal — running'i SIFIRLAMA (route set etti)
+            time.sleep(0.3)  # stay busy — do NOT RESET running (the route set it)
 
         monkeypatch.setattr(loop_mod, "run_loop", fake_run_loop)
         monkeypatch.setattr("server.get_bars", lambda: None)
@@ -482,8 +485,8 @@ class TestLoopDoubleStart:
             r1 = client.post("/loop/start", data={"mode": "agent"})
             r2 = client.post("/loop/start", data={"mode": "agent"})
             assert r1.status_code == 200 and r2.status_code == 200
-            time.sleep(0.45)  # tek fake thread'in koşmasına izin ver
-            assert len(calls) == 1, f"çift-başlatma: {len(calls)} thread"
+            time.sleep(0.45)  # let the single fake thread run
+            assert len(calls) == 1, f"double-start: {len(calls)} threads"
         finally:
             with st.lock:
                 st.stop_requested = True
@@ -491,9 +494,10 @@ class TestLoopDoubleStart:
 
 
 # ---------------------------------------------------------------------------
-# #10 (high) — custom_block_store delete dependency (M621): bir strateji bloğu
-# kullanıyorken silmek 409 dönmeli (force=1 hariç); yoksa blok silinince
-# bağımlı stratejiler bir sonraki load_catalog'da sessizce KALICI siliniyordu.
+# #10 (high) — custom_block_store delete dependency (M621): deleting a block
+# while a strategy uses it must return 409 (except force=1); otherwise deleting
+# the block would silently PERMANENTLY delete the dependent strategies on the
+# next load_catalog.
 # ---------------------------------------------------------------------------
 class TestDeleteCustomDependency:
     def test_delete_blocked_when_a_strategy_references_it(self, monkeypatch):
@@ -545,14 +549,15 @@ class TestDeleteCustomDependency:
 
 
 # ---------------------------------------------------------------------------
-# LLM model fallback: Fable kredisi bitince Opus'a düş (kullanıcı isteği).
-# İki backend iki ayrı sinyal verir:
-#   - API:        403 + error.type == "billing_error" (SDK .type alanı
-#                 billing_error'ı permission_error'dan ayırır — ikisi de 403).
-#   - claude-cli: tipli exception YOK; harcama limiti geçici rate-limit ile aynı
-#                 429 kodundan gelir → ayrım yalnız "monthly spend limit" metni.
-# ÇIPLAK 429 KASITLI olarak fallback tetiklemez (geçici; retry edilir) — bir
-# regresyon o ayrımı kaldırırsa bu testler kırılır.
+# LLM model fallback: when Fable credit runs out, fall back to Opus (user
+# request). The two backends give two distinct signals:
+#   - API:        403 + error.type == "billing_error" (the SDK .type field
+#                 distinguishes billing_error from permission_error — both 403).
+#   - claude-cli: NO typed exception; the spend limit comes through the same 429
+#                 code as a transient rate-limit → the only distinction is the
+#                 "monthly spend limit" text.
+# A BARE 429 INTENTIONALLY does not trigger fallback (transient; it is retried) —
+# if a regression removes that distinction these tests break.
 # ---------------------------------------------------------------------------
 class _LLMErr(Exception):
     def __init__(self, msg, type_=None):
@@ -561,7 +566,7 @@ class _LLMErr(Exception):
 
 
 class _FakeLLMClient:
-    """İlk çağrıda hata fırlatır, sonrakinde başarılı döner; modelleri kaydeder."""
+    """Raises an error on the first call, returns successfully afterward; records the models."""
 
     def __init__(self, exc):
         self._exc = exc
@@ -580,10 +585,24 @@ class _FakeLLMClient:
 class TestLLMCreditFallback:
     def _fresh(self):
         import importlib
+        import os
 
         import agent
 
-        return importlib.reload(agent)  # _active_model'i sıfırla
+        # These tests assert the CODE DEFAULTS (claude-fable-5 / opus fallback).
+        # A NAUTILUS_LLM_MODEL/…_FALLBACK_MODEL env override (e.g. from
+        # settings.local.json) would leak in via reload — strip it so the reload
+        # reflects the module defaults, not the local machine's override.
+        saved = {
+            k: os.environ.pop(k, None)
+            for k in ("NAUTILUS_LLM_MODEL", "NAUTILUS_LLM_FALLBACK_MODEL")
+        }
+        try:
+            return importlib.reload(agent)  # reset _active_model
+        finally:
+            for k, v in saved.items():
+                if v is not None:
+                    os.environ[k] = v
 
     def test_billing_error_falls_back_to_opus(self):
         agent = self._fresh()
@@ -591,11 +610,11 @@ class TestLLMCreditFallback:
         out = agent._create_message(c, max_tokens=10, messages=[])
         assert out == f"OK({agent.FALLBACK_MODEL})"
         assert c.models == [agent.MODEL, agent.FALLBACK_MODEL]
-        # Kalıcı kilit: sonraki çağrılar doğrudan fallback modelini kullanır.
+        # Permanent lock: subsequent calls use the fallback model directly.
         assert agent.current_model() == agent.FALLBACK_MODEL
 
     def test_credit_message_without_type_falls_back(self):
-        # claude-cli backend'i tipli exception üretmez → mesaj yüzeyi de tanınmalı.
+        # The claude-cli backend produces no typed exception → the message surface must also be recognized.
         agent = self._fresh()
         c = _FakeLLMClient(_LLMErr("400 credit balance is too low to access the API"))
         assert agent._create_message(c, max_tokens=10, messages=[]) == (
@@ -603,12 +622,12 @@ class TestLLMCreditFallback:
         )
 
     def test_rate_limit_does_not_fall_back(self):
-        # 429 geçicidir; modeli kalıcı değiştirmek yanlış olurdu.
+        # 429 is transient; permanently changing the model would be wrong.
         agent = self._fresh()
         c = _FakeLLMClient(_LLMErr("rate limited", "rate_limit_error"))
         with pytest.raises(_LLMErr):
             agent._create_message(c, max_tokens=10, messages=[])
-        assert c.models == [agent.MODEL]  # tek deneme, fallback YOK
+        assert c.models == [agent.MODEL]  # single attempt, NO fallback
         assert agent.current_model() == agent.MODEL
 
     def test_permission_error_does_not_fall_back(self):
@@ -623,14 +642,15 @@ class TestLLMCreditFallback:
         assert agent.MODEL == "claude-fable-5"
         assert agent.FALLBACK_MODEL == "claude-opus-4-8"
 
-    # -- claude-cli backend: kredi bitişi 429 + metin olarak gelir --------------
-    # Aşağıdaki gövde server.err.log'dan ALINMIŞTIR. Fallback bu şekli tanımadığı
-    # için sahada hiç tetiklenmedi: ajan 15 adım boyunca LLM yerine builtin random
-    # strateji üretti (hepsi Skor=-inf). Üstteki testler kaçırdı çünkü hepsi
-    # "credit balance is too low" gibi ZATEN eşleşen sentetik metin kullanıyordu.
+    # -- claude-cli backend: credit exhaustion arrives as 429 + text -----------
+    # The body below is TAKEN from server.err.log. Because the fallback did not
+    # recognize this shape it never triggered in the field: the agent produced
+    # builtin random strategies instead of the LLM for 15 steps (all Score=-inf).
+    # The tests above missed it because they all used synthetic text like
+    # "credit balance is too low" that ALREADY matched.
     _CLI_SPEND_LIMIT_ENVELOPE = {
         "type": "result",
-        "subtype": "success",  # (evet: hata gövdesinde bile "success")
+        "subtype": "success",  # (yes: "success" even in an error body)
         "is_error": True,
         "api_error_status": 429,
         "result": (
@@ -655,7 +675,7 @@ class TestLLMCreditFallback:
         assert agent.current_model() == agent.FALLBACK_MODEL
 
     def test_cli_transient_429_does_not_fall_back(self):
-        # Aynı 429 kodu, kalıcı OLMAYAN gövde → model değişmemeli.
+        # Same 429 code, NON-permanent body → the model must not change.
         agent = self._fresh()
         exc = agent._CLIError(
             "claude CLI exited 1: ...",
@@ -665,28 +685,29 @@ class TestLLMCreditFallback:
         c = _FakeLLMClient(exc)
         with pytest.raises(agent._CLIError):
             agent._create_message(c, max_tokens=10, messages=[])
-        assert c.models == [agent.MODEL]  # tek deneme, fallback YOK
+        assert c.models == [agent.MODEL]  # single attempt, NO fallback
         assert agent.current_model() == agent.MODEL
 
     def test_cli_error_preserves_message_when_raw_text_is_truncated(self):
-        # Ham stdout 500 karakterde kırpılıyor; sinyal `message` alanında durmalı,
-        # yoksa uzun gövdelerde kalıcı/geçici ayrımı kaybolur.
+        # Raw stdout is truncated at 500 chars; the signal must live in the
+        # `message` field, otherwise the permanent/transient distinction is lost
+        # on long bodies.
         agent = self._fresh()
-        # padding ÖNDE: kırpma `result`a ulaşsın diye onu 500. karakterin ötesine iter.
+        # padding UP FRONT: pushes `result` past char 500 so truncation reaches it.
         env = {"padding": "x" * 4000, **self._CLI_SPEND_LIMIT_ENVELOPE}
         exc = agent._CLIError(
             f"claude CLI exited 1: {json.dumps(env)[:500]}",
             status=429,
             message=env["result"],
         )
-        assert "monthly spend limit" not in str(exc)  # kırpma sinyali yedi
-        assert agent._is_credit_exhausted(exc)  # ama tipli alan kurtarıyor
+        assert "monthly spend limit" not in str(exc)  # truncation ate the signal
+        assert agent._is_credit_exhausted(exc)  # but the typed field saves it
 
 
 # ---------------------------------------------------------------------------
-# Windows konsol penceresi: alt-süreçler (claude CLI, bash/gunzip/awk) her
-# çağrıda terminal açıp kapatıyordu. CREATE_NO_WINDOW konsolu hiç yaratmaz
-# (startupinfo/windowsHide bu makinede WT tarafından yok sayılıyor).
+# Windows console window: subprocesses (claude CLI, bash/gunzip/awk) opened and
+# closed a terminal on every call. CREATE_NO_WINDOW never creates the console
+# (startupinfo/windowsHide are ignored by WT on this machine).
 # ---------------------------------------------------------------------------
 class TestNoConsoleWindow:
     def test_flag_matches_platform(self):
@@ -698,14 +719,14 @@ class TestNoConsoleWindow:
         if os.name == "nt":
             assert NO_WINDOW_FLAGS == subprocess.CREATE_NO_WINDOW
         else:
-            # POSIX: subprocess sıfır-olmayan creationflags'i REDDEDER.
+            # POSIX: subprocess REJECTS nonzero creationflags.
             assert NO_WINDOW_FLAGS == 0
 
     def test_every_subprocess_call_hides_console(self):
-        """agent.py/data.py'deki her subprocess.run/Popen creationflags geçmeli.
+        """Every subprocess.run/Popen in agent.py/data.py must pass creationflags.
 
-        Kaynak-seviyesi guard: bayrağı unutan YENİ bir çağrı eklenirse kırılır
-        (kullanıcıya terminal penceresi olarak geri döner, sessiz regresyon).
+        Source-level guard: breaks if a NEW call is added that forgets the flag
+        (which surfaces to the user as a terminal window, a silent regression).
         """
         import ast as _ast
         import pathlib
@@ -728,6 +749,6 @@ class TestNoConsoleWindow:
                 if not any(k.arg == "creationflags" for k in node.keywords):
                     offenders.append(f"{name}:{node.lineno} subprocess.{fn.attr}")
         assert not offenders, (
-            "creationflags=NO_WINDOW_FLAGS eksik (Windows'ta konsol penceresi "
-            f"açar): {offenders}"
+            "creationflags=NO_WINDOW_FLAGS missing (opens a console window on "
+            f"Windows): {offenders}"
         )

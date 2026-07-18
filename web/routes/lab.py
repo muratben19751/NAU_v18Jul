@@ -1,12 +1,12 @@
-"""Strategy Lab — Otonom strateji üretici.
+"""Strategy Lab — Autonomous strategy generator.
 
-Tek tıkla: Claude bir strateji fikri üretir → custom signal block'lar yaratır →
-blokları birleştirir → backtest çalıştırır → KPI + equity curve gösterir.
+One click: Claude generates a strategy idea → creates custom signal blocks →
+combines the blocks → runs backtest → shows KPI + equity curve.
 
 Endpoints:
-    GET  /lab                    Sayfa
-    POST /lab/run                Otonom pipeline'ı başlat (hemen döner)
-    GET  /lab/progress/{run_id}  Durum polling (HTMX every 1s)
+    GET  /lab                    Page
+    POST /lab/run                Start the autonomous pipeline (returns immediately)
+    GET  /lab/progress/{run_id}  Status polling (HTMX every 1s)
 
 Wiki References
 ---------------
@@ -36,12 +36,12 @@ _LAB_PROGRESS = _LAB_STORE.raw()
 _LAB_LOCK = _LAB_STORE.lock
 
 _PHASES = [
-    "Strateji fikri üretiliyor",
-    "Entry block oluşturuluyor",
-    "Exit block oluşturuluyor",
-    "Bloklar kaydediliyor",
-    "Strateji derleniyor",
-    "Backtest çalışıyor",
+    "Generating strategy idea",
+    "Creating entry block",
+    "Creating exit block",
+    "Saving blocks",
+    "Compiling strategy",
+    "Backtest running",
 ]
 
 
@@ -143,31 +143,31 @@ def _lab_worker(
             with _LAB_LOCK:
                 if run_id in _LAB_PROGRESS:
                     _LAB_PROGRESS[run_id]["error"] = (
-                        f"{symbol}/{category}/{interval} için cache'de veri yok. "
-                        "Önce /data ekranından fetch edin."
+                        f"No data in cache for {symbol}/{category}/{interval}. "
+                        "Fetch it first from the /data screen."
                     )
             return
 
-        # ── Faz 0: Strateji fikri üret ─────────────────────────────────────
-        _set_phase(run_id, 0, "Claude'dan fikir isteniyor…")
+        # ── Phase 0: Generate strategy idea ────────────────────────────────
+        _set_phase(run_id, 0, "Requesting idea from Claude…")
         idea = _generate_idea(hint)
-        _done_phase(run_id, 0, f"Fikir: {idea['label']}")
+        _done_phase(run_id, 0, f"Idea: {idea['label']}")
 
-        # ── Faz 1: Entry block ──────────────────────────────────────────────
+        # ── Phase 1: Entry block ────────────────────────────────────────────
         entry_name = f"lab_entry_{run_id}"
-        _set_phase(run_id, 1, f"Entry block yazılıyor: {idea['entry_label']}…")
+        _set_phase(run_id, 1, f"Writing entry block: {idea['entry_label']}…")
         try:
             entry_block = propose_custom_block(
                 idea["entry_label"], idea["entry_desc"], role_hint="entry"
             )
         except GeneratedCodeError as e:
-            raise RuntimeError(f"Entry block üretilemedi: {e}") from e
+            raise RuntimeError(f"Failed to generate entry block: {e}") from e
         entry_block["name"] = entry_name
         _done_phase(run_id, 1, f"✓ {entry_name}")
 
-        # ── Faz 2: Exit block ───────────────────────────────────────────────
+        # ── Phase 2: Exit block ─────────────────────────────────────────────
         exit_name = f"lab_exit_{run_id}"
-        _set_phase(run_id, 2, f"Exit block yazılıyor: {idea['exit_label']}…")
+        _set_phase(run_id, 2, f"Writing exit block: {idea['exit_label']}…")
         try:
             exit_block = propose_custom_block(
                 idea["exit_label"], idea["exit_desc"], role_hint="exit"
@@ -178,27 +178,27 @@ def _lab_worker(
         exit_block["name"] = exit_name
         _done_phase(run_id, 2, f"✓ {exit_name}")
 
-        # ── Faz 3: Kaydet ───────────────────────────────────────────────────
-        _set_phase(run_id, 3, "Bloklar diske yazılıyor…")
+        # ── Phase 3: Save ───────────────────────────────────────────────────
+        _set_phase(run_id, 3, "Writing blocks to disk…")
         for blk_name, blk in [(entry_name, entry_block), (exit_name, exit_block)]:
             if not is_valid_name(blk_name):
-                raise RuntimeError(f"Geçersiz blok adı: {blk_name}")
+                raise RuntimeError(f"Invalid block name: {blk_name}")
             save_custom(blk_name, blk["meta"], blk["code"], prompt=hint)
             register_custom_from_disk(blk_name)
-        _done_phase(run_id, 3, "Bloklar Strategy Composer'da görünür")
+        _done_phase(run_id, 3, "Blocks are visible in Strategy Composer")
 
-        # ── Faz 4: Strateji derle ───────────────────────────────────────────
-        _set_phase(run_id, 4, "Strateji derleniyor…")
+        # ── Phase 4: Compile strategy ───────────────────────────────────────
+        _set_phase(run_id, 4, "Compiling strategy…")
 
         def _extract_params(blk: dict) -> dict:
-            """LLM meta'dan param default'larını güvenli çıkar."""
+            """Safely extract param defaults from LLM meta."""
             raw = blk["meta"].get("params") or {}
             out = {}
             for k, v in raw.items():
                 if isinstance(v, dict):
                     out[k] = v.get("default")
                 else:
-                    out[k] = v  # scalar default doğrudan
+                    out[k] = v  # scalar default directly
             return out
 
         entry_params = _extract_params(entry_block)
@@ -218,21 +218,22 @@ def _lab_worker(
         )
         err = spec.validate()
         if err:
-            raise RuntimeError(f"Spec hatası: {err}")
-        # M14: kilitsiz load→append→save, eşzamanlı koşuda son-yazan-kazanır
-        # ile stratejiyi sessizce kaybettiriyordu — kilitli yardımcı kullan.
+            raise RuntimeError(f"Spec error: {err}")
+        # M14: lockless load→append→save silently lost the strategy under
+        # concurrent runs via last-writer-wins — use the locked helper.
         from composer import append_to_catalog
 
         append_to_catalog(spec)
         with _LAB_LOCK:
             if run_id in _LAB_PROGRESS:
                 _LAB_PROGRESS[run_id]["strategy_name"] = spec.name
-        _done_phase(run_id, 4, f"✓ {spec.name} (Backtest seçicide görünür)")
+        _done_phase(run_id, 4, f"✓ {spec.name} (visible in Backtest selector)")
 
-        # ── Faz 5: Backtest ─────────────────────────────────────────────────
-        _set_phase(run_id, 5, f"BacktestEngine çalışıyor: {spec.name}…")
-        # Sandbox: her spec killable child'da — Nautilus backtest GIL'i tutar,
-        # in-process koşarsa sunucunun event loop'u donar (agent bug'ı sınıfı).
+        # ── Phase 5: Backtest ───────────────────────────────────────────────
+        _set_phase(run_id, 5, f"BacktestEngine running: {spec.name}…")
+        # Sandbox: each spec in a killable child — Nautilus backtest holds the
+        # GIL; running in-process freezes the server's event loop (agent bug
+        # class).
         from sandbox import run_backtest_guarded
 
         result = run_backtest_guarded(
@@ -291,29 +292,29 @@ def _generate_idea(hint: str) -> dict:
 
     if hint.strip():
         prompt = (
-            f"Kullanıcı şu strateji fikrini verdi: '{hint}'\n\n"
-            "Bu fikri detaylandır ve aşağıdaki JSON formatında döndür:\n"
-            '{"label": "kısa isim (max 40 kar)", '
-            '"description": "1 cümle genel açıklama", '
-            '"entry_label": "entry block için kısa isim", '
-            '"entry_desc": "entry sinyalini tarif et (TAM OHLCV: closes + highs + lows + volumes hizalı serilerde çalışacak)", '
-            '"exit_label": "exit block için kısa isim", '
-            '"exit_desc": "exit sinyalini tarif et"}\n'
-            "Sadece JSON döndür, başka bir şey yazma."
+            f"The user gave this strategy idea: '{hint}'\n\n"
+            "Elaborate on this idea and return it in the following JSON format:\n"
+            '{"label": "short name (max 40 chars)", '
+            '"description": "1 sentence general description", '
+            '"entry_label": "short name for the entry block", '
+            '"entry_desc": "describe the entry signal (FULL OHLCV: will run on aligned series of closes + highs + lows + volumes)", '
+            '"exit_label": "short name for the exit block", '
+            '"exit_desc": "describe the exit signal"}\n'
+            "Return only JSON, write nothing else."
         )
     else:
         prompt = (
-            "Bir kripto trading stratejisi fikri üret. "
-            "Teknik indikatör tabanlı olsun; tam OHLCV veri (closes/highs/lows/volumes) "
-            "kullanılabilir, ATR/ADX/Stochastic gibi high-low gerektiren indikatörler de geçerli. "
-            "Aşağıdaki JSON formatında döndür:\n"
-            '{"label": "kısa isim (max 40 kar)", '
-            '"description": "1 cümle genel açıklama", '
-            '"entry_label": "entry block için kısa isim", '
-            '"entry_desc": "entry sinyalini tarif et (closes/highs/lows/volumes serilerinde çalışacak)", '
-            '"exit_label": "exit block için kısa isim", '
-            '"exit_desc": "exit sinyalini tarif et"}\n'
-            "Sadece JSON döndür, başka bir şey yazma."
+            "Generate a crypto trading strategy idea. "
+            "Make it technical-indicator based; full OHLCV data (closes/highs/lows/volumes) "
+            "is available, and indicators requiring high-low such as ATR/ADX/Stochastic are also valid. "
+            "Return it in the following JSON format:\n"
+            '{"label": "short name (max 40 chars)", '
+            '"description": "1 sentence general description", '
+            '"entry_label": "short name for the entry block", '
+            '"entry_desc": "describe the entry signal (will run on closes/highs/lows/volumes series)", '
+            '"exit_label": "short name for the exit block", '
+            '"exit_desc": "describe the exit signal"}\n'
+            "Return only JSON, write nothing else."
         )
     import json
 
@@ -336,11 +337,11 @@ def _generate_idea(hint: str) -> dict:
         # Fallback idea
         return {
             "label": "EMA Crossover Lab",
-            "description": "EMA hızlı/yavaş kesişme sinyali.",
+            "description": "EMA fast/slow crossover signal.",
             "entry_label": "EMA Cross Entry",
-            "entry_desc": "EMA9 yukarı EMA21'i kestiğinde long sinyali üret",
+            "entry_desc": "Generate a long signal when EMA9 crosses above EMA21",
             "exit_label": "EMA Cross Exit",
-            "exit_desc": "EMA9 aşağı EMA21'i kestiğinde exit sinyali üret",
+            "exit_desc": "Generate an exit signal when EMA9 crosses below EMA21",
         }
 
 
@@ -354,7 +355,7 @@ def _atr_stop_fallback() -> dict:
                 "atr_period": {"type": "int", "min": 5, "max": 50, "default": 14},
                 "multiplier": {"type": "float", "min": 0.5, "max": 5.0, "default": 2.0},
             },
-            "help": "ATR tabanlı fallback çıkış.",
+            "help": "ATR-based fallback exit.",
         },
         "code": (
             "def atr_approx(closes, period):\n"
@@ -448,10 +449,10 @@ async def run(
         daemon=True,
     ).start()
 
-    # progress() ile aynı koruma: worker thread başladıktan sonra canlı
-    # _LAB_PROGRESS[run_id] referansını kilitsiz template'e geçirmek torn read
-    # (ve backtest_steps iterasyonunda 'list changed size') riski taşır —
-    # kilit altında snapshot al.
+    # Same protection as progress(): after the worker thread starts, passing
+    # the live _LAB_PROGRESS[run_id] reference to the template without a lock
+    # risks a torn read (and 'list changed size' during backtest_steps
+    # iteration) — take a snapshot under the lock.
     with _LAB_LOCK:
         raw = _LAB_PROGRESS[run_id]
         initial_state = {
@@ -486,9 +487,9 @@ async def progress(request: Request, run_id: str):
     with _LAB_LOCK:
         raw = _LAB_PROGRESS.get(run_id)
         if raw is None:
-            return HTMLResponse("<div class='empty-state'>Bilinmeyen run ID.</div>")
+            return HTMLResponse("<div class='empty-state'>Unknown run ID.</div>")
         state = {
-            # Deep copy phase dicts — lock bırakıldıktan sonra worker mutate etmesin
+            # Deep copy phase dicts — don't let the worker mutate after the lock is released
             "phases": [dict(p) for p in raw["phases"]],
             "backtest_steps": list(raw["backtest_steps"]),
             "done": raw["done"],
@@ -557,7 +558,7 @@ async def progress(request: Request, run_id: str):
 
 
 def _lab_narrative(last_row: dict, state: dict) -> str:
-    """Short Turkish narrative about the lab run result."""
+    """Short English narrative about the lab run result."""
     try:
         from agent import MODEL, _get_client
 
@@ -570,11 +571,11 @@ def _lab_narrative(last_row: dict, state: dict) -> str:
                 {
                     "role": "user",
                     "content": (
-                        f"Strategy Lab sonucu 2 cümleyle özetle:\n"
-                        f"Strateji: {state['strategy_name']}\n"
+                        f"Summarize the Strategy Lab result in 2 sentences, in English:\n"
+                        f"Strategy: {state['strategy_name']}\n"
                         f"PnL: {m.get('pnl_fmt', '?')} · Trades: {m.get('n_trades', 0)} · "
                         f"Win Rate: {m.get('win_rate_fmt', '?')} · Sortino: {m.get('sortino_fmt', '?')}\n"
-                        "Başında 'Bu lab çalıştırması' ile başla."
+                        "Start with 'This lab run'."
                     ),
                 }
             ],
@@ -583,7 +584,7 @@ def _lab_narrative(last_row: dict, state: dict) -> str:
     except Exception:
         pnl = last_row.get("pnl", 0) or 0
         return (
-            f"Bu lab çalıştırması {state['strategy_name']} stratejisini üretti ve test etti. "
-            f"{last_row.get('n_trades', 0)} trade ile {last_row.get('pnl_fmt', '?')} "
-            f"{'kazandı' if pnl >= 0 else 'kaybetti'}."
+            f"This lab run generated and tested the {state['strategy_name']} strategy. "
+            f"With {last_row.get('n_trades', 0)} trades it "
+            f"{'gained' if pnl >= 0 else 'lost'} {last_row.get('pnl_fmt', '?')}."
         )

@@ -1,40 +1,40 @@
-{# Rapor satırı trade detayı: yeniden-koşum sonucu — grafik + sebepli işlemler.
-   /reports/detail endpoint'i döndürür; expand satırının içine HTMX ile takılır. #}
+{# Report row trade detail: re-run result — chart + reasoned trades.
+   Returned by the /reports/detail endpoint; attached into the expand row via HTMX. #}
 <div class="report-detail" style="margin-top:10px;">
-  {# ── Sadakat rozeti ── #}
+  {# ── Fidelity badge ── #}
   <div style="display:flex;align-items:center;gap:10px;font-size:11px;margin-bottom:4px;">
     {% if fidelity_ok %}
-      <span class="badge running" title="Yeniden koşum log kaydıyla birebir aynı sonucu verdi">✓ birebir yeniden üretildi</span>
+      <span class="badge running" title="Re-run produced the exact same result as the log record">✓ reproduced exactly</span>
     {% else %}
       <span class="badge" style="background:rgba(251,191,36,0.18);color:#fbbf24;"
-            title="Eski kayıtlarda eksik spec alanları varsayılanla doldurulur — küçük sapma normaldir">
-        ⚠ log: {{ old_n }} işlem / {{ "%.2f"|format(old_pnl or 0) }} · yeniden: {{ new_n }} işlem / {{ "%.2f"|format(new_pnl or 0) }}
+            title="Missing spec fields in old records are filled with defaults — small deviation is normal">
+        ⚠ log: {{ old_n }} trades / {{ "%.2f"|format(old_pnl or 0) }} · re-run: {{ new_n }} trades / {{ "%.2f"|format(new_pnl or 0) }}
       </span>
     {% endif %}
-    <span class="text-muted mono">{{ trades|length }} işlem · sebepler güncel kodla hesaplandı</span>
+    <span class="text-muted mono">{{ trades|length }} trades · reasons calculated with current code</span>
   </div>
 
-  {# ── Fiyat grafiği (mevcut fragment; trade marker + giriş→çıkış çizgileri) ── #}
+  {# ── Price chart (existing fragment; trade marker + entry→exit lines) ── #}
   {% include "fragments/price_chart.html" %}
 
-  {# ── Sebepli işlem tablosu ── #}
+  {# ── Reasoned trade table ── #}
   <div class="panel" style="margin-top:10px;">
     <div class="panel-header">
-      <div class="panel-title" style="font-size:13px;">İşlemler + Karar Sebepleri</div>
-      <div class="panel-meta small">tıkla → grafikte göster · tekrar tıkla → temizle</div>
+      <div class="panel-title" style="font-size:13px;">Trades + Decision Reasons</div>
+      <div class="panel-meta small">click → show on chart · click again → clear</div>
     </div>
     <div class="panel-body" style="padding:0;max-height:420px;overflow:auto;">
       <table class="table mono rd-trades" style="font-size:11px;width:100%;">
         <thead>
           <tr>
             <th>#</th>
-            <th>Giriş</th>
-            <th>Taraf</th>
-            <th class="num">Giriş → Çıkış</th>
+            <th>Entry</th>
+            <th>Side</th>
+            <th class="num">Entry → Exit</th>
             <th class="num">PnL</th>
-            <th>Giriş Sebebi</th>
-            <th>Çıkış</th>
-            <th>Çıkış Sebebi</th>
+            <th>Entry Reason</th>
+            <th>Exit</th>
+            <th>Exit Reason</th>
           </tr>
         </thead>
         <tbody>
@@ -54,9 +54,9 @@
               {% set k = t.exit_kind %}
               {% if k == 'sl' %}<span class="badge exit">SL</span>
               {% elif k == 'tp' %}<span class="badge running">TP</span>
-              {% elif k == 'signal' %}<span class="badge" style="background:rgba(96,165,250,0.18);color:#60a5fa;">Sinyal</span>
+              {% elif k == 'signal' %}<span class="badge" style="background:rgba(96,165,250,0.18);color:#60a5fa;">Signal</span>
               {% elif k == 'flip' %}<span class="badge" style="background:rgba(251,191,36,0.18);color:#fbbf24;">Flip</span>
-              {% elif k == 'eob' %}<span class="badge" style="background:rgba(255,255,255,0.08);color:#c8c8c8;">Son</span>
+              {% elif k == 'eob' %}<span class="badge" style="background:rgba(255,255,255,0.08);color:#c8c8c8;">Last</span>
               {% else %}<span class="text-muted">—</span>{% endif %}
             </td>
             <td style="max-width:340px;white-space:normal;">{{ t.exit_reason or "—" }}</td>
@@ -68,21 +68,22 @@
   </div>
 </div>
 <script>
-// Global tek sefer tanımlanır; satırlar inline onclick ile çağırır (fragment
-// HTMX ile birden çok kez enjekte edilebilir — currentScript'e güvenilmez).
+// Defined globally once; rows call it via inline onclick (the fragment
+// can be injected multiple times via HTMX — currentScript can't be trusted).
 if (!window.rdToggleTrade) {
   window._rdActiveTradeRow = null;
-  // M10: grafiği KENDİ fragment kökünden çöz — window global'i son init
-  // edilen grafiği işaret eder ve iki açık rapor detayında YANLIŞ paneli
-  // oynatırdı. __chartApi yoksa window alias'ına düş (tek-grafik uyumu).
+  // M10: resolve the chart from ITS OWN fragment root — the window global
+  // points to the last-init'd chart and would play the WRONG panel when two
+  // report details are open. If __chartApi is missing, fall back to the
+  // window alias (single-chart compatibility).
   window._rdChartApi = function(row) {
     var root = row.closest ? row.closest(".report-detail") : null;
     var el = root ? root.querySelector("[data-price-chart]") : null;
-    // Kendi paneli var ama grafiği henüz/hiç yüklenmediyse (__chartApi yok)
-    // window alias'ına DÜŞME — o alias son init edilen BAŞKA paneli işaret
-    // eder ve yanlış grafiği oynatırdı. No-op döndür.
+    // Own panel exists but its chart hasn't/never loaded (no __chartApi) —
+    // do NOT FALL BACK to the window alias — that alias points to ANOTHER
+    // last-init'd panel and would play the wrong chart. Return a no-op.
     if (el) return el.__chartApi || { highlight: function(){}, clear: function(){} };
-    // Panel kökü yoksa (tek-grafik geriye-uyum sayfaları) window alias'ı.
+    // No panel root (single-chart backward-compat pages) — window alias.
     return { highlight: window._priceChartHighlight, clear: window._priceChartClearHighlight };
   };
   window.rdToggleTrade = function(row) {

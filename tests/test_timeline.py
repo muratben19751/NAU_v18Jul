@@ -1,4 +1,4 @@
-"""Zaman çizelgesi (Gantt) katmanı — span helpers, render modeli, replay."""
+"""Timeline (Gantt) layer — span helpers, render model, replay."""
 
 from __future__ import annotations
 
@@ -30,7 +30,7 @@ def _span(key, lane, t0, t1, *, status="ok", sub=False, rnd=1, **meta):
 
 
 # ---------------------------------------------------------------------------
-# _tl_begin / _tl_end / _tl_close_open (canlı state üzerinde)
+# _tl_begin / _tl_end / _tl_close_open (on live state)
 # ---------------------------------------------------------------------------
 
 
@@ -62,7 +62,7 @@ class TestTlHelpers:
         rid = "tltest02"
         self._seed(rid)
         try:
-            ab._tl_end(rid, "yok-boyle-span", status="ok")  # raise etmemeli
+            ab._tl_end(rid, "no-such-span", status="ok")  # should not raise
             assert ab._AGENT_PROGRESS[rid]["timeline"] == []
         finally:
             self._cleanup(rid)
@@ -77,7 +77,7 @@ class TestTlHelpers:
             ab._tl_close_open(rid, status="warn")
             tl = ab._AGENT_PROGRESS[rid]["timeline"]
             assert all(sp["t1"] is not None for sp in tl)
-            assert tl[0]["status"] == "ok"  # kapalı olan dokunulmadı
+            assert tl[0]["status"] == "ok"  # the closed one was untouched
             assert tl[1]["status"] == "warn"
         finally:
             self._cleanup(rid)
@@ -86,14 +86,14 @@ class TestTlHelpers:
         rid = "tltest04"
         self._seed(rid)
         try:
-            ab._tl_begin(rid, "data", "acik-kalan", "R")  # önce açılan, açık kalacak
+            ab._tl_begin(rid, "data", "still-open", "R")  # opened first, stays open
             for i in range(ab._TL_MAX_SPANS + 5):
                 ab._tl_begin(rid, "backtest", f"c{i}", f"C{i}")
                 ab._tl_end(rid, f"c{i}", status="ok")
             tl = ab._AGENT_PROGRESS[rid]["timeline"]
             assert len(tl) <= ab._TL_MAX_SPANS
-            assert any(sp["key"] == "acik-kalan" for sp in tl), (
-                "açık span cap eviction'da korunmalı"
+            assert any(sp["key"] == "still-open" for sp in tl), (
+                "open span must be preserved during cap eviction"
             )
         finally:
             self._cleanup(rid)
@@ -117,12 +117,12 @@ class TestTimelineView:
         assert bars["a"]["x_pct"] == 0.0
         assert abs(bars["a"]["w_pct"] - 50.0) < 0.5
         assert abs(bars["b"]["x_pct"] - 50.0) < 0.5
-        assert tl["now_pct"] is None  # done → imleç yok
+        assert tl["now_pct"] is None  # done → no cursor
 
     def test_min_width_clamp(self):
         spans = [
-            _span("uzun", "data", T0, T0 + 1000),
-            _span("an", "backtest", T0 + 500, T0 + 500.01),  # ~anlık
+            _span("long", "data", T0, T0 + 1000),
+            _span("instant", "backtest", T0 + 500, T0 + 500.01),  # ~instant
         ]
         tl = timeline_view(spans)
         bar = next(
@@ -130,16 +130,16 @@ class TestTimelineView:
             for lane in tl["lanes"]
             for row in lane["rows"]
             for b in row
-            if b["key"] == "an"
+            if b["key"] == "instant"
         )
-        assert bar["w_pct"] >= 0.35, "anlık işlemler tıklanabilir min-genişlik almalı"
+        assert bar["w_pct"] >= 0.35, "instant trades must get a clickable min-width"
 
     def test_running_span_extends_to_now(self):
         spans = [_span("r", "llm", T0, None, status="running")]
         tl = timeline_view(spans, now=T0 + 60)
         bar = tl["lanes"][0]["rows"][0][0]
         assert bar["status"] == "running"
-        assert bar["w_pct"] > 90  # tek span, now'a kadar uzar
+        assert bar["w_pct"] > 90  # single span, extends to now
         assert tl["now_pct"] is not None
 
     def test_nice_ticks_short_and_long(self):
@@ -181,24 +181,24 @@ class TestAssociateSteps:
             _span("inner", "robustness", T0 + 10, T0 + 50, sub=True),
         ]
         steps = [
-            {"ts": _hms(T0 + 20), "msg": "iç"},
-            {"ts": _hms(T0 + 80), "msg": "dış"},
+            {"ts": _hms(T0 + 20), "msg": "inner"},
+            {"ts": _hms(T0 + 80), "msg": "outer"},
         ]
         out = associate_steps(spans, steps)
-        assert [s["msg"] for s in out.get("inner", [])] == ["iç"]
-        assert [s["msg"] for s in out.get("outer", [])] == ["dış"]
+        assert [s["msg"] for s in out.get("inner", [])] == ["inner"]
+        assert [s["msg"] for s in out.get("outer", [])] == ["outer"]
 
     def test_midnight_wrap(self):
-        # Span 23:59'da başlar, adım 00:01'de (ertesi gün) düşer.
+        # Span starts at 23:59, step falls at 00:01 (next day).
         base = datetime(2026, 7, 13, 23, 59, 0, tzinfo=UTC).timestamp()
-        spans = [_span("gece", "data", base, base + 300)]
-        steps = [{"ts": "00:01:00", "msg": "sarmali"}]
+        spans = [_span("night", "data", base, base + 300)]
+        steps = [{"ts": "00:01:00", "msg": "wrapped"}]
         out = associate_steps(spans, steps)
-        assert out.get("gece"), "gece-yarısı sarması eşlenmeli"
+        assert out.get("night"), "midnight wrap must be associated"
 
     def test_bad_ts_ignored(self):
         spans = [_span("a", "data", T0, T0 + 10)]
-        out = associate_steps(spans, [{"ts": "bozuk", "msg": "x"}])
+        out = associate_steps(spans, [{"ts": "broken", "msg": "x"}])
         assert out == {}
 
 
@@ -283,34 +283,34 @@ class TestBuildTimelineSpans:
                 "event": "phase_change",
                 "ts": iso(T0),
                 "phase_idx": 0,
-                "phase_label": "Veri yükleniyor",
+                "phase_label": "Loading data",
                 "status": "running",
             },
             {
                 "event": "phase_change",
                 "ts": iso(T0 + 60),
                 "phase_idx": 0,
-                "phase_label": "Veri yükleniyor",
+                "phase_label": "Loading data",
                 "status": "done",
             },
             {
                 "event": "phase_change",
                 "ts": iso(T0 + 60),
                 "phase_idx": 2,
-                "phase_label": "Backtest döngüsü",
+                "phase_label": "Backtest loop",
                 "status": "running",
             },
         ]
         spans = _build_timeline_spans(events)
         assert len(spans) == 2
-        veri = next(sp for sp in spans if sp["lane"] == "data")
-        assert veri["t1"] == T0 + 60 and veri["status"] == "ok"
+        data_span = next(sp for sp in spans if sp["lane"] == "data")
+        assert data_span["t1"] == T0 + 60 and data_span["status"] == "ok"
         bt = next(sp for sp in spans if sp["lane"] == "backtest")
-        assert bt["status"] == "warn"  # açık kaldı → warn kapanış
+        assert bt["status"] == "warn"  # stayed open → warn close
 
 
 # ---------------------------------------------------------------------------
-# _make_rob_progress (4-marker parse köprüsü)
+# _make_rob_progress (4-marker parse bridge)
 # ---------------------------------------------------------------------------
 
 
@@ -322,19 +322,19 @@ class TestMakeRobProgress:
         try:
             pf = ab._make_rob_progress(rid, 1, 1)
             pf("🌐 Multi-Symbol — test")
-            pf("  [ETHUSDT] Veri yükleniyor…")
-            pf("  → 2/2 sembolde pozitif")
+            pf("  [ETHUSDT] Loading data…")
+            pf("  → 2/2 symbols positive")
             pf("📊 IS/OOS Split — test")
             pf("🎲 Monte Carlo — test")
-            pf("  ⚠ Monte Carlo atlandı — trade yok")
+            pf("  ⚠ Monte Carlo skipped — no trades")
             tl = ab._AGENT_PROGRESS[rid]["timeline"]
             keys = {sp["key"]: sp for sp in tl}
             assert "rob-r1-c1-ms" in keys and keys["rob-r1-c1-ms"]["status"] == "ok"
-            # 📊 açıldı; 🎲 gelince (yeni marker) ok kapandı
+            # 📊 opened; when 🎲 arrives (new marker) ok closes
             assert keys["rob-r1-c1-isoos"]["status"] == "ok"
             assert keys["rob-r1-c1-mc"]["status"] == "warn"
             assert all(sp["sub"] for sp in tl)
-            # step'ler de akmış olmalı
+            # steps must have flowed too
             assert len(ab._AGENT_PROGRESS[rid]["steps"]) == 6
         finally:
             with ab._AGENT_LOCK:

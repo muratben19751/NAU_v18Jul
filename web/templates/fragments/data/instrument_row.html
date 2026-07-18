@@ -1,10 +1,94 @@
-{# Instrument row card — used by Bybit and US-Index.
-   The shape switches on `row.source`:
-     - index → simple list of bar_types
-     - bybit → grid grouped by category
-#}
-<div class="instrument-row"
-     id="row-{{ row.source }}-{{ row.key|replace(':', '_')|replace('/', '_') }}">
+{# Instrument card — unified for Bybit / US-Index / External.
+   All three sources render the SAME structure: an instrument head + a
+   timeframe grid (.tf-grid). Bybit has one lane per category; index &
+   external have a single label-less lane. The tf_cell macro normalizes the
+   per-source cell dict (interval_label vs granularity, supported flag, etc.)
+   into one consistent cell with a shared state vocabulary:
+     cached · fetch · unsupported · read-only  (+ in-catalog badge)
+
+   Fetch and catalog-write forms show a busy state while HTMX runs the
+   (potentially slow) request, so a long write no longer looks like a no-op. #}
+
+{# ─── One timeframe cell (fetch button + state chips + catalog-write) ─── #}
+{% macro tf_cell(row, cell, rid) %}
+  {% set label = cell.interval_label if row.source == 'bybit' else cell.granularity %}
+  {% if row.source == 'external' %}
+    {% set st = 'readonly' %}
+  {% elif row.source == 'bybit' and not cell.supported %}
+    {% set st = 'unsupported' %}
+  {% elif cell.state == 'ingested' %}
+    {% set st = 'ingested' %}
+  {% else %}
+    {% set st = 'available' %}
+  {% endif %}
+  {% set in_catalog = cell.in_nautilus_catalog %}
+
+  <div class="tf-cell state-{{ st }}">
+    {# The whole cell is the fetch affordance (bybit/index); external & unsupported are non-submitting. #}
+    {% if st in ('readonly', 'unsupported') %}
+      <button type="button" class="tf-btn" disabled>
+        {{ tf_cell_body(label, st, cell, in_catalog) }}
+      </button>
+    {% elif row.source == 'bybit' %}
+      <form hx-post="/data/refresh/bybit" hx-target="#{{ rid }}" hx-swap="outerHTML">
+        <input type="hidden" name="symbol" value="{{ row.key }}">
+        <input type="hidden" name="category" value="{{ cell.category }}">
+        <input type="hidden" name="interval" value="{{ cell.interval_code }}">
+        <button type="submit" class="tf-btn">{{ tf_cell_body(label, st, cell, in_catalog) }}</button>
+      </form>
+    {% else %}{# index #}
+      <form hx-post="/data/refresh/index" hx-target="#{{ rid }}" hx-swap="outerHTML">
+        <input type="hidden" name="ticker" value="{{ row.key }}">
+        <input type="hidden" name="granularity" value="{{ cell.granularity }}">
+        <button type="submit" class="tf-btn">{{ tf_cell_body(label, st, cell, in_catalog) }}</button>
+      </form>
+    {% endif %}
+
+    {# "→ Catalog" write — only when cached but not yet in the Nautilus catalog (bybit/index).
+       Large series take a while to encode; the button shows "Writing…" and the form
+       blocks re-clicks (pointer-events) for the duration so the action reads as in-progress. #}
+    {% if st == 'ingested' and not in_catalog and row.source in ('bybit', 'index') %}
+      <form class="tf-catalog-form" hx-post="/data/catalog/write" hx-target="#{{ rid }}"
+            hx-swap="outerHTML">
+        <input type="hidden" name="source" value="{{ row.source }}">
+        {% if row.source == 'bybit' %}
+          <input type="hidden" name="symbol" value="{{ row.key }}">
+          <input type="hidden" name="category" value="{{ cell.category }}">
+          <input type="hidden" name="interval" value="{{ cell.interval_code }}">
+        {% else %}
+          <input type="hidden" name="ticker" value="{{ row.key }}">
+          <input type="hidden" name="granularity" value="{{ cell.granularity }}">
+        {% endif %}
+        <button type="submit" class="btn btn-secondary tf-catalog-btn">
+          <span class="tf-catalog-idle">→ Catalog</span>
+          <span class="tf-catalog-busy">Writing…</span>
+        </button>
+      </form>
+    {% endif %}
+  </div>
+{% endmacro %}
+
+{# ─── Cell inner content (label + state chips) ─── #}
+{% macro tf_cell_body(label, st, cell, in_catalog) %}
+  <div class="tf-label">{{ label }}</div>
+  {% if st == 'ingested' %}
+    <div class="tf-meta good"><span class="mono">{{ "{:,}".format(cell.rows) }}</span> bars</div>
+    <div class="tf-meta">{{ cell.last[:16] if cell.last else '—' }}</div>
+    {% if in_catalog %}<div class="tf-meta good">✓ catalog</div>{% endif %}
+  {% elif st == 'readonly' %}
+    <div class="tf-meta"><span class="mono">{{ "{:,}".format(cell.rows) }}</span> bars</div>
+    <div class="tf-meta">read-only</div>
+  {% elif st == 'available' %}
+    <div class="tf-meta">fetch</div>
+  {% else %}{# unsupported #}
+    <div class="tf-meta">unsupported</div>
+  {% endif %}
+{% endmacro %}
+
+
+{# ─── Card ─── #}
+{% set rid = 'row-' ~ row.source ~ '-' ~ (row.key | replace(':', '_') | replace('/', '_')) %}
+<div class="instrument-row" id="{{ rid }}">
 
   <div class="instrument-head">
     <div class="instrument-id-block">
@@ -15,11 +99,14 @@
       {% else %}
         <span class="small text-muted">{{ row.quote_currency }}</span>
       {% endif %}
+      {% if row.source == 'external' %}
+        <span class="chip">read-only</span>
+      {% endif %}
     </div>
 
     <div class="instrument-precision">
       <span class="chip">price_precision {{ row.price_precision }}</span>
-      <span class="chip {% if row.size_precision == 0 %}chip-warn{% endif %}">
+      <span class="chip {% if row.size_precision is number and row.size_precision == 0 %}chip-warn{% endif %}">
         size_precision {{ row.size_precision }}
       </span>
       <span class="chip">price_increment {{ row.price_increment }}</span>
@@ -38,115 +125,27 @@
     {% endfor %}
   {% endif %}
 
-  {# ─── Bybit grid ─── #}
-  {% if row.source == 'bybit' %}
-    <div class="bybit-grid">
-      {# Build category → intervals map from row.bar_types #}
+  <div class="tf-grid">
+    {% if row.source == 'bybit' %}
+      {# Group bar_types by category, in fixed order spot → linear → inverse. #}
       {% set by_cat = {} %}
       {% for bt in row.bar_types %}
         {% set _ = by_cat.setdefault(bt.category, []).append(bt) %}
       {% endfor %}
-
-      {% for cat, cells in by_cat.items() %}
-        <div class="bybit-cat">
-          <div class="bybit-cat-label">{{ cat }}</div>
-          <div class="bybit-cells">
-            {% for cell in cells %}
-              <form class="bybit-cell state-{{ cell.state }} {% if not cell.supported %}unsupported{% endif %}"
-                    hx-post="/data/refresh/bybit"
-                    hx-target="#row-{{ row.source }}-{{ row.key }}"
-                    hx-swap="outerHTML"
-                    {% if not cell.supported %}onsubmit="return false;"{% endif %}>
-                <input type="hidden" name="symbol" value="{{ row.key }}">
-                <input type="hidden" name="category" value="{{ cat }}">
-                <input type="hidden" name="interval" value="{{ cell.interval_code }}">
-                <button type="submit" class="cell-btn" {% if not cell.supported %}disabled{% endif %}>
-                  <div class="cell-label mono">{{ cell.interval_label }}</div>
-                  {% if cell.state == 'ingested' %}
-                    <div class="cell-state good">
-                      <span class="mono">{{ "{:,}".format(cell.rows) }}</span> bars
-                    </div>
-                    <div class="cell-last small mono text-muted">
-                      {{ cell.last[:16] if cell.last else '—' }}
-                    </div>
-                    {% if cell.in_nautilus_catalog %}
-                      <div class="cell-catalog-badge">✓ catalog</div>
-                    {% endif %}
-                  {% elif cell.state == 'available' %}
-                    <div class="cell-state small text-muted">Fetch</div>
-                  {% else %}
-                    <div class="cell-state small text-muted">n/a</div>
-                  {% endif %}
-                </button>
-              </form>
-              {# "→ Catalog" write button — only shown for ingested cells #}
-              {% if cell.state == 'ingested' and not cell.in_nautilus_catalog %}
-                <form hx-post="/data/catalog/write"
-                      hx-target="#row-{{ row.source }}-{{ row.key }}"
-                      hx-swap="outerHTML"
-                      hx-on::after-request="if(event.detail.successful){this.closest('.bybit-cell-wrap')?.remove()}"
-                      style="margin-top:4px;">
-                  <input type="hidden" name="source" value="{{ row.source }}">
-                  <input type="hidden" name="symbol" value="{{ row.key }}">
-                  <input type="hidden" name="category" value="{{ cat }}">
-                  <input type="hidden" name="interval" value="{{ cell.interval_code }}">
-                  <button type="submit" class="btn btn-secondary" style="width:100%;font-size:10px;padding:3px 6px;">
-                    → Catalog
-                  </button>
-                </form>
-              {% endif %}
-            {% endfor %}
+      {% for cat in ['spot', 'linear', 'inverse'] if cat in by_cat %}
+        <div class="tf-lane">
+          <div class="tf-lane-label">{{ cat }}</div>
+          <div class="tf-cells">
+            {% for cell in by_cat[cat] %}{{ tf_cell(row, cell, rid) }}{% endfor %}
           </div>
         </div>
       {% endfor %}
-    </div>
-
-  {# ─── Index bar list ─── #}
-  {% else %}
-    <div class="bar-list">
-      {% for bt in row.bar_types %}
-        <div class="bar-row state-{{ bt.state }}">
-          <div class="bar-dsl mono">{{ bt.dsl }}</div>
-          <div class="bar-stats">
-            {% if bt.state == 'ingested' %}
-              <span class="chip chip-good">ingested</span>
-              <span class="small mono">{{ "{:,}".format(bt.rows) }} rows</span>
-              {% if bt.first and bt.last %}
-                <span class="small text-muted mono">{{ bt.first[:10] }} → {{ bt.last[:10] }}</span>
-              {% endif %}
-              {% if bt.in_nautilus_catalog %}
-                <span class="chip chip-good">✓ catalog {{ "{:,}".format(bt.catalog_rows) }} bars</span>
-              {% endif %}
-            {% else %}
-              <span class="chip">{{ bt.state }}</span>
-            {% endif %}
-          </div>
-          <div class="bar-actions" style="display:flex;gap:6px;flex-wrap:wrap;">
-            {% if row.source == 'index' %}
-              <form class="row" style="gap:6px;"
-                    hx-post="/data/refresh/index"
-                    hx-target="#row-{{ row.source }}-{{ row.key|replace(':','_') }}"
-                    hx-swap="outerHTML">
-                <input type="hidden" name="ticker" value="{{ row.key }}">
-                <input type="hidden" name="granularity" value="{{ bt.granularity }}">
-                <button type="submit" class="btn btn-secondary">
-                  {% if bt.state == 'ingested' %}⟳{% else %}Fetch{% endif %} {{ bt.granularity }}
-                </button>
-              </form>
-              {% if bt.state == 'ingested' %}
-                <form hx-post="/data/catalog/write"
-                      hx-target="#row-{{ row.source }}-{{ row.key|replace(':','_') }}"
-                      hx-swap="outerHTML">
-                  <input type="hidden" name="source" value="index">
-                  <input type="hidden" name="ticker" value="{{ row.key }}">
-                  <input type="hidden" name="granularity" value="{{ bt.granularity }}">
-                  <button type="submit" class="btn btn-secondary">→ Catalog</button>
-                </form>
-              {% endif %}
-            {% endif %}
-          </div>
+    {% else %}
+      <div class="tf-lane no-label">
+        <div class="tf-cells">
+          {% for cell in row.bar_types %}{{ tf_cell(row, cell, rid) }}{% endfor %}
         </div>
-      {% endfor %}
-    </div>
-  {% endif %}
+      </div>
+    {% endif %}
+  </div>
 </div>

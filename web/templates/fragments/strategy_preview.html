@@ -1,5 +1,5 @@
-{# Strategy Preview — canlı akış diyagramı. Draft'lar değiştikçe OOB ile güncellenir.
-   Beklenen context: drafts (list[SignalBlock]), block_catalog, options, name #}
+{# Strategy Preview — live flow diagram. Updated via OOB as drafts change.
+   Expected context: drafts (list[SignalBlock]), block_catalog, options, name #}
 {% set opts = options if options is defined else {} %}
 {% set entry_blocks = drafts | selectattr('role', 'equalto', 'entry') | list %}
 {% set exit_blocks  = drafts | selectattr('role', 'equalto', 'exit')  | list %}
@@ -30,7 +30,7 @@
       {% endfor %}
     </div>
     {% else %}
-    <div style="border:1px dashed var(--border-input);border-radius:7px;padding:10px;text-align:center;font-size:11px;color:var(--text-muted);">entry bloğu ekleyin</div>
+    <div style="border:1px dashed var(--border-input);border-radius:7px;padding:10px;text-align:center;font-size:11px;color:var(--text-muted);">add an entry block</div>
     {% endif %}
 
     <div style="display:flex;justify-content:center;padding:6px 0;">
@@ -42,7 +42,7 @@
         {{ opts.get("order_type","market")|upper }} order{% if opts.get("use_bracket") %} + bracket SL/TP{% endif %}
       </div>
       <div class="mono" style="font-size:9.5px;color:var(--text-muted);margin-top:2px;">
-        {% if size_mode == 'fixed_usdt' %}{{ opts.get("trade_size_usdt",1000)|int }} USDT / işlem
+        {% if size_mode == 'fixed_usdt' %}{{ opts.get("trade_size_usdt",1000)|int }} USDT / trade
         {% elif size_mode == 'percent_equity' %}%{{ opts.get("trade_size_percent",5) }} equity
         {% elif size_mode == 'atr_target' %}ATR risk %{{ opts.get("trade_size_atr_risk",1) }}
         {% else %}fixed {{ opts.get("trade_size_btc",0.1) }} BTC{% endif %}
@@ -66,7 +66,7 @@
       {% endfor %}
     </div>
     {% else %}
-    <div style="border:1px dashed var(--border-input);border-radius:7px;padding:10px;text-align:center;font-size:11px;color:var(--text-muted);">exit bloğu ekleyin</div>
+    <div style="border:1px dashed var(--border-input);border-radius:7px;padding:10px;text-align:center;font-size:11px;color:var(--text-muted);">add an exit block</div>
     {% endif %}
   </div>
 </div>

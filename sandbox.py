@@ -36,12 +36,12 @@ DEFAULT_TIMEOUT_S = 180.0
 # Carlo), so it gets a much longer wall-clock budget than a single backtest.
 ROBUSTNESS_TIMEOUT_S = 900.0
 
-# Graceful-exit koruması (sandbox.py:335): daemon=False child'lar (robustness/
-# manual-suite — kendi ProcessPool'unu sahiplenir) sunucu ZARIF çıkışında
-# multiprocessing'in atexit join'ini ASAR; parent canlı (join'de takılı)
-# olduğundan parent-liveness watchdog'u da tetiklenmez → shutdown kilitlenir.
-# Çalışan non-daemon child'ları izle ve mp'nin atexit'inden ÖNCE (atexit LIFO —
-# bu register mp import'undan SONRA yapıldığından önce koşar) terminate et.
+# Graceful-exit protection (sandbox.py:335): daemon=False children (robustness/
+# manual-suite — own their own ProcessPool) hang multiprocessing's atexit join
+# on a GRACEFUL server exit; since the parent is alive (stuck in join) the
+# parent-liveness watchdog isn't triggered either → shutdown deadlocks.
+# Track running non-daemon children and terminate them BEFORE mp's atexit
+# (atexit LIFO — this register runs first because it happens AFTER the mp import).
 _LIVE_NONDAEMON_CHILDREN: set = set()
 _CHILDREN_GUARD = _threading.Lock()
 
@@ -135,9 +135,9 @@ def _child_entry(q, payload):
     """
     import sys
 
-    # M8: parent hard-kill edilirse (pm2 delete+start / TerminateProcess)
-    # daemon bayrağı çocuğu ÖLDÜRMEZ (atexit çalışmaz) — watchdog olmadan
-    # kaçak custom kod öksüz süreç olarak çekirdek yakmaya devam ediyordu.
+    # M8: if the parent is hard-killed (pm2 delete+start / TerminateProcess)
+    # the daemon flag does NOT kill the child (atexit does not run) — without a
+    # watchdog runaway custom code would keep burning the core as an orphan process.
     _start_parent_watchdog()
 
     # Progress strings contain Turkish/glyph chars; a fresh Windows child that
@@ -192,8 +192,8 @@ def _run_in_child(target, payload, progress_fn, timeout_s: float, *, daemon=True
     q = ctx.Queue()
     proc = ctx.Process(target=target, args=(q, payload), daemon=daemon)
     proc.start()
-    # non-daemon child'ı izle — graceful-exit'te atexit ile terminate edilir
-    # (aksi halde mp'nin atexit join'i shutdown'ı kilitlerdi). finally'de bırakılır.
+    # watch the non-daemon child — on graceful-exit it is terminated via atexit
+    # (otherwise mp's atexit join would deadlock shutdown). Released in finally.
     _tracked = not daemon
     if _tracked:
         with _CHILDREN_GUARD:
@@ -210,9 +210,9 @@ def _run_in_child(target, payload, progress_fn, timeout_s: float, *, daemon=True
             tag, data = q.get(timeout=min(remaining, 1.0))
         except _queue.Empty:
             if not proc.is_alive():
-                # Yarış: çocuk sonucu pipe'a flush edip get() timeout'u ile bu
-                # is_alive() kontrolü arasında çıkmış olabilir → teslim edilmiş
-                # sonucu 'crashed' diye çöpe atmadan son bir kez kısa drenaj yap.
+                # Race: the child may have flushed the result to the pipe and
+                # exited between the get() timeout and this is_alive() check →
+                # do one last short drain so a delivered result isn't trashed as 'crashed'.
                 try:
                     while True:
                         tag, data = q.get(timeout=0.5)
@@ -337,13 +337,14 @@ def _robustness_child(q, payload):
 
 
 def cleanup_stale_snapshots(max_age_h: float = 2.0) -> int:
-    """L23: timeout'la öldürülen robustness çocuklarının öksüz bıraktığı
-    ``nautilus_rob_*`` temp snapshot dizinlerini süpürür.
+    """L23: sweeps the ``nautilus_rob_*`` temp snapshot directories orphaned by
+    robustness children killed on timeout.
 
-    Temizlik normalde çocuğun finally'sinde — ama TerminateProcess (900s
-    timeout kill'i) finally'ye şans tanımaz ve Windows %TEMP%'i otomatik
-    süpürmez. Yaş filtresi (mtime), eşzamanlı koşan başka bir suite'in AKTİF
-    snapshot'ını silme riskini kaldırır. Silinen dizin sayısını döndürür.
+    Cleanup normally happens in the child's finally — but TerminateProcess (the
+    900s timeout kill) gives finally no chance and Windows does not auto-sweep
+    %TEMP%. The age filter (mtime) removes the risk of deleting the ACTIVE
+    snapshot of another suite running concurrently. Returns the number of
+    directories deleted.
     """
     import shutil
     import tempfile
@@ -385,7 +386,7 @@ def run_robustness_guarded(
     payload = (spec, bars_df, recipe, trades, symbol, interval)
     # daemon=False: the child owns a ProcessPoolExecutor (daemonic processes
     # cannot have children). Orphan safety comes from its parent watchdog.
-    cleanup_stale_snapshots()  # L23: önceki timeout-kill'lerin artıkları
+    cleanup_stale_snapshots()  # L23: leftovers from previous timeout-kills
     result, err = _run_in_child(
         _robustness_child, payload, progress_fn, timeout_s, daemon=False
     )
@@ -395,13 +396,13 @@ def run_robustness_guarded(
 
 
 def _manual_suite_child(q, payload):
-    """Child target: manuel /robustness sayfasının suite'i (WFO + IS/OOS +
-    tam backtest + Monte Carlo) — tamamı tek killable child'da.
+    """Child target: the suite of the manual /robustness page (WFO + IS/OOS +
+    full backtest + Monte Carlo) — all in a single killable child.
 
-    Bu suite daha önce sunucu sürecindeki bir daemon thread'de HAM koşuyordu;
-    Nautilus backtest'leri GIL'i tuttuğu için event loop donuyordu (agent'ta
-    düzeltilen bug'ın birebir kopyası). Dönen dict route'un beklediği parçaları
-    taşır: {wfo_windows, wfo_summary, split, mc, full_error}.
+    This suite previously ran RAW in a daemon thread inside the server process;
+    since Nautilus backtests hold the GIL the event loop froze (an exact copy of
+    the bug fixed in the agent). The returned dict carries the pieces the route
+    expects: {wfo_windows, wfo_summary, split, mc, full_error}.
     """
     import sys
 
@@ -432,8 +433,8 @@ def _manual_suite_child(q, payload):
         )
 
         prog(
-            f"Walk-Forward başlıyor · train={params['train_months']}ay "
-            f"test={params['test_months']}ay"
+            f"Walk-Forward starting · train={params['train_months']}month "
+            f"test={params['test_months']}month"
         )
         wfo_windows = run_walk_forward(
             spec,
@@ -464,7 +465,7 @@ def _manual_suite_child(q, payload):
             progress_fn=prog,
         )
 
-        prog("Monte Carlo için tam backtest çalıştırılıyor…")
+        prog("Running full backtest for Monte Carlo…")
         full_result = run_composed_backtest(
             spec,
             bars_df,
@@ -474,10 +475,10 @@ def _manual_suite_child(q, payload):
             bar_type=bar_type,
             venue=instrument.id.venue,
         )
-        mc_result = {"error": "Trade verisi yok."}
+        mc_result = {"error": "No trade data."}
         if not full_result.error and full_result.trades:
             prog(
-                f"Monte Carlo · {params['n_sims']} simülasyon · "
+                f"Monte Carlo · {params['n_sims']} simulations · "
                 f"{len(full_result.trades)} trade"
             )
             mc_result = run_monte_carlo(
@@ -512,10 +513,10 @@ def run_manual_suite_guarded(
     progress_fn=None,
     timeout_s: float = ROBUSTNESS_TIMEOUT_S,
 ) -> dict:
-    """Manuel robustness suite'ini killable child'da koştur (sunucu donmaz).
+    """Run the manual robustness suite in a killable child (the server won't freeze).
 
     ``params`` = {train_months, test_months, n_optimize, objective, split_pct,
-    n_sims}. Timeout/çökmede ``{"error": ...}`` döner.
+    n_sims}. Returns ``{"error": ...}`` on timeout/crash.
     """
     payload = (spec, bars_df, recipe, params)
     result, err = _run_in_child(
@@ -527,10 +528,10 @@ def run_manual_suite_guarded(
 
 
 def _legacy_backtest_child(q, payload):
-    """Child target: legacy STRATEGY_REGISTRY backtest'i (loop 'agent' modu)."""
+    """Child target: legacy STRATEGY_REGISTRY backtest (loop 'agent' mode)."""
     import sys
 
-    _start_parent_watchdog()  # M8: hard-kill'de öksüz kalmasın
+    _start_parent_watchdog()  # M8: so it isn't orphaned on hard-kill
     for stream in (sys.stdout, sys.stderr):
         try:
             stream.reconfigure(encoding="utf-8")  # type: ignore[union-attr]
@@ -561,7 +562,7 @@ def run_legacy_backtest_guarded(
     rationale: str = "",
     timeout_s: float = DEFAULT_TIMEOUT_S,
 ):
-    """Legacy (STRATEGY_REGISTRY) backtest'i killable child'da koştur."""
+    """Run the legacy (STRATEGY_REGISTRY) backtest in a killable child."""
     payload = (strategy_name, params, bars_df, iteration_id, rationale)
     result, err = _run_in_child(_legacy_backtest_child, payload, None, timeout_s)
     if err is not None:

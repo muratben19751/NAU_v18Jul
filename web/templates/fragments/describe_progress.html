@@ -1,7 +1,7 @@
-{# Açıklamadan strateji üretimi — Claude custom Python blok yazarken gösterilir.
-   Bitip spec hazır olunca (chain_vals) mevcut /backtest/run'a AYNI enstrüman
-   parametreleriyle zincirlenir; run kendi progress panelini bu div'in yerine
-   basar (280 satırlık run worker'ı bu akışta hiç değişmedi). #}
+{# Strategy generation from description — shown while Claude writes the custom Python block.
+   When finished and the spec is ready (chain_vals) it is chained to the existing /backtest/run
+   with the SAME instrument parameters; the run prints its own progress panel in place of this
+   div (the 280-line run worker did not change at all in this flow). #}
 {% if not done %}
 <div id="describe-progress"
      hx-get="/backtest/describe/progress/{{ gen_id }}"
@@ -14,14 +14,14 @@
 
   <div class="panel" style="border-color:rgba(129,140,248,0.35);">
     <div class="panel-header">
-      <div class="panel-title">✨ Açıklamadan strateji üretiliyor</div>
+      <div class="panel-title">✨ Generating strategy from description</div>
       <div class="spacer"></div>
       {% if not done %}
-      <span class="badge running">● Claude yazıyor…</span>
+      <span class="badge running">● Claude is writing…</span>
       {% elif state.error %}
-      <span class="badge" style="background:rgba(248,113,113,0.2);color:#f87171;">✗ Üretim başarısız</span>
+      <span class="badge" style="background:rgba(248,113,113,0.2);color:#f87171;">✗ Generation failed</span>
       {% else %}
-      <span class="badge" style="background:rgba(74,222,128,0.2);color:#4ade80;">✓ Hazır — backtest başlıyor</span>
+      <span class="badge" style="background:rgba(74,222,128,0.2);color:#4ade80;">✓ Ready — backtest starting</span>
       {% endif %}
     </div>
     <div class="panel-body">
@@ -44,9 +44,9 @@
       <div class="empty-state" style="margin-top:10px;color:#f87171;">
         {{ state.error }}
         <div class="text-muted" style="margin-top:6px;font-size:11px;">
-          Tarifi biraz daha somutlaştırıp tekrar deneyin (hangi indikatör, hangi
-          eşik, ne zaman gir/çık). Claude yalnız izinli alt kümede yazabilir:
-          math/statistics/ind + whitelist builtin'ler — import yok.
+          Make the description a bit more concrete and try again (which indicator, which
+          threshold, when to enter/exit). Claude can only write within the allowed subset:
+          math/statistics/ind + whitelisted builtins — no imports.
         </div>
       </div>
       {% endif %}
@@ -54,10 +54,10 @@
   </div>
 
   {% if state.chain_vals %}
-  {# Üretim bitti → backtest'i tetikle (kendi panelini #result'a basar).
-     2+ TF → /backtest/sweep (karşılaştırma tablosu); 1 TF → /backtest/run
-     (tam sonuç + equity). chain_vals'ı iki yol da alır — fazla anahtarlar
-     yok sayılır (interval /run için, intervals_csv /sweep için). #}
+  {# Generation finished → trigger the backtest (it prints its own panel into #result).
+     2+ TF → /backtest/sweep (comparison table); 1 TF → /backtest/run
+     (full results + equity). Both paths take chain_vals — extra keys are
+     ignored (interval for /run, intervals_csv for /sweep). #}
   {% set ivs = state.chain_vals.get('intervals') or [] %}
   {% set multi = (ivs | length) > 1 %}
   <div hx-post="{{ '/backtest/sweep' if multi else '/backtest/run' }}"
@@ -67,9 +67,9 @@
        hx-vals='{{ state.chain_vals | tojson }}'>
     <div class="text-muted mono" style="font-size:11px;padding:6px 0;">
       {% if multi %}
-      ⏳ {{ state.spec_name }} · {{ ivs | length }} zaman dilimi taranıyor…
+      ⏳ {{ state.spec_name }} · scanning {{ ivs | length }} timeframes…
       {% else %}
-      ⏳ {{ state.spec_name }} · backtest kuyruğa alınıyor…
+      ⏳ {{ state.spec_name }} · backtest queued…
       {% endif %}
     </div>
   </div>

@@ -7,7 +7,7 @@ Wiki References
 ---------------
 Bkz: [[cache]]
 
-Nautilus'ün [[cache]]'i gibi in-memory single-source-of-truth; kalıcılık yok, restart'ta boş.
+In-memory single-source-of-truth like Nautilus's [[cache]]; no persistence, empty on restart.
 """
 
 from __future__ import annotations

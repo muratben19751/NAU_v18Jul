@@ -14,9 +14,9 @@ dead link, so lint issues are obvious in the UI.
 
 Wiki References
 ---------------
-_(app-spesifik — wiki scope dışı)_
+_(app-specific — outside wiki scope)_
 
-Wiki'nin kendisini serve eden bileşen; içeriği hakkında değil, formatı hakkında (bkz. `nautilus_wiki/CLAUDE.md` şeması).
+The component that serves the wiki itself; not about its content but about its format (see the `nautilus_wiki/CLAUDE.md` schema).
 """
 
 from __future__ import annotations
@@ -132,7 +132,7 @@ def read_wiki_page(rel_path: str) -> str:
     """
     path = _resolve_rel(rel_path)
     if path is None:
-        return f"_(Wiki sayfası bulunamadı: `{rel_path}`)_"
+        return f"_(Wiki page not found: `{rel_path}`)_"
     text = path.read_text(encoding="utf-8")
     body = _strip_frontmatter(text)
     return _rewrite_wikilinks(body)

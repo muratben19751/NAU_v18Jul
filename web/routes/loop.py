@@ -4,7 +4,7 @@ Wiki References
 ---------------
 Bkz: [[crash_only_design]]
 
-Loop güvenli olarak durdurulabilir — [[crash_only_design]] fail-fast prensibi.
+Loop can be safely stopped — [[crash_only_design]] fail-fast principle.
 """
 
 from __future__ import annotations
@@ -26,14 +26,15 @@ async def start(request: Request, mode: str = Form("agent")):
 
     state = get_state()
 
-    # M29: state.running yalnız run_loop THREAD'i içinde True yapılıyordu; check
-    # ile thread'in flag'i set etmesi arasındaki pencerede ikinci bir /loop/start
-    # de running==False görüp İKİNCİ bir loop thread'i başlatabiliyordu. Kilit
-    # altında SENKRON işaretle (running'i hemen True yap) — çift-başlatma yok.
+    # M29: state.running was only set True inside the run_loop THREAD; in the
+    # window between the check and the thread setting the flag, a second
+    # /loop/start could also see running==False and start a SECOND loop thread.
+    # Mark it SYNCHRONOUSLY under the lock (set running to True immediately) —
+    # no double-start.
     started = False
     with state.lock:
         if not state.running:
-            state.running = True  # senkron guard — thread devralana dek
+            state.running = True  # sync guard — until the thread takes over
             state.stop_requested = False
             started = True
     if started:

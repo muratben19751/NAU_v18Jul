@@ -1,6 +1,6 @@
-{# Çoklu-TF taraması — aynı strateji, birden çok bar aralığı yan yana.
-   Bittiğinde her sütunun EN İYİsi vurgulanır (yeşil). Poll ana panele değil
-   kendi div'ine yazar; /run gibi #result'ı ele geçirmez. #}
+{# Multi-TF sweep — same strategy, multiple bar intervals side by side.
+   When finished, each column's BEST is highlighted (green). Poll writes to its
+   own div, not the main panel; it does not hijack #result like /run. #}
 {% if not done %}
 <div id="sweep-progress"
      hx-get="/backtest/sweep/progress/{{ sweep_id }}"
@@ -11,25 +11,33 @@
 <div id="sweep-progress">
 {% endif %}
 
-  {# ── En iyi hücreleri hesapla (yalnız tamamlanan satırlar) ── #}
+  {# ── Compute best cells (only completed rows) ── #}
   {% set done_rows = state.rows | selectattr('status', 'equalto', 'done') | list %}
   {% set pnls = done_rows | map(attribute='metrics') | map(attribute='pnl_pct') | reject('none') | list %}
   {% set shs  = done_rows | map(attribute='metrics') | map(attribute='sharpe_per_trade') | reject('none') | list %}
   {% set best_pnl = pnls | max if pnls else None %}
   {% set best_sh  = shs  | max if shs  else None %}
-  {# max_dd_pct negatif (sağlıklı = 0'a yakın) → en yüksek (en az negatif) en iyi #}
+  {# max_dd_pct is negative (healthy = close to 0) → highest (least negative) is best #}
   {% set dds = done_rows | map(attribute='metrics') | map(attribute='max_dd_pct') | reject('none') | list %}
   {% set best_dd = dds | max if dds else None %}
 
+  {# ── Which timeframe is running right now + overall progress ── #}
+  {% set running_rows = state.rows | selectattr('status', 'equalto', 'running') | list %}
+  {% set n_done = done_rows | length %}
+  {% set n_total = state.rows | length %}
+
   <div class="panel" style="border-color:rgba(96,165,250,0.35);">
     <div class="panel-header">
-      <div class="panel-title">⏱ Zaman Dilimi Taraması · {{ state.spec_name }}</div>
+      <div class="panel-title">⏱ Timeframe Sweep · {{ state.spec_name }}</div>
       <div class="spacer"></div>
       <span class="text-muted mono" style="font-size:11px;">{{ state.symbol }} / {{ state.category }}</span>
       {% if not done %}
-      <span class="badge running" style="margin-left:8px;">● koşuyor</span>
+      <span class="badge running" style="margin-left:8px;">
+        {% if running_rows %}<span class="spin">⟳</span> {{ running_rows[0].label }} running{% else %}● preparing{% endif %}
+        · {{ n_done }}/{{ n_total }}
+      </span>
       {% else %}
-      <span class="badge" style="background:rgba(74,222,128,0.2);color:#4ade80;margin-left:8px;">✓ bitti</span>
+      <span class="badge" style="background:rgba(74,222,128,0.2);color:#4ade80;margin-left:8px;">✓ done · {{ n_done }}/{{ n_total }}</span>
       {% endif %}
     </div>
     <div class="panel-body" style="overflow-x:auto;">
@@ -40,7 +48,7 @@
             <th style="padding:4px 8px;">PnL %</th>
             <th style="padding:4px 8px;">Sharpe (per-trade)</th>
             <th style="padding:4px 8px;">Max DD %</th>
-            <th style="padding:4px 8px;">İşlem</th>
+            <th style="padding:4px 8px;">Trade</th>
             <th style="padding:4px 8px;">Win %</th>
             <th style="padding:4px 8px;">PF</th>
           </tr>
@@ -60,7 +68,7 @@
             <td colspan="6" style="padding:4px 8px;color:#f87171;font-size:11px;">{{ r.error }}</td>
             {% elif r.status != 'done' %}
             <td colspan="6" style="padding:4px 8px;color:rgba(255,255,255,0.35);font-size:11px;">
-              {{ 'koşuyor…' if r.status == 'running' else 'sırada' }}
+              {{ 'running…' if r.status == 'running' else 'queued' }}
             </td>
             {% else %}
             <td style="text-align:right;padding:4px 8px;{% if best_pnl is not none and m.pnl_pct == best_pnl %}color:#4ade80;font-weight:700;{% endif %}">
@@ -90,8 +98,8 @@
       {% endif %}
       {% if done %}
       <div class="text-muted" style="margin-top:8px;font-size:11px;">
-        Yeşil = o sütunun en iyisi. Sharpe = NAU per-trade ((mean/std)×√n).
-        Aynı tarih aralığı, aynı strateji — yalnız bar çözünürlüğü değişir.
+        Green = best in that column. Sharpe = NAU per-trade ((mean/std)×√n).
+        Same date range, same strategy — only the bar resolution changes.
       </div>
       {% endif %}
     </div>

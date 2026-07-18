@@ -9,12 +9,12 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 @pytest.fixture(autouse=True)
 def _isolate_session_logs(tmp_path, monkeypatch):
-    """Testlerin agent session JSONL'lerini GERÇEK cache dizinine yazmasını engelle.
+    """Prevent tests from writing agent session JSONLs to the ACTUAL cache directory.
 
-    _session_log / _tl_* helpers modül sabiti SESSION_LOG_DIR'a yazar; testler
-    (test_timeline, test_agent_fixes) sahte run_id'lerle bunları çağırınca
-    kullanıcının ~/.cache/.../agent_sessions dizinine tltest*.jsonl sızıyordu
-    ve /sessions listesinde görünüyordu. Her iki modül bağını da tmp'ye çevir.
+    _session_log / _tl_* helpers write to the module constant SESSION_LOG_DIR; when tests
+    (test_timeline, test_agent_fixes) call these with fake run_ids, tltest*.jsonl was
+    leaking into the user's ~/.cache/.../agent_sessions directory
+    and showing up in the /sessions list. Redirect both module bindings to tmp.
     """
     import web.routes.agent_backtest as ab
     import web.routes.sessions as ss

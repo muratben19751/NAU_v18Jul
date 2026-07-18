@@ -2,57 +2,57 @@
 {% from "fragments/timeline_svg.html" import timeline %}
 {% block content %}
 
-{# ── Üst başlık ─────────────────────────────────────────────────────────── #}
+{# ── Top header ─────────────────────────────────────────────────────────── #}
 <div class="panel" style="margin-bottom:14px;position:sticky;top:0;z-index:20;">
   <div class="panel-body" style="padding:12px 18px;">
     <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap;">
-      <a href="/sessions" class="text-muted mono" style="font-size:12px;text-decoration:none;">← Tüm Sessionlar</a>
+      <a href="/sessions" class="text-muted mono" style="font-size:12px;text-decoration:none;">← All Sessions</a>
       <span class="mono" style="font-size:14px;font-weight:700;">{{ run_id }}</span>
       <span class="text-muted mono" style="font-size:11px;">{{ session_start.ts[:19]|replace("T"," ") if session_start.ts is defined else "—" }}</span>
       {% if elapsed %}<span class="text-muted mono" style="font-size:11px;">⏱ {{ elapsed }}</span>{% endif %}
-      <span class="text-muted mono" style="font-size:11px;">{{ size_mb }} MB · {{ n_events }} event</span>
+      <span class="text-muted mono" style="font-size:11px;">{{ size_mb }} MB · {{ n_events }} events</span>
       {% if steps_truncated %}
-      {# H7: yapısal olaylar TAM — yalnız en eski step'ler kırpıldı #}
+      {# H7: structural events are COMPLETE — only the oldest steps were trimmed #}
       <span class="badge" style="font-size:10px;color:#fb923c;border-color:rgba(251,146,60,0.35);"
-            title="Yapısal olaylar (tur/kazanan/maliyet) eksiksiz; yalnız en eski adım satırları RAM koruması için kırpıldı.">
-        ⚠ adım olayları kırpıldı (son 20k)
+            title="Structural events (round/winner/cost) are complete; only the oldest step lines were trimmed for RAM protection.">
+        ⚠ step events trimmed (last 20k)
       </span>
       {% endif %}
-      {# L38: model-bazlı TAHMİNİ maliyet; abonelik CLI koşusunda None → gizli #}
+      {# L38: model-based ESTIMATED cost; None on subscription CLI runs → hidden #}
       {% if last_tok and last_tok.cost_eur is not none %}
       <span class="mono" style="font-size:12px;font-weight:600;color:var(--amber);margin-left:auto;">
         ≈ €{{ "%.4f"|format(last_tok.cost_eur) }}
-        <span class="text-muted" style="font-weight:400;font-size:11px;"> (${{ "%.4f"|format(last_tok.cost_usd) }} · tahmini)</span>
+        <span class="text-muted" style="font-weight:400;font-size:11px;"> (${{ "%.4f"|format(last_tok.cost_usd) }} · estimated)</span>
       </span>
       {% endif %}
       {% if session_end %}
         {% if session_end.outcome == 'winner_found' %}
-          <span class="badge running">🏆 Kazanan</span>
+          <span class="badge running">🏆 Winner</span>
         {% elif session_end.outcome == 'no_winner' %}
-          <span class="badge" style="color:#f87171;border-color:rgba(248,113,113,0.35);">✗ Kazanan bulunamadı</span>
+          <span class="badge" style="color:#f87171;border-color:rgba(248,113,113,0.35);">✗ No winner found</span>
         {% elif session_end.outcome == 'error' %}
-          <span class="badge exit">Hata</span>
+          <span class="badge exit">Error</span>
         {% else %}
           <span class="badge">{{ session_end.outcome }}</span>
         {% endif %}
       {% else %}
-        <span class="badge" style="color:#f0b100;border-color:rgba(240,177,0,0.35);">▶ Devam ediyor / Kesildi</span>
+        <span class="badge" style="color:#f0b100;border-color:rgba(240,177,0,0.35);">▶ Running / Interrupted</span>
       {% endif %}
     </div>
   </div>
 </div>
 
-{# ── Parametre özeti ─────────────────────────────────────────────────────── #}
+{# ── Parameter summary ───────────────────────────────────────────────────── #}
 {% if session_start %}
 <div class="panel" style="margin-bottom:14px;">
-  <div class="panel-header"><div class="panel-title">Koşum Parametreleri</div></div>
+  <div class="panel-header"><div class="panel-title">Run Parameters</div></div>
   <div class="panel-body" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;">
-    <div><div class="label" style="font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--text-muted);">Sembol</div><div class="mono" style="font-size:13px;">{{ session_start.symbol }}</div></div>
-    <div><div class="label" style="font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--text-muted);">Timeframe'ler</div><div class="mono" style="font-size:13px;">{{ session_start.intervals | join(", ") }}</div></div>
-    <div><div class="label" style="font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--text-muted);">İterasyon</div><div class="mono" style="font-size:13px;">{{ session_start.n_iterations }}</div></div>
-    <div><div class="label" style="font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--text-muted);">Sürekli mod</div><div class="mono" style="font-size:13px;">{{ "✓ Evet" if session_start.continuous_mode else "Hayır" }}</div></div>
+    <div><div class="label" style="font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--text-muted);">Symbol</div><div class="mono" style="font-size:13px;">{{ session_start.symbol }}</div></div>
+    <div><div class="label" style="font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--text-muted);">Timeframes</div><div class="mono" style="font-size:13px;">{{ session_start.intervals | join(", ") }}</div></div>
+    <div><div class="label" style="font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--text-muted);">Iterations</div><div class="mono" style="font-size:13px;">{{ session_start.n_iterations }}</div></div>
+    <div><div class="label" style="font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--text-muted);">Continuous mode</div><div class="mono" style="font-size:13px;">{{ "✓ Yes" if session_start.continuous_mode else "No" }}</div></div>
     <div><div class="label" style="font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--text-muted);">Strict</div><div class="mono" style="font-size:13px;">{{ "✓ Strict" if session_start.strict_mode else "Relaxed" }}</div></div>
-    <div><div class="label" style="font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--text-muted);">Web araştırma</div><div class="mono" style="font-size:13px;">{{ "✓ Evet" if session_start.web_research else "Hayır" }}</div></div>
+    <div><div class="label" style="font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--text-muted);">Web research</div><div class="mono" style="font-size:13px;">{{ "✓ Yes" if session_start.web_research else "No" }}</div></div>
     {% if session_start.hint %}
     <div style="grid-column:1/-1;">
       <div class="label" style="font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--text-muted);">Hint</div>
@@ -63,14 +63,14 @@
 </div>
 {% endif %}
 
-{# ── Kazanan(lar) ────────────────────────────────────────────────────────── #}
+{# ── Winner(s) ───────────────────────────────────────────────────────────── #}
 {% if winners %}
 {% for w in winners %}
 <div class="panel" style="margin-bottom:14px;border-color:rgba(74,222,128,0.35);background:rgba(74,222,128,0.04);">
-  <div class="panel-header"><div class="panel-title" style="color:var(--pnl-up);">🏆 Kazanan Strateji — Tur {{ w.round }}</div></div>
+  <div class="panel-header"><div class="panel-title" style="color:var(--pnl-up);">🏆 Winning Strategy — Round {{ w.round }}</div></div>
   <div class="panel-body" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;">
-    <div><div class="label" style="font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--text-muted);">Strateji</div><div class="mono" style="font-size:14px;font-weight:600;color:var(--pnl-up);">{{ w.spec_name }}</div></div>
-    <div><div class="label" style="font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--text-muted);">Skor</div><div class="mono" style="font-size:14px;font-weight:600;">{{ "%.4f"|format(w.score) if w.score is not none else "—" }}</div></div>
+    <div><div class="label" style="font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--text-muted);">Strategy</div><div class="mono" style="font-size:14px;font-weight:600;color:var(--pnl-up);">{{ w.spec_name }}</div></div>
+    <div><div class="label" style="font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--text-muted);">Score</div><div class="mono" style="font-size:14px;font-weight:600;">{{ "%.4f"|format(w.score) if w.score is not none else "—" }}</div></div>
     {% if w.metrics %}
     <div><div class="label" style="font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--text-muted);">PnL</div><div class="mono" style="font-size:13px;color:{% if (w.metrics.pnl or 0) >= 0 %}var(--pnl-up){% else %}var(--pnl-down){% endif %};">{{ "%+.2f"|format(w.metrics.pnl) }} USDT</div></div>
     <div><div class="label" style="font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--text-muted);">Sharpe</div><div class="mono" style="font-size:13px;">{{ "%.3f"|format(w.metrics.sharpe) if w.metrics.sharpe else "—" }}</div></div>
@@ -82,39 +82,39 @@
 {% endfor %}
 {% endif %}
 
-{# ── Round bazında detay ─────────────────────────────────────────────────── #}
+{# ── Per-round detail ────────────────────────────────────────────────────── #}
 {% if rounds %}
 <div style="margin-bottom:14px;">
-  <div style="font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:var(--text-muted);margin-bottom:8px;">Turlar ({{ rounds|length }} tur)</div>
+  <div style="font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:var(--text-muted);margin-bottom:8px;">Rounds ({{ rounds|length }} rounds)</div>
 
   {% for round_num, rd in rounds.items() %}
   <details style="margin-bottom:8px;" {% if loop.first %}open{% endif %}>
     <summary class="panel-header" style="cursor:pointer;list-style:none;border-radius:8px;background:var(--panel);border:1px solid var(--border);">
-      <div class="panel-title">Tur {{ round_num }}</div>
+      <div class="panel-title">Round {{ round_num }}</div>
       <div class="spacer"></div>
       <span class="text-muted mono" style="font-size:11px;">
-        {{ rd.backtests|length }} backtest ·
-        {{ rd.proposals|length + rd.custom_blocks|length }} strateji ·
+        {{ rd.backtests|length }} backtests ·
+        {{ rd.proposals|length + rd.custom_blocks|length }} strategies ·
         {{ rd.robustness|length }} robustness
       </span>
     </summary>
 
     <div style="padding:12px;background:var(--inset);border:1px solid var(--border);border-top:none;border-radius:0 0 8px 8px;">
 
-      {# Zaman çizelgesi (replay — JSONL'den) #}
+      {# Timeline (replay — from JSONL) #}
       {% if rd.timeline and rd.timeline.tl %}
       <div style="margin-bottom:12px;">
         <div class="label" style="font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--text-muted);margin-bottom:6px;">
-          ⏱ Zaman Çizelgesi · {{ rd.timeline.tl.dur_label }}
+          ⏱ Timeline · {{ rd.timeline.tl.dur_label }}
         </div>
         {{ timeline(rd.timeline.tl, rd.timeline.steps_by_key, "s" ~ round_num) }}
       </div>
       {% endif %}
 
-      {# Strateji önerileri #}
+      {# Strategy proposals #}
       {% if rd.proposals %}
       <div style="margin-bottom:12px;">
-        <div class="label" style="font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--text-muted);margin-bottom:6px;">Strateji Önerileri</div>
+        <div class="label" style="font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--text-muted);margin-bottom:6px;">Strategy Proposals</div>
         {% for p in rd.proposals %}
         {% set spec = p.spec or {} %}
         <div style="border:1px solid var(--border);border-radius:6px;padding:8px 12px;margin-bottom:6px;background:var(--panel);">
@@ -145,22 +145,22 @@
       </div>
       {% endif %}
 
-      {# Custom bloklar #}
+      {# Custom blocks #}
       {% if rd.custom_blocks %}
       <div style="margin-bottom:12px;">
-        <div class="label" style="font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--text-muted);margin-bottom:6px;">Claude Custom Blokları</div>
+        <div class="label" style="font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--text-muted);margin-bottom:6px;">Claude Custom Blocks</div>
         {% for cb in rd.custom_blocks %}
         <details style="margin-bottom:6px;">
           <summary style="cursor:pointer;border:1px solid var(--border);border-radius:6px;padding:7px 12px;background:var(--panel);display:flex;align-items:center;gap:8px;list-style:none;">
             <span class="mono" style="font-size:12px;font-weight:600;">{{ cb.name }}</span>
             <span class="badge {% if cb.role == 'entry' %}entry{% else %}exit{% endif %}" style="font-size:10px;">{{ cb.role }}</span>
             <span class="text-muted" style="font-size:11px;">{{ cb.label }}</span>
-            <span class="text-muted mono" style="font-size:10px;margin-left:auto;">{{ cb.code|length }} karakter</span>
+            <span class="text-muted mono" style="font-size:10px;margin-left:auto;">{{ cb.code|length }} characters</span>
           </summary>
           <div style="border:1px solid var(--border);border-top:none;border-radius:0 0 6px 6px;background:var(--inset);">
             {% if cb.meta and cb.meta.help %}
             <div style="padding:10px 12px;border-bottom:1px solid var(--border);font-size:11.5px;color:var(--text-muted);line-height:1.5;">
-              <span style="color:var(--text-primary);font-weight:600;">Ne yapıyor / basitleştirmeler:</span> {{ cb.meta.help }}
+              <span style="color:var(--text-primary);font-weight:600;">What it does / simplifications:</span> {{ cb.meta.help }}
             </div>
             {% endif %}
             <pre style="margin:0;padding:12px;font-size:11.5px;font-family:var(--mono);overflow-x:auto;color:var(--text-primary);line-height:1.55;">{{ cb.code | e }}</pre>
@@ -170,22 +170,22 @@
       </div>
       {% endif %}
 
-      {# Backtest sonuçları #}
+      {# Backtest results #}
       {% if rd.backtests %}
       <div style="margin-bottom:12px;">
-        <div class="label" style="font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--text-muted);margin-bottom:6px;">Backtest Sonuçları</div>
+        <div class="label" style="font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--text-muted);margin-bottom:6px;">Backtest Results</div>
         <div style="overflow-x:auto;">
         <table style="width:100%;border-collapse:collapse;font-size:11.5px;font-family:var(--mono);">
           <thead>
             <tr style="border-bottom:1px solid var(--border);">
-              <th style="text-align:left;padding:5px 8px;color:var(--text-muted);font-weight:600;">Strateji</th>
+              <th style="text-align:left;padding:5px 8px;color:var(--text-muted);font-weight:600;">Strategy</th>
               <th style="text-align:center;padding:5px 8px;color:var(--text-muted);">TF</th>
               <th style="text-align:right;padding:5px 8px;color:var(--text-muted);">PnL</th>
               <th style="text-align:right;padding:5px 8px;color:var(--text-muted);">Sharpe</th>
               <th style="text-align:right;padding:5px 8px;color:var(--text-muted);">Trades</th>
               <th style="text-align:right;padding:5px 8px;color:var(--text-muted);">Win%</th>
               <th style="text-align:right;padding:5px 8px;color:var(--text-muted);">Max DD</th>
-              <th style="text-align:right;padding:5px 8px;color:var(--text-muted);">Skor</th>
+              <th style="text-align:right;padding:5px 8px;color:var(--text-muted);">Score</th>
             </tr>
           </thead>
           <tbody>
@@ -211,10 +211,10 @@
       </div>
       {% endif %}
 
-      {# Robustness sonuçları #}
+      {# Robustness results #}
       {% if rd.robustness %}
       <div>
-        <div class="label" style="font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--text-muted);margin-bottom:6px;">Robustness Testleri</div>
+        <div class="label" style="font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--text-muted);margin-bottom:6px;">Robustness Tests</div>
         {% for rob in rd.robustness %}
         {% set sp = rob.split or {} %}
         {% set mc = rob.mc or {} %}
@@ -225,9 +225,9 @@
           <summary style="cursor:pointer;list-style:none;border:1px solid {% if rob.passed %}rgba(74,222,128,0.35){% else %}rgba(248,113,113,0.25){% endif %};border-radius:6px;padding:8px 12px;background:{% if rob.passed %}rgba(74,222,128,0.05){% else %}var(--panel){% endif %};display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
             <span class="mono" style="font-size:12px;font-weight:600;">{{ rob.spec_name }}</span>
             <span style="font-size:11px;font-weight:700;color:{% if rob.passed %}var(--pnl-up){% else %}var(--pnl-down){% endif %};">
-              {{ "✓ GEÇTİ" if rob.passed else "✗ GEÇEMEDİ" }}
+              {{ "✓ PASSED" if rob.passed else "✗ FAILED" }}
             </span>
-            <span class="text-muted mono" style="font-size:10px;">skor={{ "%.4f"|format(rob.score) }}</span>
+            <span class="text-muted mono" style="font-size:10px;">score={{ "%.4f"|format(rob.score) }}</span>
             <span class="text-muted" style="font-size:11px;">{{ rob.overfitting_label }}</span>
             <span class="text-muted" style="font-size:11px;">WFO: {{ rob.wf_pass }}</span>
             <span class="text-muted" style="font-size:11px;">MS: {{ rob.ms_label }}</span>
@@ -257,11 +257,11 @@
               <div style="border:1px solid var(--border);border-radius:6px;padding:10px;background:var(--panel);">
                 <div class="label" style="font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--text-muted);margin-bottom:8px;">Monte Carlo ({{ mc.n_sims or 300 }} sim)</div>
                 <div style="font-size:11px;font-family:var(--mono);">
-                  <div>Medyan final: <span style="color:{% if (mc.median_final or 0) >= (mc.starting_cash or 10000) %}var(--pnl-up){% else %}var(--pnl-down){% endif %};">${{ "%.0f"|format(mc.median_final or 0) }}</span></div>
-                  <div>p5 senaryo: ${{ "%.0f"|format(mc.p5_final or 0) }}</div>
-                  <div>Medyan max DD: <span style="color:var(--pnl-down);">{{ "%.1f"|format(mc.max_dd_p50 or 0) }}%</span></div>
+                  <div>Median final: <span style="color:{% if (mc.median_final or 0) >= (mc.starting_cash or 10000) %}var(--pnl-up){% else %}var(--pnl-down){% endif %};">${{ "%.0f"|format(mc.median_final or 0) }}</span></div>
+                  <div>p5 scenario: ${{ "%.0f"|format(mc.p5_final or 0) }}</div>
+                  <div>Median max DD: <span style="color:var(--pnl-down);">{{ "%.1f"|format(mc.max_dd_p50 or 0) }}%</span></div>
                   <div>DD p95: <span style="color:var(--pnl-down);">{{ "%.1f"|format(mc.max_dd_p95 or 0) }}%</span></div>
-                  <div>Win rate ort: {{ "%.1f"|format(mc.win_rate_mean or 0) }}%</div>
+                  <div>Win rate avg: {{ "%.1f"|format(mc.win_rate_mean or 0) }}%</div>
                 </div>
               </div>
 
@@ -273,19 +273,19 @@
                   {{ ms.generalization_label or "—" }}
                 </div>
                 <div style="font-size:11px;font-family:var(--mono);">
-                  {{ ms.symbols_positive or 0 }}/{{ ms.symbols_valid or 0 }} sembol pozitif
+                  {{ ms.symbols_positive or 0 }}/{{ ms.symbols_valid or 0 }} symbols positive
                 </div>
                 {% if ms.results %}
                 <div style="margin-top:6px;">
                   {% for r in ms.results %}
                   <div style="font-size:10.5px;font-family:var(--mono);color:{% if (r.pnl or 0) >= 0 %}var(--pnl-up){% else %}var(--pnl-down){% endif %};">
-                    {{ r.symbol }}: {{ "%+.2f"|format(r.pnl or 0) }} ({{ r.n_trades }} trade)
+                    {{ r.symbol }}: {{ "%+.2f"|format(r.pnl or 0) }} ({{ r.n_trades }} trades)
                   </div>
                   {% endfor %}
                 </div>
                 {% endif %}
                 {% else %}
-                <div class="text-muted" style="font-size:11px;">Veri yok</div>
+                <div class="text-muted" style="font-size:11px;">No data</div>
                 {% endif %}
               </div>
 
@@ -302,10 +302,10 @@
 </div>
 {% endif %}
 
-{# ── Üretilen Python Kodları ─────────────────────────────────────────────── #}
+{# ── Generated Python Code ───────────────────────────────────────────────── #}
 {% if block_codes %}
 <div style="margin-bottom:14px;">
-  <div style="font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:var(--text-muted);margin-bottom:8px;">Üretilen Python Kodları ({{ block_codes|length }} dosya)</div>
+  <div style="font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:var(--text-muted);margin-bottom:8px;">Generated Python Code ({{ block_codes|length }} files)</div>
   {% for bc in block_codes %}
   <details style="margin-bottom:8px;">
     <summary style="cursor:pointer;list-style:none;border:1px solid var(--border);border-radius:6px;padding:8px 14px;background:var(--panel);display:flex;align-items:center;gap:10px;">
@@ -313,8 +313,8 @@
       <span class="badge" style="font-size:10px;{% if '_e_' in bc.name %}background:rgba(74,222,128,0.08);color:var(--pnl-up);border-color:rgba(74,222,128,0.3);{% else %}background:rgba(248,113,113,0.08);color:var(--pnl-down);border-color:rgba(248,113,113,0.3);{% endif %}">
         {{ "entry" if "_e_" in bc.name else "exit" }}
       </span>
-      <span class="text-muted mono" style="font-size:10px;">{{ bc.code|length }} karakter</span>
-      <a href="/sessions/{{ run_id }}/block/{{ bc.name }}" target="_blank" class="text-muted mono" style="font-size:10px;margin-left:auto;text-decoration:none;" onclick="event.stopPropagation()">⬇ indir</a>
+      <span class="text-muted mono" style="font-size:10px;">{{ bc.code|length }} characters</span>
+      <a href="/sessions/{{ run_id }}/block/{{ bc.name }}" target="_blank" class="text-muted mono" style="font-size:10px;margin-left:auto;text-decoration:none;" onclick="event.stopPropagation()">⬇ download</a>
     </summary>
     <div style="border:1px solid var(--border);border-top:none;border-radius:0 0 6px 6px;background:#0a0a0a;">
       <pre style="margin:0;padding:14px;font-size:12px;font-family:var(--mono);overflow-x:auto;color:var(--text-primary);line-height:1.6;tab-size:4;">{{ bc.code | e }}</pre>
@@ -324,19 +324,19 @@
 </div>
 {% endif %}
 
-{# ── Adım Zaman Akışı ────────────────────────────────────────────────────── #}
+{# ── Step Timeline ───────────────────────────────────────────────────────── #}
 {% if step_timeline %}
 <div class="panel">
   <div class="panel-header">
-    <div class="panel-title">Adım Akışı</div>
+    <div class="panel-title">Step Flow</div>
     <div class="spacer"></div>
-    <span class="text-muted mono" style="font-size:10px;">{{ n_steps }} toplam adım · son {{ step_timeline|length }} gösteriliyor</span>
+    <span class="text-muted mono" style="font-size:10px;">{{ n_steps }} total steps · showing last {{ step_timeline|length }}</span>
   </div>
-  {# Kolon başlıkları #}
+  {# Column headers #}
   <div style="display:grid;grid-template-columns:54px 1fr 1fr;gap:0;padding:6px 16px;border-bottom:1px solid var(--border);background:var(--panel-2);">
     <div></div>
-    <div style="font-size:9.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--text-muted);font-weight:600;">Adım</div>
-    <div style="font-size:9.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--text-muted);font-weight:600;padding-left:16px;border-left:1px solid var(--border);">Açıklama</div>
+    <div style="font-size:9.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--text-muted);font-weight:600;">Step</div>
+    <div style="font-size:9.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--text-muted);font-weight:600;padding-left:16px;border-left:1px solid var(--border);">Explanation</div>
   </div>
   <div style="padding:0;max-height:600px;overflow-y:auto;" id="steps-container">
     {% for st in step_timeline %}
@@ -357,15 +357,15 @@
 
 {% block scripts %}
 <script>
-  // Adım akışını en alta kaydır
+  // Scroll the step flow to the bottom
   const sc = document.getElementById('steps-container');
   if (sc) sc.scrollTop = sc.scrollHeight;
 
-  // ── Adım açıklama motoru ──────────────────────────────────────────────────
-  // M15: adım metinleri ajan/LLM ve web-araştırması kaynaklı — capture
-  // gruplarını innerHTML'e escapesiz gömmek stored-XSS vektörüydü. Tüm
-  // ${m[i]} interpolasyonları esc() içinden geçer; kuralların KENDİ statik
-  // <b>/<br> markup'ı aynen kalır.
+  // ── Step explanation engine ───────────────────────────────────────────────
+  // M15: step texts originate from the agent/LLM and web research — embedding
+  // capture groups into innerHTML without escaping was a stored-XSS vector. All
+  // ${m[i]} interpolations go through esc(); each rule's OWN static <b>/<br>
+  // markup stays verbatim.
   function esc(s) {
     return String(s ?? '').replace(/[&<>"']/g, c => ({
       '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
@@ -373,231 +373,231 @@
   }
 
   const STEP_RULES = [
-    // ── Backtest adımları ──
+    // ── Backtest steps ──
     { re: /^\[(\d+)\/(\d+)\] Backtest \[(.+?)\]: (.+?)…?$/, fn: m =>
-      `📊 <b>Backtest iterasyonu ${esc(m[1])}/${esc(m[2])}</b> başlıyor.<br>` +
-      `Strateji <b>"${esc(m[4])}"</b>, <b>${esc(m[3])} bar zaman dilimi</b>nde test edilecek. ` +
-      `Her bar'da strateji sinyalleri hesaplanır, giriş/çıkış emirleri simüle edilir.` },
+      `📊 <b>Backtest iteration ${esc(m[1])}/${esc(m[2])}</b> is starting.<br>` +
+      `Strategy <b>"${esc(m[4])}"</b> will be tested on the <b>${esc(m[3])} bar timeframe</b>. ` +
+      `On every bar the strategy signals are computed and entry/exit orders are simulated.` },
 
-    { re: /└ Spec doğrulandı · (\d+) blok \((\d+) entry, (\d+) exit\)/, fn: m =>
-      `✅ <b>Strateji konfigürasyonu geçerli.</b> ` +
-      `Toplam <b>${esc(m[1])} sinyal bloğu</b>: <b>${esc(m[2])} giriş</b> + <b>${esc(m[3])} çıkış</b> koşulu. ` +
-      `Bloklar parametre aralıkları ve rol kurallarına uygun.` },
+    { re: /└ Spec validated · (\d+) blocks \((\d+) entry, (\d+) exit\)/, fn: m =>
+      `✅ <b>Strategy configuration is valid.</b> ` +
+      `A total of <b>${esc(m[1])} signal blocks</b>: <b>${esc(m[2])} entry</b> + <b>${esc(m[3])} exit</b> conditions. ` +
+      `Blocks conform to the parameter ranges and role rules.` },
 
-    { re: /└ Veri hazırlanıyor · ([\d,]+) bar · (.+?) → (.+)/, fn: m =>
-      `📅 <b>${m[1].replace(/,/g,'')} mum verisi</b> yükleniyor (${esc(m[2])} → ${esc(m[3])}). ` +
-      `Her mum bir zaman dilimi kapanışını temsil eder. ` +
-      `Veri, OHLC bütünlük kontrolünden geçirilecek (low>close gibi bozuk barlar atılır).` },
+    { re: /└ Preparing data · ([\d,]+) bars · (.+?) → (.+)/, fn: m =>
+      `📅 <b>${m[1].replace(/,/g,'')} candles</b> are being loaded (${esc(m[2])} → ${esc(m[3])}). ` +
+      `Each candle represents one timeframe close. ` +
+      `The data will pass an OHLC integrity check (broken bars such as low>close are dropped).` },
 
-    { re: /└ Bar nesneleri oluşturuluyor · ([\d,]+) bar \(OHLC doğrulama: (\d+) satır atıldı\)/, fn: m =>
-      `🔧 <b>Nautilus Bar nesneleri</b> oluşturuluyor. ${parseInt(m[2])>0
-        ? `⚠️ <b>${esc(m[2])} bozuk bar</b> (low>close veya high<open) tespit edildi ve veri setinden çıkarıldı.`
-        : `<b>Hiç bozuk bar yok</b> — tüm ${esc(m[1])} bar geçerli.`} ` +
-      `Her Bar nesnesi nanosaniye zaman damgası ve fiyat hassasiyeti içerir.` },
+    { re: /└ Building bar objects · ([\d,]+) bars \(OHLC validation: (\d+) rows dropped\)/, fn: m =>
+      `🔧 <b>Nautilus Bar objects</b> are being built. ${parseInt(m[2])>0
+        ? `⚠️ <b>${esc(m[2])} broken bars</b> (low>close or high<open) were detected and removed from the dataset.`
+        : `<b>No broken bars</b> — all ${esc(m[1])} bars are valid.`} ` +
+      `Each Bar object carries a nanosecond timestamp and price precision.` },
 
-    { re: /└ Engine kuruluyor · (.+?) · (.+?) · başlangıç: \$(.+)/, fn: m =>
-      `⚙️ <b>NautilusTrader BacktestEngine</b> başlatılıyor.<br>` +
-      `Borsa: <b>${esc(m[1])}</b> | Hesap tipi: <b>${esc(m[2])}</b> | Başlangıç sermayesi: <b>$${esc(m[3])}</b>.<br>` +
-      `Engine, emir akışını, dolum simülasyonunu ve pozisyon takibini yönetir.` },
+    { re: /└ Setting up engine · (.+?) · (.+?) · starting: \$(.+)/, fn: m =>
+      `⚙️ <b>NautilusTrader BacktestEngine</b> is being initialized.<br>` +
+      `Exchange: <b>${esc(m[1])}</b> | Account type: <b>${esc(m[2])}</b> | Starting capital: <b>$${esc(m[3])}</b>.<br>` +
+      `The engine manages order flow, fill simulation and position tracking.` },
 
-    { re: /└ Simülasyon başladı · ([\d,]+) bar işlenecek · order_type=(.+)/, fn: m =>
-      `▶️ <b>Backtest simülasyonu başladı.</b> ` +
-      `<b>${esc(m[1])} mum</b> sırayla işlenecek — her bar'da strateji sinyali hesaplanır. ` +
-      `Emir tipi: <b>${m[2]==='market'?'Market (anlık fiyattan dolum)':'Limit (belirli fiyat bekler)'}</b>. ` +
-      `Geriye dönük veriye bakış (look-ahead bias) engellenmiş: strateji yalnızca o ana kadar gelen barlara erişebilir.` },
+    { re: /└ Simulation started · ([\d,]+) bars to process · order_type=(.+)/, fn: m =>
+      `▶️ <b>Backtest simulation has started.</b> ` +
+      `<b>${esc(m[1])} candles</b> will be processed in sequence — on each bar the strategy signal is computed. ` +
+      `Order type: <b>${m[2]==='market'?'Market (filled at the current price)':'Limit (waits for a specific price)'}</b>. ` +
+      `Look-ahead bias is prevented: the strategy can only access bars up to the current moment.` },
 
-    { re: /└ Simülasyon tamamlandı · sonuçlar toplanıyor/, fn: () =>
-      `✅ <b>Tüm barlar işlendi.</b> ` +
-      `Açık pozisyon varsa zorla kapatılır. ` +
-      `Pozisyon geçmişi, PnL kayıtları ve equity eğrisi hesaplanmaya başlıyor.` },
+    { re: /└ Simulation completed · collecting results/, fn: () =>
+      `✅ <b>All bars processed.</b> ` +
+      `Any open position is force-closed. ` +
+      `The position history, PnL records and equity curve start being computed.` },
 
-    { re: /└ Metrikler hesaplanıyor · (\d+) pozisyon bulundu/, fn: m =>
-      `📐 <b>${esc(m[1])} pozisyon</b> tespit edildi. ` +
+    { re: /└ Calculating metrics · (\d+) positions found/, fn: m =>
+      `📐 <b>${esc(m[1])} positions</b> detected. ` +
       (parseInt(m[1])===0
-        ? `⚠️ Hiç işlem açılmamış — strateji bu veri setinde hiç sinyal üretmedi. Skor: -∞`
-        : `Her pozisyon için giriş/çıkış fiyatı, süre, PnL hesaplanıyor. ` +
-          `Ardından Sharpe, Sortino, Max Drawdown, Win Rate gibi portföy metrikleri türetiliyor.`) },
+        ? `⚠️ No trade was opened — the strategy produced no signal on this dataset. Score: -∞`
+        : `For each position the entry/exit price, duration and PnL are computed. ` +
+          `Portfolio metrics such as Sharpe, Sortino, Max Drawdown and Win Rate are then derived.`) },
 
-    { re: /└ Tamamlandı · PnL=([+-]?[\d.]+) USDT · win_rate=([\d.]+)%/, fn: m =>
-      `🏁 <b>Backtest sonuçlandı.</b> ` +
-      `Net kâr/zarar: <b>${parseFloat(m[1])>=0?'+':''}${esc(m[1])} USDT</b> · Kazanma oranı: <b>${esc(m[2])}%</b>. ` +
-      `Komisyon ve slippage dahil, $10,000 başlangıç sermayesi üzerinden.` },
+    { re: /└ Completed · PnL=([+-]?[\d.]+) USDT · win_rate=([\d.]+)%/, fn: m =>
+      `🏁 <b>Backtest finished.</b> ` +
+      `Net profit/loss: <b>${parseFloat(m[1])>=0?'+':''}${esc(m[1])} USDT</b> · Win rate: <b>${esc(m[2])}%</b>. ` +
+      `Commission and slippage included, over $10,000 starting capital.` },
 
-    { re: /✓ PnL=([+-]?[\d.]+) · Sharpe=([\d.nan-]+) · Trades=(\d+) · Skor=([\d.inf-]+)/, fn: m =>
-      `📊 <b>Özet:</b> PnL ${esc(m[1])} | Sharpe ${esc(m[2])} | İşlem sayısı ${esc(m[3])} | ` +
-      `Bileşik skor: <b>${esc(m[4])}</b> ((0.7·Calmar + 0.3·Sharpe) × T/(T+20), NAU fitness). ` +
-      (parseFloat(m[4])<0 ? `⚠️ Skor negatif/−∞: yeterli işlem yok veya zarar eden strateji — eleme listesine alındı.`
-        : `Bu skor, strateji sıralamada kullanılır.`) },
+    { re: /✓ PnL=([+-]?[\d.]+) · Sharpe=([\d.nan-]+) · Trades=(\d+) · Score=([\d.inf-]+)/, fn: m =>
+      `📊 <b>Summary:</b> PnL ${esc(m[1])} | Sharpe ${esc(m[2])} | Trade count ${esc(m[3])} | ` +
+      `Composite score: <b>${esc(m[4])}</b> ((0.7·Calmar + 0.3·Sharpe) × T/(T+20), NAU fitness). ` +
+      (parseFloat(m[4])<0 ? `⚠️ Negative/−∞ score: not enough trades or a losing strategy — dropped to the elimination list.`
+        : `This score is used in the strategy ranking.`) },
 
-    // ── Custom blok üretimi ──
-    { re: /^\[(\d+)\/(\d+)\] Custom blok üretiliyor/, fn: m =>
-      `🤖 <b>Claude Sonnet'e custom Python bloğu yazdırılıyor</b> (iterasyon ${esc(m[1])}/${esc(m[2])}). ` +
-      `Önceki turdaki sonuçlar analiz edilip farklı bir strateji konsepti önerilecek, ` +
-      `ardından AST (sözdizim) doğrulamasından geçirilecek Python kodu üretilecek.` },
+    // ── Custom block generation ──
+    { re: /^\[(\d+)\/(\d+)\] Generating custom block/, fn: m =>
+      `🤖 <b>Claude Sonnet is being asked to write a custom Python block</b> (iteration ${esc(m[1])}/${esc(m[2])}). ` +
+      `Results from the previous round are analyzed and a different strategy concept is proposed, ` +
+      `then Python code is generated that will pass AST (syntax) validation.` },
 
-    { re: /⚙ Custom entry block üretiliyor: (.+?)…?$/, fn: m =>
-      `✍️ Claude, <b>"${esc(m[1])}"</b> adlı <b>giriş sinyali bloğunu</b> yazıyor. ` +
-      `Blok, closes (kapanış fiyatları) listesi üzerinde çalışacak, ` +
-      `"long", "short" veya None döndürecek. ` +
-      `Üretilen kod, yasak komutlar (import, try/except vb.) ve sözdizimi için otomatik denetlenecek.` },
+    { re: /⚙ Generating custom entry block: (.+?)…?$/, fn: m =>
+      `✍️ Claude is writing the <b>entry signal block</b> named <b>"${esc(m[1])}"</b>. ` +
+      `The block will operate over the closes (closing prices) list, ` +
+      `returning "long", "short" or None. ` +
+      `The generated code is automatically checked for forbidden statements (import, try/except, etc.) and syntax.` },
 
-    { re: /⚙ Custom exit block üretiliyor: (.+?)…?$/, fn: m =>
-      `✍️ Claude, <b>"${esc(m[1])}"</b> adlı <b>çıkış sinyali bloğunu</b> yazıyor. ` +
-      `Bu blok, açık pozisyonun ne zaman kapatılacağını belirler. ` +
-      `Giriş bloğuyla tutarlı bir mantık kurmak gerekir.` },
+    { re: /⚙ Generating custom exit block: (.+?)…?$/, fn: m =>
+      `✍️ Claude is writing the <b>exit signal block</b> named <b>"${esc(m[1])}"</b>. ` +
+      `This block decides when the open position should be closed. ` +
+      `It must implement logic consistent with the entry block.` },
 
-    { re: /✓ Entry block kaydedildi: (.+)/, fn: m =>
-      `💾 Giriş bloğu <b>${esc(m[1])}.py</b> olarak diske kaydedildi ve ` +
-      `canlı BLOCK_REGISTRY'ye eklendi. ` +
-      `Artık bu session'ın backtest döngüsünde kullanılabilir. ` +
-      `Dosyayı sayfanın alt kısmındaki "Üretilen Python Kodları" bölümünde görebilirsiniz.` },
+    { re: /✓ Entry block saved: (.+)/, fn: m =>
+      `💾 The entry block was saved to disk as <b>${esc(m[1])}.py</b> and ` +
+      `added to the live BLOCK_REGISTRY. ` +
+      `It can now be used in this session's backtest loop. ` +
+      `You can find the file in the "Generated Python Code" section at the bottom of the page.` },
 
-    { re: /✓ Exit block kaydedildi: (.+)/, fn: m =>
-      `💾 Çıkış bloğu <b>${esc(m[1])}.py</b> olarak diske kaydedildi ve registry'ye eklendi.` },
+    { re: /✓ Exit block saved: (.+)/, fn: m =>
+      `💾 The exit block was saved to disk as <b>${esc(m[1])}.py</b> and added to the registry.` },
 
     { re: /→ (.+?) \(custom\)/, fn: m =>
-      `🎯 Bir sonraki iterasyonda test edilecek strateji: <b>"${esc(m[1])}"</b> (Claude üretimi). ` +
-      `Bu strateji, az önce yazılan custom giriş + çıkış bloklarını kullanacak.` },
+      `🎯 Strategy to be tested in the next iteration: <b>"${esc(m[1])}"</b> (Claude-generated). ` +
+      `This strategy will use the custom entry + exit blocks just written.` },
 
     { re: /→ (.+?) \(fallback builtin\)/, fn: m =>
-      `⚠️ Custom blok üretimi başarısız oldu. ` +
-      `Yedek olarak built-in katalogdan Claude'un önerdiği <b>"${esc(m[1])}"</b> stratejisi kullanılacak.` },
+      `⚠️ Custom block generation failed. ` +
+      `As a fallback, the <b>"${esc(m[1])}"</b> strategy from the built-in catalog suggested by Claude will be used.` },
 
     { re: /→ ([^·]+)$/, fn: m =>
-      `🔄 Bir sonraki iterasyon için strateji belirlendi: <b>"${esc(m[1])}"</b>. ` +
-      `Claude, geçmiş sonuçlara bakarak yeni parametreler veya farklı bir indikatör ailesi seçti.` },
+      `🔄 Strategy determined for the next iteration: <b>"${esc(m[1])}"</b>. ` +
+      `Looking at past results, Claude selected new parameters or a different indicator family.` },
 
-    // ── Sıralama ──
-    { re: /(\d+)\/\d+ sonuç uygun \(≥(\d+) trade, hata yok\)/, fn: m =>
-      `📋 <b>${esc(m[1])} strateji</b>, sıralamaya girmeye hak kazandı. ` +
-      `Kriter: en az ${esc(m[2])} işlem açmış olması ve hata üretmemiş olması. ` +
-      `Daha az trade, istatistiksel güvenilirlik açısından yetersiz kabul edilir.` },
+    // ── Ranking ──
+    { re: /(\d+)\/\d+ results qualify \(≥(\d+) trades, no error\)/, fn: m =>
+      `📋 <b>${esc(m[1])} strategies</b> qualified to enter the ranking. ` +
+      `Criteria: having opened at least ${esc(m[2])} trades and produced no error. ` +
+      `Fewer trades are considered statistically unreliable.` },
 
-    { re: /#(\d+) (.+?) \[(\w+)\] · skor=([\d.inf-]+) · PnL=([+-]?[\d.]+) · Sharpe=([\d.nan-]+)/, fn: m =>
-      `🏅 <b>Sıralama #${esc(m[1])}:</b> "${esc(m[2])}" [${esc(m[3])}m TF] — ` +
-      `Skor: ${esc(m[4])} | PnL: ${esc(m[5])} | Sharpe: ${esc(m[6])}. ` +
-      (parseInt(m[1])===1 ? `Bu en yüksek skorlu aday — önce robustness testine girecek.`
-        : `Birinci aday geçemezse bu strateji test edilecek.`) },
+    { re: /#(\d+) (.+?) \[(\w+)\] · score=([\d.inf-]+) · PnL=([+-]?[\d.]+) · Sharpe=([\d.nan-]+)/, fn: m =>
+      `🏅 <b>Ranking #${esc(m[1])}:</b> "${esc(m[2])}" [${esc(m[3])}m TF] — ` +
+      `Score: ${esc(m[4])} | PnL: ${esc(m[5])} | Sharpe: ${esc(m[6])}. ` +
+      (parseInt(m[1])===1 ? `This is the highest-scoring candidate — it enters the robustness test first.`
+        : `If the first candidate fails, this strategy will be tested.`) },
 
     // ── Robustness ──
     { re: /^\[(\d+)\/(\d+)\] Robustness: (.+?) \[(\w+)\]/, fn: m =>
-      `🔬 <b>Robustness testi ${esc(m[1])}/${esc(m[2])}: "${esc(m[3])}"</b> stratejisi, <b>3 farklı testten</b> geçirilecek:<br>` +
-      `① IS/OOS Split (eğitim/test bölünmesi) ② Walk-Forward (kayan pencere) ③ Monte Carlo (şans faktörü). ` +
-      `Hepsini geçerse strateji kataloga kaydedilir.` },
+      `🔬 <b>Robustness test ${esc(m[1])}/${esc(m[2])}: "${esc(m[3])}"</b> strategy will go through <b>3 different tests</b>:<br>` +
+      `① IS/OOS Split (train/test division) ② Walk-Forward (rolling window) ③ Monte Carlo (luck factor). ` +
+      `If it passes all of them the strategy is saved to the catalog.` },
 
     { re: /📊 IS\/OOS Split/, fn: () =>
-      `📊 <b>In-Sample / Out-of-Sample Bölünme Testi başlıyor.</b><br>` +
-      `Verinin <b>%70'i eğitim (in-sample)</b>, <b>%30'u gerçek test (out-of-sample)</b> olarak ayrılır. ` +
-      `Strateji sadece eğitim verisini "görür", test verisinde bağımsız değerlendirme yapılır. ` +
-      `OOS/IS Sharpe oranı ≥0.7 ise strateji "sağlam", <0.4 ise "aşırı uyum" riski var demektir.` },
+      `📊 <b>In-Sample / Out-of-Sample Split Test is starting.</b><br>` +
+      `<b>70% of the data is training (in-sample)</b>, <b>30% is a real test (out-of-sample)</b>. ` +
+      `The strategy only "sees" the training data and is independently evaluated on the test data. ` +
+      `An OOS/IS Sharpe ratio ≥0.7 means the strategy is "robust", <0.4 indicates an "overfitting" risk.` },
 
     { re: /In-sample: ([\d,]+) bar → (.+?) \| OOS: ([\d,]+) bar/, fn: m =>
-      `📅 Eğitim seti: <b>${esc(m[1])} bar</b> (${esc(m[2])}'ye kadar). ` +
-      `Test seti: <b>${esc(m[3])} bar</b> (geri kalan dönem). ` +
-      `Strateji, test setindeki fiyatları hiç "görmeden" optimize edilmiş parametrelerle çalışacak.` },
+      `📅 Training set: <b>${esc(m[1])} bars</b> (up to ${esc(m[2])}). ` +
+      `Test set: <b>${esc(m[3])} bars</b> (the remaining period). ` +
+      `The strategy will run with parameters optimized without ever "seeing" the prices in the test set.` },
 
-    { re: /Split tamamlandı · overfitting skoru \((\w+)\): ([\d.]+) \((.+?)\)/, fn: m =>
-      `✅ <b>IS/OOS testi bitti.</b> Overfitting skoru (${esc(m[1])}): <b>${esc(m[2])}</b> → <b>${esc(m[3])}</b>.<br>` +
-      `<em>Nasıl yorumlanır?</em> Skor=OOS_${esc(m[1])}/IS_${esc(m[1])}. ` +
-      `≥0.7: strateji gerçek veriye de iyi uyum sağlıyor. 0.4–0.7: dikkatli. <0.4: ezber, gerçek performans düşük.` },
+    { re: /Split completed · overfitting score \((\w+)\): ([\d.]+) \((.+?)\)/, fn: m =>
+      `✅ <b>IS/OOS test finished.</b> Overfitting score (${esc(m[1])}): <b>${esc(m[2])}</b> → <b>${esc(m[3])}</b>.<br>` +
+      `<em>How to interpret?</em> Score=OOS_${esc(m[1])}/IS_${esc(m[1])}. ` +
+      `≥0.7: the strategy fits real data well too. 0.4–0.7: be cautious. <0.4: memorized, real performance is low.` },
 
-    { re: /IS sonucu: PnL=([+-]?[\d.]+) · Sharpe=([\d.nan-]+) · (\d+) trade \| OOS sonucu: PnL=([+-]?[\d.]+) · Sharpe=([\d.nan-]+) · (\d+) trade/, fn: m =>
-      `📈 <b>Karşılaştırma:</b><br>` +
-      `• Eğitim (IS): PnL=${esc(m[1])}, Sharpe=${esc(m[2])}, ${esc(m[3])} işlem<br>` +
-      `• Test (OOS): PnL=${esc(m[4])}, Sharpe=${esc(m[5])}, ${esc(m[6])} işlem<br>` +
-      (parseFloat(m[5])>parseFloat(m[2]) ? `💡 OOS Sharpe > IS Sharpe — strateji test verisinde daha iyi! Güçlü genelleme.`
-        : `OOS Sharpe düşük — eğitim verisine biraz aşırı uymuş olabilir.`) },
+    { re: /IS result: PnL=([+-]?[\d.]+) · Sharpe=([\d.nan-]+) · (\d+) trade \| OOS result: PnL=([+-]?[\d.]+) · Sharpe=([\d.nan-]+) · (\d+) trade/, fn: m =>
+      `📈 <b>Comparison:</b><br>` +
+      `• Training (IS): PnL=${esc(m[1])}, Sharpe=${esc(m[2])}, ${esc(m[3])} trades<br>` +
+      `• Test (OOS): PnL=${esc(m[4])}, Sharpe=${esc(m[5])}, ${esc(m[6])} trades<br>` +
+      (parseFloat(m[5])>parseFloat(m[2]) ? `💡 OOS Sharpe > IS Sharpe — the strategy is better on the test data! Strong generalization.`
+        : `OOS Sharpe is lower — it may be slightly overfit to the training data.`) },
 
     { re: /📈 Walk-Forward/, fn: () =>
-      `📈 <b>Walk-Forward Analizi başlıyor.</b><br>` +
-      `Zaman serisi boyunca <b>kayan pencereler</b> kaydırılır: her pencerede 6 ay eğitim + 2 ay test. ` +
-      `~35 pencere üretilir. <b>Pencerelerin ≥%50'sinde test PnL > 0</b> olması gerekir. ` +
-      `Bu test, stratejinin farklı piyasa dönemlerinde (bull/bear/sideways) tutarlı çalışıp çalışmadığını ölçer.` },
+      `📈 <b>Walk-Forward Analysis is starting.</b><br>` +
+      `<b>Rolling windows</b> are slid across the time series: each window has 6 months training + 2 months test. ` +
+      `~35 windows are produced. <b>≥50% of the windows must have test PnL > 0</b>. ` +
+      `This test measures whether the strategy works consistently across different market regimes (bull/bear/sideways).` },
 
     { re: /WFO window (\d+): train (.+?) → (.+?), test (.+?) → (.+)/, fn: m =>
-      `🪟 <b>Pencere ${esc(m[1])}:</b> Eğitim ${esc(m[2])}→${esc(m[3])} | Test ${esc(m[4])}→${esc(m[5])}. ` +
-      `Bu pencerede strateji eğitim döneminde "kör" kalarak test döneminde sonuç üretecek.` },
+      `🪟 <b>Window ${esc(m[1])}:</b> Training ${esc(m[2])}→${esc(m[3])} | Test ${esc(m[4])}→${esc(m[5])}. ` +
+      `In this window the strategy stays "blind" during the training period and produces results in the test period.` },
 
-    { re: /→ (\d+)\/(\d+) pencere pozitif · ortalama test PnL=([+-]?[\d.]+) USDT/, fn: m =>
-      `📊 <b>Walk-Forward sonucu:</b> <b>${esc(m[1])}/${esc(m[2])} pencere</b> pozitif PnL üretti (%${Math.round(parseInt(m[1])/parseInt(m[2])*100)}). ` +
-      `Ortalama test PnL: ${esc(m[3])} USDT. ` +
+    { re: /→ (\d+)\/(\d+) windows positive · average test PnL=([+-]?[\d.]+) USDT/, fn: m =>
+      `📊 <b>Walk-Forward result:</b> <b>${esc(m[1])}/${esc(m[2])} windows</b> produced positive PnL (${Math.round(parseInt(m[1])/parseInt(m[2])*100)}%). ` +
+      `Average test PnL: ${esc(m[3])} USDT. ` +
       (parseInt(m[1])/parseInt(m[2]) >= 0.5
-        ? `✅ Eşik (%50) aşıldı — WFO testi geçildi.`
-        : `❌ Eşik (%50) geçilemedi — çok fazla pencere zarar etti. Strateji tutarsız.`) },
+        ? `✅ Threshold (50%) exceeded — WFO test passed.`
+        : `❌ Threshold (50%) not reached — too many windows lost money. Strategy is inconsistent.`) },
 
     { re: /🎲 Monte Carlo/, fn: () =>
-      `🎲 <b>Monte Carlo Simülasyonu başlıyor.</b><br>` +
-      `<b>300 farklı senaryo</b>da işlem sırası karıştırılır. Amaç: stratejinin başarısının ` +
-      `şansla mı (o özgün işlem sırasına göre mi) yoksa gerçek bir kenara mı (sistematik avantaja mı) dayandığını anlamak. ` +
-      `Medyan Max Drawdown < -%40 ise strateji riskli sayılır.` },
+      `🎲 <b>Monte Carlo Simulation is starting.</b><br>` +
+      `The trade sequence is shuffled across <b>300 different scenarios</b>. Goal: to understand whether the strategy's success ` +
+      `is due to luck (that specific trade order) or a real edge (a systematic advantage). ` +
+      `If the median Max Drawdown < -40% the strategy is considered risky.` },
 
-    { re: /Monte Carlo başlıyor · (\d+) simülasyon · (\d+) trade/, fn: m =>
-      `🔄 <b>${esc(m[1])} senaryo</b> için <b>${esc(m[2])} işlemin</b> sırası karıştırılıyor. ` +
-      `Her karıştırma, "bu işlemler farklı bir sırayla gelseydi ne olurdu?" sorusunu yanıtlar. ` +
-      `Sonuç: p5/p25/medyan/p75/p95 yüzdelik dağılımı ve olası drawdown aralığı.` },
+    { re: /Monte Carlo starting · (\d+) simulations · (\d+) trades/, fn: m =>
+      `🔄 The order of <b>${esc(m[2])} trades</b> is shuffled for <b>${esc(m[1])} scenarios</b>. ` +
+      `Each shuffle answers the question "what would happen if these trades had come in a different order?". ` +
+      `Result: p5/p25/median/p75/p95 percentile distribution and the likely drawdown range.` },
 
-    { re: /Monte Carlo tamamlandı · median final: \$([\d,]+)/, fn: m =>
-      `✅ <b>Monte Carlo bitti.</b> 300 senaryonun medyanında final bakiye: <b>$${esc(m[1])}</b>. ` +
-      `Bu değer, $10,000 başlangıçla rastgele senaryo sayısında beklenen ortalama sonucu gösterir. ` +
-      `Medyan > başlangıç sermayesi ise strateji genelde kârlı.` },
+    { re: /Monte Carlo completed · median final: \$([\d,]+)/, fn: m =>
+      `✅ <b>Monte Carlo finished.</b> Median final balance across 300 scenarios: <b>$${esc(m[1])}</b>. ` +
+      `This value shows the expected average result across random scenarios with a $10,000 start. ` +
+      `If the median > starting capital, the strategy is generally profitable.` },
 
-    { re: /→ Medyan final: \$([\d,]+) · p5 senaryo: \$([\d,]+) · Medyan max DD: ([+-]?[\d.]+)%/, fn: m =>
-      `📉 <b>Dağılım özeti:</b> Medyan final $${esc(m[1])} | En kötü %5 senaryo: $${esc(m[2])} | ` +
-      `Tipik en derin düşüş: %${esc(m[3])}.<br>` +
-      `<em>p5 senaryo</em>: 300 denemenin %5'inde bu kadar kötü veya daha kötü sonuç görülebilir. ` +
-      `Bu rakam sermaye planlaması için kritik.` },
+    { re: /→ Median final: \$([\d,]+) · p5 scenario: \$([\d,]+) · Median max DD: ([+-]?[\d.]+)%/, fn: m =>
+      `📉 <b>Distribution summary:</b> Median final $${esc(m[1])} | Worst 5% scenario: $${esc(m[2])} | ` +
+      `Typical deepest drop: ${esc(m[3])}%.<br>` +
+      `<em>p5 scenario</em>: in 5% of the 300 runs a result this bad or worse can occur. ` +
+      `This figure is critical for capital planning.` },
 
     { re: /🌐 Multi-Symbol/, fn: () =>
-      `🌐 <b>Çoklu Sembol Testi başlıyor.</b><br>` +
-      `Strateji BTCUSDT dışında <b>ETHUSDT ve SOLUSDT</b>'de de test edilir. ` +
-      `Amaç: stratejinin sadece BTC'ye özgü olup olmadığını anlamak. ` +
-      `En az 1 diğer sembolde de pozitif sonuç veriyorsa "Genellenebilir" sayılır.` },
+      `🌐 <b>Multi-Symbol Test is starting.</b><br>` +
+      `The strategy is also tested on <b>ETHUSDT and SOLUSDT</b> besides BTCUSDT. ` +
+      `Goal: to understand whether the strategy is BTC-specific. ` +
+      `If it gives a positive result on at least 1 other symbol, it is considered "Generalizable".` },
 
-    { re: /Multi-symbol testi başlıyor · (\d+) sembol · son (\d+) gün · interval=(.+)/, fn: m =>
-      `🔄 <b>${esc(m[1])} farklı sembol</b>de, son <b>${esc(m[2])} günün</b> verisiyle test başlıyor (${esc(m[3])}m TF). ` +
-      `Her sembol için bağımsız bir backtest çalıştırılır.` },
+    { re: /Multi-symbol test starting · (\d+) symbols · last (\d+) days · interval=(.+)/, fn: m =>
+      `🔄 A test is starting on <b>${esc(m[1])} different symbols</b> with the last <b>${esc(m[2])} days</b> of data (${esc(m[3])}m TF). ` +
+      `An independent backtest is run for each symbol.` },
 
     { re: /\[([A-Z]+)\] ✓ PnL=([+-]?[\d.]+) USDT \([+-]?[\d.]+%\) · Sharpe=([\d.]+) · (\d+) trade/, fn: m =>
-      `✅ <b>${esc(m[1])}:</b> PnL=${esc(m[2])} USDT | Sharpe=${esc(m[3])} | ${esc(m[4])} işlem. ` +
-      `Bu sembol için strateji pozitif sonuç üretti — genelleme puanına katkı sağladı.` },
+      `✅ <b>${esc(m[1])}:</b> PnL=${esc(m[2])} USDT | Sharpe=${esc(m[3])} | ${esc(m[4])} trades. ` +
+      `The strategy produced a positive result for this symbol — it contributed to the generalization score.` },
 
     { re: /\[([A-Z]+)\] ✗ Hata: (.+)/, fn: m =>
-      `❌ <b>${esc(m[1])} sembolünde hata:</b> ${esc(m[2])}. ` +
-      `Bu sembol geçersiz sayılır, pass rate hesabından çıkarılır.` },
+      `❌ <b>Error on symbol ${esc(m[1])}:</b> ${esc(m[2])}. ` +
+      `This symbol is considered invalid and excluded from the pass rate calculation.` },
 
-    { re: /Multi-symbol tamamlandı · (\d+)\/(\d+) sembolde pozitif · pass_rate=(%?[\d.]+)% · (.+)/, fn: m =>
-      `🏁 <b>Çoklu sembol testi bitti:</b> ${esc(m[1])}/${esc(m[2])} sembol pozitif (%${esc(m[3])}). ` +
-      `Sonuç: <b>${esc(m[4])}</b>.<br>` +
-      (m[4].includes('Genellenebilir')
-        ? `✅ Strateji farklı varlıklarda da çalışıyor — gerçek bir edge'in göstergesi.`
-        : `⚠️ Strateji yalnızca BTC'de çalışıyor olabilir — sembole özgü parametre optimizasyonu riski var.`) },
+    { re: /Multi-symbol completed · (\d+)\/(\d+) symbols positive · pass_rate=(%?[\d.]+)% · (.+)/, fn: m =>
+      `🏁 <b>Multi-symbol test finished:</b> ${esc(m[1])}/${esc(m[2])} symbols positive (${esc(m[3])}%). ` +
+      `Result: <b>${esc(m[4])}</b>.<br>` +
+      (m[4].includes('Generalizable')
+        ? `✅ The strategy works on different assets too — a sign of a real edge.`
+        : `⚠️ The strategy may only work on BTC — risk of symbol-specific parameter optimization.`) },
 
-    // ── Genel ──
-    { re: /⚠ Robustness hatası: (.+?) — atlanıyor/, fn: m =>
-      `⚠️ <b>Robustness testi sırasında teknik hata:</b> "${esc(m[1])}". ` +
-      `Bu aday atlandı, bir sonraki sıradaki strateji test edilecek.` },
+    // ── General ──
+    { re: /⚠ Robustness error: (.+?) — skipping/, fn: m =>
+      `⚠️ <b>Technical error during the robustness test:</b> "${esc(m[1])}". ` +
+      `This candidate was skipped, the next strategy in line will be tested.` },
 
-    { re: /✅ TÜM TESTLERİ GEÇTİ!/, fn: () =>
-      `🏆 <b>Tüm robustness kriterleri karşılandı!</b><br>` +
+    { re: /✅ ALL TESTS PASSED!/, fn: () =>
+      `🏆 <b>All robustness criteria were met!</b><br>` +
       `IS/OOS ✓ + WFO ✓ + MC ✓ + Multi-symbol ✓. ` +
-      `Bu strateji strateji kataloğuna kaydedilecek ve backtest sayfasında kullanıma açılacak.` },
+      `This strategy will be saved to the strategy catalog and made available on the backtest page.` },
 
-    { re: /❌ Geçemedi — IS\/OOS: (.+?) · WFO: (\d+)\/(\d+)/, fn: m =>
-      `❌ <b>Robustness testi geçilemedi.</b><br>` +
-      `IS/OOS: ${esc(m[1])} | WFO: ${esc(m[2])}/${esc(m[3])} pencere pozitif (%${Math.round(parseInt(m[2])/parseInt(m[3])*100)}). ` +
+    { re: /❌ Failed — IS\/OOS: (.+?) · WFO: (\d+)\/(\d+)/, fn: m =>
+      `❌ <b>Robustness test failed.</b><br>` +
+      `IS/OOS: ${esc(m[1])} | WFO: ${esc(m[2])}/${esc(m[3])} windows positive (${Math.round(parseInt(m[2])/parseInt(m[3])*100)}%). ` +
       (parseInt(m[2])/parseInt(m[3]) < 0.5
-        ? `WFO %50 eşiğinin altında kaldı. Strateji farklı dönemlerde tutarsız.`
+        ? `WFO stayed below the 50% threshold. The strategy is inconsistent across different periods.`
         : ``) +
-      ` Sıradaki aday test edilecek.` },
+      ` The next candidate will be tested.` },
 
-    { re: /Sürekli mod: tur (\d+) tamamlandı, devam ediliyor/, fn: m =>
-      `🔁 <b>Tur ${esc(m[1])} tamamlandı.</b> Continuous mode aktif — yeni tur başlıyor. ` +
-      `Önceki turda kazanan bulunamazsa veya daha iyi strateji aranıyorsa döngü devam eder.` },
+    { re: /Continuous mode: round (\d+) completed, continuing/, fn: m =>
+      `🔁 <b>Round ${esc(m[1])} completed.</b> Continuous mode is active — a new round is starting. ` +
+      `If no winner was found in the previous round or a better strategy is being sought, the loop continues.` },
 
-    { re: /🌐 Web araştırması yapılıyor/, fn: () =>
-      `🔍 <b>DuckDuckGo ile web araştırması başlıyor.</b><br>` +
-      `Gerçek zamanlı kripto strateji sonuçları, backtestler ve piyasa analizleri aranıyor. ` +
-      `Bulunan fikirler Claude'a "ilham" olarak geçirilir — uygulama yine BLOCK_CATALOG'daki blok tipleriyle yapılır.` },
+    { re: /🌐 Running web research/, fn: () =>
+      `🔍 <b>Web research with DuckDuckGo is starting.</b><br>` +
+      `Real-time crypto strategy results, backtests and market analyses are searched. ` +
+      `The ideas found are passed to Claude as "inspiration" — the implementation is still done with the block types in BLOCK_CATALOG.` },
   ];
 
   function explainStep(msg) {
@@ -608,7 +608,7 @@
     return null;
   }
 
-  // Sayfa yüklenince tüm satırların açıklama sütununu doldur
+  // On page load, fill the explanation column for every row
   document.addEventListener('DOMContentLoaded', function () {
     document.querySelectorAll('.step-row').forEach(function (row) {
       const msg = row.dataset.msg || '';
@@ -617,11 +617,11 @@
       if (target && explanation) {
         target.innerHTML = explanation;
       } else if (target) {
-        // Açıklama yoksa sütunu soluklaştır
+        // If there is no explanation, dim the column
         target.innerHTML = '<span style="color:var(--text-muted);font-style:italic;">—</span>';
       }
     });
-    // En alta kaydır
+    // Scroll to the bottom
     const sc = document.getElementById('steps-container');
     if (sc) sc.scrollTop = sc.scrollHeight;
   });

@@ -103,9 +103,10 @@ _CACHE_DIR = Path.home() / ".cache" / "nautilus_web_app"
 BACKTEST_LOG = _CACHE_DIR / "backtest_log.jsonl"
 ROBUSTNESS_LOG = _CACHE_DIR / "robustness_log.jsonl"
 
-# Append-only JSONL loglar sınırsız büyüyordu (backtest_log ~10MB, robustness
-# ~5MB). Eşik aşımında tek nesil arşive devir: aktif dosya temiz başlar,
-# okuyucular (tail-read / tam okuma) yalnız aktif dosyayı görür.
+# Append-only JSONL logs were growing without bound (backtest_log ~10MB,
+# robustness ~5MB). On threshold exceed, roll over to a single-generation
+# archive: the active file starts clean, and readers (tail-read / full read)
+# see only the active file.
 LOG_ROTATE_BYTES = 20 * 1024 * 1024
 
 _BACKTEST_LOG_LOCK = threading.Lock()
@@ -113,9 +114,9 @@ _ROBUSTNESS_LOG_LOCK = threading.Lock()
 
 
 def rotate_if_large(path: Path, max_bytes: int | None = None) -> None:
-    """Dosya eşiği aştıysa `<ad>.jsonl.1`'e devir (mevcut arşivi ezerek).
+    """Roll the file over to `<name>.jsonl.1` if it exceeds the threshold (overwriting the existing archive).
 
-    Eşik çağrı anında çözülür (test'te monkeypatch edilebilir olsun diye)."""
+    The threshold is resolved at call time (so it can be monkeypatched in tests)."""
     limit = max_bytes if max_bytes is not None else LOG_ROTATE_BYTES
     try:
         if path.exists() and path.stat().st_size >= limit:
@@ -124,7 +125,7 @@ def rotate_if_large(path: Path, max_bytes: int | None = None) -> None:
                 archive.unlink()
             path.rename(archive)
     except OSError:
-        pass  # rotation başarısızlığı log yazımını engellememeli
+        pass  # a rotation failure must not block log writing
 
 
 def sanitize_floats(obj):
@@ -145,7 +146,7 @@ def chart_url(bi: dict, spec_id: str = "") -> str:
 
     Interval → chart TF mapping picks a resolution that keeps bar count sane
     while covering the full backtest range so trade markers land on-screen.
-    spec_id → chart, stratejinin gerçek indikatörlerini çizer.
+    spec_id → chart, draws the strategy's actual indicators.
     """
     sym = bi.get("symbol")
     if not sym:
@@ -153,7 +154,7 @@ def chart_url(bi: dict, spec_id: str = "") -> str:
     cat = bi.get("category", "linear")
     interval = bi.get("interval", "60")
     sid = f"&spec_id={spec_id}" if spec_id else ""
-    # Backtest zaman aralığını timestamp'e çevir
+    # Convert the backtest time range to a timestamp
     start_ts = end_ts = None
     try:
         from pandas import Timestamp
@@ -165,7 +166,7 @@ def chart_url(bi: dict, spec_id: str = "") -> str:
     except Exception:
         pass
     if start_ts and end_ts:
-        # Aralık uzunsa daha büyük TF seç (bar sayısını ~2000 altında tut)
+        # For a long range pick a larger TF (keep bar count under ~2000)
         span_days = (end_ts - start_ts) / 86400
         tf = interval
         if span_days > 400:
@@ -210,8 +211,8 @@ def log_backtest(
             "tp_value": spec.tp_value,
             "allow_short": spec.allow_short,
             "emulate": spec.emulate,
-            # Deterministik yeniden-koşum (reports/detail) için kalan spec
-            # alanları — getattr: testlerdeki duck-typed sahte spec kırılmasın.
+            # Remaining spec fields for deterministic re-run (reports/detail)
+            # — getattr: don't break duck-typed fake specs in tests.
             "limit_offset_bps": getattr(spec, "limit_offset_bps", 0.0),
             "atr_period": getattr(spec, "atr_period", 14),
             "trade_size_percent": getattr(spec, "trade_size_percent", 5.0),
@@ -245,16 +246,17 @@ def log_robustness(
     interval: str | None = None,
     venue: str | None = None,
 ) -> None:
-    """Skalar robustness özetini diske yaz (equity curve'leri hariç tut).
+    """Write the scalar robustness summary to disk (excluding equity curves).
 
-    Kimlik alanları (symbol/category/interval/venue) kayda eklenir; verilmezse
-    ``result`` içinden okunur. Bunlar olmadan aynı spec'in farklı sembol/TF
-    koşuları raporda son-yazan-kazanır şeklinde ezişiyordu.
+    Identity fields (symbol/category/interval/venue) are added to the record; if
+    not provided they are read from ``result``. Without them, different
+    symbol/TF runs of the same spec were overwriting each other in a
+    last-writer-wins fashion in the report.
     """
     try:
         ROBUSTNESS_LOG.parent.mkdir(parents=True, exist_ok=True)
 
-        # Walk-forward: equity curve'siz
+        # Walk-forward: without equity curve
         wf_clean = []
         for w in result.get("wfo_windows") or []:
             wf_clean.append(
@@ -275,7 +277,7 @@ def log_robustness(
                 }
             )
 
-        # Monte Carlo: büyük listeler hariç
+        # Monte Carlo: excluding large lists
         mc_raw = result.get("mc") or {}
         mc_clean = {
             k: mc_raw[k]
@@ -301,7 +303,7 @@ def log_robustness(
         if "error" in mc_raw:
             mc_clean["error"] = mc_raw["error"]
 
-        # In/Out-of-Sample: equity curve'siz
+        # In/Out-of-Sample: without equity curve
         sp_raw = result.get("split") or {}
         sp_clean = {
             k: sp_raw[k]

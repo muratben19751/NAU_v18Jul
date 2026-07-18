@@ -1,4 +1,4 @@
-"""Phase 1 — Ölçüm Katmanı testleri.
+"""Phase 1 — Measurement Layer tests.
 
 Verification criteria from IMPROVEMENT_PLAN.md Phase 1:
 1. Synthetic position series where MTM max_dd > realized max_dd.
@@ -155,10 +155,11 @@ class TestManualSharpe:
         assert metrics["annualization"] == 365
         assert "sharpe_nautilus" in metrics
         assert metrics["sharpe_nautilus"] == pytest.approx(1.5, abs=1e-6)
-        # H610: MTM eğrisi YOKken primary sharpe = sharpe_nautilus (frekans-doğru
-        # 252-gün) olmalı — bar-annualize edilmiş manuel sharpe DEĞİL (1m'de ~725×
-        # şişiyordu). Bu pin olmadan o regresyon sharpe_nautilus/annualization'ı
-        # doğru bırakıp primary 'sharpe'ı sessizce bozardı.
+        # H610: when there is NO MTM curve, primary sharpe = sharpe_nautilus
+        # (frequency-correct 252-day) — NOT the bar-annualized manual sharpe
+        # (which inflated ~725x on 1m). Without this pin, that regression would
+        # leave sharpe_nautilus/annualization correct while silently breaking
+        # the primary 'sharpe'.
         assert metrics["sharpe"] == pytest.approx(metrics["sharpe_nautilus"], abs=1e-6)
 
 

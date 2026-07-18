@@ -1,15 +1,15 @@
-"""Saf-Python teknik indikatör kütüphanesi (bağımlılıksız).
+"""Pure-Python technical indicator library (dependency-free).
 
-Kaynak: E:/myAI_Projects/NAU_ev/backend/app/lib/indicators.py — M27/M33 portu.
-Matematik birebir korunmuştur; tek uyarlama: NAU'daki ``Kline`` nesne listesi
-yerine hizalı ``highs/lows/closes/volumes`` float listeleri alınır (composer
-buffer'ları ve custom blok ``indicators`` sözlüğüyle aynı şekil). Kline tabanlı
-fonksiyonlar (calc_atr/calc_adx/calc_wave_trend/…) bu yüzden
-``(highs, lows, closes, …)`` imzasına çevrildi.
+Source: E:/myAI_Projects/NAU_ev/backend/app/lib/indicators.py — M27/M33 port.
+The math is preserved exactly; the only adaptation: instead of NAU's ``Kline``
+object list, aligned ``highs/lows/closes/volumes`` float lists are taken (same
+shape as the composer buffers and the custom block ``indicators`` dict). Kline-based
+functions (calc_atr/calc_adx/calc_wave_trend/…) were therefore converted to the
+``(highs, lows, closes, …)`` signature.
 
-Hem builtin bloklar (composer) hem LLM-üretimi custom bloklar (codegate
-whitelist + modül enjeksiyonu) buradaki ``calc_*`` fonksiyonlarını kullanır —
-RSI/ATR/ADX/StochRSI/WaveTrend matematiği elle yeniden yazılmaz.
+Both builtin blocks (composer) and LLM-generated custom blocks (codegate
+whitelist + module injection) use the ``calc_*`` functions here —
+RSI/ATR/ADX/StochRSI/WaveTrend math is not rewritten by hand.
 """
 
 from __future__ import annotations
@@ -124,7 +124,7 @@ def calc_stoch_rsi(
 def _tail3(
     highs: list[float], lows: list[float], closes: list[float]
 ) -> tuple[list[float], list[float], list[float], int]:
-    """Üç seriyi ortak (en kısa) uzunluğa kuyruktan hizala."""
+    """Align three series to a common (shortest) length from the tail."""
     n = min(len(highs), len(lows), len(closes))
     return highs[-n:], lows[-n:], closes[-n:], n
 
@@ -213,7 +213,7 @@ def _find_swing_highs(prices, rsi_series, lookback, offset):
                 is_high = False
                 break
         if is_high:
-            # i - offset < 0: TS'de undefined (etkisiz nokta) — Python'da sona sarmasın
+            # i - offset < 0: undefined in TS (ineffective point) — don't wrap around to the end in Python
             rsi = rsi_series[i - offset] if i - offset >= 0 else None
             points.append({"index": i, "price": prices[i], "rsi": rsi})
     return points
@@ -251,7 +251,7 @@ def detect_rsi_divergence(
     if len(swing_highs) >= 2:
         prev = swing_highs[-2]
         last = swing_highs[-1]
-        # rsi None (TS: undefined) -> karşılaştırmalar false
+        # rsi None (TS: undefined) -> comparisons false
         if (
             last["rsi"] is not None
             and prev["rsi"] is not None

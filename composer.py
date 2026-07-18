@@ -13,9 +13,9 @@ Aligned with Nautilus wiki (Strategy & Actor + Order Flow Pipeline):
 
 Wiki References
 ---------------
-Bkz: [[strategy_and_actor]], [[order_flow_pipeline]]
+See: [[strategy_and_actor]], [[order_flow_pipeline]]
 
-Blocks emit signals; the composer wires them into a Nautilus `Strategy`. Emir gönderimi tam olarak [[order_flow_pipeline]]'a giriyor (`submit_order` → OrderEmulator/ExecutionAlgorithms/RiskEngine/Adapter).
+Blocks emit signals; the composer wires them into a Nautilus `Strategy`. Order submission enters exactly into [[order_flow_pipeline]] (`submit_order` → OrderEmulator/ExecutionAlgorithms/RiskEngine/Adapter).
 """
 
 from __future__ import annotations
@@ -68,7 +68,7 @@ TradeSizeMode = Literal["fixed", "fixed_usdt", "percent_equity", "atr_target"]
 
 _BUILTIN_META: dict[str, dict] = {
     "ma_cross": {
-        "label": "MA Kesişimi",
+        "label": "MA Cross",
         "params": {
             "fast": {"type": "int", "min": 2, "max": 100, "default": 10},
             "slow": {"type": "int", "min": 5, "max": 300, "default": 30},
@@ -79,12 +79,12 @@ _BUILTIN_META: dict[str, dict] = {
             "wiki/concepts/event_driven_architecture.md",
         ],
         "help": (
-            "Hızlı ve yavaş hareketli ortalama kesişimi. `up` = hızlı yavaşı yukarı "
-            "keserse tetiklenir. `on_bar`'da her yeni kapanışla yeniden hesaplanır."
+            "Fast and slow moving average cross. `up` = triggers when the fast crosses "
+            "the slow upward. Recalculated on each new close in `on_bar`."
         ),
     },
     "rsi_threshold": {
-        "label": "RSI Eşik",
+        "label": "RSI Threshold",
         "params": {
             "period": {"type": "int", "min": 2, "max": 50, "default": 14},
             "threshold": {"type": "float", "min": 5.0, "max": 95.0, "default": 30.0},
@@ -96,12 +96,12 @@ _BUILTIN_META: dict[str, dict] = {
         },
         "wiki_refs": ["wiki/entities/strategy_and_actor.md"],
         "help": (
-            "RSI belirtilen eşiği yukarı/aşağı geçtiğinde tetiklenir. "
-            "`below` = eşiğin altına inince (aşırı satım sinyali)."
+            "Triggers when RSI crosses the given threshold upward/downward. "
+            "`below` = when it drops below the threshold (oversold signal)."
         ),
     },
     "price_breakout": {
-        "label": "Fiyat Kırılımı",
+        "label": "Price Breakout",
         "params": {
             "lookback": {"type": "int", "min": 3, "max": 200, "default": 20},
             "direction": {
@@ -112,12 +112,12 @@ _BUILTIN_META: dict[str, dict] = {
         },
         "wiki_refs": ["wiki/entities/strategy_and_actor.md"],
         "help": (
-            "Son N barın en yüksek/düşük kapanışı kırıldığında tetiklenir. "
-            "Donchian mantığı."
+            "Triggers when the highest/lowest close of the last N candles is broken. "
+            "Donchian logic."
         ),
     },
     "momentum": {
-        "label": "Momentum İşareti",
+        "label": "Momentum Signal",
         "params": {
             "lookback": {"type": "int", "min": 2, "max": 100, "default": 10},
             "sign": {
@@ -128,11 +128,11 @@ _BUILTIN_META: dict[str, dict] = {
         },
         "wiki_refs": ["wiki/entities/strategy_and_actor.md"],
         "help": (
-            "Son N bar getirisinin işareti. `positive` = son N barda net yükseliş."
+            "The sign of the return over the last N candles. `positive` = net rise over the last N candles."
         ),
     },
     "volume_spike": {
-        "label": "Hacim Patlaması",
+        "label": "Volume Spike",
         "params": {
             "period": {"type": "int", "min": 5, "max": 100, "default": 20},
             "mult": {"type": "float", "min": 1.1, "max": 10.0, "default": 2.0},
@@ -144,14 +144,14 @@ _BUILTIN_META: dict[str, dict] = {
         },
         "wiki_refs": ["wiki/entities/strategy_and_actor.md"],
         "help": (
-            "Son barın hacmi, önceki N barın ortalama hacminin `mult` katını "
-            "aşarsa (`above`) veya altına inerse (`below` — hacim kuruması) "
-            "tetiklenir. Hacim-teyitli giriş/çıkışlar için diğer bloklarla "
-            "AND mantığında birleştirilebilir."
+            "Triggers when the last candle's volume exceeds `mult` times the average "
+            "volume of the previous N candles (`above`), or drops below it (`below` — "
+            "volume dry-up). Can be combined in AND logic with other blocks for "
+            "volume-confirmed entries/exits."
         ),
     },
     "ema_cross": {
-        "label": "EMA Kesişimi (Nautilus)",
+        "label": "EMA Cross (Nautilus)",
         "params": {
             "fast": {"type": "int", "min": 2, "max": 100, "default": 12},
             "slow": {"type": "int", "min": 5, "max": 300, "default": 26},
@@ -162,13 +162,13 @@ _BUILTIN_META: dict[str, dict] = {
             "wiki/concepts/event_driven_architecture.md",
         ],
         "help": (
-            "Nautilus native `ExponentialMovingAverage` indicator kullanır. "
-            "EMA yumuşak MA'dır: son barlara daha fazla ağırlık verir. `up` = fast EMA "
-            "slow EMA'yı yukarı keser (short için `down`)."
+            "Uses the Nautilus native `ExponentialMovingAverage` indicator. "
+            "EMA is a smoothed MA: it gives more weight to recent candles. `up` = fast EMA "
+            "crosses slow EMA upward (`down` for short)."
         ),
     },
     "bollinger_break": {
-        "label": "Bollinger Kırılımı (Nautilus)",
+        "label": "Bollinger Breakout (Nautilus)",
         "params": {
             "period": {"type": "int", "min": 5, "max": 200, "default": 20},
             "k": {"type": "float", "min": 0.5, "max": 5.0, "default": 2.0},
@@ -181,14 +181,14 @@ _BUILTIN_META: dict[str, dict] = {
         },
         "wiki_refs": ["wiki/entities/strategy_and_actor.md"],
         "help": (
-            "Nautilus `BollingerBands(period, k)` indicator. Fiyat üst banda değerse "
-            "`upper` (breakout/momentum girişi), alt banda değerse `lower` (mean reversion). "
-            "mode=legacy her iki bantta LONG (eski davranış); breakout: upper→long, "
-            "lower→short; revert: upper→short, lower→long (short'lar allow_short ister)."
+            "Nautilus `BollingerBands(period, k)` indicator. When price touches the upper band "
+            "`upper` (breakout/momentum entry), when it touches the lower band `lower` (mean reversion). "
+            "mode=legacy LONG on both bands (old behavior); breakout: upper→long, "
+            "lower→short; revert: upper→short, lower→long (shorts require allow_short)."
         ),
     },
     "macd_cross": {
-        "label": "EMA Fark Kesişimi (MACD benzeri)",
+        "label": "EMA Diff Cross (MACD-like)",
         "params": {
             "fast": {"type": "int", "min": 2, "max": 60, "default": 12},
             "slow": {"type": "int", "min": 5, "max": 200, "default": 26},
@@ -196,39 +196,39 @@ _BUILTIN_META: dict[str, dict] = {
         },
         "wiki_refs": ["wiki/entities/strategy_and_actor.md"],
         "help": (
-            "İki Nautilus `ExponentialMovingAverage` indicator'ının farkı sıfırı "
-            "keçtiğinde tetiklenir. `up` = fast EMA - slow EMA sıfırı yukarı keser "
-            "(momentum girişi). Sinyal çizgisi içermez."
+            "Triggers when the difference of two Nautilus `ExponentialMovingAverage` indicators "
+            "crosses zero. `up` = fast EMA - slow EMA crosses zero upward "
+            "(momentum entry). Does not include a signal line."
         ),
     },
     "atr_stop": {
-        "label": "ATR Stop (yalnız exit)",
+        "label": "ATR Stop (exit only)",
         "params": {
             "period": {"type": "int", "min": 5, "max": 100, "default": 14},
             "mult": {"type": "float", "min": 0.5, "max": 10.0, "default": 3.0},
         },
         "wiki_refs": ["wiki/entities/execution_engine.md"],
         "help": (
-            "Nautilus `AverageTrueRange` indicator kullanır. Fiyat son close'dan "
-            "ATR × mult kadar aşağı çekildiğinde exit tetiklenir. Yalnız exit rolünde kullanılır."
+            "Uses the Nautilus `AverageTrueRange` indicator. Exit triggers when price is pulled "
+            "down by ATR × mult from the last close. Used only in the exit role."
         ),
     },
-    # ── M27: NAU parite kütüphanesi (indicators.py) üstüne kurulu builtin'ler ──
+    # ── M27: builtins built on top of the NAU parity library (indicators.py) ──
     "adx_threshold": {
-        "label": "ADX Trend Gücü (NAU)",
+        "label": "ADX Trend Strength (NAU)",
         "params": {
             "period": {"type": "int", "min": 7, "max": 50, "default": 14},
             "threshold": {"type": "float", "min": 10.0, "max": 50.0, "default": 25.0},
         },
         "wiki_refs": [],
         "help": (
-            "indicators.calc_adx (Wilder) — NAU_ev ile birebir parite. Entry: "
-            "ADX ≥ threshold iken +DI>−DI → long, −DI>+DI → short. Exit: ADX "
-            "threshold altına düşerse (trend zayıfladı) çıkış."
+            "indicators.calc_adx (Wilder) — exact parity with NAU_ev. Entry: "
+            "when ADX ≥ threshold, +DI>−DI → long, −DI>+DI → short. Exit: when ADX "
+            "drops below threshold (trend weakened) exit."
         ),
     },
     "stoch_rsi_cross": {
-        "label": "StochRSI K/D Kesişimi (NAU)",
+        "label": "StochRSI K/D Cross (NAU)",
         "params": {
             "rsi_period": {"type": "int", "min": 5, "max": 50, "default": 14},
             "stoch_period": {"type": "int", "min": 5, "max": 50, "default": 14},
@@ -237,13 +237,13 @@ _BUILTIN_META: dict[str, dict] = {
         },
         "wiki_refs": [],
         "help": (
-            "indicators.calc_stoch_rsi (K=3/D=3 SMA yumuşatma). Entry: K, D'yi "
-            "aşırı-satım bölgesinde yukarı keserse long; aşırı-alımda aşağı "
-            "keserse short. Exit: ters kesişim."
+            "indicators.calc_stoch_rsi (K=3/D=3 SMA smoothing). Entry: when K crosses D "
+            "upward in the oversold zone, long; when it crosses down in the "
+            "overbought zone, short. Exit: reverse cross."
         ),
     },
     "wave_trend_cross": {
-        "label": "WaveTrend Kesişimi (NAU)",
+        "label": "WaveTrend Cross (NAU)",
         "params": {
             "channel_len": {"type": "int", "min": 5, "max": 30, "default": 10},
             "avg_len": {"type": "int", "min": 10, "max": 50, "default": 21},
@@ -252,13 +252,13 @@ _BUILTIN_META: dict[str, dict] = {
         },
         "wiki_refs": [],
         "help": (
-            "indicators.calc_wave_trend (LazyBear WT1/WT2). Entry: WT1, WT2'yi "
-            "os_level altında yukarı keserse long; ob_level üstünde aşağı "
-            "keserse short. Exit: ters kesişim."
+            "indicators.calc_wave_trend (LazyBear WT1/WT2). Entry: when WT1 crosses WT2 "
+            "upward below os_level, long; when it crosses down above ob_level, "
+            "short. Exit: reverse cross."
         ),
     },
     "donchian_channel": {
-        "label": "Donchian Kanalı",
+        "label": "Donchian Channel",
         "params": {
             "period": {"type": "int", "min": 5, "max": 100, "default": 20},
             "mode": {
@@ -269,10 +269,10 @@ _BUILTIN_META: dict[str, dict] = {
         },
         "wiki_refs": [],
         "help": (
-            "Gerçek high/low Donchian kanalı (price_breakout yalnız close "
-            "kırılımıydı). breakout: close, önceki N barın en yükseğini aşarsa "
-            "long / en düşüğünü kırarsa short. revert: tersi. Exit: close kanal "
-            "ortasını ters yönde keserse."
+            "Actual high/low Donchian channel (price_breakout was a close-only "
+            "breakout). breakout: when close exceeds the highest of the previous N candles, "
+            "long / when it breaks the lowest, short. revert: the opposite. Exit: when close crosses "
+            "the channel mid in the reverse direction."
         ),
     },
 }
@@ -314,9 +314,9 @@ def _eval_rsi_threshold(strategy, idx, block, closes):
         return None
     thr = block.params.get("threshold", 30.0)
     cross = block.params.get("cross", "below")
-    # H6: Nautilus RelativeStrengthIndex.value ∈ [0,1) üretir; threshold ise
-    # 0-100 ölçeğinde (varsayılan 30). Ölçek uyumsuzluğu bloğu ÖLÜ KOD yapıyordu
-    # (prev>=30 asla olmaz). rsi.value'yu 0-100'e çek (NAU calc_rsi konvansiyonu).
+    # H6: Nautilus RelativeStrengthIndex.value produces ∈ [0,1); the threshold is
+    # on a 0-100 scale (default 30). The scale mismatch made the block DEAD CODE
+    # (prev>=30 never happens). Scale rsi.value to 0-100 (NAU calc_rsi convention).
     val = rsi.value * 100.0
     prev = strategy._prev_state.get(idx, val)
     strategy._prev_state[idx] = val
@@ -369,11 +369,11 @@ def _eval_momentum(strategy, idx, block, closes):
 
 
 def _eval_volume_spike(strategy, idx, block, closes):
-    """Hacim patlaması/kuruması: son hacim vs önceki N barın ortalaması."""
+    """Volume spike/dry-up: last volume vs average of the previous N candles."""
     n = int(block.params.get("period", 20))
     mult = float(block.params.get("mult", 2.0))
     direction = block.params.get("direction", "above")
-    vols = strategy._volumes  # düz list buffer — kopya gereksiz (salt okunur)
+    vols = strategy._volumes  # flat list buffer — no copy needed (read-only)
     if n < 1 or len(vols) < n + 1:
         return None
     avg = sum(vols[-n - 1 : -1]) / n
@@ -381,14 +381,14 @@ def _eval_volume_spike(strategy, idx, block, closes):
         return None
     ratio = vols[-1] / avg
     fired = ratio >= mult if direction == "above" else ratio <= (1.0 / mult)
-    # Kenar tetikleme: koşul sürerken her bar yeniden ateşlemesin
+    # Edge trigger: don't re-fire on every candle while the condition persists
     prev_fired = strategy._prev_state.get(idx, False)
     strategy._prev_state[idx] = fired
     if not fired or prev_fired:
         return None
     if block.role == "exit":
         return "exit"
-    # Hacim yön bilgisi taşımaz — spike anında bar yönüne göre long/short
+    # Volume carries no direction info — at the spike, long/short by candle direction
     return "long" if closes[-1] >= closes[-2] else "short"
 
 
@@ -419,10 +419,10 @@ def _eval_bollinger_break(strategy, idx, block, closes):
     if bb is None or not bb.initialized:
         return None
     side = block.params.get("side", "lower")
-    # L14: mode parametresi — 'legacy' (varsayılan) mevcut davranışı AYNEN
-    # korur (her iki bant → long; katalogdaki eski spec'ler kırılmaz).
-    # 'breakout': upper→long, lower→short. 'revert' (ortalamaya dönüş):
-    # upper→short, lower→long. Short sinyalleri allow_short kapısına tabi.
+    # L14: mode parameter — 'legacy' (default) preserves the current behavior
+    # EXACTLY (both bands → long; old specs in the catalog are not broken).
+    # 'breakout': upper→long, lower→short. 'revert' (mean reversion):
+    # upper→short, lower→long. Short signals are subject to the allow_short gate.
     mode = block.params.get("mode", "legacy")
     last = closes[-1] if closes else 0.0
     fired_upper = last >= bb.upper
@@ -492,10 +492,10 @@ def _eval_atr_stop(strategy, idx, block, closes):
     return None
 
 
-# Snapshot (karar anındaki indikatör değerleri) per built-in block. Sinyal
-# ateşlediğinde çağrılır; dönen dict trade'in "giriş/çıkış sebebi" satırında
-# gösterilir. Hata halinde None (çağıran try/except sarar). Custom bloklarda
-# hook yoktur → yalnız label+params gösterilir.
+# Snapshot (indicator values at decision time) per built-in block. Called when
+# the signal fires; the returned dict is shown in the trade's "entry/exit reason"
+# line. On error returns None (caller wraps in try/except). Custom blocks have no
+# hook → only label+params are shown.
 
 
 def _snap_ma_cross(strategy, idx, block, closes):
@@ -512,7 +512,7 @@ def _snap_rsi_threshold(strategy, idx, block, closes):
     rsi = strategy._indicators.get(idx, {}).get("rsi")
     if rsi is None or not rsi.initialized:
         return None
-    return {"rsi": round(rsi.value * 100.0, 2)}  # H6: 0-100 ölçek (eşiklerle aynı)
+    return {"rsi": round(rsi.value * 100.0, 2)}  # H6: 0-100 scale (same as thresholds)
 
 
 def _snap_price_breakout(strategy, idx, block, closes):
@@ -663,13 +663,13 @@ def _lb_atr_stop(params):
 
 def _validate_cross_fast_slow(block):
     if block.params.get("slow", 0) <= block.params.get("fast", 0):
-        return f"{block.type}: slow > fast olmalı."
+        return f"{block.type}: slow must be > fast."
     return None
 
 
 def _validate_atr_stop(block):
     if block.role != "exit":
-        return "atr_stop bloğu yalnızca exit rolünde kullanılabilir."
+        return "atr_stop block can only be used in the exit role."
     return None
 
 
@@ -679,28 +679,27 @@ def _validate_atr_stop(block):
 # Custom blocks are added by `_load_custom_blocks()` at import time and via
 # `register_custom_block()` at runtime.
 
-# ── M27: NAU parite kütüphanesi (indicators.py) üstüne kurulu builtin'ler ──
-# Nautilus indicator nesnesi yerine saf-python calc_* çağrıları: NAU_ev ile
-# sayısal parite testli, on_start hook'u gerektirmez, sandbox'a girmez.
+# ── M27: builtins built on top of the NAU parity library (indicators.py) ──
+# Pure-python calc_* calls instead of a Nautilus indicator object: numerically
+# parity-tested against NAU_ev, requires no on_start hook, does not enter the sandbox.
 
-# H1940: bu bloklar özyinelemeli calc_* (Wilder ADX, StochRSI, EMA-zincirli
-# WaveTrend) kullanır; değer SERİ UZUNLUĞUNA bağlıdır. on_bar buffer'ı 4×cap →
-# cap kırptığında pencere tek barda ~4× küçülüp indikatör değeri SIÇRIYOR ve
-# sahte kesişim/eşik sinyali üretiyordu. Çözüm: calc_*'a HER ZAMAN sabit
-# uzunlukta pencere ver (son NAU_WINDOW bar) — kompaksiyondan bağımsız, kararlı
-# değer. NAU generic_strategy.py deque(maxlen=260) ile aynı sabit-pencere
-# yaklaşımı.
+# H1940: these blocks use recursive calc_* (Wilder ADX, StochRSI, EMA-chained
+# WaveTrend); the value depends on the SERIES LENGTH. The on_bar buffer is 4×cap →
+# when cap trims, the window shrinks ~4× in a single candle so the indicator value
+# JUMPS and produced a spurious cross/threshold signal. Fix: ALWAYS give calc_* a
+# fixed-length window (last NAU_WINDOW candles) — independent of compaction, a stable
+# value. Same fixed-window approach as NAU generic_strategy.py deque(maxlen=260).
 NAU_WINDOW = 260
 
-# _nau_win'in son NAU_WINDOW barı tutarlı döndürebilmesi için buffer'ı en az
-# NAU_WINDOW tutması gereken RECURSIVE (Wilder/EMA tohum) bloklar. donchian
-# non-recursive (max/min) olduğundan salınan pencereden etkilenmez — dahil değil.
+# RECURSIVE (Wilder/EMA seed) blocks that require the buffer to hold at least
+# NAU_WINDOW candles so _nau_win can consistently return the last NAU_WINDOW candles.
+# donchian is non-recursive (max/min) so it is unaffected by the swinging window — not included.
 _NAU_RECURSIVE_BLOCKS = {"adx_threshold", "stoch_rsi_cross", "wave_trend_cross"}
 
 
 def _nau_win(series):
-    """calc_* için kararlı (sabit uzunluklu) pencere — kompaksiyon sıçramasını
-    (H1940) kaldırır. Seri NAU_WINDOW'dan kısaysa olduğu gibi döner."""
+    """Stable (fixed-length) window for calc_* — removes the compaction jump
+    (H1940). If the series is shorter than NAU_WINDOW, returns it as is."""
     return series[-NAU_WINDOW:] if len(series) > NAU_WINDOW else series
 
 
@@ -751,11 +750,11 @@ def _eval_stoch_rsi_cross(strategy, idx, block, closes):
     res = _ind.calc_stoch_rsi(_nau_win(closes), rsi_p, st_p)
     k, d = res.get("k", 50.0), res.get("d", 50.0)
     key = f"stochrsi_{idx}"
-    # Warmup guard: calc_stoch_rsi yeterli bar birikene kadar (50,50) sentinel
-    # döner (None değil). Sentinel'i prev olarak TOHUMLAMA — yoksa ilk gerçek
-    # (k,d) pk==pd_==50 okuyup sahte kesişim üretir. Gerçek k==d==50 zaten sinyal
-    # ateşleyemez (k>d ve k<d ikisi de yanlış), o yüzden atlamak güvenli
-    # (wave_trend None-guard'ı ile aynı desen).
+    # Warmup guard: calc_stoch_rsi returns a (50,50) sentinel (not None) until
+    # enough candles accumulate. Do NOT SEED the sentinel as prev — otherwise the first
+    # real (k,d) reads pk==pd_==50 and produces a spurious cross. A real k==d==50
+    # cannot fire a signal anyway (both k>d and k<d are false), so skipping is safe
+    # (same pattern as the wave_trend None-guard).
     if k == 50.0 and d == 50.0:
         return None
     prev = strategy._prev_state.get(key)
@@ -844,11 +843,11 @@ def _eval_donchian_channel(strategy, idx, block, closes):
     highs, lows = strategy._highs, strategy._lows
     if len(highs) < period + 1 or len(lows) < period + 1 or not closes:
         return None
-    upper = max(highs[-period - 1 : -1])  # mevcut bar HARİÇ önceki N bar
+    upper = max(highs[-period - 1 : -1])  # previous N candles EXCLUDING the current candle
     lower = min(lows[-period - 1 : -1])
     last = closes[-1]
     if block.role == "exit":
-        # Kanal ortası ters-yön kesişimi → exit.
+        # Channel-mid reverse-direction cross → exit.
         mid = (upper + lower) / 2.0
         key = f"donchian_{idx}"
         prev = strategy._prev_state.get(key)
@@ -870,8 +869,8 @@ def _snap_donchian_channel(strategy, idx, block, closes):
     if len(highs) < period + 1 or len(lows) < period + 1:
         return None
     return {
-        "üst": round(max(highs[-period - 1 : -1]), 4),
-        "alt": round(min(lows[-period - 1 : -1]), 4),
+        "upper": round(max(highs[-period - 1 : -1]), 4),
+        "lower": round(min(lows[-period - 1 : -1]), 4),
     }
 
 
@@ -1008,9 +1007,9 @@ BLOCK_CATALOG: dict[str, dict] = {}
 
 
 def _rebuild_catalog() -> None:
-    # Yeni dict'i önce kur, sonra tek clear+update ile uygula — kilitsiz
-    # okuyucunun boş/yarım katalog (veya 'changed size during iteration')
-    # görme penceresini daraltır. Dict KİMLİĞİ korunur (template ref'leri).
+    # Build the new dict first, then apply it with a single clear+update — narrows
+    # the window in which a lock-free reader sees an empty/half catalog (or
+    # 'changed size during iteration'). The dict IDENTITY is preserved (template refs).
     new = {k: entry["meta"] for k, entry in BLOCK_REGISTRY.items()}
     BLOCK_CATALOG.clear()
     BLOCK_CATALOG.update(new)
@@ -1021,12 +1020,12 @@ _rebuild_catalog()
 
 
 class _PortfolioView:
-    """L25: custom bloklara geçen minimal Portfolio görünümü.
+    """L25: minimal Portfolio view passed to custom blocks.
 
-    Blok taramasında hiçbir mevcut blok portfolio kullanmıyor; whitelist'teki
-    üç sorgu passthrough olarak açılır (argümansız çağrıda stratejinin kendi
-    enstrümanı varsayılır). Gerçek Portfolio'nun mutasyon yüzeyi bloklara
-    kapalı kalır.
+    No existing block uses portfolio in block scanning; the three whitelisted
+    queries are exposed as passthroughs (when called without arguments the
+    strategy's own instrument is assumed). The real Portfolio's mutation surface
+    stays closed to blocks.
     """
 
     __slots__ = ("_strategy",)
@@ -1109,10 +1108,10 @@ def _load_module_from_path(name: str, path: Path):
     if spec is None or spec.loader is None:
         raise ImportError(f"cannot build spec for {path}")
     module = importlib.util.module_from_spec(spec)
-    # H8: üretim smoke ortamıyla PARİTE — smoke exec'i math/statistics enjekte
-    # ederken yükleyici etmiyordu; math.* kullanan bloklar her barda NameError
-    # ile sessiz no-op oluyordu (canlı doğrulandı). `ind` = NAU parite
-    # kütüphanesi (indicators.py, M27/M33).
+    # H8: PARITY with the generation smoke environment — the smoke exec injected
+    # math/statistics while the loader did not; blocks using math.* silently no-op'd
+    # every candle with a NameError (validated live). `ind` = the NAU parity
+    # library (indicators.py, M27/M33).
     module.__dict__["math"] = _math
     module.__dict__["statistics"] = _statistics
     module.__dict__["ind"] = _ind_mod
@@ -1121,10 +1120,10 @@ def _load_module_from_path(name: str, path: Path):
     # CPython from injecting the FULL builtins on exec, so even a codegate miss
     # cannot resolve eval/exec/open/getattr at runtime — defense in depth.
     module.__dict__["__builtins__"] = safe_builtins()
-    # M25: doğrulanmış kaynak döngü-bütçeli AST ile derlenir — `while True`
-    # sınıfı sonsuz döngüler 5M adımda RuntimeError üretir. Bütçe module-level
-    # validate/max_lookback hook'larını da kapsar (sunucuda timeout'suz
-    # çağrılan tek yol buydu).
+    # M25: the validated source is compiled with a loop-budget AST — `while True`
+    # class infinite loops raise a RuntimeError after 5M steps. The budget also covers
+    # module-level validate/max_lookback hooks (this was the only path called on the
+    # server without a timeout).
     code = compile_with_loop_budget(src, filename=str(path))
     exec(code, module.__dict__)
     return module
@@ -1149,15 +1148,15 @@ def register_custom_from_disk(name: str) -> None:
         # Give custom blocks a small mutable state dict scoped by block idx.
         key = f"custom_state_{idx}"
         state = strategy._prev_state.setdefault(key, {})
-        # Kullanıcı kodu buffer'ı MUTASYONA uğratabilir → izolasyon kopyası.
-        # Pencere eski deque genişliğiyle (buf_cap) birebir: custom kod tüm
-        # listeyi tararsa (örn. sum(volumes)) aynı elemanları görmeli.
+        # User code may MUTATE the buffer → isolation copy.
+        # The window matches the old deque width (buf_cap) exactly: if custom code
+        # scans the whole list (e.g. sum(volumes)) it must see the same elements.
         cap = getattr(strategy, "_buf_cap", None)
         closes_view = closes[-cap:] if cap else list(closes)
-        # Hacim + high/low serilerini indicators üzerinden aç — imza
-        # değişmeden (eski bloklar görmezden gelir; yeniler volumes/highs/lows
-        # okur). Kullanıcı kodu mutasyon yapabilir → hepsi pencere KOPYASI,
-        # eski deque genişliğiyle (buf_cap) birebir hizalı.
+        # Expose volume + high/low series via indicators — without changing the
+        # signature (old blocks ignore them; new ones read volumes/highs/lows).
+        # User code may mutate → all are window COPIES, aligned exactly with the
+        # old deque width (buf_cap).
         indicators = dict(strategy._indicators.get(idx, {}))
 
         def _view(series):
@@ -1166,11 +1165,11 @@ def register_custom_from_disk(name: str) -> None:
         indicators["volumes"] = _view(strategy._volumes)
         indicators["highs"] = _view(getattr(strategy, "_highs", []))
         indicators["lows"] = _view(getattr(strategy, "_lows", []))
-        # L25: gerçek SignalBlock yerine params KOPYASI taşıyan görünüm —
-        # `block.params.update(...)` yazan bir blok spec'in canlı dict'ini
-        # değil kendi kopyasını değiştirir (raporlanan parametre == koşulan).
-        # Portfolio da minimal facade'la geçer (blok taramasında hiçbir blok
-        # portfolio kullanmıyor; is_net_long/short/flat passthrough yeterli).
+        # L25: a view carrying a COPY of params instead of the real SignalBlock —
+        # a block that writes `block.params.update(...)` changes its own copy, not
+        # the spec's live dict (reported params == the ones that ran).
+        # Portfolio is also passed via a minimal facade (no block uses portfolio
+        # in block scanning; is_net_long/short/flat passthrough is sufficient).
         block_view = SimpleNamespace(
             params=dict(block.params), role=block.role, type=block.type
         )
@@ -1179,9 +1178,9 @@ def register_custom_from_disk(name: str) -> None:
     max_lookback_fn = getattr(module, "max_lookback", None)
     validate_fn = getattr(module, "validate", None)
 
-    # M16: deklare lookback, params'taki period-benzeri değerlerin altındaysa
-    # pencere sessizce kırpılıyordu ('SMA-200' bloğu yalnız son 55 barı
-    # görüyordu). Deklareyi param imasıyla tabanla ve uyar.
+    # M16: when the declared lookback is below the period-like values in params,
+    # the window was silently trimmed (an 'SMA-200' block only saw the last 55
+    # candles). Floor the declared value by the param implication and warn.
     _periodish = ("period", "length", "lookback", "window", "slow", "fast")
 
     def _lookback_with_floor(params, _decl=max_lookback_fn, _name=name):
@@ -1198,8 +1197,8 @@ def register_custom_from_disk(name: str) -> None:
                     continue
         if implied and declared < implied + 5:
             logging.warning(
-                "custom blok '%s': deklare lookback %d < param iması %d — "
-                "%d kullanılıyor (M16)",
+                "custom block '%s': declared lookback %d < param implication %d — "
+                "using %d (M16)",
                 _name,
                 declared,
                 implied,
@@ -1325,19 +1324,19 @@ class ComposedStrategySpec:
 
     def validate(self) -> str | None:
         if not self.blocks:
-            return "En az bir sinyal bloğu gerekli."
+            return "At least one signal block is required."
         if not any(b.role == "entry" for b in self.blocks):
-            return "En az bir 'entry' bloğu gerekli."
+            return "At least one 'entry' block is required."
         for b in self.blocks:
             reg_entry = BLOCK_REGISTRY.get(b.type)
             if reg_entry is None:
-                return f"Bilinmeyen blok tipi: {b.type}"
+                return f"Unknown block type: {b.type}"
             v = reg_entry.get("validate")
             if v is not None:
-                # L25 izolasyonunu validate'e de taşı: custom validate hook'una
-                # canlı SignalBlock yerine params KOPYASI taşıyan görünüm ver —
-                # `b.params.update(...)` spec'in canlı dict'ini bozamasın. Built-in
-                # validator'lar salt-okur, gerçek block ile geçer (davranış aynı).
+                # Carry the L25 isolation into validate too: give the custom validate
+                # hook a view carrying a COPY of params instead of the live SignalBlock —
+                # so `b.params.update(...)` cannot corrupt the spec's live dict. Built-in
+                # validators are read-only, pass with the real block (behavior unchanged).
                 vb = (
                     b
                     if reg_entry.get("builtin")
@@ -1350,15 +1349,15 @@ class ComposedStrategySpec:
                     return err
         if self.use_bracket:
             if self.sl_value <= 0:
-                return "Bracket açıkken sl_value > 0 olmalı."
+                return "sl_value must be > 0 when bracket is enabled."
             if self.tp_type != "off" and self.tp_value <= 0:
-                return "TP kapalı değilse tp_value > 0 olmalı."
+                return "tp_value must be > 0 when TP is not off."
         if self.trade_size_mode == "percent_equity" and self.trade_size_percent <= 0:
-            return "trade_size_percent > 0 olmalı."
+            return "trade_size_percent must be > 0."
         if self.trade_size_mode == "atr_target" and self.trade_size_atr_risk <= 0:
-            return "trade_size_atr_risk > 0 olmalı."
+            return "trade_size_atr_risk must be > 0."
         if self.trade_size_mode == "fixed_usdt" and self.trade_size_usdt <= 0:
-            return "trade_size_usdt > 0 olmalı."
+            return "trade_size_usdt must be > 0."
         return None
 
 
@@ -1370,10 +1369,11 @@ def _catalog_block_names(spec: ComposedStrategySpec) -> list[str]:
 
 
 def _catalog_is_valid(spec: ComposedStrategySpec, custom_names: set[str]) -> bool:
-    # H1338: diskte VAR olan (custom_names) ama registry'ye YÜKLENEMEMİŞ custom
-    # blokları koru — spec.validate() registry'ye baktığından böyle bir spec'i
-    # 'bilinmeyen blok' diye siliyordu. Blok diskte varsa spec'i geçerli say
-    # (blok yeniden yüklenebilir; kalıcı silmek geri dönüşsüz veri kaybı).
+    # H1338: preserve custom blocks that EXIST on disk (custom_names) but COULD NOT
+    # be LOADED into the registry — since spec.validate() looks at the registry it
+    # was deleting such a spec as an 'unknown block'. If the block exists on disk,
+    # treat the spec as valid (the block can be reloaded; permanent deletion is
+    # irreversible data loss).
     on_disk_custom = False
     for block_type in _catalog_block_names(spec):
         if block_type in BLOCK_CATALOG:
@@ -1381,10 +1381,10 @@ def _catalog_is_valid(spec: ComposedStrategySpec, custom_names: set[str]) -> boo
         if block_type in custom_names:
             on_disk_custom = True
             continue
-        return False  # ne builtin ne diskte custom → gerçekten geçersiz
+        return False  # neither builtin nor custom-on-disk → genuinely invalid
     if on_disk_custom:
-        # validate() registry-miss'te başarısız olur; diskteki custom bloklu
-        # spec'i yalnız yapısal (blok-tipi bağımsız) kontrollerle koru.
+        # validate() fails on a registry miss; preserve a spec with an on-disk
+        # custom block using only structural (block-type-independent) checks.
         return not (not spec.blocks or not any(b.role == "entry" for b in spec.blocks))
     return spec.validate() is None
 
@@ -1434,9 +1434,9 @@ def load_catalog() -> list[ComposedStrategySpec]:
     except Exception:
         custom_names = set()
 
-    # M1342: kayıt-başına try/except — TEK bozuk kayıt (bilinmeyen alan,
-    # exception fırlatan custom validate) tüm kataloğu [] yapıp, ardından bir
-    # RMW-save ile 30 stratejiyi silebiliyordu. Bozuğu atla, gerisini koru.
+    # M1342: per-record try/except — a SINGLE broken record (unknown field,
+    # exception-raising custom validate) could turn the whole catalog into [], then
+    # via an RMW-save delete 30 strategies. Skip the broken one, keep the rest.
     catalog: list[ComposedStrategySpec] = []
     n_broken = 0
     for d in raw:
@@ -1450,25 +1450,25 @@ def load_catalog() -> list[ComposedStrategySpec]:
             if _catalog_is_valid(spec, custom_names):
                 filtered.append(spec)
         except Exception:
-            n_broken += 1  # validate hook'u patladı — spec'i düşür ama sayaçla
-    # Yalnızca GEÇERLİ kayıtlar elendiğinde (bozuk parse YOK) kilitli yeniden
-    # yaz — bozuk kayıt varken save etmek onları kalıcı silerdi.
+            n_broken += 1  # the validate hook blew up — drop the spec but count it
+    # Only rewrite under lock when VALID records were filtered out (NO broken
+    # parse) — saving while a broken record exists would permanently delete them.
     if len(filtered) != len(catalog) and n_broken == 0:
         with _CATALOG_LOCK:
             save_catalog(filtered)
     return filtered
 
 
-# M14: katalog mutasyonları için süreç-içi kilit — lab/agent/strategy rotaları
-# kilitsiz load→append→save yapıyordu (son yazan kazanır, strateji kaybı).
-# RLock: append_to_catalog kilidi tutarken load_catalog'un içindeki kilitli
-# auto-save aynı thread'de yeniden girebilsin (deadlock önlemi).
+# M14: in-process lock for catalog mutations — the lab/agent/strategy routes did
+# lock-free load→append→save (last writer wins, strategy loss).
+# RLock: so the locked auto-save inside load_catalog can re-enter on the same
+# thread while append_to_catalog holds the lock (deadlock prevention).
 _CATALOG_LOCK = threading.RLock()
 
 
 def save_catalog(specs: list[ComposedStrategySpec]) -> None:
     CATALOG_FILE.parent.mkdir(parents=True, exist_ok=True)
-    # M14: atomik yazım (tmp + os.replace) — yarım yazım dosyayı bozamaz.
+    # M14: atomic write (tmp + os.replace) — a partial write cannot corrupt the file.
     payload = json.dumps([s.to_dict() for s in specs], indent=2)
     tmp = CATALOG_FILE.with_suffix(".json.tmp")
     tmp.write_text(payload)
@@ -1476,10 +1476,10 @@ def save_catalog(specs: list[ComposedStrategySpec]) -> None:
 
 
 def append_to_catalog(spec: ComposedStrategySpec) -> None:
-    """Kataloğa TEK kilit altında load→append→save (M14).
+    """load→append→save to the catalog under a SINGLE lock (M14).
 
-    Eşzamanlı iki koşunun birbirinin yeni stratejisini ezmesini önler.
-    Çağıranlar (lab/agent/strategy) kilitsiz RMW yerine bunu kullanmalı.
+    Prevents two concurrent runs from overwriting each other's new strategy.
+    Callers (lab/agent/strategy) should use this instead of a lock-free RMW.
     """
     with _CATALOG_LOCK:
         cat = load_catalog()
@@ -1488,12 +1488,13 @@ def append_to_catalog(spec: ComposedStrategySpec) -> None:
 
 
 def mutate_catalog(fn) -> None:
-    """Katalog üzerinde keyfi mutasyonu kilit altında uygula: fn(list)→list."""
+    """Apply an arbitrary mutation on the catalog under lock: fn(list)→list."""
     with _CATALOG_LOCK:
         cat = load_catalog()
         result = fn(cat)
-        # fn kasıtlı BOŞ liste ([]) dönebilir (son stratejiyi sil) — `or cat`
-        # bunu sessizce yutup silmeyi iptal ediyordu. Yalnız None'ı no-op say.
+        # fn may intentionally return an EMPTY list ([]) (delete the last strategy) —
+        # `or cat` was silently swallowing this and canceling the deletion. Only
+        # treat None as a no-op.
         save_catalog(result if result is not None else cat)
 
 
@@ -1507,8 +1508,8 @@ class ComposedStrategyConfig(StrategyConfig, frozen=True):
     spec_json: str
     trade_size: Decimal = Decimal("0.1")
     # Optional secondary bar type for multi-timeframe trend filter.
-    # ImportableStrategyConfig yolunda msgspec str -> BarType decode eder;
-    # doğrudan yapımda (backtest.py) BarType nesnesi geçirilmelidir.
+    # On the ImportableStrategyConfig path msgspec decodes str -> BarType;
+    # in direct construction (backtest.py) a BarType object must be passed.
     secondary_bar_type: BarType | None = None
 
 
@@ -1521,39 +1522,40 @@ class ComposedStrategy(Strategy):
         self.spec = ComposedStrategySpec.from_dict(spec_dict)
         self.instrument = None
         max_lookback = self._max_lookback()
-        # Fiyat/hacim buffer'ları: düz list + amortize kompaksiyon. Eskiden
-        # deque idi ve her bar list(deque) TAM KOPYASI alınıyordu (200k barda
-        # ölçülen ~0.5s). Bloklar kuyruk-göreli dilim okur (closes[-n:]) —
-        # değerler birebir aynı; yalnız kopya maliyeti kalkar. Custom blok
-        # adaptörü izolasyon için pencere kopyası vermeye devam eder.
+        # Price/volume buffers: flat list + amortized compaction. Formerly a deque,
+        # taking a FULL COPY of list(deque) every candle (~0.5s measured over 200k
+        # candles). Blocks read queue-relative slices (closes[-n:]) — the values are
+        # exactly the same; only the copy cost is removed. The custom-block adapter
+        # still gives a window copy for isolation.
         self._buf_cap = max_lookback + 5
-        # H1940 (etkin düzeltme): adx/stoch_rsi/wave_trend RECURSIVE (Wilder/EMA)
-        # bloklar _nau_win ile son NAU_WINDOW=260 barlık SABİT pencere ister. Buffer
-        # buf_cap↔4·buf_cap arası salınırken 260'a hiç ulaşmazsa (buf_cap küçükken)
-        # _nau_win salınan pencere döndürür; recursive tohum her kompaksiyonda ~4×
-        # sıçrayıp SAHTE kesişim üretir (metrik/skor bozulur). Bu bloklar varsa
-        # buffer'ı en az NAU_WINDOW tut → kompaksiyon 260'ın altına inmez, _nau_win
-        # her bar tutarlı 260 döndürür (NAU deque(maxlen=260) ile aynı).
+        # H1940 (effective fix): the adx/stoch_rsi/wave_trend RECURSIVE (Wilder/EMA)
+        # blocks require a FIXED window of the last NAU_WINDOW=260 candles via _nau_win.
+        # While the buffer swings between buf_cap↔4·buf_cap, if it never reaches 260
+        # (when buf_cap is small) _nau_win returns a swinging window; the recursive seed
+        # jumps ~4× on each compaction producing a SPURIOUS cross (metrics/score corrupted).
+        # If these blocks are present, keep the buffer at least NAU_WINDOW → compaction
+        # never drops below 260, _nau_win consistently returns 260 every candle
+        # (same as NAU deque(maxlen=260)).
         if any(b.type in _NAU_RECURSIVE_BLOCKS for b in self.spec.blocks):
             self._buf_cap = max(self._buf_cap, NAU_WINDOW)
         self._closes: list[float] = []
-        # Hacim serisi — volume_spike bloğu + custom blokların
-        # indicators["volumes"] erişimi için (closes ile aynı hizada).
+        # Volume series — for the volume_spike block + custom blocks'
+        # indicators["volumes"] access (aligned with closes).
         self._volumes: list[float] = []
-        # High/low serileri — custom bloklar indicators["highs"]/["lows"] ile
-        # gerçek OHLC-tabanlı indikatör (ADX/ATR/WaveTrend/Stochastic/Donchian)
-        # hesaplayabilsin diye. closes/volumes ile aynı hizada, aynı buffer
-        # yaşam döngüsü. Bar zaten tam OHLCV taşır (backtest._bars_from_df);
-        # yalnızca kapanışa ek olarak high/low de yakalanır.
+        # High/low series — so custom blocks can compute real OHLC-based indicators
+        # (ADX/ATR/WaveTrend/Stochastic/Donchian) via indicators["highs"]/["lows"].
+        # Aligned with closes/volumes, same buffer lifecycle. The Bar already carries
+        # full OHLCV (backtest._bars_from_df); in addition to the close, high/low are
+        # captured too.
         self._highs: list[float] = []
         self._lows: list[float] = []
-        # _iid() her çağrıda isinstance/from_str yapmasın (bar başına 4-6 çağrı)
+        # so _iid() doesn't do isinstance/from_str on every call (4-6 calls per candle)
         _iid_raw = config.instrument_id
         self._iid_obj = (
             InstrumentId.from_str(_iid_raw) if isinstance(_iid_raw, str) else _iid_raw
         )
-        # _current_equity hızlı yolu: ilk başarılı strateji sonrakilerde
-        # doğrudan kullanılır ("portfolio" | "balances" | None=henüz bilinmiyor)
+        # _current_equity fast path: the first successful strategy is used directly
+        # by subsequent ones ("portfolio" | "balances" | None=not yet known)
         self._equity_mode: str | None = None
         self._prev_state: dict = {}
         # Per-block Nautilus indicators, keyed by block index.
@@ -1572,20 +1574,20 @@ class ComposedStrategy(Strategy):
         ]
         # MTM equity snapshots: one value per bar for real drawdown calculation
         self._mtm_equity: list[float] = []
-        # L19: MTM anlık görüntülerinin bar zaman damgaları (ns) — backtest.py
-        # bar-çözünürlüklü equity_curve_mtm'i (ts, eq) çifti olarak kurar.
+        # L19: bar timestamps (ns) of the MTM snapshots — backtest.py builds a
+        # bar-resolution equity_curve_mtm as (ts, eq) pairs.
         self._mtm_ts: list[int] = []
         # delay_fill buffer: pending entry order side when delay_fill=True
         self._pending_entry: str | None = None  # "BUY" | "SELL" | None
-        # Karar günlüğü: her giriş/çıkış sinyalinde ateşleyen bloklar +
-        # indikatör değerleri. Emirlere "dr:<seq>"/"xr:<seq>" tag'i basılır;
-        # backtest sonrası positions↔fills join'i ile trade başına giriş/çıkış
-        # sebebi üretilir (harvest: _mtm_equity ile aynı yaşam döngüsü).
+        # Decision log: on each entry/exit signal, the firing blocks +
+        # indicator values. Orders are stamped with a "dr:<seq>"/"xr:<seq>" tag;
+        # after the backtest, a positions↔fills join produces the per-trade
+        # entry/exit reason (harvest: same lifecycle as _mtm_equity).
         self._decision_log: list[dict] = []
         self._decision_seq: int = 0
-        # delay_fill'de sinyal barındaki sebep, sonraki barın submit'ine taşınır
+        # in delay_fill, the reason on the signal candle is carried to the next candle's submit
         self._pending_entry_reason: dict | None = None
-        # L13: delay_fill'de ertelenen çıkış sebebi (giriş simetrisi).
+        # L13: deferred exit reason in delay_fill (entry symmetry).
         self._pending_exit_reason: dict | None = None
         # Multi-timeframe trend filter state
         trend_period = max(self.spec.trend_ema_period, 10)
@@ -1671,14 +1673,14 @@ class ComposedStrategy(Strategy):
         return self._iid_obj
 
     def _current_equity(self) -> float:
-        """Best-effort account equity. Portfolio.equity() → USDT balance fallback → sabit.
+        """Best-effort account equity. Portfolio.equity() → USDT balance fallback → constant.
 
-        Her bar çağrıldığından (MTM eğrisi) ilk başarılı yol ``_equity_mode``a
-        kaydedilir ve sonraki barlarda deneme/fallback zinciri atlanır —
-        aynı API, aynı değer, daha az Python maliyeti.
+        Since it is called every candle (MTM curve), the first successful path is
+        saved to ``_equity_mode`` and on subsequent candles the attempt/fallback chain
+        is skipped — same API, same value, less Python cost.
         """
         venue = self._iid_obj.venue
-        # 1) Portfolio.equity(venue) — v2 native yol
+        # 1) Portfolio.equity(venue) — v2 native path
         if self._equity_mode in (None, "portfolio"):
             try:
                 eq = self.portfolio.equity(venue)
@@ -1687,12 +1689,12 @@ class ComposedStrategy(Strategy):
                     return float(eq.as_double() if hasattr(eq, "as_double") else eq)
             except Exception:
                 pass
-        # 2) Hesap bakiyelerini tara — USDT/USD öncelikli, sonra ilk bulduğu
+        # 2) Scan account balances — USDT/USD preferred, then the first found
         try:
             account = self.portfolio.account(venue)
             if account is not None:
                 balances = account.balances()
-                # Önce USDT veya USD ara
+                # First look for USDT or USD
                 for preferred in ("USDT", "USD"):
                     for currency, bal in balances.items():
                         if str(currency) == preferred:
@@ -1705,15 +1707,15 @@ class ComposedStrategy(Strategy):
                                             if hasattr(v, "as_double")
                                             else v
                                         )
-                                        # Hızlı-yol kilidi: sonraki barlarda
-                                        # portfolio.equity() denemesi atlanır
-                                        # (dokümante edilen _equity_mode cache'i;
-                                        # eskiden 'balances' HİÇ set edilmiyordu).
+                                        # Fast-path lock: on subsequent candles the
+                                        # portfolio.equity() attempt is skipped
+                                        # (the documented _equity_mode cache;
+                                        # 'balances' was NEVER set before).
                                         self._equity_mode = "balances"
                                         return _eq
                                     except Exception:
                                         continue
-                # Fallback: ilk non-None balance (para birimi bilinmiyor, uyarı logla)
+                # Fallback: first non-None balance (currency unknown, log a warning)
                 for bal in balances.values():
                     for attr in ("total", "free"):
                         v = getattr(bal, attr, None)
@@ -1722,18 +1724,18 @@ class ComposedStrategy(Strategy):
                                 result = float(
                                     v.as_double() if hasattr(v, "as_double") else v
                                 )
-                                self._equity_mode = "balances"  # hızlı-yol kilidi
+                                self._equity_mode = "balances"  # fast-path lock
                                 self.log.warning(
-                                    f"_current_equity: USDT/USD bulunamadı, ilk balance kullanılıyor ({result})"
+                                    f"_current_equity: USDT/USD not found, using first balance ({result})"
                                 )
                                 return result
                             except Exception:
                                 continue
         except Exception:
             pass
-        # L43: fallback tek kaynaktan (app_constants.STARTING_CASH) — kopya
-        # sabit sessizce ayrışabiliyordu. app_constants bağımsız modül,
-        # döngüsel import riski yok.
+        # L43: fallback from a single source (app_constants.STARTING_CASH) — a
+        # copied constant could silently diverge. app_constants is an independent
+        # module, no circular import risk.
         from app_constants import STARTING_CASH
 
         return float(STARTING_CASH)
@@ -1745,7 +1747,7 @@ class ComposedStrategy(Strategy):
         if price <= 0:
             return float(self.spec.trade_size)
         if mode == "fixed_usdt":
-            # Sabit dolar → quantity: USDT tutarını fiyata böl
+            # Fixed dollar → quantity: divide the USDT amount by the price
             return max(0.0, float(self.spec.trade_size_usdt) / price)
         if mode == "percent_equity":
             equity = self._current_equity()
@@ -1799,10 +1801,10 @@ class ComposedStrategy(Strategy):
         return price * (1.0 + offset)
 
     # ------------------------------------------------------------------
-    # Karar günlüğü (giriş/çıkış sebepleri)
+    # Decision log (entry/exit reasons)
 
     def _build_reason(self, kind, side, fires_per, blocks_list, bar, closes) -> dict:
-        """Ateşleyen blokların label+params+indikatör-değer anlık görüntüsü."""
+        """label+params+indicator-value snapshot of the firing blocks."""
         fired = []
         for (i, b), f in zip(blocks_list, fires_per):
             if not f:
@@ -1826,7 +1828,7 @@ class ComposedStrategy(Strategy):
                 }
             )
         return {
-            "seq": None,  # _log_decision atar
+            "seq": None,  # _log_decision sets this
             "kind": kind,
             "side": side,
             "bar_ts": int(bar.ts_event // 1_000_000_000),
@@ -1837,7 +1839,7 @@ class ComposedStrategy(Strategy):
         }
 
     def _log_decision(self, reason: dict, submit_ts: int) -> int:
-        """Kararı günlüğe yaz, emir tag'inde kullanılacak seq'i döndür."""
+        """Write the decision to the log, return the seq to use in the order tag."""
         self._decision_seq += 1
         reason["seq"] = self._decision_seq
         reason["submit_ts"] = submit_ts
@@ -1845,12 +1847,12 @@ class ComposedStrategy(Strategy):
         return self._decision_seq
 
     def _can_submit_entry(self, side: OrderSide, bar: Bar) -> bool:
-        """M17: emir GÖNDERMEDEN ön-kontrol.
+        """M17: pre-check BEFORE SENDING an order.
 
-        Flip yolundaki 'önce kapat, sonra gir' sırası, giriş zaten başarısız
-        olacaksa (qty→0, make_qty hatası, bracket SL'i için ATR hazır değil)
-        eski pozisyonu kapatıp stratejiyi istenmeden FLAT bırakıyordu. Flip
-        ancak bu kontrol True ise kapanışla başlar.
+        On the flip path the 'close first, then enter' order was leaving the strategy
+        unintentionally FLAT if the entry was going to fail anyway (qty→0, make_qty
+        error, ATR not ready for the bracket SL) by closing the old position. A flip
+        only begins with a close if this check is True.
         """
         price = float(bar.close)
         qty_raw = self._compute_qty(price)
@@ -1869,26 +1871,26 @@ class ComposedStrategy(Strategy):
         return True
 
     def _cancel_working(self) -> None:
-        """H1999/M1840: enstrümanın açık (çalışan) emirlerini iptal et.
+        """H1999/M1840: cancel the instrument's open (working) orders.
 
-        Çıkış ve flip'te yalnız close_all_positions çağrılıyordu; bekleyen
-        SL/TP koruma emirleri (bracket/SL-only) ve dolmamış GTC limit giriş
-        emirleri iptal edilmiyordu. Sonuç: (a) bayat SL/TP sonraki pozisyonu
-        eski seviyeden kapatabilir; (b) dolmamış limit girişler birikip
-        çift/üçlü pozisyon açabilir. Nautilus manage_contingent_orders default
-        kapalı olduğundan bunu elle yapıyoruz.
+        On exit and flip only close_all_positions was being called; pending
+        SL/TP protective orders (bracket/SL-only) and unfilled GTC limit entry
+        orders were not canceled. Result: (a) a stale SL/TP could close the next
+        position at the old level; (b) unfilled limit entries could accumulate and
+        open double/triple positions. Since Nautilus manage_contingent_orders is
+        off by default, we do this manually.
         """
         try:
             self.cancel_all_orders(self._iid())
         except Exception as e:
-            self.log.error(f"_cancel_working başarısız: {e}")
+            self.log.error(f"_cancel_working failed: {e}")
 
     def _rollback_decision(self, seq: int | None) -> None:
-        """L12: emir gönderilemedi — az önce yazılan kararı geri al.
+        """L12: order could not be sent — roll back the decision just written.
 
-        Karar logu submit'ten ÖNCE yazılıyor; emir çıkmazsa 'dr:<seq>' tag'i
-        hiçbir emirde olmaz ve log hayalet 'entry' kayıtlarıyla şişerdi.
-        Strateji tek iş parçacıklı — pop güvenli.
+        The decision log is written BEFORE the submit; if the order does not go out
+        the 'dr:<seq>' tag is on no order and the log would bloat with ghost 'entry'
+        records. The strategy is single-threaded — the pop is safe.
         """
         if seq is None:
             return
@@ -1899,8 +1901,8 @@ class ComposedStrategy(Strategy):
     def _submit_entry(
         self, side: OrderSide, bar: Bar, reason_seq: int | None = None
     ) -> bool:
-        """Giriş emrini gönderir; GÖNDERİLDİYSE True (L12: bool sözleşmesi —
-        False dönüşünde çağıran kararı geri alır)."""
+        """Submits the entry order; True IF SENT (L12: bool contract —
+        on a False return the caller rolls back the decision)."""
         entry_tags = [f"dr:{reason_seq}"] if reason_seq is not None else None
         price = float(bar.close)
         qty_raw = self._compute_qty(price)
@@ -1910,14 +1912,14 @@ class ComposedStrategy(Strategy):
             qty = self.instrument.make_qty(qty_raw)
         except Exception:
             return False
-        # Rounding sonrası sıfıra düşen miktarla emir gönderme
+        # Don't send an order with a quantity that drops to zero after rounding
         if float(qty) <= 0:
             return False
 
         if self.spec.use_bracket:
             sl_price, tp_price = self._compute_bracket_prices(side, price)
             if sl_price <= 0:
-                # ATR henüz hazır değil — bracket order için SL hesaplanamıyor
+                # ATR not ready yet — SL cannot be computed for the bracket order
                 return False
             entry_price_obj = None
             entry_order_type = OrderType.MARKET
@@ -1928,10 +1930,10 @@ class ComposedStrategy(Strategy):
                 )
 
             if tp_price is None:
-                # tp_type == 'off': Nautilus bracket() her zaman TP LIMIT emri
-                # kurar ve price=None'ı KABUL ETMEZ (TypeError — agent loglarında
-                # 8× görülen canlı bug). Entry + SL-only'a düş: entry emrini
-                # normal gönder, SL'i reduce-only STOP_MARKET olarak ekle.
+                # tp_type == 'off': Nautilus bracket() always sets up a TP LIMIT
+                # order and does NOT ACCEPT price=None (TypeError — a live bug seen
+                # 8× in the agent logs). Fall back to entry + SL-only: send the entry
+                # order normally, add the SL as a reduce-only STOP_MARKET.
                 if entry_order_type == OrderType.LIMIT:
                     entry = self.order_factory.limit(
                         instrument_id=self._iid(),
@@ -1956,7 +1958,7 @@ class ComposedStrategy(Strategy):
                     quantity=qty,
                     trigger_price=self.instrument.make_price(sl_price),
                     time_in_force=TimeInForce.GTC,
-                    reduce_only=True,  # pozisyon yoksa ters pozisyon AÇMAZ
+                    reduce_only=True,  # does NOT open a reverse position if no position exists
                     tags=["sl"],
                 )
                 self.submit_order(sl_order)
@@ -2033,13 +2035,13 @@ class ComposedStrategy(Strategy):
             eq = self._current_equity()
             if eq > 0:
                 self._mtm_equity.append(eq)
-                self._mtm_ts.append(int(bar.ts_event))  # L19: hizalı zaman
+                self._mtm_ts.append(int(bar.ts_event))  # L19: aligned time
         except Exception:
             pass
 
-        # L13: delay_fill — ertelenen ÇIKIŞ, ertelenen girişten ÖNCE işlenir
-        # (aynı barda hem çıkış hem giriş kuyruktaysa sıra: çıkış → giriş;
-        # flip semantiği pending_entry dalındaki close_all ile aynı kalır).
+        # L13: delay_fill — the deferred EXIT is processed BEFORE the deferred entry
+        # (if both an exit and an entry are queued on the same candle, order: exit → entry;
+        # flip semantics stay the same as the close_all in the pending_entry branch).
         if self.spec.delay_fill and self._pending_exit_reason is not None:
             reason = self._pending_exit_reason
             self._pending_exit_reason = None
@@ -2048,29 +2050,30 @@ class ComposedStrategy(Strategy):
                 self._iid()
             ):
                 seq = self._log_decision(reason, submit_ts)
-                self._cancel_working()  # H1999: bayat SL/TP + dolmamış limit
+                self._cancel_working()  # H1999: stale SL/TP + unfilled limit
                 self.close_all_positions(self._iid(), tags=[f"xr:{seq}"])
 
         # delay_fill: execute deferred entry from previous bar
         if self.spec.delay_fill and self._pending_entry is not None:
             side = self._pending_entry
             self._pending_entry = None
-            # Sinyal barında biriken sebep — yalnız emir GERÇEKTEN gönderilirse
-            # günlüğe geçer (pozisyon zaten açıksa karar sessizce düşer).
+            # The reason accumulated on the signal candle — only reaches the log if
+            # the order is ACTUALLY sent (if a position is already open the decision
+            # silently drops).
             reason = self._pending_entry_reason
             self._pending_entry_reason = None
             submit_ts = int(bar.ts_event // 1_000_000_000)
             is_long = self.portfolio.is_net_long(self._iid())
             is_short = self.portfolio.is_net_short(self._iid())
             if side == "BUY" and not is_long:
-                # M17: flip ön-kontrolü (bkz. anlık yol) — giriş çıkamayacaksa
-                # eski pozisyon kapatılmaz.
+                # M17: flip pre-check (see the synchronous path) — if the entry
+                # cannot go out, the old position is not closed.
                 if is_short and not self._can_submit_entry(OrderSide.BUY, bar):
                     pass
                 else:
-                    # H1999 (flip: bayat SL/TP) + #4 (flat: dolmamış GTC limit
-                    # girişi). Koşulsuz — yeni giriş göndermeden önce açık emirleri
-                    # daima temizle ki limit girişleri birikip birlikte dolmasın.
+                    # H1999 (flip: stale SL/TP) + #4 (flat: unfilled GTC limit
+                    # entry). Unconditional — always clear open orders before sending
+                    # a new entry so limit entries don't accumulate and fill together.
                     self._cancel_working()
                     self.close_all_positions(self._iid(), tags=["flip"])
                     seq = self._log_decision(reason, submit_ts) if reason else None
@@ -2080,15 +2083,15 @@ class ComposedStrategy(Strategy):
                 if is_long and not self._can_submit_entry(OrderSide.SELL, bar):
                     pass
                 else:
-                    self._cancel_working()  # H1999 (flip) + #4 (flat limit birikmesi)
+                    self._cancel_working()  # H1999 (flip) + #4 (flat limit accumulation)
                     self.close_all_positions(self._iid(), tags=["flip"])
                     seq = self._log_decision(reason, submit_ts) if reason else None
                     if not self._submit_entry(OrderSide.SELL, bar, reason_seq=seq):
                         self._rollback_decision(seq)
 
-        # Buffer'lara ekle; amortize kompaksiyon (4×cap'te kuyruk kırp) — her
-        # bar tam kopya (eski list(deque)) yerine sıfır-kopya paylaşım.
-        # Dört seri (close/volume/high/low) SENKRON kırpılır → hizalı kalır.
+        # Append to the buffers; amortized compaction (trim the queue at 4×cap) — zero-copy
+        # sharing instead of a full copy every candle (the old list(deque)).
+        # The four series (close/volume/high/low) are trimmed IN SYNC → stay aligned.
         self._closes.append(float(bar.close))
         self._volumes.append(float(bar.volume))
         self._highs.append(float(bar.high))
@@ -2128,12 +2131,12 @@ class ComposedStrategy(Strategy):
             if self._trend_bias == "bearish":
                 long_fires = False  # no longs in downtrend
             elif self._trend_bias == "bullish":
-                # Yükseliş trendinde short'ları bastır. Eskiden bu dal
-                # `and not allow_short` ile korunuyordu — oysa short'ların
-                # ateşlendiği TEK durum allow_short=True'dur; guard tam o durumu
-                # atlayıp ters-trend short'ları filtresiz geçiriyordu (filtre
-                # hiç iş yapmıyordu). allow_short=False iken short_fires zaten
-                # False olduğundan bu satır o durumda zararsız.
+                # Suppress shorts in an uptrend. This branch was formerly guarded
+                # by `and not allow_short` — but the ONLY case where shorts fire is
+                # allow_short=True; the guard skipped exactly that case and let
+                # counter-trend shorts through unfiltered (the filter did nothing).
+                # When allow_short=False, short_fires is already False so this line
+                # is harmless in that case.
                 short_fires = False  # no shorts in uptrend
 
         if self.spec.exit_logic == "AND":
@@ -2149,14 +2152,14 @@ class ComposedStrategy(Strategy):
                 "exit", None, exit_fires_per, self._exit_blocks, bar, closes
             )
             if self.spec.delay_fill:
-                # L13: delay_fill artık ÇIKIŞLARA da uygulanıyor — eskiden
-                # girişler bir bar gecikirken çıkışlar sinyal barında işlenir,
-                # çıkışlar sistematik olarak bir bar avantajlı olurdu
-                # (asimetrik/iyimser zamanlama). Bilinçli davranış değişikliği.
+                # L13: delay_fill is now applied to EXITS too — formerly entries
+                # were delayed by one candle while exits were processed on the
+                # signal candle, so exits were systematically one candle early
+                # (asymmetric/optimistic timing). A deliberate behavior change.
                 self._pending_exit_reason = reason
             else:
                 seq = self._log_decision(reason, reason["bar_ts"])
-                self._cancel_working()  # H1999: bayat SL/TP + dolmamış limit
+                self._cancel_working()  # H1999: stale SL/TP + unfilled limit
                 self.close_all_positions(self._iid(), tags=[f"xr:{seq}"])
             return
 
@@ -2168,15 +2171,15 @@ class ComposedStrategy(Strategy):
                 self._pending_entry = "BUY"  # execute next bar
                 self._pending_entry_reason = reason
             else:
-                # M17: flip'te ÖNCE giriş ön-kontrolü — yeni emir zaten
-                # çıkamayacaksa eski pozisyonu kapatma (istenmeden flat kalma).
+                # M17: on a flip, entry pre-check FIRST — if the new order
+                # cannot go out anyway, don't close the old position (avoid staying flat unintentionally).
                 if is_short:
                     if not self._can_submit_entry(OrderSide.BUY, bar):
                         return
                     self._cancel_working()  # H1999
                     self.close_all_positions(self._iid(), tags=["flip"])
                 else:
-                    self._cancel_working()  # #4: flat'te dolmamış GTC limit girişi birikmesin
+                    self._cancel_working()  # #4: prevent unfilled GTC limit entry accumulation when flat
                 seq = self._log_decision(reason, reason["bar_ts"])
                 if not self._submit_entry(OrderSide.BUY, bar, reason_seq=seq):
                     self._rollback_decision(seq)
@@ -2194,7 +2197,7 @@ class ComposedStrategy(Strategy):
                     self._cancel_working()  # H1999
                     self.close_all_positions(self._iid(), tags=["flip"])
                 else:
-                    self._cancel_working()  # #4: flat'te dolmamış GTC limit girişi birikmesin
+                    self._cancel_working()  # #4: prevent unfilled GTC limit entry accumulation when flat
                 seq = self._log_decision(reason, reason["bar_ts"])
                 if not self._submit_entry(OrderSide.SELL, bar, reason_seq=seq):
                     self._rollback_decision(seq)

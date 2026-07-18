@@ -1,0 +1,5 @@
+{# Discover-tickers result — swapped into #discover-result via HTMX. #}
+<span class="small text-muted">
+  Found <span class="mono">{{ "{:,}".format(count) }}</span> tickers.
+  {% if sample %}Sample: <span class="mono">{{ sample | join(', ') }}</span>{% endif %}
+</span>

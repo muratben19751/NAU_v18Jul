@@ -7,7 +7,7 @@ Wiki References
 ---------------
 Bkz: [[v1_to_v2_migration_lessons]]
 
-Pre-migration parity anchor — [[v1_to_v2_migration_lessons]] sayfasının "6 catalog spec bit-identical parity" iddiasını üreten script.
+Pre-migration parity anchor — the script that produces the "6 catalog spec bit-identical parity" claim on the [[v1_to_v2_migration_lessons]] page.
 """
 
 from __future__ import annotations

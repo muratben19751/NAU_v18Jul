@@ -1,8 +1,8 @@
-"""Trade giriş/çıkış sebebi yakalama testleri.
+"""Trade entry/exit reason capture tests.
 
-/reports trade-detay özelliğinin çekirdeği: ComposedStrategy karar günlüğü +
-emir tag'leri ("dr:<seq>"/"xr:<seq>"/"sl"/"tp"/"flip"/"eob") + positions↔fills
-join'i (_extract_trades).
+Core of the /reports trade-detail feature: ComposedStrategy decision log +
+order tags ("dr:<seq>"/"xr:<seq>"/"sl"/"tp"/"flip"/"eob") + positions↔fills
+join (_extract_trades).
 """
 
 from __future__ import annotations
@@ -31,7 +31,7 @@ def _positions_df(rows: list[dict]) -> pd.DataFrame:
 
 
 def _fills_df(rows: dict[str, dict]) -> pd.DataFrame:
-    """client_order_id → {tags, type} (fills raporu şekli: index=id)."""
+    """client_order_id → {tags, type} (fills report shape: index=id)."""
     df = pd.DataFrame.from_dict(rows, orient="index")
     df.index.name = "client_order_id"
     return df
@@ -49,7 +49,7 @@ _DECISIONS = [
             {
                 "idx": 0,
                 "type": "ma_cross",
-                "label": "MA Kesişimi",
+                "label": "MA Cross",
                 "params": {"fast": 5, "slow": 20},
                 "values": {"fast": 42.1, "slow": 41.8},
             }
@@ -67,7 +67,7 @@ _DECISIONS = [
             {
                 "idx": 1,
                 "type": "rsi_threshold",
-                "label": "RSI Eşiği",
+                "label": "RSI Threshold",
                 "params": {"threshold": 70},
                 "values": {"rsi": 76.3},
             }
@@ -78,7 +78,7 @@ _DECISIONS = [
 
 
 class TestReasonJoin:
-    """Motor olmadan: sahte positions/fills/decisions → doğru atıf."""
+    """Without engine: fake positions/fills/decisions → correct attribution."""
 
     def test_entry_dr_tag_and_signal_exit(self):
         pos = _positions_df([{"opening_order_id": "O-1", "closing_order_id": "O-2"}])
@@ -89,10 +89,10 @@ class TestReasonJoin:
             }
         )
         t = _extract_trades(pos, fills_df=fills, decisions=_DECISIONS)[0]
-        assert "MA Kesişimi" in t["entry_reason"]
+        assert "MA Cross" in t["entry_reason"]
         assert "fast=5" in t["entry_reason"] and "42.1" in t["entry_reason"]
         assert t["exit_kind"] == "signal"
-        assert "RSI Eşiği" in t["exit_reason"] and "76.3" in t["exit_reason"]
+        assert "RSI Threshold" in t["exit_reason"] and "76.3" in t["exit_reason"]
 
     def test_sl_tp_flip_eob_kinds(self):
         pos = _positions_df(
@@ -117,7 +117,7 @@ class TestReasonJoin:
         assert kinds == ["sl", "tp", "flip", "eob"]
 
     def test_type_fallback_when_tags_missing(self):
-        """Eski koşum / tag'siz emir → emir tipinden çıkarım."""
+        """Old run / untagged order → inference from order type."""
         pos = _positions_df(
             [
                 {"opening_order_id": "E1", "closing_order_id": "C1"},
@@ -135,7 +135,7 @@ class TestReasonJoin:
         assert trades[1]["exit_kind"] == "tp"
 
     def test_no_fills_df_degrades_to_none(self):
-        """fills verilmezse mevcut davranış: sebep alanları None, 7 eski alan sağlam."""
+        """If fills not provided, current behavior: reason fields None, 7 old fields intact."""
         pos = _positions_df([{"opening_order_id": "X", "closing_order_id": "Y"}])
         t = _extract_trades(pos)[0]
         assert t["entry_reason"] is None and t["exit_kind"] is None
@@ -143,14 +143,14 @@ class TestReasonJoin:
 
     def test_missing_fill_row_no_crash(self):
         pos = _positions_df(
-            [{"opening_order_id": "YOK-1", "closing_order_id": "YOK-2"}]
+            [{"opening_order_id": "NONE-1", "closing_order_id": "NONE-2"}]
         )
-        fills = _fills_df({"BASKA": {"tags": "['dr:1']", "type": "MARKET"}})
+        fills = _fills_df({"OTHER": {"tags": "['dr:1']", "type": "MARKET"}})
         t = _extract_trades(pos, fills_df=fills, decisions=_DECISIONS)[0]
         assert t["entry_reason"] is None and t["exit_kind"] is None
 
     def test_unfilled_decision_is_harmless(self):
-        """Dolmayan limit girişinin kararı pozisyonsuz kalır — crash yok."""
+        """Unfilled limit entry's decision stays position-less — no crash."""
         pos = _positions_df([{"opening_order_id": "O-1", "closing_order_id": "O-2"}])
         fills = _fills_df(
             {
@@ -159,7 +159,7 @@ class TestReasonJoin:
             }
         )
         extra = _DECISIONS + [
-            {**_DECISIONS[0], "seq": 99}  # hiçbir fill'e bağlanmayan karar
+            {**_DECISIONS[0], "seq": 99}  # decision not bound to any fill
         ]
         trades = _extract_trades(pos, fills_df=fills, decisions=extra)
         assert len(trades) == 1 and trades[0]["exit_kind"] == "eob"
@@ -188,7 +188,7 @@ def _run(spec: ComposedStrategySpec):
         spec,
         _bars(),
         iteration_id=1,
-        rationale="reason testi",
+        rationale="reason test",
         instrument=instrument,
         bar_type=bar_type,
         venue=instrument.id.venue,
@@ -196,11 +196,11 @@ def _run(spec: ComposedStrategySpec):
 
 
 class TestLogSpecRoundTrip:
-    """Log kaydındaki spec → from_dict → validate (eski VE yeni şekil)."""
+    """Spec in log record → from_dict → validate (old AND new shape)."""
 
     _OLD_SUBSET = {
         "id": "old1",
-        "name": "Eski Kayıt",
+        "name": "Old Record",
         "blocks": [
             {"type": "ma_cross", "role": "entry", "params": {"fast": 5, "slow": 20}}
         ],
@@ -221,7 +221,7 @@ class TestLogSpecRoundTrip:
     def test_old_subset_record_fills_defaults(self):
         spec = ComposedStrategySpec.from_dict(self._OLD_SUBSET)
         assert spec.validate() is None
-        assert spec.delay_fill is True  # varsayılan
+        assert spec.delay_fill is True  # default
         assert spec.trend_filter is False
 
     def test_new_full_record_preserves_fields(self):
@@ -241,14 +241,14 @@ class TestLogSpecRoundTrip:
     def test_unknown_block_type_fails_validate(self):
         rec = {
             **self._OLD_SUBSET,
-            "blocks": [{"type": "silinmis_custom", "role": "entry", "params": {}}],
+            "blocks": [{"type": "deleted_custom", "role": "entry", "params": {}}],
         }
         spec = ComposedStrategySpec.from_dict(rec)
         assert spec.validate() is not None
 
 
 class TestDetailEndpoint:
-    """GET /reports/detail — log satırı → yeniden-koşum → fragment."""
+    """GET /reports/detail — log row → re-run → fragment."""
 
     def _make_record(self) -> dict:
         return {
@@ -302,7 +302,7 @@ class TestDetailEndpoint:
                     "side": "BUY",
                     "pnl": 500.0,
                     "dur_min": 60,
-                    "entry_reason": "MA Kesişimi (fast=5, slow=20) · fast 30010 / slow 29990",
+                    "entry_reason": "MA Cross (fast=5, slow=20) · fast 30010 / slow 29990",
                     "exit_reason": "Stop-Loss",
                     "exit_kind": "sl",
                     "entry_detail": None,
@@ -326,8 +326,8 @@ class TestDetailEndpoint:
         assert resp.status_code == 200
         html = resp.text
         assert "data-price-chart" in html
-        assert "MA Kesişimi" in html
-        assert "birebir" in html  # sadakat rozeti (n_trades + pnl eşleşti)
+        assert "MA Cross" in html
+        assert "reproduced exactly" in html  # fidelity badge (n_trades + pnl matched)
         assert "Stop-Loss" in html
 
     def test_detail_unknown_ts(self, tmp_path, monkeypatch):
@@ -341,8 +341,8 @@ class TestDetailEndpoint:
         monkeypatch.setattr(rp, "BACKTEST_LOG", log)
         rp._DETAIL_CACHE.clear()
         client = TestClient(app)
-        resp = client.get("/reports/detail", params={"ts": "yok"})
-        assert resp.status_code == 200 and "bulunamadı" in resp.text
+        resp = client.get("/reports/detail", params={"ts": "none"})
+        assert resp.status_code == 200 and "not found" in resp.text
 
     def test_detail_non_bybit_row(self, tmp_path, monkeypatch):
         import json as _json
@@ -353,7 +353,7 @@ class TestDetailEndpoint:
         from server import app
 
         rec = self._make_record()
-        rec["bars"] = {"ticker": "A.NASDAQ", "granularity": "1-DAY"}  # symbol yok
+        rec["bars"] = {"ticker": "A.NASDAQ", "granularity": "1-DAY"}  # no symbol
         log = tmp_path / "backtest_log.jsonl"
         log.write_text(_json.dumps(rec) + "\n")
         monkeypatch.setattr(rp, "BACKTEST_LOG", log)
@@ -364,7 +364,7 @@ class TestDetailEndpoint:
 
 
 class TestChartWindowGuard:
-    """/chart/data pencere/TF fizibilite guard'ı — veri yüklemeden reddeder."""
+    """/chart/data window/TF feasibility guard — rejects before loading data."""
 
     def test_too_fine_tf_rejected_without_data_load(self, monkeypatch):
         from fastapi.testclient import TestClient
@@ -372,7 +372,7 @@ class TestChartWindowGuard:
         from server import app
 
         def boom(**kwargs):
-            raise AssertionError("guard veri yüklemeden reddetmeliydi")
+            raise AssertionError("guard should have rejected before loading data")
 
         monkeypatch.setattr("data.load_bybit_bars", boom)
         client = TestClient(app)
@@ -388,7 +388,7 @@ class TestChartWindowGuard:
         )
         assert resp.status_code == 200
         body = resp.json()
-        assert "çok ince" in body["error"] and body["candles"] == []
+        assert "too fine" in body["error"] and body["candles"] == []
 
     def test_feasible_tf_passes_guard(self, monkeypatch):
         from fastapi.testclient import TestClient
@@ -414,7 +414,7 @@ class TestChartWindowGuard:
             "/chart/data",
             params={
                 "symbol": "BTCUSDT",
-                "interval": "D",  # 6y / 1d ≈ 2.2k mum — makul
+                "interval": "D",  # 6y / 1d ≈ 2.2k candles — reasonable
                 "start_ts": 1_600_000_000,
                 "end_ts": 1_600_000_000 + six_years,
             },
@@ -424,7 +424,7 @@ class TestChartWindowGuard:
 
 
 class TestReasonCaptureIntegration:
-    """Gerçek motor: sinyal → tag → fills → sebepli trade."""
+    """Real engine: signal → tag → fills → reasoned trade."""
 
     def test_ma_cross_reasons_end_to_end(self):
         spec = ComposedStrategySpec(
@@ -448,21 +448,21 @@ class TestReasonCaptureIntegration:
         r = _run(spec)
         assert r.error is None
         trades = r.trades or []
-        assert trades, "hiç trade yok"
+        assert trades, "no trades at all"
         for t in trades:
-            assert t["entry_reason"] and "MA Kesişimi" in t["entry_reason"]
+            assert t["entry_reason"] and "MA Cross" in t["entry_reason"]
             assert "fast=5" in t["entry_reason"]
-            assert "·" in t["entry_reason"], "indikatör değerleri eksik"
+            assert "·" in t["entry_reason"], "indicator values missing"
             assert t["exit_kind"] in ("signal", "eob")
         assert any(t["exit_kind"] == "signal" for t in trades)
 
     def test_bracket_sl_attribution(self):
-        """Düşüş→yükseliş→çöküş: giriş yükselişte, çöküş SL'i KESİN tetikler."""
+        """Decline→rise→crash: entry on the rise, crash DEFINITELY triggers SL."""
         n = 400
         idx = pd.date_range("2024-01-01", periods=n, freq="1h", tz="UTC")
-        seg1 = 31_000 - np.arange(100) * 20.0  # düşüş → 29k
-        seg2 = seg1[-1] + np.arange(200) * 20.0  # yükseliş → 33k (giriş burada)
-        seg3 = seg2[-1] - np.arange(100) * 100.0  # çöküş → 23k (SL tetiklenir)
+        seg1 = 31_000 - np.arange(100) * 20.0  # decline → 29k
+        seg2 = seg1[-1] + np.arange(200) * 20.0  # rise → 33k (entry here)
+        seg3 = seg2[-1] - np.arange(100) * 100.0  # crash → 23k (SL triggers)
         close = np.concatenate([seg1, seg2, seg3])
         open_ = np.concatenate([[close[0]], close[:-1]])
         bars = pd.DataFrame(
@@ -490,24 +490,24 @@ class TestReasonCaptureIntegration:
             use_bracket=True,
             sl_type="percent",
             sl_value=0.5,
-            tp_type="off",  # SL-fallback yolu (reduce-only STOP_MARKET)
+            tp_type="off",  # SL-fallback path (reduce-only STOP_MARKET)
         )
         instrument, bar_type = _build_instrument_bar_type(_RECIPE)
         r = run_composed_backtest(
             spec,
             bars,
             iteration_id=1,
-            rationale="sl testi",
+            rationale="sl test",
             instrument=instrument,
             bar_type=bar_type,
             venue=instrument.id.venue,
         )
         assert r.error is None
         kinds = {t["exit_kind"] for t in r.trades or []}
-        assert "sl" in kinds, f"SL atfı yok, görülen: {kinds}"
+        assert "sl" in kinds, f"no SL attribution, seen: {kinds}"
 
     def test_delay_fill_submit_next_bar(self):
-        """delay_fill=True (varsayılan): karar sinyal barında, submit sonraki barda."""
+        """delay_fill=True (default): decision on signal bar, submit on next bar."""
 
         spec = ComposedStrategySpec(
             id="reas3",
@@ -525,7 +525,8 @@ class TestReasonCaptureIntegration:
         assert spec.delay_fill is True
         r = _run(spec)
         assert r.error is None and (r.trades or [])
-        # Karar günlüğü sandbox'sız in-process yolda strateji üzerinden okunamaz
-        # (IterationResult'a girmiyor) — davranışı trade sebebi üzerinden
-        # doğruluyoruz: sebep var → dr-tag join'i delay yolunda da çalıştı.
+        # The decision log cannot be read through the strategy on the in-process
+        # path without sandbox (it does not enter IterationResult) — we verify the
+        # behavior via the trade reason: reason present → dr-tag join also worked
+        # on the delay path.
         assert all(t["entry_reason"] for t in r.trades)

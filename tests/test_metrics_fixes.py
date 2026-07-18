@@ -1,5 +1,5 @@
-"""B kümesi regresyonları: H5 frekans-duyarlı yıllıklandırma, M5 komisyon,
-H11 max_dd_pct köprüsü, L5 _to_unix bantları, L30 NAU spec pinleri, L33 PF cap.
+"""B set regressions: H5 frequency-aware annualization, M5 commission,
+H11 max_dd_pct bridge, L5 _to_unix bands, L30 NAU spec pins, L33 PF cap.
 """
 
 from __future__ import annotations
@@ -10,7 +10,7 @@ import pytest
 
 
 class TestPeriodsPerYear:
-    """H5: yıllıklandırma tabanı kaynak + bar aralığından türetilmeli."""
+    """H5: annualization base should be derived from source + bar interval."""
 
     def _bt(self, interval: str):
         from backtest import _make_bybit_bar_type, _make_bybit_instrument
@@ -38,9 +38,9 @@ class TestPeriodsPerYear:
         assert _periods_per_year(None, None) == 365
 
     def test_equity_week_month(self):
-        # M387: equity/index WEEK→52, MONTH→12 (252 değil; haftalık Sharpe ~2.2×,
-        # aylık ~4.6× şişiktı). instrument non-CurrencyPair → equity dalı; spec
-        # str'i '<step>-<UNIT>-...' yüzeyinden türetilir (_periods_per_year doc).
+        # M387: equity/index WEEK→52, MONTH→12 (not 252; weekly Sharpe was ~2.2×,
+        # monthly ~4.6× inflated). instrument non-CurrencyPair → equity branch; spec
+        # str is derived from the '<step>-<UNIT>-...' surface (_periods_per_year doc).
         from backtest import _periods_per_year
 
         class _Spec:
@@ -54,26 +54,26 @@ class TestPeriodsPerYear:
             def __init__(self, unit):
                 self.spec = _Spec(unit)
 
-        equity_inst = object()  # CurrencyPair değil → is_crypto False
+        equity_inst = object()  # not CurrencyPair → is_crypto False
         assert _periods_per_year(_BarType("WEEK"), equity_inst) == 52
         assert _periods_per_year(_BarType("MONTH"), equity_inst) == 12
         assert _periods_per_year(_BarType("DAY"), equity_inst) == 252
 
 
 class TestToUnixBands:
-    """L5: sn/ms/µs/ns dört bandı da doğru sınıflanmalı."""
+    """L5: all four bands sec/ms/µs/ns should be classified correctly."""
 
     def test_all_resolutions(self):
         import pandas as pd
 
-        from backtest import _extract_trades  # closure'a erişim yok — dolaylı test
+        from backtest import _extract_trades  # no access to closure — indirect test
 
         ts_s = 1_752_000_000
         rows = []
         for v in (
-            ts_s,  # saniye
+            ts_s,  # seconds
             ts_s * 1_000,  # ms
-            ts_s * 1_000_000,  # µs (eski kod ~55.000 yıl ileri atardı)
+            ts_s * 1_000_000,  # µs (old code would jump ~55,000 years forward)
             ts_s * 1_000_000_000,  # ns
         ):
             rows.append(
@@ -94,7 +94,7 @@ class TestToUnixBands:
 
 
 class TestNauDrawdownBridge:
-    """H11: negatif-kesir iç konvansiyonu ↔ NAU pozitif-yüzde köprüsü."""
+    """H11: internal negative-fraction convention ↔ NAU positive-percent bridge."""
 
     def test_bridge(self):
         from backtest import nau_max_drawdown
@@ -106,12 +106,12 @@ class TestNauDrawdownBridge:
 
 
 class TestNauSpecPins:
-    """L30: enstrüman spec'leri NAU universe.yaml değerlerine pinli."""
+    """L30: instrument specs pinned to NAU universe.yaml values."""
 
     def test_bybit_specs_match_universe_yaml(self):
         from backtest import _BYBIT_SPECS
 
-        # universe.yaml'dan elle pinlendi (runtime yaml okuma yok).
+        # pinned by hand from universe.yaml (no runtime yaml reading).
         assert _BYBIT_SPECS["BTCUSDT"] == (2, 3, "0.01")
         assert _BYBIT_SPECS["ETHUSDT"] == (2, 3, "0.01")
         assert _BYBIT_SPECS["SOLUSDT"] == (3, 2, "0.001")
@@ -127,7 +127,7 @@ class TestNauSpecPins:
         assert int(eq.lot_size) == 1
 
     def test_bybit_fees_pinned(self):
-        """M5: instrument komisyon oranları bps sabitleriyle tutarlı."""
+        """M5: instrument commission rates consistent with bps constants."""
         from backtest import (
             BYBIT_MAKER_FEE_BPS,
             BYBIT_TAKER_FEE_BPS,
@@ -139,15 +139,68 @@ class TestNauSpecPins:
         assert float(inst.taker_fee) == pytest.approx(BYBIT_TAKER_FEE_BPS / 10_000)
 
 
+class TestIBEquityCommission:
+    """US stock/ETF (QQQ) Interactive Brokers Pro Fixed commission."""
+
+    def test_fee_model_selection_by_instrument_type(self):
+        """Crypto→MakerTaker (bps), equity→IB Fixed (per-share)."""
+        from nautilus_trader.backtest.models import MakerTakerFeeModel
+
+        from backtest import (
+            IBFixedFeeModel,
+            _fee_model_for,
+            _make_bybit_instrument,
+            _make_index_instrument,
+        )
+
+        assert isinstance(_fee_model_for(_make_bybit_instrument()), MakerTakerFeeModel)
+        assert isinstance(_fee_model_for(_make_index_instrument("QQQ")), IBFixedFeeModel)
+
+    def test_ib_fixed_commission_math(self):
+        """IB Fixed: max(per-share, min) then clamp with 1% cap."""
+        from nautilus_trader.model.objects import Price, Quantity
+
+        from backtest import IBFixedFeeModel, _make_index_instrument
+
+        eq = _make_index_instrument("QQQ")
+        m = IBFixedFeeModel()
+
+        def comm(qty, px):
+            return float(
+                m.get_commission(
+                    None, Quantity.from_int(qty), Price.from_str(str(px)), eq
+                )
+            )
+
+        # 100 shares @ $500: per-share $0.50 < min → $1.00 floor
+        assert comm(100, 500) == pytest.approx(1.0)
+        # 1000 shares @ $500: per-share $5.00 (above min, below 1% cap=$5000)
+        assert comm(1000, 500) == pytest.approx(5.0)
+        # 1000 shares @ $0.10: per-share $5.00 but 1% cap=$1.00 wins
+        assert comm(1000, 0.10) == pytest.approx(1.0)
+
+    def test_ib_fixed_constants(self):
+        """IBKR Pro Fixed tariff: $0.005/share, min $1, 1% cap."""
+        from backtest import (
+            IB_FIXED_MAX_PCT_OF_TRADE,
+            IB_FIXED_MIN_PER_ORDER_USD,
+            IB_FIXED_PER_SHARE_USD,
+        )
+
+        assert IB_FIXED_PER_SHARE_USD == 0.005
+        assert IB_FIXED_MIN_PER_ORDER_USD == 1.0
+        assert IB_FIXED_MAX_PCT_OF_TRADE == 0.01
+
+
 class TestProfitFactorCap:
-    """L33: kayıpsız koşuda inf yerine NAU cap'i (99.0)."""
+    """L33: NAU cap (99.0) instead of inf on a lossless run."""
 
     def test_metrics_empty_pf_zero(self):
         from backtest import _metrics
 
         m = _metrics(None, None)
-        assert m["profit_factor"] == 0.0  # NaN değil (JSON güvenli)
-        # M620: dejenere/boş → sharpe_per_trade NaN (alan var, değer NaN).
-        # (eski `!= self or True` totolojisi her zaman geçiyordu — ölü kontrol.)
+        assert m["profit_factor"] == 0.0  # not NaN (JSON safe)
+        # M620: degenerate/empty → sharpe_per_trade NaN (field present, value NaN).
+        # (old `!= self or True` tautology always passed — dead check.)
         assert math.isnan(m["sharpe_per_trade"])
         assert "max_dd_pct" in m

@@ -15,7 +15,7 @@ Wiki References
 ---------------
 Bkz: [[strategy_and_actor]]
 
-Blok kodları çalıştırma zamanında import edilir; her blok tek fonksiyon (`evaluate`).
+Block codes are imported at run time; each block is a single function (`evaluate`).
 """
 
 from __future__ import annotations
@@ -27,10 +27,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-# M(store): registry.json + blok .py yazımları için süreç-içi kilit — agent
-# worker thread'i (entry+exit art arda) ile /lab veya /strategy eşzamanlı
-# save/delete yaparsa read-modify-write kayıp-güncelleme ile bir bloğun
-# kaydını sessizce yok edebiliyordu (RLock: aynı thread reentrant).
+# M(store): in-process lock for registry.json + block .py writes — if the agent
+# worker thread (entry+exit back to back) runs save/delete concurrently with
+# /lab or /strategy, a read-modify-write lost-update could silently destroy a
+# block's registration (RLock: reentrant within the same thread).
 _STORE_LOCK = threading.RLock()
 
 STORE_DIR = Path.home() / ".cache" / "nautilus_web_app" / "custom_blocks"
@@ -52,8 +52,8 @@ def _read_registry() -> dict[str, dict[str, Any]]:
             raise ValueError("registry.json is not a dict")
         return data
     except Exception:
-        # Bozuk registry.json varsa yedekle, boş başla — sonraki write'da sıfırlanmasın diye
-        # mevcut .py dosyalarından yeniden oluşturulabilir.
+        # If registry.json is corrupt, back it up and start empty — so the next write
+        # does not reset it and it can be rebuilt from the existing .py files.
         corrupt = REGISTRY_FILE.with_suffix(".json.bak")
         try:
             REGISTRY_FILE.replace(corrupt)
@@ -64,7 +64,7 @@ def _read_registry() -> dict[str, dict[str, Any]]:
 
 def _write_registry(reg: dict[str, dict[str, Any]]) -> None:
     _ensure_dir()
-    # Atomik write: önce tmp dosyaya yaz, sonra rename
+    # Atomic write: first write to a tmp file, then rename
     tmp = REGISTRY_FILE.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(reg, indent=2))
     tmp.replace(REGISTRY_FILE)
@@ -106,10 +106,10 @@ def save_custom(name: str, meta: dict, code: str, prompt: str = "") -> Path:
         )
     _ensure_dir()
     path = module_path(name)
-    # H(store): composer read_text(encoding="utf-8") ile okuyor; yazımda encoding
-    # belirtilmezse Windows'ta locale (cp1254) kullanılır → non-ASCII (→, …,
-    # tipografik tırnak) içeren LLM kodu UnicodeEncodeError'la patlar ya da
-    # blok kalıcı import edilemez olur. UTF-8 sabitle.
+    # H(store): composer reads with read_text(encoding="utf-8"); if encoding is
+    # not specified on write, Windows uses the locale (cp1254) → LLM code
+    # containing non-ASCII (→, …, typographic quotes) blows up with
+    # UnicodeEncodeError or the block can never be imported. Pin UTF-8.
     with _STORE_LOCK:
         path.write_text(code, encoding="utf-8")
         reg = _read_registry()
@@ -127,7 +127,7 @@ def delete_custom(name: str) -> bool:
     """Remove a custom block from disk, registry, and in-memory BLOCK_REGISTRY."""
     if not is_valid_name(name):
         return False
-    with _STORE_LOCK:  # M(store): kilitli RMW — kayıp güncelleme önlemi
+    with _STORE_LOCK:  # M(store): locked RMW — lost-update prevention
         reg = _read_registry()
         if name not in reg:
             return False
@@ -138,7 +138,7 @@ def delete_custom(name: str) -> bool:
             pass
         del reg[name]
         _write_registry(reg)
-    # In-memory temizle — aynı session'da silinmiş blok çalışmasın
+    # Clear in-memory — a block deleted in the same session should not run
     try:
         from composer import unregister_custom_block
 

@@ -1,6 +1,6 @@
-"""D kümesi regresyonları: H8 runtime enjeksiyonu, M25 döngü bütçesi,
-M27/M33 indicators.py entegrasyonu + yeni builtin bloklar, L14 bollinger mode,
-L25 blok izolasyonu.
+"""D set regressions: H8 runtime injection, M25 loop budget,
+M27/M33 indicators.py integration + new builtin blocks, L14 bollinger mode,
+L25 block isolation.
 """
 
 from __future__ import annotations
@@ -50,10 +50,10 @@ def evaluate(state, block, closes, indicators, portfolio):
     return None
 """
 
-# Sonsuz döngü bir HELPER içinde — deep-review fix: bütçe reset'i yalnız
-# evaluate() başında olmalı. Eskiden HER fonksiyonun başına konuyordu, bu yüzden
-# döngü içinden çağrılan helper bütçeyi her iterasyonda tazeleyip backstop'u
-# yeniliyordu (bütçe hiç <0 olmuyordu → worker asılırdı).
+# Infinite loop inside a HELPER — deep-review fix: the budget reset must only
+# be at the start of evaluate(). Previously it was placed at the start of EVERY
+# function, so a helper called from inside a loop refreshed the budget on every
+# iteration and renewed the backstop (the budget never went <0 → the worker hung).
 HELPER_LOOP_BLOCK = """\
 def max_lookback(params):
     return 10
@@ -86,11 +86,11 @@ INDICATORS = {
 
 
 class TestRuntimeInjection:
-    """H8: yükleyici, smoke ortamıyla aynı enjeksiyonu yapmalı."""
+    """H8: the loader must do the same injection as the smoke environment."""
 
     def test_math_statistics_available_at_runtime(self, tmp_path):
         mod = _load(tmp_path, "t_math", MATH_BLOCK)
-        # Eskiden: NameError: name 'math' is not defined (sessiz no-op).
+        # Previously: NameError: name 'math' is not defined (silent no-op).
         out = mod.evaluate({}, SimpleNamespace(params={}), CLOSES, INDICATORS, None)
         assert out in (None, "long", "short", "exit")
 
@@ -100,7 +100,7 @@ class TestRuntimeInjection:
         assert out in (None, "long", "short", "exit")
 
     def test_existing_catalog_math_blocks_no_nameerror(self):
-        """Katalogdaki gerçek math/statistics kullanan bloklar artık çalışmalı."""
+        """Real catalog blocks using math/statistics must now run."""
         import custom_block_store as cbs
         from composer import _load_module_from_path
 
@@ -125,22 +125,23 @@ class TestRuntimeInjection:
             )
             assert out in (None, "long", "short", "exit"), name
             checked += 1
-        assert checked >= 1, "math kullanan katalog bloğu bulunamadı"
+        assert checked >= 1, "no math-using catalog block found"
 
 
 class TestLoopBudget:
-    """M25: sonsuz döngü, thread sızdırmak yerine RuntimeError üretmeli."""
+    """M25: an infinite loop must raise RuntimeError instead of leaking a thread."""
 
     def test_infinite_loop_trips_budget(self, tmp_path):
         mod = _load(tmp_path, "t_loop", LOOP_BLOCK)
-        with pytest.raises(RuntimeError, match="döngü bütçesi"):
+        with pytest.raises(RuntimeError, match="loop budget exceeded"):
             mod.evaluate({}, SimpleNamespace(params={}), CLOSES, INDICATORS, None)
 
     def test_infinite_loop_in_helper_trips_budget(self, tmp_path):
-        # Bütçe reset'i yalnız evaluate() başında — helper içindeki sonsuz döngü
-        # paylaşılan bütçeyi tüketip yakalanmalı (helper her çağrıda reset ETMEZ).
+        # The budget reset is only at the start of evaluate() — an infinite loop
+        # inside a helper must consume the shared budget and be caught (the helper
+        # does NOT reset on each call).
         mod = _load(tmp_path, "t_helper_loop", HELPER_LOOP_BLOCK)
-        with pytest.raises(RuntimeError, match="döngü bütçesi"):
+        with pytest.raises(RuntimeError, match="loop budget exceeded"):
             mod.evaluate({}, SimpleNamespace(params={}), CLOSES, INDICATORS, None)
 
     def test_smoke_rejects_infinite_loop(self):
@@ -158,9 +159,9 @@ class TestLoopBudget:
             "def evaluate(state, block, closes, indicators, portfolio):\n"
             "    return None\n"
         )
-        # Eski bloklar (require=False) geçer…
+        # Old blocks (require=False) pass…
         _test_execute_generated(src)
-        # …yeni üretimde zorunlu (M16).
+        # …mandatory in new generation (M16).
         with pytest.raises(GeneratedCodeError, match="max_lookback"):
             _test_execute_generated(src, require_max_lookback=True)
 
@@ -176,7 +177,7 @@ def _fake_strategy(closes, highs=None, lows=None):
 
 
 class TestNewBuiltinBlocks:
-    """M27: NAU parite kütüphanesi üstüne kurulu 4 yeni builtin."""
+    """M27: 4 new builtins built on top of the NAU parity library."""
 
     def test_registered_as_builtin(self):
         from composer import BLOCK_REGISTRY
@@ -203,12 +204,12 @@ class TestNewBuiltinBlocks:
         res = ind.calc_adx(strat._highs, strat._lows, closes, 14)
         assert res is not None
         expected = "long" if res["plusDI"] > res["minusDI"] else "short"
-        assert out == expected  # threshold=0 → yön birebir calc_adx'ten
+        assert out == expected  # threshold=0 → direction exactly from calc_adx
 
     def test_donchian_breakout_and_revert(self):
         from composer import _eval_donchian_channel
 
-        closes = [100.0] * 30 + [105.0]  # son bar önceki 30 barın üstünü kırar
+        closes = [100.0] * 30 + [105.0]  # last bar breaks above the previous 30 bars
         strat = _fake_strategy(closes)
         blk = SimpleNamespace(
             params={"period": 20, "mode": "breakout"},
@@ -229,14 +230,14 @@ class TestNewBuiltinBlocks:
             (_eval_wave_trend_cross, "wave_trend_cross"),
         ):
             blk = SimpleNamespace(params={}, role="entry", type=typ)
-            # İki bar üst üste: ilki prev-state doldurur, ikincisi kesişim arar.
+            # Two bars in a row: the first fills prev-state, the second looks for a cross.
             fn(strat, 0, blk, closes[:-1])
             out = fn(strat, 0, blk, closes)
             assert out in (None, "long", "short")
 
 
 class TestBollingerMode:
-    """L14: legacy default korunur; breakout/revert short üretebilir."""
+    """L14: legacy default is preserved; breakout/revert can produce short."""
 
     def _strat_with_bb(self, upper, lower):
         bb = SimpleNamespace(initialized=True, upper=upper, lower=lower)
@@ -270,12 +271,12 @@ class TestBollingerMode:
 
 
 class TestBlockIsolation:
-    """L25: custom blok spec'in canlı params dict'ini mutasyona uğratamamalı."""
+    """L25: a custom block must not be able to mutate the spec's live params dict."""
 
     def test_params_mutation_stays_in_copy(self, tmp_path):
         from composer import (
             BLOCK_REGISTRY,
-            register_custom_from_disk,  # noqa: F401 (kayıt yolu)
+            register_custom_from_disk,  # noqa: F401 (registration path)
         )
 
         src = (
@@ -303,7 +304,7 @@ class TestBlockIsolation:
             )
             strat._iid = lambda: "X"
             entry["eval"](strat, 0, real_block, CLOSES)
-            # Gerçek spec params'ı DEĞİŞMEMELİ (kopya mutasyona uğradı).
+            # The real spec params MUST NOT change (the copy was mutated).
             assert real_block.params["period"] == 14
         finally:
             from composer import unregister_custom_block

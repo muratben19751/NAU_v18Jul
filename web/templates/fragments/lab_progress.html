@@ -15,8 +15,8 @@
       <div class="panel-title" style="display:flex;align-items:center;gap:10px;">
         ⚗ Pipeline
         {% if not done and not error %}<span class="dot"></span>{% endif %}
-        {% if done and not error %}✓ Tamamlandı{% endif %}
-        {% if error %}✗ Hata{% endif %}
+        {% if done and not error %}✓ Completed{% endif %}
+        {% if error %}✗ Error{% endif %}
       </div>
       {% if state.strategy_name %}
         <div class="panel-meta mono small">{{ state.strategy_name }}</div>
@@ -50,7 +50,7 @@
         {% endfor %}
       </div>
 
-      {# Backtest sub-steps (faz 5 çalışırken göster) #}
+      {# Backtest sub-steps (show while phase 5 is running) #}
       {% if state.backtest_steps %}
         <div class="progress-steps" style="margin-top:12px;padding-left:28px;">
           {% for step in state.backtest_steps %}

@@ -317,8 +317,8 @@ class TestOrphanReaping:
         finally:
             if proc.poll() is None:
                 proc.kill()
-            # stdout pipe'ını deterministik kapat — text=True + encoding yok
-            # Windows'ta cp1254 TextIOWrapper açıyor; kapatılmayınca GC reap edip
-            # ResourceWarning üretiyordu (sonuç-birebir; yalnız fd'yi geri alır).
+            # deterministically close the stdout pipe — text=True + no encoding
+            # on Windows opens a cp1254 TextIOWrapper; if not closed, GC reaps it
+            # and emits a ResourceWarning (result-identical; only reclaims the fd).
             if proc.stdout:
                 proc.stdout.close()

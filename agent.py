@@ -5,9 +5,9 @@ Returns a dict:
 
 Wiki References
 ---------------
-_(app-spesifik — wiki scope dışı)_
+_(app-specific — outside wiki scope)_
 
-App-specific; wiki scope'unun dışında (LLM parametre önerici, Nautilus konsepti değil).
+App-specific; outside wiki scope (LLM parameter proposer, not a Nautilus concept).
 """
 
 from __future__ import annotations
@@ -29,13 +29,13 @@ from app_constants import NO_WINDOW_FLAGS
 from strategies import STRATEGY_PARAM_SPEC
 
 MODEL = os.environ.get("NAUTILUS_LLM_MODEL", "claude-fable-5")
-# Fable kredisi/kotası biterse otomatik düşülecek model. Opus 4.8 aynı 1M
-# bağlamı ve API yüzeyini sunar (adaptive thinking, sampling paramları yok),
-# per-token fiyatı daha düşüktür → çağrı gövdeleri değişmeden çalışır.
+# Model to automatically fall back to if Fable credit/quota runs out. Opus 4.8
+# offers the same 1M context and API surface (adaptive thinking, no sampling
+# params), at a lower per-token price → call bodies run unchanged.
 FALLBACK_MODEL = os.environ.get("NAUTILUS_LLM_FALLBACK_MODEL", "claude-opus-4-8")
 
-# Kredi tükenince süreç ömrü boyunca FALLBACK_MODEL'e kilitlenir (her çağrıda
-# tekrar 403 yemeyelim). None = henüz düşülmedi, MODEL kullanılıyor.
+# Once credit is exhausted, lock to FALLBACK_MODEL for the process lifetime (so we
+# don't get a 403 on every call). None = not yet fallen back, MODEL is in use.
 _active_model: str | None = None
 _model_lock = threading.Lock()
 
@@ -44,7 +44,7 @@ _client_lock = threading.Lock()
 
 
 def current_model() -> str:
-    """O an kullanılan model (fallback devreye girdiyse FALLBACK_MODEL)."""
+    """The model currently in use (FALLBACK_MODEL if fallback has kicked in)."""
     return _active_model or MODEL
 
 
@@ -52,25 +52,26 @@ _CREDIT_EXHAUSTED_SIGNALS = (
     "credit balance is too low",  # API: 400
     "billing_error",
     "insufficient credit",
-    "monthly spend limit",  # claude-cli: 429 ama KALICI
+    "monthly spend limit",  # claude-cli: 429 but PERMANENT
 )
 
 
 def _is_credit_exhausted(exc: Exception) -> bool:
-    """Kredi/kota tükenmesi mi? (rate-limit veya geçici hata DEĞİL)
+    """Is this credit/quota exhaustion? (NOT a rate-limit or transient error)
 
-    İki backend iki ayrı sinyal verir:
+    The two backends emit two distinct signals:
 
-    - API: HTTP 403 + ``error.type == "billing_error"``. SDK'nın `.type` alanı
-      billing_error'ı permission_error'dan ayırır (ikisi de 403'tür), o yüzden
-      string eşleme yerine tipli alan kullanılır.
-    - claude-cli (abonelik): tipli exception üretmez ve harcama limitini geçici
-      rate-limit ile AYNI 429 koduyla bildirir → ayrım yalnız mesaj metninden
-      yapılabilir ("monthly spend limit", remedy olarak model değişimini söyler).
+    - API: HTTP 403 + ``error.type == "billing_error"``. The SDK's `.type` field
+      separates billing_error from permission_error (both are 403), so a typed
+      field is used instead of string matching.
+    - claude-cli (subscription): does not produce a typed exception and reports
+      the spend limit with the SAME 429 code as a transient rate-limit → the
+      distinction can only be made from the message text ("monthly spend limit",
+      which advises switching models as the remedy).
 
-    Bu yüzden çıplak 429 KASITLI olarak dışarıda: o geçicidir, geri çekilmeyle
-    yeniden denenir — modeli kalıcı değiştirmek yanlış olurdu. Yalnız yukarıdaki
-    kalıcı ifadeler eşleşir.
+    That's why a bare 429 is DELIBERATELY excluded: it is transient, retried with
+    backoff — permanently switching the model would be wrong. Only the permanent
+    expressions above match.
     """
     if getattr(exc, "type", None) == "billing_error":
         return True
@@ -79,12 +80,12 @@ def _is_credit_exhausted(exc: Exception) -> bool:
 
 
 def _create_message(client, **kwargs):
-    """messages.create + kredi tükenmesinde Fable→Opus otomatik düşüşü.
+    """messages.create + automatic Fable→Opus fallback on credit exhaustion.
 
-    Model kwargs'a BURADA eklenir; çağıranlar model geçmez. Kredi hatasında
-    aktif model kalıcı olarak FALLBACK_MODEL'e çevrilir ve istek bir kez
-    yeniden denenir (istek gövdesi aynen geçerlidir — iki model de aynı API
-    yüzeyini paylaşır).
+    The model kwarg is added HERE; callers do not pass a model. On a credit
+    error the active model is permanently switched to FALLBACK_MODEL and the
+    request is retried once (the request body is passed as-is — both models
+    share the same API surface).
     """
     global _active_model
     model = current_model()
@@ -96,7 +97,7 @@ def _create_message(client, **kwargs):
         with _model_lock:
             _active_model = FALLBACK_MODEL
         logging.warning(
-            "%s kredisi tükendi (%s) — kalıcı olarak %s'e düşülüyor",
+            "%s credit exhausted (%s) — permanently falling back to %s",
             model,
             type(e).__name__,
             FALLBACK_MODEL,
@@ -104,11 +105,11 @@ def _create_message(client, **kwargs):
         return client.messages.create(model=FALLBACK_MODEL, **kwargs)
 
 
-# ── Web araştırması (DuckDuckGo, API key gerektirmez) ─────────────────────────
+# ── Web research (DuckDuckGo, no API key required) ─────────────────────────
 
 
 def _ddg_search(query: str, max_results: int = 5) -> list[dict]:
-    """ddgs kütüphanesi ile web araması. Hata durumunda [] döner."""
+    """Web search via the ddgs library. Returns [] on error."""
     try:
         from ddgs import DDGS
 
@@ -124,15 +125,16 @@ def _ddg_search(query: str, max_results: int = 5) -> list[dict]:
 def web_research_strategies(
     hint: str = "", n: int = 5, market: str | None = None
 ) -> str:
-    """Web'de başarılı stratejileri arar; bulunan fikirleri metin olarak döner.
-    Sonuç boş gelirse "" döner (caller fallback uygular).
+    """Searches the web for successful strategies; returns the found ideas as text.
+    Returns "" if the result is empty (caller applies a fallback).
 
-    ``market`` verilirse (örn. "US equity QQQ.NASDAQ (1-DAY bars, ...)") sorgular
-    kripto yerine o enstrümana yönelir; None ise mevcut kripto sorguları korunur.
+    If ``market`` is given (e.g. "US equity QQQ.NASDAQ (1-DAY bars, ...)") the
+    queries target that instrument instead of crypto; if None the existing crypto
+    queries are kept.
     """
     queries = []
     if market:
-        # "US equity QQQ.NASDAQ (1-DAY bars, ...)" → arama için kısa biçim
+        # "US equity QQQ.NASDAQ (1-DAY bars, ...)" → short form for the search
         market_q = market.split("(")[0].strip()
         if hint.strip():
             queries.append(f"{hint.strip()} {market_q} trading strategy backtest")
@@ -151,7 +153,7 @@ def web_research_strategies(
         ]
 
     all_snippets: list[str] = []
-    for q in queries[:2]:  # 2 sorgu yeter, hız için
+    for q in queries[:2]:  # 2 queries are enough, for speed
         for r in _ddg_search(q, max_results=4):
             title = r.get("title", "").strip()
             snip = r.get("snippet", "").strip()
@@ -161,17 +163,17 @@ def web_research_strategies(
     if not all_snippets:
         return ""
     return (
-        "WEB RESEARCH — Başarılı strateji fikirleri (bu ipuçlarından ilham al, "
-        "ama BLOCK CATALOG'daki block type'larla implemente et):\n"
+        "WEB RESEARCH — Successful strategy ideas (draw inspiration from these hints, "
+        "but implement them with the block types in the BLOCK CATALOG):\n"
         + "\n".join(all_snippets[:8])
     )
 
 
-# ── Claude Code CLI backend (abonelik / OAuth — ANTHROPIC_API_KEY gerektirmez) ─
+# ── Claude Code CLI backend (subscription / OAuth — no ANTHROPIC_API_KEY needed) ─
 #
-# `claude -p` headless modda Claude Code'un mevcut oturum açmasını (Pro/Max
-# aboneliği) kullanır. Uygulamanın kullandığı minimal messages.create yüzeyini
-# taklit eder: tek user mesajı + opsiyonel system prompt → text bloklu yanıt.
+# `claude -p` uses Claude Code's existing session (Pro/Max subscription) in
+# headless mode. It mimics the minimal messages.create surface the app uses:
+# a single user message + optional system prompt → a text-block response.
 
 
 class _CLITextBlock:
@@ -198,11 +200,12 @@ class _CLIResponse:
 
 
 class _CLIError(RuntimeError):
-    """claude CLI hatası; JSON gövdesi varsa tipli alanları korur.
+    """claude CLI error; preserves typed fields if a JSON body is present.
 
-    ``message`` (envelope'ın ``result``'ı) ham metinden ayrı tutulur: kalıcı
-    harcama limitini geçici rate-limit'ten ayıran ifade orada, ve ham metin
-    kırpıldığında kaybolabiliyor → bkz. _is_credit_exhausted.
+    ``message`` (the envelope's ``result``) is kept separate from the raw text:
+    the expression that separates a permanent spend limit from a transient
+    rate-limit lives there, and it can be lost when the raw text is truncated →
+    see _is_credit_exhausted.
     """
 
     def __init__(self, text: str, status: int | None = None, message: str = "") -> None:
@@ -221,7 +224,7 @@ class _ClaudeCLIMessages:
         model: str,
         messages: list[dict],
         system: str | None = None,
-        max_tokens: int = 0,  # CLI'de karşılığı yok; prompt'lar zaten kısa yanıt ister
+        max_tokens: int = 0,  # no equivalent in the CLI; prompts already request short answers
         **_ignored: Any,
     ) -> _CLIResponse:
         prompt = "\n\n".join(
@@ -237,13 +240,14 @@ class _ClaudeCLIMessages:
             "--model",
             model,
             "--tools",
-            "",  # tüm araçlar kapalı: saf LLM çağrısı
+            "",  # all tools off: a pure LLM call
             "--no-session-persistence",
             "--strict-mcp-config",
         ]
 
-        # System prompt dosya ile geçilir: Windows'ta .cmd shim üzerinden komut
-        # satırı ~8K karakterle sınırlı; katalog içeren promptlar bunu aşabilir.
+        # The system prompt is passed via a file: on Windows the command line
+        # over the .cmd shim is limited to ~8K chars; prompts containing the
+        # catalog can exceed that.
         sys_file: str | None = None
         try:
             if system:
@@ -254,8 +258,9 @@ class _ClaudeCLIMessages:
                     sys_file = f.name
                 cmd += ["--system-prompt-file", sys_file]
 
-            # Abonelik (OAuth) kullanılsın diye API key/base URL env'den temizlenir;
-            # cwd nötr bir dizin olsun ki proje CLAUDE.md/ayarları yüklenmesin.
+            # Clear the API key/base URL from the env so the subscription (OAuth)
+            # is used; make cwd a neutral directory so the project CLAUDE.md/settings
+            # are not loaded.
             env = os.environ.copy()
             for var in (
                 "ANTHROPIC_API_KEY",
@@ -275,7 +280,7 @@ class _ClaudeCLIMessages:
                 env=env,
                 cwd=tempfile.gettempdir(),
                 timeout=timeout,
-                # Windows: her LLM çağrısında konsol penceresi açılıp kapanmasın.
+                # Windows: don't open/close a console window on every LLM call.
                 creationflags=NO_WINDOW_FLAGS,
             )
         finally:
@@ -285,9 +290,9 @@ class _ClaudeCLIMessages:
                 except OSError:
                     pass
 
-        # Hata gövdesi de JSON gelir (exit≠0 iken bile) ve asıl sebep oradaki
-        # ``result``/``api_error_status`` alanlarındadır — ham stdout'u kırpıp
-        # string'e gömmek bu sinyali kaybettiriyordu.
+        # The error body also comes back as JSON (even when exit≠0) and the real
+        # cause is in its ``result``/``api_error_status`` fields — truncating the
+        # raw stdout and embedding it into a string lost this signal.
         envelope: dict[str, Any] = {}
         try:
             envelope = json.loads(proc.stdout) or {}
@@ -304,7 +309,7 @@ class _ClaudeCLIMessages:
                 message=message,
             )
         if envelope.get("subtype") != "success":
-            # envelope boşsa (stdout JSON değil) ham çıktıyı göster, "None" değil.
+            # If envelope is empty (stdout not JSON) show the raw output, not "None".
             detail = str(envelope.get("result") or (proc.stdout or "").strip())
             raise _CLIError(
                 f"claude CLI error ({envelope.get('subtype')}): {detail[:500]}"
@@ -325,11 +330,11 @@ def _find_claude_cli() -> str | None:
 
 
 def _build_client() -> Anthropic | _ClaudeCLIClient:
-    """Backend seçimi (NAUTILUS_LLM_BACKEND env var):
+    """Backend selection (NAUTILUS_LLM_BACKEND env var):
 
-    - "api":        anthropic SDK — ANTHROPIC_API_KEY / ~/.nautilus_proxy_key zorunlu
-    - "claude-cli": Claude Code CLI (`claude -p`) — abonelik (OAuth), key gerekmez
-    - "auto" (varsayılan): key varsa API, yoksa claude CLI
+    - "api":        anthropic SDK — ANTHROPIC_API_KEY / ~/.nautilus_proxy_key required
+    - "claude-cli": Claude Code CLI (`claude -p`) — subscription (OAuth), no key needed
+    - "auto" (default): API if a key exists, otherwise the claude CLI
     """
     backend = os.environ.get("NAUTILUS_LLM_BACKEND", "auto").strip().lower()
 
@@ -354,7 +359,7 @@ def _build_client() -> Anthropic | _ClaudeCLIClient:
 
     cli = _find_claude_cli()
     if cli:
-        logging.info("LLM backend: claude CLI / abonelik (%s)", cli)
+        logging.info("LLM backend: claude CLI / subscription (%s)", cli)
         return _ClaudeCLIClient(cli)
     if backend == "claude-cli":
         raise RuntimeError(
@@ -465,8 +470,8 @@ Propose the next strategy + parameters as JSON."""
         return fb
 
 
-# Varsayılan pazar bağlamı — market parametresi verilmezse Bybit kripto
-# ifadesi bayt-bayt korunur (mevcut davranış değişmez).
+# Default market context — if no market parameter is given, the Bybit crypto
+# expression is preserved byte-for-byte (existing behavior unchanged).
 _DEFAULT_MARKET_CONTEXT = (
     "crypto trading strategies on Bybit (BTCUSDT USDT perp, 1-minute bars)"
 )
@@ -570,7 +575,7 @@ def _summarize_composed_history(history: list[Any], catalog: list[Any]) -> str:
         # Show which block types have already been tried so Claude avoids repeating them
         tried_blocks: set[str] = set()
         for r in history:
-            # r.strategy = "composed:Name [block1+block2]" veya "composed:Name"
+            # r.strategy = "composed:Name [block1+block2]" or "composed:Name"
             import re as _re
 
             m = _re.search(r"\[([^\]]+)\]", r.strategy)
@@ -638,7 +643,7 @@ def _fallback_composed() -> dict:
         ],
         "strategy_options": dict(_STRATEGY_OPTION_DEFAULTS),
     }
-    # _validate_composed çalıştır — atr_stop gibi exit-only blokların rolünü düzelt
+    # Run _validate_composed — fix the role of exit-only blocks like atr_stop
     return _validate_composed(result)
 
 
@@ -751,13 +756,13 @@ def _validate_composed(data: dict) -> dict:
     if not clean_blocks or not any(b["role"] == "entry" for b in clean_blocks):
         raise ValueError("proposal missing entry block after cleanup")
 
-    # Exit bloğu yoksa çeşitli exit seçeneklerinden birini ekle (hep atr_stop değil)
+    # Add one of several exit options if no exit block exists (not always atr_stop)
     if not any(b["role"] == "exit" for b in clean_blocks):
         from composer import BLOCK_CATALOG
 
-        # Entry bloğuna göre uygun exit seç
+        # Choose a suitable exit based on the entry block
         entry_types = {b["type"] for b in clean_blocks if b["role"] == "entry"}
-        # Tercih sırası: entry'ye zıt sinyal veren blok → atr_stop son çare
+        # Preference order: block giving the opposite signal to entry → atr_stop last resort
         _exit_candidates = [
             "momentum",
             "rsi_threshold",
@@ -765,7 +770,7 @@ def _validate_composed(data: dict) -> dict:
             "macd_cross",
             "atr_stop",
         ]
-        # Zaten kullanılan tipler hariç
+        # Exclude types already used
         _exit_candidates = [t for t in _exit_candidates if t not in entry_types]
         fallback_exit_type = _exit_candidates[0] if _exit_candidates else "atr_stop"
         exit_meta = BLOCK_CATALOG.get(fallback_exit_type, {}).get("params", {})
@@ -798,8 +803,8 @@ def propose_composed_strategy(
     Returns (strategy_dict, usage_dict | None).
     usage_dict has keys: input_tokens, output_tokens, cache_read_input_tokens, cache_creation_input_tokens.
 
-    ``market`` — opsiyonel pazar bağlamı (örn. "US equity QQQ.NASDAQ (1-DAY
-    bars, USD cash account)"). None ise Bybit BTCUSDT ifadesi aynen korunur.
+    ``market`` — optional market context (e.g. "US equity QQQ.NASDAQ (1-DAY
+    bars, USD cash account)"). If None the Bybit BTCUSDT expression is preserved as-is.
     """
     try:
         client = _get_client()
@@ -891,14 +896,14 @@ def _test_execute_generated(
     `meta` — if provided, `block.params` is pre-populated with declared defaults
     so the smoke call matches real runtime shape.
 
-    `require_max_lookback` — M16: YENİ üretilen bloklar için max_lookback
-    ihracı zorunlu (deklare edilmezse pencere 50+5'e kırpılıp uzun-periyotlu
-    indikatörler sessizce yanlış hesaplanıyordu). Eski disk blokları için
-    False (geriye uyum).
+    `require_max_lookback` — M16: for NEWLY generated blocks the max_lookback
+    export is required (if not declared, the window was clipped to 50+5 and
+    long-period indicators were silently computed wrong). False for old disk
+    blocks (backward compatibility).
 
-    Ortam paritesi (H8): buradaki enjeksiyon seti (math/statistics/ind) ve
-    döngü-bütçeli derleme, composer._load_module_from_path ile BİREBİR aynı —
-    smoke'ta geçen blok çalışma anında da aynı ortamı bulur.
+    Environment parity (H8): the injection set here (math/statistics/ind) and
+    the loop-budgeted compilation are IDENTICAL to composer._load_module_from_path —
+    a block that passes smoke finds the same environment at runtime.
     """
     import math as _math
     import statistics as _stats
@@ -917,17 +922,17 @@ def _test_execute_generated(
     }
     ns: dict = {}
     try:
-        # M25: döngü-bütçeli derleme — `while True: pass` artık 2sn thread
-        # timeout'una takılıp daemon thread SIZDIRMAK yerine bütçe aşımında
-        # RuntimeError üretir (L4 çekirdek-sızıntısı bu sayede kapanır).
+        # M25: loop-budgeted compilation — `while True: pass` now raises a
+        # RuntimeError on budget overrun instead of hitting the 2s thread
+        # timeout and LEAKING a daemon thread (this closes the L4 core-leak).
         exec(compile_with_loop_budget(src, "<custom_block>"), safe_globals, ns)
     except Exception as e:
         raise GeneratedCodeError(f"module init failed: {type(e).__name__}: {e}") from e
 
     if require_max_lookback and not callable(ns.get("max_lookback")):
         raise GeneratedCodeError(
-            "max_lookback(params) fonksiyonu zorunlu (M16): bloğun ihtiyaç "
-            "duyduğu bar sayısını döndürmeli, yoksa pencere 55 bara kırpılır"
+            "max_lookback(params) function is required (M16): it must return the "
+            "number of bars the block needs, otherwise the window is clipped to 55 bars"
         )
 
     # Make helpers defined in the module visible when evaluate() runs.
@@ -940,10 +945,10 @@ def _test_execute_generated(
     for k, v in ns.items():
         if callable(v) and not k.startswith("_") and k not in _protected:
             safe_globals[k] = v
-    # M1084: bütçe preamble'ı (__budget/__budget_tick) exec'in ayrı globals/
-    # locals'ında ns'e düşüyor; enjekte edilen fonksiyonlar bunları GLOBALS'ta
-    # arar — smoke'ta da erişilebilsin diye taşı (loader tek-namespace kullanır,
-    # orada sorun yok).
+    # M1084: the budget preamble (__budget/__budget_tick) lands in ns inside
+    # exec's separate globals/locals; the injected functions look these up in
+    # GLOBALS — move them so they are reachable in smoke too (the loader uses a
+    # single namespace, no problem there).
     for _bk in ("__budget", "__budget_tick"):
         if _bk in ns:
             safe_globals[_bk] = ns[_bk]
@@ -979,10 +984,10 @@ def _test_execute_generated(
     # Give the block a decently long price series so most lookbacks don't
     # underrun and skip execution entirely.
     closes = [100.0 + i * 0.1 for i in range(300)]
-    # Volume + high/low serileri de runtime'daki gibi indicators üzerinden
-    # verilir — OHLC okuyan bloklar (ADX/ATR/Stochastic/Donchian) smoke-exec'te
-    # gerçekten çalışsın (None-guard'a düşmesin). high > close > low sıralaması
-    # korunur ki True-Range vb. mantık makul değerler görsün.
+    # Volume + high/low series are also provided via indicators just like at
+    # runtime — blocks reading OHLC (ADX/ATR/Stochastic/Donchian) should really
+    # run in smoke-exec (not fall into the None-guard). The high > close > low
+    # ordering is preserved so True-Range etc. logic sees sensible values.
     indicators = {
         "volumes": [1000.0 + (i % 7) * 150.0 for i in range(300)],
         "highs": [100.0 + i * 0.1 + 0.5 for i in range(300)],
@@ -1165,7 +1170,7 @@ def _extract_json_object(text: str) -> str:
 
 
 def _usage_dict(resp) -> dict:
-    """resp.usage → normalize token dict (M1583: her LLM çağrısında sayılır)."""
+    """resp.usage → normalize token dict (M1583: counted on every LLM call)."""
     u = getattr(resp, "usage", None)
     return {
         "input_tokens": getattr(u, "input_tokens", 0) or 0,
@@ -1177,7 +1182,7 @@ def _usage_dict(resp) -> dict:
 
 
 def _call_claude_for_block(user_prompt: str) -> tuple[dict, dict]:
-    """(parsed_json, usage) döndürür — M1583: custom-blok token'ları sayılsın."""
+    """Returns (parsed_json, usage) — M1583: count custom-block tokens too."""
     client = _get_client()
     resp = _create_message(
         client,
@@ -1231,11 +1236,12 @@ Return the JSON only."""
 
 
 def propose_condition_breakdown(description: str) -> dict:
-    """Doğal-dil tarifi AYRI sinyal koşullarına böl (her biri ayrı blok olacak).
+    """Split a natural-language description into SEPARATE signal conditions (each
+    becomes its own block).
 
-    Döner: {label, entry_logic, exit_logic, conditions:[{role,label,desc}], usage}.
-    Koşullar en az 1 entry + 1 exit içerir; aksi halde ValueError (çağıran tek-blok
-    yoluna düşer). LLM/parse hatası da yükseltilir.
+    Returns: {label, entry_logic, exit_logic, conditions:[{role,label,desc}], usage}.
+    Conditions include at least 1 entry + 1 exit; otherwise ValueError (the caller
+    falls back to the single-block path). LLM/parse errors are also raised.
     """
     client = _get_client()
     resp = _create_message(
@@ -1250,7 +1256,7 @@ def propose_condition_breakdown(description: str) -> dict:
 
     conds = data.get("conditions")
     if not isinstance(conds, list) or not conds:
-        raise ValueError("breakdown: 'conditions' listesi yok/boş")
+        raise ValueError("breakdown: no/empty 'conditions' list")
     clean: list[dict] = []
     for c in conds:
         if not isinstance(c, dict):
@@ -1269,14 +1275,14 @@ def propose_condition_breakdown(description: str) -> dict:
     n_exit = sum(1 for c in clean if c["role"] == "exit")
     if n_entry < 1 or n_exit < 1:
         raise ValueError(
-            f"breakdown: en az 1 entry + 1 exit gerekli (entry={n_entry}, exit={n_exit})"
+            f"breakdown: at least 1 entry + 1 exit required (entry={n_entry}, exit={n_exit})"
         )
 
     def _logic(v):
         return "AND" if str(v).upper() == "AND" else "OR"
 
     return {
-        "label": str(data.get("label") or "").strip()[:40] or "Tarif edilen strateji",
+        "label": str(data.get("label") or "").strip()[:40] or "Described strategy",
         "entry_logic": _logic(data.get("entry_logic")),
         "exit_logic": _logic(data.get("exit_logic")),
         "conditions": clean,
@@ -1358,48 +1364,48 @@ Return the JSON only."""
 
 
 _AGENT_IDEA_PROMPT = """\
-Sen bir {market_tr} araştırma ajanısın.{market_note}
+You are a {market_tr} research agent.{market_note}
 
 {exploration_directive}
 
-⚠️ YASAK: Bollinger Band crossing — her zaman 0 trade üretiyor. KESİNLİKLE SEÇME.
-⚠️ YASAK: VWAP sapma + momentum AND kombinasyonu — 0 trade üretiyor.
+⚠️ FORBIDDEN: Bollinger Band crossing — always produces 0 trades. NEVER select this.
+⚠️ FORBIDDEN: VWAP deviation + momentum AND combination — produces 0 trades.
 
-Geçmiş stratejiler ve SONUÇLARI (0 trade = başarısız, değiştir!):
+Past strategies and their RESULTS (0 trades = failed, change it!):
 {history}
 
-Daha önce custom blok olarak üretilen kavramlar (TEKRAR ÜRETME):
+Concepts previously generated as custom blocks (DO NOT REGENERATE):
 {used_concepts}
 
-Kullanıcı ipucu:
+User hint:
 {hint}
 
-Kural: Kullanılabilir veri = TAM OHLCV. closes (kapanış) + indicators["highs"] (en yüksek)
-+ indicators["lows"] (en düşük) + indicators["volumes"] (hacim) — dördü de float liste,
-closes ile hizalı, eskiden yeniye. High/low MEVCUT olduğu için gerçek OHLC indikatörleri
-hesaplanabilir: ATR, ADX/DMI, Stochastic, Donchian/Keltner kanalı, WaveTrend, SuperTrend.
-Hacim bazlı fikirler (hacim patlaması, OBV, hacim teyidi) de geçerli. Kullanıcı ipucu bu
-indikatörlerden birini içeriyorsa GERÇEK formülüyle kullan (kaba proxy'ye düşme).
-Kullanıcı çoklu-indikatör konfluans istediyse (örn. "RSI VE ADX VE ATR") hepsini
-BİRLİKTE kullanan bir fikir üret — kısma. AND koşul sayısında üst sınır yok; tek
-maliyet sinyal sıklığı, onu gevşek eşiklerle telafi et (az-trade koşular zaten
-sonradan eleniyor). Kullanıcı konfluans istemediyse tek basit koşul yeterli.
+Rule: Usable data = FULL OHLCV. closes (close) + indicators["highs"] (high)
++ indicators["lows"] (low) + indicators["volumes"] (volume) — all four are float lists,
+aligned with closes, oldest to newest. Since high/low are AVAILABLE, real OHLC indicators
+can be computed: ATR, ADX/DMI, Stochastic, Donchian/Keltner channel, WaveTrend, SuperTrend.
+Volume-based ideas (volume spike, OBV, volume confirmation) are also valid. If the user hint
+contains one of these indicators, use its REAL formula (do not fall back to a crude proxy).
+If the user asked for multi-indicator confluence (e.g. "RSI AND ADX AND ATR"), produce an idea
+that uses them ALL TOGETHER — do not trim. There is no upper limit on AND condition count; the
+only cost is signal frequency, so compensate with loose thresholds (low-trade runs are already
+filtered out later). If the user did not ask for confluence, a single simple condition is enough.
 
-Şu JSON formatında döndür (başka hiçbir şey yazma):
+Return in this JSON format (write nothing else):
 {{
-  "name": "kısa strateji adı (2-4 kelime)",
-  "description": "1 cümle trading tezi",
-  "entry_label": "entry bloğu için kısa isim",
-  "entry_desc": "entry sinyalini nasıl hesaplayacağını tarif et (closes/highs/lows/volumes serilerinde — high/low gerektiren ATR/ADX/Stochastic de kullanılabilir)",
-  "exit_label": "exit bloğu için kısa isim",
-  "exit_desc": "exit sinyalini tarif et"
+  "name": "short strategy name (2-4 words)",
+  "description": "1-sentence trading thesis",
+  "entry_label": "short name for the entry block",
+  "entry_desc": "describe how to compute the entry signal (over closes/highs/lows/volumes series — ATR/ADX/Stochastic requiring high/low can also be used)",
+  "exit_label": "short name for the exit block",
+  "exit_desc": "describe the exit signal"
 }}
 """
 
 
-# İpuçlarında tanınan indikatörler: kanonik ad → arama desenleri. Kısa akronimler
-# (rsi/adx/atr…) kelime-sınırıyla, uzun ayırt edici adlar (bollinger/stochastic…)
-# substring ile eşleşir — böylece "smart" içindeki "ma" gibi yanlış-pozitif olmaz.
+# Indicators recognized in hints: canonical name → search patterns. Short acronyms
+# (rsi/adx/atr…) match on word boundaries, long distinctive names (bollinger/stochastic…)
+# match as substrings — so that e.g. "ma" inside "smart" is not a false positive.
 _HINT_INDICATORS: dict[str, list[str]] = {
     "RSI": [r"\brsi\b"],
     "ADX/DMI": [r"\badx\b", r"\bdmi\b", r"\bdx\b"],
@@ -1418,12 +1424,12 @@ _HINT_INDICATORS: dict[str, list[str]] = {
     "SuperTrend": ["supertrend", "super trend"],
     "Momentum/ROC": ["momentum", r"\broc\b", "rate of change"],
     "Ichimoku": ["ichimoku"],
-    "Hacim": ["hacim", r"\bvolume\b"],
+    "Volume": ["hacim", r"\bvolume\b"],
 }
 
 
 def _hint_indicators(hint: str) -> list[str]:
-    """İpucunda geçen tanınan indikatörlerin kanonik adları (sıralı, tekrarsız)."""
+    """Canonical names of recognized indicators mentioned in the hint (ordered, deduplicated)."""
     import re
 
     low = (hint or "").lower()
@@ -1435,30 +1441,35 @@ def _hint_indicators(hint: str) -> list[str]:
 
 
 def _exploration_directive(hint: str) -> str:
-    """İpucu belirgin indikatör içeriyorsa 'sette kal + varyasyon tara', yoksa
-    'farklı indikatör ailesi seç' yönergesini döndürür.
+    """If the hint contains explicit indicators, returns a 'stay in this set +
+    scan variations' directive, otherwise a 'pick a different indicator family'
+    directive.
 
-    Amaç: kullanıcı 'RSI+ADX+ATR' verdiğinde agent her turda başka bir indikatör
-    ailesine kaymak yerine bu setin kombinasyon/parametre uzayını tarasın.
+    Goal: when the user gives 'RSI+ADX+ATR', the agent should scan the
+    combination/parameter space of this set instead of drifting to a different
+    indicator family every round.
     """
     inds = _hint_indicators(hint)
     if inds:
         names = ", ".join(inds)
         return (
-            f"Görev: Kullanıcı şu indikatörleri istedi: {names}. Bunlar stratejinin "
-            "ÇEKİRDEĞİ — her fikirde kullan (tek başına, ikili veya hepsi birden AND; "
-            "her turda FARKLI bir kombinasyon/alt küme + FARKLI parametre/eşik/mantık "
-            "dene, böylece bu setin uzayını sistematik tara). AYRICA her fikre, KÂRI "
-            "ARTIRABİLECEĞİNİ düşündüğün TAMAMLAYICI bir indikatör (ek filtre, teyit "
-            "ya da daha iyi bir çıkış) ekleyerek YARATICI ol — istenen seti BIRAKMA "
-            "ama yalnız onlarla da sınırlı kalma, üstüne kat. Aşağıdaki geçmişte "
-            "denenen kombinasyonları TEKRARLAMA; her tur YENİ bir varyasyon üret."
+            f"Task: The user requested these indicators: {names}. These are the "
+            "CORE of the strategy — use them in every idea (alone, in pairs, or all "
+            "together with AND; each round try a DIFFERENT combination/subset + "
+            "DIFFERENT parameters/thresholds/logic, so you systematically scan the "
+            "space of this set). ALSO be CREATIVE by adding to each idea a "
+            "COMPLEMENTARY indicator (an extra filter, confirmation, or a better "
+            "exit) that you think COULD INCREASE PROFIT — do not abandon the "
+            "requested set, but do not stay limited to them alone either; build on "
+            "top. Do NOT REPEAT the combinations tried in the history below; produce "
+            "a NEW variation each round. (STAY IN THIS SET.)"
         )
     return (
-        "Görev: Aşağıdaki geçmiş sonuçlara bakarak YENİ ve TAMAMEN FARKLI bir "
-        "strateji fikri üret. Mevcut geçmişten FARKLI bir indikatör ailesi seç "
-        "(örn. Donchian kanal, Hull MA, Williams %R, Keltner kanalı, DEMA/TEMA, "
-        "rate-of-change eşiği, CCI, WaveTrend, MACD histogram işaret değişimi)."
+        "Task: Looking at the past results below, produce a NEW and COMPLETELY "
+        "DIFFERENT strategy idea. pick a DIFFERENT indicator family from the "
+        "existing history (e.g. Donchian channel, Hull MA, Williams %R, Keltner "
+        "channel, DEMA/TEMA, rate-of-change threshold, CCI, WaveTrend, MACD "
+        "histogram sign change)."
     )
 
 
@@ -1473,7 +1484,7 @@ def _propose_agent_strategy_idea(
     Returns dict with keys: name, description, entry_label, entry_desc,
     exit_label, exit_desc. Falls back to a hardcoded idea on any failure.
 
-    ``market`` — opsiyonel pazar bağlamı; None ise kripto ifadesi korunur.
+    ``market`` — optional market context; if None the crypto phrasing is kept.
     """
     history_summary = ""
     if history:
@@ -1481,13 +1492,13 @@ def _propose_agent_strategy_idea(
         for r in history[-8:]:
             n_trades = (r.metrics or {}).get("n_trades", 0) if not r.error else 0
             if n_trades == 0:
-                outcome = "❌ 0 TRADE — HİÇ ÇALIŞMADI"
+                outcome = "❌ 0 TRADES — NEVER RAN"
             else:
                 sh = (r.metrics or {}).get("sharpe", 0) or 0
                 outcome = f"✓ {n_trades} trade, sharpe={sh:.1f}"
             name = r.strategy.split(":")[-1].strip()
             tried_with_outcomes.append(f"  {name}: {outcome}")
-        history_summary = "Daha önce denenenler ve sonuçları:\n" + "\n".join(
+        history_summary = "Previously tried and their results:\n" + "\n".join(
             tried_with_outcomes
         )
 
@@ -1499,32 +1510,32 @@ def _propose_agent_strategy_idea(
         ]
         if zero_names:
             history_summary += (
-                "\n\n⛔ SIFIR TRADE VEREN KAVRAMLAR — BUNLARI MUTLAKA ATLA: "
+                "\n\n⛔ CONCEPTS THAT PRODUCED ZERO TRADES — ALWAYS SKIP THESE: "
                 + ", ".join(zero_names[-8:])
             )
 
-    concepts_str = "Yok (ilk tur)"
+    concepts_str = "None (first round)"
     if used_concepts:
-        concepts_str = ", ".join(used_concepts[-12:])  # son 12 konsept
+        concepts_str = ", ".join(used_concepts[-12:])  # last 12 concepts
 
     if market:
-        market_tr = "ABD hisse senedi (US equity) trading"
+        market_tr = "US equity trading"
         market_note = (
-            f"\nEnstrüman: {market}. Kripto değil — hisse senedi dinamiklerine ve "
-            "bar aralığına uygun fikirler üret (günlük barlarda 'intraday' yerine "
-            "swing mantığı kullan)."
+            f"\nInstrument: {market}. Not crypto — produce ideas suited to equity "
+            "dynamics and the bar interval (on daily bars use swing logic instead "
+            "of 'intraday')."
         )
     else:
-        market_tr = "kripto trading"
+        market_tr = "crypto trading"
         market_note = ""
 
     prompt = _AGENT_IDEA_PROMPT.format(
         market_tr=market_tr,
         market_note=market_note,
         exploration_directive=_exploration_directive(hint),
-        history=history_summary or "Henüz geçmiş yok.",
+        history=history_summary or "No history yet.",
         used_concepts=concepts_str,
-        hint=hint.strip() or "Yok (tamamen otonom)",
+        hint=hint.strip() or "None (fully autonomous)",
     )
 
     try:
@@ -1538,58 +1549,58 @@ def _propose_agent_strategy_idea(
             b.text for b in resp.content if getattr(b, "type", "") == "text"
         ).strip()
         idea = json.loads(_extract_json_object(text))
-        idea["usage"] = _usage_dict(resp)  # M1583: fikir token'ları da sayılsın
+        idea["usage"] = _usage_dict(resp)  # M1583: count idea tokens too
         return idea
     except Exception as e:
         logging.warning("_propose_agent_strategy_idea failed: %s", e, exc_info=True)
-        # Fallback: çeşitli konseptler arasından seç (hep Bollinger döndürmeyi önle)
+        # Fallback: pick from a variety of concepts (avoid always returning Bollinger)
         _FALLBACK_IDEAS = [
             {
-                "name": "RSI Aşırı Satım Dönüşü",
-                "description": "RSI 30 altından yukarı dönerken giriş, 70 üstünde çıkış.",
+                "name": "RSI Oversold Reversal",
+                "description": "Enter when RSI turns up from below 30, exit above 70.",
                 "entry_label": "RSI Oversold Entry",
-                "entry_desc": "RSI 14 periyot, önceki bar 30'un altındayken mevcut bar 30 üzerine geçerse long sinyal.",
+                "entry_desc": "RSI 14 period; if the previous bar was below 30 and the current bar crosses above 30, long signal.",
                 "exit_label": "RSI Overbought Exit",
-                "exit_desc": "RSI 70'in üzerine çıktığında exit sinyali üret.",
+                "exit_desc": "Produce an exit signal when RSI rises above 70.",
             },
             {
-                "name": "MACD Sıfır Çizgisi Kırılımı",
-                "description": "MACD histogram sıfırı yukarı kırdığında momentum başlıyor.",
+                "name": "MACD Zero Line Cross",
+                "description": "Momentum begins when the MACD histogram crosses zero upward.",
                 "entry_label": "MACD Zero Cross Entry",
-                "entry_desc": "MACD histogram (12-26 EMA farkı) sıfırın altından yukarı geçtiğinde long sinyal.",
+                "entry_desc": "When the MACD histogram (12-26 EMA difference) crosses from below zero to above, long signal.",
                 "exit_label": "MACD Negative Exit",
-                "exit_desc": "MACD histogram negatife döndüğünde exit sinyali üret.",
+                "exit_desc": "Produce an exit signal when the MACD histogram turns negative.",
             },
             {
-                "name": "EMA Şerit Kırılımı",
-                "description": "Kısa EMA uzun EMA'yı yukarı kırdığında trend başlangıcı.",
+                "name": "EMA Ribbon Breakout",
+                "description": "Trend starts when the short EMA crosses above the long EMA.",
                 "entry_label": "EMA Ribbon Entry",
-                "entry_desc": "5-periyot EMA 20-periyot EMA'nın altındayken yukarı keserse long sinyal.",
+                "entry_desc": "If the 5-period EMA is below the 20-period EMA and crosses above it, long signal.",
                 "exit_label": "EMA Ribbon Exit",
-                "exit_desc": "5-periyot EMA 20-periyot EMA'nın altına düştüğünde exit sinyali üret.",
+                "exit_desc": "Produce an exit signal when the 5-period EMA falls below the 20-period EMA.",
             },
             {
-                "name": "Stochastic Dönüş",
-                "description": "Stochastic aşırı satım bölgesinden dönerken giriş.",
+                "name": "Stochastic Reversal",
+                "description": "Enter as Stochastic turns up from the oversold zone.",
                 "entry_label": "Stoch Reversal Entry",
-                "entry_desc": "Stochastic K (14,3) 20'nin altından yukarı dönerse long sinyal. K = (close-min14)/(max14-min14)*100.",
+                "entry_desc": "If Stochastic K (14,3) turns up from below 20, long signal. K = (close-min14)/(max14-min14)*100.",
                 "exit_label": "Stoch Overbought Exit",
-                "exit_desc": "Stochastic K 80'in üzerine çıktığında exit sinyali üret.",
+                "exit_desc": "Produce an exit signal when Stochastic K rises above 80.",
             },
             {
-                "name": "Donchian Kanal Kırılımı",
-                "description": "Fiyat N-periyot yüksek seviyeyi kırdığında breakout girişi.",
+                "name": "Donchian Channel Breakout",
+                "description": "Breakout entry when price breaks the N-period high.",
                 "entry_label": "Donchian Breakout Entry",
-                "entry_desc": "Close son 20 barın maksimumunu (Donchian üst kanal) kırdığında long sinyal.",
+                "entry_desc": "When close breaks the maximum of the last 20 bars (Donchian upper channel), long signal.",
                 "exit_label": "Donchian Lower Exit",
-                "exit_desc": "Close son 10 barın minimumunun altına düştüğünde exit sinyali üret.",
+                "exit_desc": "Produce an exit signal when close falls below the minimum of the last 10 bars.",
             },
         ]
-        # used_concepts'e göre en az kullanılan fallback'i seç
+        # pick the least-used fallback according to used_concepts
         idx = 0
         if used_concepts:
             used_str = " ".join(used_concepts).lower()
-            # Her fallback için kullanılma skoru hesapla
+            # compute a usage score for each fallback
             scores = []
             for idea in _FALLBACK_IDEAS:
                 score = sum(

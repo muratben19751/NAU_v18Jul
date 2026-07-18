@@ -5,9 +5,9 @@ market orders. The LLM agent proposes numeric parameters only.
 
 Wiki References
 ---------------
-Bkz: [[strategy_and_actor]], [[v1_to_v2_migration_lessons]]
+See: [[strategy_and_actor]], [[v1_to_v2_migration_lessons]]
 
-StrategyConfig is v2 plain-class (bkz. [[v1_to_v2_migration_lessons]]); Strategy servisleri [[strategy_and_actor]] sayfasındaki liste.
+StrategyConfig is v2 plain-class (see [[v1_to_v2_migration_lessons]]); Strategy services are the list on the [[strategy_and_actor]] page.
 """
 
 from __future__ import annotations
@@ -138,9 +138,9 @@ class RSIMeanReversionStrategy(Strategy):
 
         qty = self.instrument.make_qty(float(self.config.trade_size))
 
-        # H7: Nautilus RSI.value ∈ [0,1); oversold/overbought 0-100 ölçeğinde
-        # (30/70). Ölçek uyumsuzluğu stratejiyi dejenere al-tut'a çeviriyordu
-        # (value<30 hep doğru, value>70 asla). 0-100'e çek.
+        # H7: Nautilus RSI.value ∈ [0,1); oversold/overbought on 0-100 scale
+        # (30/70). The scale mismatch turned the strategy into a degenerate buy-hold
+        # (value<30 always true, value>70 never). Scale to 0-100.
         rsi_100 = self._rsi.value * 100.0
         if rsi_100 < self.config.oversold and not has_long:
             order = self.order_factory.market(
@@ -166,7 +166,7 @@ STRATEGY_PARAM_SPEC = {
     "ma_crossover": {
         "fast": {"type": "int", "range": [2, 50], "desc": "Fast MA period"},
         "slow": {"type": "int", "range": [10, 200], "desc": "Slow MA period (> fast)"},
-        "_note": "Long-only: crossed_up → BUY, crossed_down → long kapatır; short açmaz.",
+        "_note": "Long-only: crossed_up → BUY, crossed_down → closes long; does not open short.",
     },
     "rsi_mean_reversion": {
         "rsi_period": {"type": "int", "range": [5, 30], "desc": "RSI lookback"},
@@ -176,6 +176,6 @@ STRATEGY_PARAM_SPEC = {
             "range": [60.0, 90.0],
             "desc": "Sell threshold",
         },
-        "_note": "Long-only: oversold → BUY, overbought → long kapatır; short açmaz.",
+        "_note": "Long-only: oversold → BUY, overbought → closes long; does not open short.",
     },
 }

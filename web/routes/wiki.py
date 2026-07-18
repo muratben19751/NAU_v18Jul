@@ -10,9 +10,9 @@ template is deliberately minimal — Obsidian remains the primary reader.
 
 Wiki References
 ---------------
-_(app-spesifik — wiki scope dışı)_
+_(app-specific — outside wiki scope)_
 
-Karpathy pattern frontend'i.
+Karpathy pattern frontend.
 """
 
 from __future__ import annotations
@@ -54,7 +54,7 @@ def _render(request: Request, rel_path: str, title: str) -> HTMLResponse:
 
 @router.get("", response_class=HTMLResponse)
 async def wiki_index(request: Request):
-    return _render(request, "index.md", "Wiki — İçerik Kataloğu")
+    return _render(request, "index.md", "Wiki — Content Catalog")
 
 
 @router.get("/slug/{slug}", response_class=HTMLResponse)

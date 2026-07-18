@@ -1,9 +1,9 @@
-"""Agent log denetiminden çıkan düzeltmelerin regresyon testleri.
+"""Regression tests for fixes coming out of the agent log audit.
 
-1. TP-off bracket: use_bracket=True + tp_type='off' TypeError üretmemeli
-   (entry + SL-only'a düşer).
-2. Sürekli mod devre kesicisi: 3 ardışık aynı hata → durur.
-3. Kazanan yolu session_end(outcome="winner") yazar.
+1. TP-off bracket: use_bracket=True + tp_type='off' must not raise TypeError
+   (falls back to entry + SL-only).
+2. Continuous mode circuit breaker: 3 consecutive identical errors → stops.
+3. Winner path writes session_end(outcome="winner").
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ _RECIPE = {"symbol": "BTCUSDT", "interval": "60", "category": "linear"}
 
 
 def _trending_bars(n: int = 400) -> pd.DataFrame:
-    """MA-cross'un kesin tetiklendiği deterministik trend + dalga verisi."""
+    """Deterministic trend + wave data where MA-cross definitely triggers."""
     idx = pd.date_range("2024-01-01", periods=n, freq="1h", tz="UTC")
     t = np.arange(n)
     close = 30_000 + 2_000 * np.sin(t / 30.0) + t * 2.0
@@ -55,15 +55,15 @@ def _bracket_tp_off_spec() -> ComposedStrategySpec:
         use_bracket=True,
         sl_type="percent",
         sl_value=2.0,
-        tp_type="off",  # ← hata deseni: TP kapalı + bracket
+        tp_type="off",  # ← error pattern: TP off + bracket
     )
 
 
 class TestBracketTpOff:
     def test_no_price_typeerror_and_entries_fill(self):
-        """8× loglanan canlı bug: tp_price=None → bracket() TypeError.
+        """Live bug logged 8×: tp_price=None → bracket() TypeError.
 
-        Fix sonrası: hata yok, entry'ler açılıyor (SL-only yol)."""
+        After fix: no error, entries open (SL-only path)."""
         from backtest import run_composed_backtest
         from sandbox import _build_instrument_bar_type
 
@@ -72,23 +72,23 @@ class TestBracketTpOff:
             _bracket_tp_off_spec(),
             _trending_bars(),
             iteration_id=1,
-            rationale="tp-off regresyon",
+            rationale="tp-off regression",
             instrument=instrument,
             bar_type=bar_type,
             venue=instrument.id.venue,
         )
-        assert r.error is None, f"TP-off bracket hata üretti: {r.error}"
+        assert r.error is None, f"TP-off bracket produced an error: {r.error}"
         m = r.metrics or {}
-        assert (m.get("n_trades") or 0) > 0, "hiç trade açılmadı — entry yolu kırık"
+        assert (m.get("n_trades") or 0) > 0, "no trades opened — entry path broken"
 
 
 class TestContinuousCircuitBreaker:
     def test_three_identical_errors_stop_the_loop(self, monkeypatch):
-        """Sürekli modda aynı hata 3 kez ardışık → done=True, tur 4 KOŞULMAZ.
+        """In continuous mode the same error 3 times consecutively → done=True, run 4 NOT RUN.
 
-        886f439b oturumu aynı 'Cache çok az veri' hatasıyla 100 tur dönmüştü.
-        Worker'ı gerçek koşturmak yerine faz-0 veri yükleyicisini patch'leyip
-        deterministik hata ürettiriyoruz.
+        Session 886f439b spun 100 runs with the same 'Cache too little data' error.
+        Instead of running the worker for real, we patch the phase-0 data loader
+        to produce a deterministic error.
         """
         import web.routes.agent_backtest as ab
 
@@ -131,18 +131,18 @@ class TestContinuousCircuitBreaker:
 
         def boom(*a, **k):
             calls["n"] += 1
-            raise RuntimeError("Cache çok az veri içeriyor (5 bar).")
+            raise RuntimeError("Cache contains too little data (5 bars).")
 
-        # Faz 0'ın ilk dokunduğu şey: load_bybit_bars — her turda aynı hata.
+        # The first thing phase 0 touches: load_bybit_bars — same error every run.
         monkeypatch.setattr("data.load_bybit_bars", boom)
-        # Cache fallback'ini de kapat: _load_tf fetch hatasında cache'e düşer;
-        # bu makinede gerçek cache VAR — var-olmayan yola yönlendir ki hata
-        # deterministik olarak yukarı fırlasın (her turda aynı RuntimeError).
+        # Also disable the cache fallback: on a fetch error _load_tf falls back to
+        # cache; this machine HAS a real cache — redirect to a non-existent path so
+        # the error deterministically bubbles up (same RuntimeError every run).
         from pathlib import Path
 
         monkeypatch.setattr(
             "data._bybit_cache_path",
-            lambda *a, **k: Path("Z:/yok/boyle/bir/cache.parquet"),
+            lambda *a, **k: Path("Z:/no/such/cache.parquet"),
         )
         try:
             ab._agent_worker(
@@ -160,15 +160,15 @@ class TestContinuousCircuitBreaker:
             with ab._AGENT_LOCK:
                 ab._AGENT_PROGRESS.pop(rid, None)
 
-        assert calls["n"] == 3, f"3 turda durmalıydı, {calls['n']} tur koştu"
+        assert calls["n"] == 3, f"should have stopped after 3 runs, ran {calls['n']} runs"
         assert state.get("done") is True
         joined = " ".join(s["msg"] for s in state.get("steps", []))
-        assert "ardışık" in joined, "devre kesici adımı loglanmalı"
+        assert "consecutive" in joined, "circuit-breaker step should be logged"
 
 
 class TestWinnerSessionEnd:
     def test_winner_path_logs_session_end(self, tmp_path, monkeypatch):
-        """Kazanan yolunda session_end(outcome='winner') JSONL'e yazılmalı."""
+        """On the winner path session_end(outcome='winner') must be written to JSONL."""
         import json
 
         import web.routes.agent_backtest as ab
@@ -176,7 +176,7 @@ class TestWinnerSessionEnd:
         monkeypatch.setattr(ab, "SESSION_LOG_DIR", tmp_path)
         rid = "wintest1"
         ab._session_log(rid, "winner", spec_name="X")
-        # Fix'in eklediği çağrının birebir aynısı:
+        # Exactly the same call the fix added:
         ab._session_log(rid, "session_end", round=1, outcome="winner", total_rounds=1)
         lines = (tmp_path / f"{rid}.jsonl").read_text().strip().splitlines()
         events = [json.loads(ln) for ln in lines]
@@ -184,30 +184,30 @@ class TestWinnerSessionEnd:
         assert end and end[0]["outcome"] == "winner"
 
     def test_worker_source_contains_winner_session_end(self):
-        """Kaynak düzeyi guard: kazanan bloğunda session_end çağrısı mevcut."""
+        """Source-level guard: session_end call exists in the winner block."""
         import inspect
 
         import web.routes.agent_backtest as ab
 
         src = inspect.getsource(ab._agent_worker)
-        # 'winner' logundan sonra ve continuous-return'den önce session_end olmalı
+        # session_end must come after the 'winner' log and before the continuous-return
         wi = src.find('"winner",')
         assert wi != -1
         tail = src[wi : wi + 2000]
         assert 'outcome="winner"' in tail, (
-            "kazanan yolunda session_end(outcome='winner') yok"
+            "no session_end(outcome='winner') on the winner path"
         )
 
 
 class TestTerminalMessage:
-    """Bellekte olmayan run için dürüst mesaj (sunucu restart'ı koşuyu
-    öldürünce UI 'tamamlandı' DEMEMELİ — 2026-07-14 canlı olayı)."""
+    """Honest message for a run not in memory (when a server restart kills the run
+    the UI must NOT SAY 'completed' — 2026-07-14 live incident)."""
 
     def test_no_log_generic(self, tmp_path, monkeypatch):
         import web.routes.agent_backtest as ab
 
         monkeypatch.setattr(ab, "SESSION_LOG_DIR", tmp_path)
-        assert "tamamlandı veya süresi doldu" in ab._terminal_message("yok1")
+        assert "completed or timed out" in ab._terminal_message("none1")
 
     def test_session_end_means_completed(self, tmp_path, monkeypatch):
         import json as _json
@@ -223,7 +223,7 @@ class TestTerminalMessage:
             + "\n"
         )
         msg = ab._terminal_message("r1")
-        assert "tamamlandı" in msg and "kesildi" not in msg
+        assert "completed" in msg and "cut off" not in msg
 
     def test_truncated_log_means_interrupted(self, tmp_path, monkeypatch):
         import json as _json
@@ -235,15 +235,15 @@ class TestTerminalMessage:
         log.write_text(
             _json.dumps({"event": "session_start"})
             + "\n"
-            + _json.dumps({"event": "step", "msg": "Custom blok üretiliyor…"})
+            + _json.dumps({"event": "step", "msg": "Generating custom block…"})
             + "\n"
         )
         msg = ab._terminal_message("r2")
-        assert "kesildi" in msg and "yeniden" in msg
+        assert "cut off" in msg and "restart" in msg
 
 
 class TestScoreJunkFilter:
-    """_score JUNK elemesi NAU ile hizalı: <20 trade VEYA dejenere drawdown."""
+    """_score JUNK elimination aligned with NAU: <20 trades OR degenerate drawdown."""
 
     @staticmethod
     def _res(n_trades, max_dd=-0.1):
@@ -278,13 +278,13 @@ class TestScoreJunkFilter:
         assert ab._score(self._res(150)) > float("-inf")
 
     def test_degenerate_drawdown_eliminated(self):
-        """NAU: max_drawdown <= 0 → junk. Bu projede max_dd >= 0 (veya None)."""
+        """NAU: max_drawdown <= 0 → junk. In this project max_dd >= 0 (or None)."""
         import web.routes.agent_backtest as ab
 
         assert ab._score(self._res(100, max_dd=0.0)) == float("-inf")
         assert ab._score(self._res(100, max_dd=0.05)) == float("-inf")
         assert ab._score(self._res(100, max_dd=None)) == float("-inf")
-        # Sağlıklı negatif drawdown → geçer
+        # Healthy negative drawdown → passes
         assert ab._score(self._res(100, max_dd=-0.2)) > float("-inf")
 
     def test_error_always_eliminated(self):
@@ -297,8 +297,9 @@ class TestScoreJunkFilter:
 
 
 class TestAgentPageReattach:
-    """GET /agent bitmemiş koşu varsa ona otomatik bağlanmalı (restart/refresh
-    sonrası 'ekran aynı' / boş kalma sorunu — koşu API'den başlatılsa bile)."""
+    """GET /agent must auto-attach to an unfinished run if present (fixes the
+    'screen unchanged' / blank-after-restart-or-refresh issue — even when the run
+    was started from the API)."""
 
     def test_reattaches_to_active_run(self, monkeypatch):
         from fastapi.testclient import TestClient
@@ -314,9 +315,9 @@ class TestAgentPageReattach:
         client = TestClient(app)
         resp = client.get("/agent")
         assert resp.status_code == 200
-        # En yeni aktif run'a polling bağlanmalı
+        # Polling should connect to the newest active run
         assert "/agent/progress/liverun" in resp.text
-        assert "Çalışan koşuya bağlanılıyor" in resp.text
+        assert "Connecting to the running run" in resp.text
 
     def test_no_active_run_shows_form_prompt(self, monkeypatch):
         from fastapi.testclient import TestClient
@@ -328,5 +329,5 @@ class TestAgentPageReattach:
         client = TestClient(app)
         resp = client.get("/agent")
         assert resp.status_code == 200
-        assert "otonom araştırma döngüsünü başlat" in resp.text
+        assert "start the autonomous research loop" in resp.text
         assert "/agent/progress/deadrun" not in resp.text

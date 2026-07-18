@@ -5,9 +5,9 @@ bars and extracts summary metrics + equity curve.
 
 Wiki References
 ---------------
-Bkz: [[backtest_node]], [[backtesting_guide]], [[environment_contexts]], [[data_wranglers]], [[precision_modes]], [[portfolio]], [[v1_to_v2_migration_lessons]], [[index_backtest_via_equity_proxy]]
+See: [[backtest_node]], [[backtesting_guide]], [[environment_contexts]], [[data_wranglers]], [[precision_modes]], [[portfolio]], [[v1_to_v2_migration_lessons]], [[index_backtest_via_equity_proxy]]
 
-Low-level API path; [[backtesting_guide]] "BacktestEngine seç eğer:" listesine uyar. `_bars_from_df` v2'de `BarDataWrangler.process` kaldırılınca yazılan helper — [[data_wranglers]] v1→v2 bölümü. Sharpe nan bug: bkz. [[portfolio]] ve [[v1_to_v2_migration_lessons]].
+Low-level API path; matches the [[backtesting_guide]] "choose BacktestEngine if:" list. `_bars_from_df` is a helper written after `BarDataWrangler.process` was removed in v2 — see [[data_wranglers]] v1→v2 section. Sharpe nan bug: see [[portfolio]] and [[v1_to_v2_migration_lessons]].
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ from decimal import Decimal
 import numpy as np
 import pandas as pd
 from nautilus_trader.backtest.engine import BacktestEngine, BacktestEngineConfig
-from nautilus_trader.backtest.models import MakerTakerFeeModel
+from nautilus_trader.backtest.models import FeeModel, MakerTakerFeeModel
 from nautilus_trader.config import LoggingConfig
 from nautilus_trader.model import (
     Bar,
@@ -47,8 +47,8 @@ USD = Currency.from_str("USD")
 USDT = Currency.from_str("USDT")
 
 
-# L43: tek kaynak app_constants — composer da oradan okur. Geriye uyum için
-# backtest.STARTING_CASH adı korunur (yeniden ihraç).
+# L43: single source app_constants — composer reads from there too. For
+# backward compat the name backtest.STARTING_CASH is preserved (re-export).
 from app_constants import STARTING_CASH  # noqa: E402
 
 POLYGON = Venue("POLYGON")
@@ -83,15 +83,104 @@ def _bybit_market_symbol(symbol: str, category: str) -> str:
     return symbol
 
 
-# M5: komisyonlar ARTIK MODELLENIYOR — instrument maker/taker fee +
-# MakerTakerFeeModel pinli 1.230.0'da çalışıyor (canlı doğrulandı; önceki
-# 'engine-level fee injection not supported' yorumu YANLIŞTI). Bybit
-# venue'ları bu oranlarla komisyon keser; PnL artık net-komisyon.
+# M5: commissions ARE NOW MODELED — instrument maker/taker fee +
+# MakerTakerFeeModel works on the pinned 1.230.0 (verified live; the earlier
+# 'engine-level fee injection not supported' comment was WRONG). Bybit
+# venues deduct commission at these rates; PnL is now net-of-commission.
 BYBIT_TAKER_FEE_BPS: float = 5.5  # 0.055% Bybit taker fee
 BYBIT_MAKER_FEE_BPS: float = 1.0  # 0.01%  Bybit maker fee
-# Slippage BİLEREK modellenmedi: Nautilus FillModel'i olasılıksal (deterministik
-# backtest'i bozar); sabit yalnız harici analiz/testler için duruyor.
-SLIPPAGE_BPS: float = 2.0  # ~1 tick slippage estimate per fill (modellenmedi)
+
+# Per-symbol commission overrides (maker_bps, taker_bps). Same pattern as
+# _BYBIT_SPECS: symbols not listed here fall back to the global BYBIT_*_FEE_BPS
+# above. Key is the canonical (USDT) symbol; the inverse ...USD market symbol
+# maps to the same rate too.
+_BYBIT_FEES_BPS: dict[str, tuple[float, float]] = {
+    "BTCUSDT": (BYBIT_MAKER_FEE_BPS, BYBIT_TAKER_FEE_BPS),
+    "ETHUSDT": (BYBIT_MAKER_FEE_BPS, BYBIT_TAKER_FEE_BPS),
+    "SOLUSDT": (BYBIT_MAKER_FEE_BPS, BYBIT_TAKER_FEE_BPS),
+    "XRPUSDT": (BYBIT_MAKER_FEE_BPS, BYBIT_TAKER_FEE_BPS),
+}
+
+
+def _bybit_fees_bps(symbol: str, market_symbol: str) -> tuple[float, float]:
+    """(maker_bps, taker_bps) for a symbol — canonical key first, then market
+    symbol (inverse ...USD), then the global BYBIT_*_FEE_BPS default."""
+    return _BYBIT_FEES_BPS.get(
+        symbol.upper(),
+        _BYBIT_FEES_BPS.get(
+            market_symbol.upper(), (BYBIT_MAKER_FEE_BPS, BYBIT_TAKER_FEE_BPS)
+        ),
+    )
+
+
+# Slippage INTENTIONALLY not modeled: Nautilus FillModel is probabilistic
+# (breaks the deterministic backtest); the constant stays only for external
+# analysis/tests.
+SLIPPAGE_BPS: float = 2.0  # ~1 tick slippage estimate per fill (not modeled)
+
+# Interactive Brokers — US stock/ETF (e.g. QQQ) commission. IBKR Pro "Fixed"
+# plan: fixed fee per share, minimum per order, and a cap as a percentage of
+# trade value. Unlike Bybit's bps-rate (MakerTakerFeeModel), it is a per-share
+# + min/max clamp structure; so IBFixedFeeModel is used instead of the built-in
+# fee model. Figures from the IBKR Pro Fixed tariff.
+IB_FIXED_PER_SHARE_USD: float = 0.005  # $0.005 / share
+IB_FIXED_MIN_PER_ORDER_USD: float = 1.0  # minimum $1.00 per order
+IB_FIXED_MAX_PCT_OF_TRADE: float = 0.01  # cap: 1% of trade value
+
+
+class IBFixedFeeModel(FeeModel):
+    """IBKR Pro 'Fixed' commission: per-share fee, bounded by a minimum per
+    order and a trade-value percentage cap.
+
+    Nautilus' built-in ``PerContractFeeModel``/``FixedFeeModel`` do not support
+    min/max clamping; since IB's real structure is ``max(per_share*qty, min)``
+    then ``min(…, max_pct*notional)``, a custom ``FeeModel`` is required. The
+    ``FeeModel`` subclass is verified live on the pinned 1.230.0.
+
+    ``get_commission`` is called for every fill; the commission is returned in
+    the instrument's quote currency (US equity → USD).
+    """
+
+    def __init__(
+        self,
+        per_share_usd: float = IB_FIXED_PER_SHARE_USD,
+        min_per_order_usd: float = IB_FIXED_MIN_PER_ORDER_USD,
+        max_pct_of_trade: float = IB_FIXED_MAX_PCT_OF_TRADE,
+    ) -> None:
+        super().__init__()
+        self._per_share = per_share_usd
+        self._min = min_per_order_usd
+        self._max_pct = max_pct_of_trade
+
+    def get_commission(self, order, fill_qty, fill_px, instrument) -> Money:
+        qty = float(fill_qty)
+        px = float(fill_px)
+        notional = qty * px
+        commission = qty * self._per_share
+        # Minimum per order (applied per fill — Nautilus calls per-fill)
+        commission = max(commission, self._min)
+        # 1% cap of trade value; not applied on zero/negative notional.
+        if notional > 0:
+            commission = min(commission, self._max_pct * notional)
+        return Money(commission, instrument.quote_currency)
+
+
+def _fee_model_for(instrument) -> FeeModel | None:
+    """Commission model by instrument type.
+
+    - CurrencyPair (Bybit crypto): MakerTakerFeeModel — reads the instrument's
+      maker/taker fees (bps).
+    - Equity (US stock/ETF, e.g. QQQ): IBFixedFeeModel — since it is traded on
+      Interactive Brokers, IB Pro Fixed commission (per-share + min + 1% cap).
+      Both the POLYGON index proxy and the external NASDAQ identity fall in this
+      scope.
+    - Other: None (commission not modeled).
+    """
+    if isinstance(instrument, CurrencyPair):
+        return MakerTakerFeeModel()
+    if isinstance(instrument, Equity):
+        return IBFixedFeeModel()
+    return None
 
 # Set NAUTILUS_DEBUG_LOG=1 to enable NautilusTrader's internal logging.
 # Reveals order rejections, strategy on_bar() exceptions, and account state errors
@@ -141,6 +230,7 @@ def _make_bybit_instrument(
         _BYBIT_SPECS.get(market_symbol.upper(), _BYBIT_DEFAULT_SPEC),
     )
     size_step = "1" if size_prec == 0 else "0." + "0" * (size_prec - 1) + "1"
+    maker_bps, taker_bps = _bybit_fees_bps(symbol, market_symbol)
     return CurrencyPair(
         instrument_id=iid,
         raw_symbol=sym,
@@ -151,9 +241,10 @@ def _make_bybit_instrument(
         price_increment=Price.from_str(tick),
         size_increment=Quantity.from_str(size_step),
         min_quantity=Quantity.from_str(size_step),
-        # M5: gerçek Bybit komisyon oranları — MakerTakerFeeModel bunları okur.
-        maker_fee=Decimal(str(BYBIT_MAKER_FEE_BPS / 10_000)),
-        taker_fee=Decimal(str(BYBIT_TAKER_FEE_BPS / 10_000)),
+        # M5: real Bybit commission rates — MakerTakerFeeModel reads these.
+        # Per-symbol override from _BYBIT_FEES_BPS; otherwise falls to global rate.
+        maker_fee=Decimal(str(maker_bps / 10_000)),
+        taker_fee=Decimal(str(taker_bps / 10_000)),
         ts_event=0,
         ts_init=0,
     )
@@ -183,11 +274,12 @@ def _make_index_instrument(ticker: str) -> Equity:
     close, which is what a user backtesting an index-tracking strategy
     would expect.
 
-    L40 (venue ikiliği, bilinçli): burada venue=POLYGON — bu, uygulamanın
-    KENDİ index-CSV proxy kimliğidir ve NAU kataloğunun gerçek-borsa
-    kimlikleriyle (SPY.ARCA, QQQ.NASDAQ…) ASLA çapraz eşleşmez. Harici
-    (NAU) katalog yolu zaten gerçek venue id'leriyle çalışır
-    (load_external_bars + EXTERNAL_PEER_BASKET); iki dünya bilinçli ayrıdır.
+    L40 (venue duality, intentional): here venue=POLYGON — this is the app's
+    OWN index-CSV proxy identity and NEVER cross-matches the NAU catalog's
+    real-exchange identities (SPY.ARCA, QQQ.NASDAQ…). The external (NAU)
+    catalog path already works with real venue ids
+    (load_external_bars + EXTERNAL_PEER_BASKET); the two worlds are
+    intentionally separate.
 
     Precision follows NAU's QLAB equity standard (universe.yaml: every
     equity is USD, price_precision 2, tick 0.01, lot 1) so backtests here
@@ -209,8 +301,14 @@ def _make_index_instrument(ticker: str) -> Equity:
 
 
 def _make_index_bar_type(instrument_id: InstrumentId, granularity: str) -> BarType:
-    step = "1-DAY" if granularity == "1d" else "1-MINUTE"
-    return BarType.from_str(f"{instrument_id}-{step}-LAST-EXTERNAL")
+    from data import _GRAN_BARSPEC
+
+    if granularity not in _GRAN_BARSPEC:
+        raise ValueError(
+            f"unsupported granularity {granularity!r}; supported: {list(_GRAN_BARSPEC)}"
+        )
+    step, aggregation = _GRAN_BARSPEC[granularity]
+    return BarType.from_str(f"{instrument_id}-{step}-{aggregation}-LAST-EXTERNAL")
 
 
 def _make_external_bar_type(instrument_id: InstrumentId, granularity: str) -> BarType:
@@ -242,10 +340,10 @@ def _prepare_df(bars_df: pd.DataFrame) -> pd.DataFrame:
     )
     dropped = int(len(df) - valid.sum())
     if dropped > 0:
-        # L21: sessiz veri kaybı gözlemlenebilir olsun — üç çağrı yolu da
-        # (run_backtest, composed, trend-filter) bu tek noktadan loglanır.
+        # L21: make silent data loss observable — all three call paths
+        # (run_backtest, composed, trend-filter) are logged from this one point.
         logging.getLogger(__name__).warning(
-            "_prepare_df: OHLC-invaryant bozan %d satır atıldı (%d kaldı)",
+            "_prepare_df: dropped %d row(s) violating OHLC invariant (%d kept)",
             dropped,
             int(valid.sum()),
         )
@@ -351,21 +449,21 @@ def _parse_money_column(series: pd.Series) -> np.ndarray:
 
 
 def _periods_per_year(bar_type=None, instrument=None) -> int:
-    """H5/M35/L42: yıllıklandırma tabanını KAYNAK + BAR ARALIĞINDAN türet.
+    """H5/M35/L42: derive the annualization base FROM SOURCE + BAR INTERVAL.
 
-    Getiriler bar-frekansındadır; doğru katsayı sqrt(yıldaki bar sayısı)dır.
-    Eski kod koşulsuz 365 kullanıyordu — 1m veride Sharpe ~38× ezik, 1h'de
-    ~4.9× ezik ve TF'ler arası kıyas geçersizdi.
+    Returns are at bar frequency; the correct factor is sqrt(bars per year).
+    The old code used 365 unconditionally — on 1m data Sharpe was crushed ~38×,
+    on 1h ~4.9×, and cross-TF comparisons were invalid.
 
-    - Kripto (7/24): 365 gün × 86400sn / bar_sn
-    - Equity/Index (hafta içi): gün-içi → 252 gün × 6.5 saat / bar_sn;
-      günlük+ → 252 (NAU konvansiyonu)
-    - Türetilemezse muhafazakâr 365 (günlük varsayımı) döner.
+    - Crypto (24/7): 365 days × 86400s / bar_s
+    - Equity/Index (weekdays): intraday → 252 days × 6.5 hours / bar_s;
+      daily+ → 252 (NAU convention)
+    - If not derivable, returns a conservative 365 (daily assumption).
     """
     bar_sec = 0.0
     try:
-        # spec str'i sürümden bağımsız en sağlam yüzey: '1-MINUTE-LAST'
-        # (aggregation alanı pyo3 int enum — adı str()'den çıkmıyor).
+        # The spec str is the most robust version-independent surface: '1-MINUTE-LAST'
+        # (the aggregation field is a pyo3 int enum — its name doesn't come out of str()).
         txt = str(bar_type.spec) if bar_type is not None else ""
         parts = txt.split("-")
         step = int(parts[0])
@@ -385,24 +483,24 @@ def _periods_per_year(bar_type=None, instrument=None) -> int:
     is_crypto = isinstance(instrument, CurrencyPair) if instrument is not None else True
     if is_crypto:
         return max(1, int(365 * 86400 / bar_sec))
-    # M387: equity/index — WEEK/MONTH için 252 yanlıştı (haftalık Sharpe ~2.2×,
-    # aylık ~4.6× şişik). Doğru yıllık periyot sayısı: gün 252, hafta 52, ay 12.
-    if bar_sec >= 27 * 86400:  # ~aylık
+    # M387: equity/index — 252 was wrong for WEEK/MONTH (weekly Sharpe ~2.2×,
+    # monthly ~4.6× inflated). Correct annual period counts: day 252, week 52, month 12.
+    if bar_sec >= 27 * 86400:  # ~monthly
         return 12
-    if bar_sec >= 6 * 86400:  # ~haftalık
+    if bar_sec >= 6 * 86400:  # ~weekly
         return 52
-    if bar_sec >= 86400:  # günlük+
-        return 252  # NAU 252 işlem günü
-    return max(1, int(252 * 6.5 * 3600 / bar_sec))  # gün-içi equity (RTH)
+    if bar_sec >= 86400:  # daily+
+        return 252  # NAU 252 trading days
+    return max(1, int(252 * 6.5 * 3600 / bar_sec))  # intraday equity (RTH)
 
 
 def _sharpe_manual(equity_series: list[float], annualization: int = 365) -> float:
-    """Bar-çözünürlüklü equity serisinden Sharpe.
+    """Sharpe from a bar-resolution equity series.
 
-    Getiriler ardil-bar yüzde değişimleridir (resample YOK — H5: eski
-    docstring'in 'daily resampling' iddiası gerçek dışıydı); yıllıklandırma
-    sqrt(annualization) ile yapılır ve ``annualization`` YILDAKİ BAR SAYISI
-    olmalıdır (bkz. _periods_per_year). 2'den az nokta / sıfır std → NaN.
+    Returns are consecutive-bar percent changes (NO resample — H5: the old
+    docstring's 'daily resampling' claim was false); annualization is done with
+    sqrt(annualization), and ``annualization`` must be the NUMBER OF BARS PER
+    YEAR (see _periods_per_year). Fewer than 2 points / zero std → NaN.
     """
     if len(equity_series) < 2:
         return float("nan")
@@ -422,11 +520,11 @@ def _sharpe_manual(equity_series: list[float], annualization: int = 365) -> floa
 def _max_dd_from_series(equity_series: list[float]) -> float:
     """Compute max drawdown from any equity series (bar or trade resolution).
 
-    SÖZLEŞME (H11/L36): dönüş NEGATİF KESİRDİR (%12 çekilme → -0.12; düşüş
-    yoksa 0.0). Uygulama içi tüm tüketiciler (junk kapısı max_dd>=0, MC eşiği
-    dd_p50<-25, wfo abs(dd)) bu konvansiyonu varsayar. NAU POZİTİF YÜZDE
-    saklar — NAU sınırında ``nau_max_drawdown`` / ``metrics['max_dd_pct']``
-    kullanın; kalıpları kelimesi kelimesine kopyalamayın.
+    CONTRACT (H11/L36): the return is a NEGATIVE FRACTION (12% drawdown →
+    -0.12; no drawdown → 0.0). All in-app consumers (junk gate max_dd>=0, MC
+    threshold dd_p50<-25, wfo abs(dd)) assume this convention. NAU stores a
+    POSITIVE PERCENTAGE — at the NAU boundary use ``nau_max_drawdown`` /
+    ``metrics['max_dd_pct']``; don't copy the patterns verbatim.
     """
     if len(equity_series) < 2:
         return 0.0
@@ -437,9 +535,9 @@ def _max_dd_from_series(equity_series: list[float]) -> float:
 
 
 def nau_max_drawdown(max_dd: float | None) -> float | None:
-    """H11: uygulama-içi negatif-kesir max_dd → NAU pozitif-yüzde dönüşümü.
+    """H11: in-app negative-fraction max_dd → NAU positive-percentage conversion.
 
-    Kayıt birleşimi / çapraz-sistem kıyası için tek resmi köprü.
+    The single official bridge for record merging / cross-system comparison.
     """
     if max_dd is None:
         return None
@@ -466,10 +564,10 @@ def _metrics(
         mtm_equity: Optional bar-resolution mark-to-market equity snapshots
             captured by ComposedStrategy._mtm_equity. When provided, max_dd
             and Sharpe are computed from MTM rather than realized PnL.
-        annualization: H5 — yıldaki bar sayısı (_periods_per_year); None ise
-            365 (günlük varsayımı, eski davranış).
-        mtm_ts: L19 — mtm_equity ile hizalı bar zaman damgaları (ns);
-            verilirse ``equity_curve_mtm`` [(iso_ts, eq)] alanı üretilir.
+        annualization: H5 — bars per year (_periods_per_year); if None,
+            365 (daily assumption, old behavior).
+        mtm_ts: L19 — bar timestamps (ns) aligned with mtm_equity; if
+            provided, an ``equity_curve_mtm`` [(iso_ts, eq)] field is produced.
     """
     if annualization is None:
         annualization = 365
@@ -488,7 +586,7 @@ def _metrics(
             "n_breakeven": 0,
             "avg_win": 0.0,
             "avg_loss": 0.0,
-            # L33: boş koşuda NaN yerine 0.0 (NAU kuralı; NaN JSON'u bozar).
+            # L33: on an empty run use 0.0 instead of NaN (NAU rule; NaN breaks JSON).
             "profit_factor": 0.0,
             "avg_return": float("nan"),
             "volatility": float("nan"),
@@ -595,7 +693,7 @@ def _metrics(
     pnl_stats = _pnls_by_ccy.get("USDT", _pnls_by_ccy.get("USD", {}))
 
     def _stat(d: dict, key: str) -> float:
-        """Anahtar yoksa NaN; gerçek 0.0 değerini korur (falsy-zero tuzağı yok)."""
+        """NaN if key missing; preserves a real 0.0 value (no falsy-zero trap)."""
         v = d.get(key)
         if v is None:
             return float("nan")
@@ -612,26 +710,27 @@ def _metrics(
     avg_win_ret = _stat(ret, "Average Win (Return)")
     avg_loss_ret = _stat(ret, "Average Loss (Return)")
 
-    # H5: bar-frekanslı manuel Sharpe — annualization ÇAĞIRANDAN gelir
-    # (_periods_per_year: kaynak + bar aralığı). MTM eğrisi (bar-çözünürlüklü)
-    # kullanılıyorsa bar-frekanslı annualization DOĞRU.
+    # H5: bar-frequency manual Sharpe — annualization comes FROM THE CALLER
+    # (_periods_per_year: source + bar interval). When the MTM curve
+    # (bar-resolution) is used, bar-frequency annualization is CORRECT.
     _using_mtm = bool(mtm_equity and len(mtm_equity) > 5)
     if _using_mtm:
         sharpe_manual = _sharpe_manual(mtm_equity, annualization=annualization)
         sharpe = sharpe_manual if not math.isnan(sharpe_manual) else sharpe_nautilus
     else:
-        # H610: MTM yok (registry stratejileri — MACrossover/RSIMeanReversion).
-        # realized_equity_full TRADE-çözünürlüklüdür; buna bar-frekanslı
-        # annualization (1m'de sqrt(525600)) uygulamak Sharpe'ı ~725× ŞİŞİRİYORDU.
-        # Frekans-doğru Nautilus 252-gün değerini birincil yap; o da yoksa
-        # per-trade sqrt(n) tabanı.
+        # H610: no MTM (registry strategies — MACrossover/RSIMeanReversion).
+        # realized_equity_full is TRADE-resolution; applying bar-frequency
+        # annualization to it (sqrt(525600) on 1m) was INFLATING Sharpe ~725×.
+        # Make the frequency-correct Nautilus 252-day value primary; if that's
+        # missing too, the per-trade sqrt(n) base.
         sharpe = sharpe_nautilus
 
-    # M35: NAU kıyası için per-trade Sharpe (NAU_ev: mean/std × sqrt(n_trades)
-    # per-TRADE getirilerden). M620: NAU population std (ddof=0) kullanır ve
-    # dejenere (n<2 / std=0) durumda NaN yerine 0.0 döndürür — hizalandı.
-    # (Getiri tabanı NAU'da koşan-equity; burada sabit STARTING_CASH — uzun
-    # bileşik koşularda küçük ölçek farkı, çapraz-sistem kıyasında dikkate al.)
+    # M35: per-trade Sharpe for NAU comparison (NAU_ev: mean/std × sqrt(n_trades)
+    # from per-TRADE returns). M620: NAU uses population std (ddof=0) and in the
+    # degenerate (n<2 / std=0) case returns 0.0 instead of NaN — aligned.
+    # (The return base in NAU is running-equity; here it's fixed STARTING_CASH —
+    # a small scale difference on long compounding runs, consider it in
+    # cross-system comparison.)
     sharpe_per_trade = 0.0
     if n_trades >= 2:
         _tr = np.asarray(pnls, dtype=float) / STARTING_CASH
@@ -639,17 +738,17 @@ def _metrics(
         if _std > 0:
             sharpe_per_trade = float(np.mean(_tr)) / _std * math.sqrt(n_trades)
     if not _using_mtm and (sharpe is None or math.isnan(sharpe)):
-        # Nautilus Sharpe de yoksa per-trade tabanına düş (frekans-doğru).
+        # If Nautilus Sharpe is also missing, fall to the per-trade base (frequency-correct).
         sharpe = sharpe_per_trade
 
-    # L33: kayıpsız koşuda Nautilus PF=inf döner — NAU sonlu cap'i (99.0);
-    # inf/NaN standart-dışı JSON üretir ve sıralamayı bozar.
+    # L33: on a lossless run Nautilus returns PF=inf — NAU's finite cap (99.0);
+    # inf/NaN produces non-standard JSON and breaks sorting.
     if math.isinf(profit_factor):
         profit_factor = 99.0 if profit_factor > 0 else 0.0
 
-    # L19: bar-çözünürlüklü MTM equity eğrisi (ts, eq) — UI'daki realized
-    # basamak-eğrisi pozisyon-içi dipleri göstermiyordu; max_dd bu seriden
-    # geliyor, artık eğri de gösterilebilir. >5000 nokta uniform seyreltilir.
+    # L19: bar-resolution MTM equity curve (ts, eq) — the realized step-curve
+    # in the UI didn't show intra-position dips; max_dd comes from this series,
+    # and now the curve can be shown too. >5000 points are uniformly thinned.
     equity_curve_mtm: list[list] = []
     if mtm_equity and mtm_ts and len(mtm_equity) == len(mtm_ts):
         _n = len(mtm_equity)
@@ -700,8 +799,9 @@ def _metrics(
         "profit_factor": profit_factor,
         "win_rate": win_rate,
         "max_dd": max_dd,
-        # H11: NAU sınır kıyası için pozitif-yüzde alanı (iç konvansiyon
-        # negatif kesir olarak KALIR — bkz. _max_dd_from_series docstring'i).
+        # H11: positive-percentage field for the NAU boundary comparison (the
+        # internal convention STAYS as a negative fraction — see the
+        # _max_dd_from_series docstring).
         "max_dd_pct": nau_max_drawdown(max_dd),
         "n_trades": n_trades,
         "n_wins": n_wins,
@@ -718,8 +818,8 @@ def _metrics(
         "runner": "BacktestEngine",
         # Phase 1 additions
         "sharpe_nautilus": sharpe_nautilus,  # Nautilus 252-day value kept for audit
-        "sharpe_per_trade": sharpe_per_trade,  # M35: NAU per-trade tabanı
-        "annualization": annualization,  # H5: gerçek bar/yıl tabanı
+        "sharpe_per_trade": sharpe_per_trade,  # M35: NAU per-trade base
+        "annualization": annualization,  # H5: real bars/year base
         "max_dd_mtm": max_dd_mtm,  # MTM drawdown (== max_dd when MTM available)
         "equity_curve_realized": realized_equity_full,
         "equity_curve_mtm": equity_curve_mtm,  # L19: [(iso_ts, eq)] bar-MTM
@@ -748,8 +848,8 @@ def comparable_metrics(m: dict) -> dict:
 _EXIT_KIND_LABELS = {
     "sl": "Stop-Loss",
     "tp": "Take-Profit",
-    "flip": "Ters sinyal (flip)",
-    "eob": "Backtest sonu",
+    "flip": "Reverse signal (flip)",
+    "eob": "Backtest end",
 }
 
 _DR_TAG_RE = re.compile(r"dr:(\d+)")
@@ -757,10 +857,10 @@ _XR_TAG_RE = re.compile(r"xr:(\d+)")
 
 
 def _reason_text(decision: dict | None) -> str | None:
-    """Karar kaydını insan-okur tek satıra çevir.
+    """Convert a decision record to a single human-readable line.
 
-    Örn: "MA Kesişimi (fast=10, slow=30, up) · fast 42.1 / slow 41.8".
-    AND mantığında birden çok blok " + " ile birleşir.
+    E.g.: "MA Cross (fast=10, slow=30, up) · fast 42.1 / slow 41.8".
+    In AND logic, multiple blocks are joined with " + ".
     """
     if not decision or not decision.get("blocks"):
         return None
@@ -778,11 +878,11 @@ def _reason_text(decision: dict | None) -> str | None:
 
 
 def _fills_lookup(fills_df: pd.DataFrame | None) -> tuple[dict, dict]:
-    """Fills raporunu tek geçişte {order_id: tags/type} dict'lerine çevir.
+    """Convert the fills report to {order_id: tags/type} dicts in a single pass.
 
-    Eski hali her trade için pandas ``.loc`` yapıyordu — 1k trade'de profil
-    ~0.5s gösterdi. Çoklu-fill emirlerde İLK satır kazanır (eski
-    ``iloc[0]`` semantiğiyle birebir).
+    The old version did a pandas ``.loc`` for every trade — on 1k trades the
+    profile showed ~0.5s. On multi-fill orders the FIRST row wins (identical to
+    the old ``iloc[0]`` semantics).
     """
     tags_by_id: dict[str, str] = {}
     type_by_id: dict[str, str] = {}
@@ -814,10 +914,11 @@ def _extract_trades(
     onto candle *i* instead of the next candle. Clamped so times never go
     negative.
 
-    ``fills_df`` + ``decisions`` verilirse her trade'e giriş/çıkış sebebi
-    eklenir: opening/closing_order_id → fills tag'leri ("dr:<seq>"/"xr:<seq>"/
-    "sl"/"tp"/"flip"/"eob") → karar günlüğü join'i. Tag yoksa emir tipinden
-    fallback (STOP_MARKET→sl, LIMIT→tp); o da yoksa alanlar None kalır.
+    When ``fills_df`` + ``decisions`` are provided, an entry/exit reason is
+    added to each trade: opening/closing_order_id → fills tags ("dr:<seq>"/
+    "xr:<seq>"/"sl"/"tp"/"flip"/"eob") → decision-log join. If there is no tag,
+    it falls back to the order type (STOP_MARKET→sl, LIMIT→tp); if that's also
+    absent the fields stay None.
     """
     if positions_df is None or positions_df.empty:
         return []
@@ -831,9 +932,9 @@ def _extract_trades(
     def _to_unix(v) -> int:
         """Convert Nautilus timestamp (Timestamp, int-ns, or str) to Unix seconds.
 
-        L5: eşikler µs bandını da kapsar — eski >1e18/>1e12 ikilisi
-        mikrosaniyeyi ms sanıp ~55.000 yıl ileri damgalıyordu (latent).
-        2001-sonrası gerçek değerler: sn ~1e9, ms ~1e12, µs ~1e15, ns ~1e18.
+        L5: the thresholds also cover the µs band — the old >1e18/>1e12 pair
+        mistook microseconds for ms and stamped ~55,000 years forward (latent).
+        Post-2001 real values: s ~1e9, ms ~1e12, µs ~1e15, ns ~1e18.
         """
         if v is None:
             return 0
@@ -865,7 +966,7 @@ def _extract_trades(
                 ts_open = max(0, ts_open - marker_shift_s)
                 ts_close = max(0, ts_close - marker_shift_s)
 
-            # ── Giriş sebebi: opening_order_id → "dr:<seq>" → karar kaydı ──
+            # ── Entry reason: opening_order_id → "dr:<seq>" → decision record ──
             entry_reason = None
             entry_detail = None
             m = _DR_TAG_RE.search(tags_by_id.get(str(row.get("opening_order_id")), ""))
@@ -873,7 +974,7 @@ def _extract_trades(
                 entry_detail = by_seq.get(int(m.group(1)))
                 entry_reason = _reason_text(entry_detail)
 
-            # ── Çıkış sebebi: closing_order_id tag'leri / tip fallback ──
+            # ── Exit reason: closing_order_id tags / type fallback ──
             exit_reason = None
             exit_detail = None
             exit_kind = None
@@ -918,12 +1019,12 @@ def _extract_trades(
                 }
             )
         except Exception:
-            # Parse edilemeyen pozisyon satırı — sessizce düşürülürse trades
-            # listesi n_trades'in ALTINDA kalır (metrik↔grafik tutarsızlığı, iz yok).
+            # An unparseable position row — if silently dropped, the trades
+            # list stays BELOW n_trades (metric↔chart inconsistency, no trace).
             _dropped += 1
     if _dropped:
         logging.getLogger(__name__).warning(
-            "_extract_trades: %d pozisyon satırı parse edilemedi (trade listesinden düştü)",
+            "_extract_trades: %d position row(s) could not be parsed (dropped from trade list)",
             _dropped,
         )
     return trades
@@ -938,17 +1039,17 @@ def _equity_curve(
     pnls = _parse_money_column(positions_df["realized_pnl"])
     dates_ns = None
     if "ts_closed" in positions_df.columns:
-        # M905: koşum sonunda AÇIK pozisyon kalırsa ts_closed pd.NA taşır ve
-        # kolon object dtype olur → to_numpy(dtype='int64') TypeError fırlatıp
-        # TÜM koşumu 'error'a çeviriyordu (_metrics'te try/except vardı, burada
-        # yoktu). Güvenli dönüşüm: NA'ları koru, sırasız bırak.
+        # M905: if an OPEN position remains at the end of the run, ts_closed
+        # carries pd.NA and the column becomes object dtype → to_numpy(dtype='int64')
+        # raised TypeError, turning the WHOLE run into 'error' (_metrics had a
+        # try/except here, this didn't). Safe conversion: keep the NAs, leave unsorted.
         try:
             dates_ns = positions_df["ts_closed"].to_numpy(dtype="int64")
             order = np.argsort(dates_ns)
             pnls = pnls[order]
             dates_ns = dates_ns[order]
         except (TypeError, ValueError):
-            dates_ns = None  # açık pozisyon / NA → tarihsiz eğri (metrikler sağ)
+            dates_ns = None  # open position / NA → curve without dates (metrics fine)
     curve = STARTING_CASH + np.cumsum(pnls)
     values = [STARTING_CASH] + [float(x) for x in curve]
     if dates_ns is not None:
@@ -998,7 +1099,7 @@ def run_backtest(
             account_type=AccountType.CASH,
             starting_balances=[Money(STARTING_CASH, USDT)],
             base_currency=None,
-            fee_model=MakerTakerFeeModel(),  # M5: gerçek Bybit komisyonları
+            fee_model=_fee_model_for(instrument),  # crypto→Bybit maker/taker
         )
         engine.add_instrument(instrument)
 
@@ -1118,7 +1219,7 @@ def run_composed_backtest(
     n_entry = sum(1 for b in spec.blocks if getattr(b, "role", "") == "entry")
     n_exit = sum(1 for b in spec.blocks if getattr(b, "role", "") == "exit")
     _p(
-        f"Spec doğrulandı · {len(spec.blocks)} blok ({n_entry} entry, {n_exit} exit) · {spec.name}"
+        f"Spec validated · {len(spec.blocks)} blocks ({n_entry} entry, {n_exit} exit) · {spec.name}"
     )
 
     use_custom = instrument is not None
@@ -1147,14 +1248,14 @@ def run_composed_backtest(
             active_venue = active_instrument.id.venue
             active_instrument_id = active_instrument.id
 
-        # Veri bilgisi
+        # Data info
         n_bars = len(bars_df)
         try:
             date_start = bars_df.index[0].date()
             date_end = bars_df.index[-1].date()
-            _p(f"Veri hazırlanıyor · {n_bars:,} bar · {date_start} → {date_end}")
+            _p(f"Preparing data · {n_bars:,} bars · {date_start} → {date_end}")
         except Exception:
-            _p(f"Veri hazırlanıyor · {n_bars:,} bar")
+            _p(f"Preparing data · {n_bars:,} bars")
 
         config = BacktestEngineConfig(
             trader_id=TraderId("BACKTESTER-001"),
@@ -1164,9 +1265,9 @@ def run_composed_backtest(
         # Determine account type from instrument type, not from use_custom flag.
         # Equity (index proxy) → USD CASH; CurrencyPair (crypto) → USDT CASH/MARGIN.
         is_equity = use_custom and isinstance(active_instrument, Equity)
-        # M1128: inverse (coin-margined) kripto USD-kotalıdır (BTCUSD); hesap
-        # USDT ile açılırsa RiskEngine tüm girişleri SESSİZCE reddeder (0 trade).
-        # Enstrümanın gerçek quote para birimini kullan.
+        # M1128: inverse (coin-margined) crypto is USD-quoted (BTCUSD); if the
+        # account is opened with USDT the RiskEngine SILENTLY rejects all entries
+        # (0 trades). Use the instrument's real quote currency.
         _quote_ccy = getattr(active_instrument, "quote_currency", None)
         _is_usd_quote = _quote_ccy is not None and str(_quote_ccy) == "USD"
         _crypto_ccy = USD if _is_usd_quote else USDT
@@ -1184,7 +1285,7 @@ def run_composed_backtest(
             _base = None
 
         _p(
-            f"Engine kuruluyor · {str(active_venue)} · {_account_type.name} · başlangıç: ${STARTING_CASH:,.0f}"
+            f"Setting up engine · {str(active_venue)} · {_account_type.name} · starting: ${STARTING_CASH:,.0f}"
         )
 
         engine.add_venue(
@@ -1194,17 +1295,15 @@ def run_composed_backtest(
             starting_balances=_balances,
             base_currency=_base,
             bar_adaptive_high_low_ordering=getattr(spec, "use_bracket", False),
-            # M5: komisyon yalnız Bybit kripto çiftlerinde (instrument fee'leri
-            # tanımlı); index/external Equity venue'larına fee model eklenmez.
-            fee_model=MakerTakerFeeModel()
-            if isinstance(active_instrument, CurrencyPair)
-            else None,
+            # Commission by instrument type: crypto→Bybit maker/taker,
+            # US stock/ETF (QQQ etc.)→Interactive Brokers Fixed (see _fee_model_for).
+            fee_model=_fee_model_for(active_instrument),
         )
         engine.add_instrument(active_instrument)
 
         df = _prepare_df(bars_df)
         _p(
-            f"Bar nesneleri oluşturuluyor · {len(df):,} bar (OHLC doğrulama: {n_bars - len(df)} satır atıldı)"
+            f"Building bar objects · {len(df):,} bars (OHLC validation: {n_bars - len(df)} rows dropped)"
         )
         bars = _bars_from_df(active_bar_type, active_instrument, df)
         if not bars:
@@ -1218,16 +1317,16 @@ def run_composed_backtest(
         ):
             try:
                 _trend_interval = spec.trend_interval
-                _p(f"Trend filter verisi yükleniyor · interval={_trend_interval}…")
+                _p(f"Loading trend filter data · interval={_trend_interval}…")
                 _trend_start = bars_df.index[0].to_pydatetime()
                 _trend_end = bars_df.index[-1].to_pydatetime()
                 if _trend_start.tzinfo is None:
                     _trend_start = _trend_start.replace(tzinfo=UTC)
                 if _trend_end.tzinfo is None:
                     _trend_end = _trend_end.replace(tzinfo=UTC)
-                # External-catalog Equity (venue != POLYGON — index proxy'si
-                # değil): trend barları da aynı harici katalogdan gelir.
-                # Katalogda trend dilimi yoksa ValueError → tek-TF fallback.
+                # External-catalog Equity (venue != POLYGON — not the index
+                # proxy): trend bars also come from the same external catalog.
+                # If the catalog has no trend slice, ValueError → single-TF fallback.
                 _is_ext_equity = (
                     isinstance(active_instrument, Equity)
                     and active_instrument.id.venue != POLYGON
@@ -1252,12 +1351,13 @@ def run_composed_backtest(
                         active_instrument.id, _trend_interval
                     )
 
-                # Trend TF ana TF ile aynıysa ikinci feed eklenmez: strateji
-                # her barı "trend barı" sayar ve hiç işlem açmaz (0 trade).
+                # If the trend TF equals the main TF, no second feed is added:
+                # the strategy treats every bar as a "trend bar" and never opens
+                # a trade (0 trades).
                 if _sec_bar_type.spec == active_bar_type.spec:
                     _p(
-                        f"Trend TF ({_trend_interval}) ana TF ile aynı — "
-                        "trend filtresi atlanıyor, tek TF ile devam"
+                        f"Trend TF ({_trend_interval}) is the same as the main TF — "
+                        "skipping trend filter, continuing with single TF"
                     )
                     trend_df = None
                 elif _is_ext_equity:
@@ -1277,10 +1377,10 @@ def run_composed_backtest(
                         "value",
                         str(active_instrument.id.symbol),
                     )
-                    # M1234: kategori ana koşumun venue'sinden türetilir —
-                    # sabit 'linear' spot koşumuna linear-perp fiyatı karıştırıyor
-                    # ve inverse'de BTCUSD linear'da bulunmayıp filtreyi sessizce
-                    # devre dışı bırakıyordu.
+                    # M1234: the category is derived from the main run's venue —
+                    # a fixed 'linear' mixed linear-perp price into a spot run,
+                    # and on inverse BTCUSD wasn't found in linear, silently
+                    # disabling the filter.
                     _vname = str(active_venue)
                     if "SPOT" in _vname:
                         _trend_cat = "spot"
@@ -1303,11 +1403,11 @@ def run_composed_backtest(
                     if trend_bars:
                         engine.add_data(trend_bars)
                         _p(
-                            f"Trend bars eklendi · {len(trend_bars):,} bar · {_trend_interval}"
+                            f"Trend bars added · {len(trend_bars):,} bars · {_trend_interval}"
                         )
             except Exception as _te:
                 _p(
-                    f"Trend filter verisi yüklenemedi: {_te} — tek TF ile devam ediliyor"
+                    f"Failed to load trend filter data: {_te} — continuing with single TF"
                 )
                 secondary_bar_type_obj = None
 
@@ -1322,10 +1422,10 @@ def run_composed_backtest(
         engine.add_strategy(_composed_strategy)
 
         _p(
-            f"Simülasyon başladı · {len(bars):,} bar işlenecek · order_type={spec.order_type}"
+            f"Simulation started · {len(bars):,} bars to process · order_type={spec.order_type}"
         )
         engine.run()
-        _p("Simülasyon tamamlandı · sonuçlar toplanıyor…")
+        _p("Simulation completed · collecting results…")
 
         positions_df = engine.trader.generate_positions_report()
         n_trades = (
@@ -1333,7 +1433,7 @@ def run_composed_backtest(
             if positions_df is not None and not positions_df.empty
             else 0
         )
-        _p(f"Metrikler hesaplanıyor · {n_trades} pozisyon bulundu")
+        _p(f"Calculating metrics · {n_trades} positions found")
 
         # Collect MTM equity snapshots from strategy (Phase 1)
         mtm_equity = getattr(_composed_strategy, "_mtm_equity", None)
@@ -1345,8 +1445,8 @@ def run_composed_backtest(
             mtm_ts=getattr(_composed_strategy, "_mtm_ts", None),
         )
         equity, equity_dates = _equity_curve(positions_df)
-        # Giriş/çıkış sebepleri: karar günlüğü (_mtm_equity ile aynı yaşam
-        # döngüsü) + fills raporu tag join'i
+        # Entry/exit reasons: decision log (same lifecycle as _mtm_equity) +
+        # fills report tag join
         try:
             reason_fills_df = engine.trader.generate_order_fills_report()
         except Exception:
@@ -1359,7 +1459,7 @@ def run_composed_backtest(
         )
 
         _p(
-            f"Tamamlandı · PnL={metrics.get('pnl', 0):+.2f} USDT · win_rate={metrics.get('win_rate', 0) * 100:.1f}%"
+            f"Completed · PnL={metrics.get('pnl', 0):+.2f} USDT · win_rate={metrics.get('win_rate', 0) * 100:.1f}%"
         )
 
         return IterationResult(
@@ -1375,7 +1475,7 @@ def run_composed_backtest(
             timestamp=datetime.now(UTC),
         )
     except Exception as e:
-        _p(f"Hata oluştu: {type(e).__name__}: {e}")
+        _p(f"An error occurred: {type(e).__name__}: {e}")
         return IterationResult(
             id=iteration_id,
             strategy=f"composed:{spec.name}",
@@ -1417,8 +1517,8 @@ def run_backtest_node(
     strategy_name: str,
     params: dict,
     instrument_id: str,
-    bar_type: str | None = None,  # None → katalogdan en kısa interval seç
-    venue_name: str | None = None,  # None → instrument_id'nin venue'sinden türet
+    bar_type: str | None = None,  # None → pick the shortest interval from the catalog
+    venue_name: str | None = None,  # None → derive from instrument_id's venue
     starting_balance_usdt: float = STARTING_CASH,
     iteration_id: int = 0,
     rationale: str = "",
@@ -1462,7 +1562,7 @@ def run_backtest_node(
         if not isinstance(strat_params.get("trade_size"), Decimal):
             strat_params["trade_size"] = Decimal(str(strat_params["trade_size"]))
 
-        # Bar type: caller'dan gel, yoksa katalogdan en kısa interval'ı seç
+        # Bar type: take from the caller, otherwise pick the shortest interval from the catalog
         from nautilus_trader.persistence.catalog import ParquetDataCatalog
 
         catalog = ParquetDataCatalog(str(NAUTILUS_CATALOG_DIR))
@@ -1478,7 +1578,7 @@ def run_backtest_node(
         if bar_type:
             bar_type_str = bar_type
         else:
-            # Öncelik: 1m > 5m > 15m > 1h > 4h > 1d
+            # Priority: 1m > 5m > 15m > 1h > 4h > 1d
             _pref = ["1-MINUTE", "5-MINUTE", "15-MINUTE", "1-HOUR", "4-HOUR", "1-DAY"]
             bar_type_str = next(
                 (b for p in _pref for b in matching if p in b), matching[0]
@@ -1500,9 +1600,9 @@ def run_backtest_node(
             config=cfg_dict,
         )
 
-        # M6: enstrümana göre para birimi — POLYGON equity/index USD-kotalı;
-        # koşulsuz USDT bakiye, equity emirlerini karşılıksız bırakıyordu
-        # (run_composed_backtest_node'daki dallanmanın aynısı).
+        # M6: currency by instrument — POLYGON equity/index is USD-quoted;
+        # an unconditional USDT balance left equity orders uncovered
+        # (same branching as in run_composed_backtest_node).
         is_index = instrument_id.endswith(".POLYGON")
         _node_ccy = "USD" if is_index else "USDT"
         run_cfg = BacktestRunConfig(
@@ -1537,12 +1637,12 @@ def run_backtest_node(
             raise RuntimeError("BacktestNode returned no results.")
         r = results[0]
 
-        # M6: önce venue para birimi (USD equity'de USDT anahtarı boş olurdu).
+        # M6: venue currency first (on USD equity the USDT key would be empty).
         pnls = r.stats_pnls.get(_node_ccy, r.stats_pnls.get("USDT", {}))
         returns = r.stats_returns
         general = r.summary
 
-        # n_trades: total_positions veya general stats'tan al
+        # n_trades: take from total_positions or general stats
         n_trades = getattr(r, "total_positions", None)
         if n_trades is None:
             for k, v in general.items():
@@ -1598,7 +1698,7 @@ def run_backtest_node(
             "annualization": 252,
             "sortino": _sf(returns, "Sortino Ratio (252 days)"),
             "profit_factor": _sf(returns, "Profit Factor"),
-            "max_dd": float("nan"),  # BacktestNode stats'te Max Drawdown yok
+            "max_dd": float("nan"),  # BacktestNode stats have no Max Drawdown
             "volatility": _sf(returns, "Returns Volatility (252 days)"),
             "long_ratio": _sf(general, "Long Ratio"),
             "avg_duration_mins": float("nan"),
@@ -1646,21 +1746,21 @@ def run_composed_backtest_node(
     spec,
     instrument_id: str,
     bar_type: str,
-    venue_name: str | None = None,  # None → instrument_id'nin venue'sinden türet
+    venue_name: str | None = None,  # None → derive from instrument_id's venue
     starting_balance_usdt: float = STARTING_CASH,
-    start_ns: int | None = None,  # nanosecond timestamp filtresi
+    start_ns: int | None = None,  # nanosecond timestamp filter
     end_ns: int | None = None,
     iteration_id: int = 0,
     rationale: str = "",
     progress_fn=None,
 ) -> IterationResult:
-    """BacktestNode + ParquetDataCatalog ile ComposedStrategy çalıştır.
+    """Run ComposedStrategy via BacktestNode + ParquetDataCatalog.
 
-    Nau'nun standart pipeline'ı: katalogdan veri oku, Rust engine'de çalıştır.
-    BacktestEngine yoluna göre 5-10x daha hızlı.
+    NAU's standard pipeline: read data from the catalog, run in the Rust engine.
+    5-10x faster than the BacktestEngine path.
 
-    Kısıtlama: Per-trade detayı (giriş/çıkış zamanları) mevcut değil —
-    BacktestNode bu veriyi dışa açmıyor. Sadece özet metrikler döner.
+    Limitation: Per-trade detail (entry/exit times) is not available —
+    BacktestNode doesn't expose this data. Only summary metrics are returned.
     """
     import json as _json
 
@@ -1685,9 +1785,9 @@ def run_composed_backtest_node(
     node = None
     try:
         iid = InstrumentId.from_str(instrument_id)
-        _p(f"BacktestNode başlatılıyor · {instrument_id} · {bar_type}")
+        _p(f"Starting BacktestNode · {instrument_id} · {bar_type}")
 
-        # ComposedStrategyConfig tüm değerleri str olarak taşır (JSON-safe)
+        # ComposedStrategyConfig carries all values as str (JSON-safe)
         cfg_dict = {
             "instrument_id": instrument_id,
             "bar_type": bar_type,
@@ -1700,7 +1800,7 @@ def run_composed_backtest_node(
             config=cfg_dict,
         )
 
-        # Instrument ID'den venue tipini çıkar: .POLYGON → USD, .BYBIT → USDT
+        # Derive the venue type from the instrument ID: .POLYGON → USD, .BYBIT → USDT
         is_index = instrument_id.endswith(".POLYGON")
         # Node path serialises to JSON — use enum *names* (str), not enum objects.
         account_type = "CASH"
@@ -1736,12 +1836,12 @@ def run_composed_backtest_node(
         )
 
         node = BacktestNode(configs=[run_cfg])
-        _p("Simülasyon çalışıyor…")
+        _p("Simulation running…")
         results = node.run()
         if not results:
             raise RuntimeError("BacktestNode returned no results.")
         r = results[0]
-        _p("Simülasyon tamamlandı · metrikler toplanıyor")
+        _p("Simulation completed · collecting metrics")
 
         pnls = r.stats_pnls.get(
             currency, r.stats_pnls.get("USDT", r.stats_pnls.get("USD", {}))
@@ -1779,7 +1879,7 @@ def run_composed_backtest_node(
             round(n_trades * win_rate) if n_trades and not _math.isnan(win_rate) else 0
         )
         n_losses = (n_trades - n_wins) if n_trades else 0
-        # PnL% (total) v2rc1'de zaten yüzde biriminde → fmt_pct tekrar ×100 yapmasın diye /100 ile fraksiyona çevir
+        # PnL% (total) in v2rc1 is already in percent units → divide by 100 to convert to a fraction so fmt_pct doesn't ×100 again
         pnl_pct_raw = _sf(pnls, "PnL% (total)")
         pnl_pct = (
             (pnl_pct_raw / 100.0)
@@ -1804,7 +1904,7 @@ def run_composed_backtest_node(
             "annualization": 252,
             "sortino": _sf(returns, "Sortino Ratio (252 days)"),
             "profit_factor": _sf(returns, "Profit Factor"),
-            "max_dd": float("nan"),  # BacktestNode stats'te Max Drawdown yok
+            "max_dd": float("nan"),  # BacktestNode stats have no Max Drawdown
             "volatility": _sf(returns, "Returns Volatility (252 days)"),
             "long_ratio": _sf(general, "Long Ratio"),
             "avg_duration_mins": float("nan"),
@@ -1814,10 +1914,10 @@ def run_composed_backtest_node(
             "starting_cash": starting_balance_usdt,
             "runner": "BacktestNode",
         }
-        # L33 parity: kayıpsız koşuda Nautilus PF=inf döner — NAU sonlu cap'i (99.0).
+        # L33 parity: on a lossless run Nautilus returns PF=inf — NAU's finite cap (99.0).
         if _math.isinf(metrics["profit_factor"]):
             metrics["profit_factor"] = 99.0 if metrics["profit_factor"] > 0 else 0.0
-        _p(f"Tamamlandı · PnL={pnl:+.2f} {currency} · trades={n_trades}")
+        _p(f"Completed · PnL={pnl:+.2f} {currency} · trades={n_trades}")
 
         return IterationResult(
             id=iteration_id,
