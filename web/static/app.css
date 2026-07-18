@@ -575,6 +575,7 @@ pre.diagram {
 
 /* ------- Layout helpers ------- */
 .grid-2 { display: grid; grid-template-columns: 2fr 1fr; gap: 16px; }
+.grid-2.equal { grid-template-columns: 1fr 1fr; }
 .grid-3 { display: grid; grid-template-columns: 3fr 2fr; gap: 16px; }
 .stack { display: flex; flex-direction: column; gap: 16px; }
 .row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
@@ -835,6 +836,18 @@ pre.diagram {
 /* Backtest progress: title row + raw log below the phase flow */
 .bt-progress-title { display: flex; align-items: center; gap: 10px; }
 .bt-progress-log { margin-top: 14px; padding-left: 28px; }
+
+/* Backtest page compact overrides — shrink form chrome so everything fits one viewport */
+.bt-compact label.field { font-size: 9px; gap: 4px; }
+.bt-compact input[type="text"],
+.bt-compact input[type="number"],
+.bt-compact input[type="date"],
+.bt-compact select { font-size: 11px; padding: 6px 9px; }
+.bt-compact .panel-body { padding: 12px 14px; }
+.bt-compact .btn { font-size: 11px; padding: 7px 14px; }
+.bt-compact .chip { font-size: 9px; padding: 2px 6px; }
+.bt-compact .row { gap: 8px; }
+.bt-compact .stack { gap: 10px; }
 
 .lab-phase {
   display: grid;

@@ -1154,6 +1154,36 @@ def get_nautilus_catalog():
     return ParquetDataCatalog(str(NAUTILUS_CATALOG_DIR))
 
 
+def list_catalog_bybit_symbols() -> list[dict]:
+    """Return distinct Bybit symbols in the catalog as [{symbol, category}] sorted.
+
+    Reads the bar/ subdirectory names (e.g. 'BTCUSDT.BYBIT_LINEAR-1-MINUTE-…')
+    to extract unique symbol+category pairs without importing nautilus.
+    """
+    bar_dir = NAUTILUS_CATALOG_DIR / "data" / "bar"
+    if not bar_dir.exists():
+        return []
+    seen: set[tuple[str, str]] = set()
+    _cat_map = {
+        "BYBIT_LINEAR": "linear",
+        "BYBIT_SPOT": "spot",
+        "BYBIT_INVERSE": "inverse",
+    }
+    for entry in bar_dir.iterdir():
+        # name format: BTCUSDT.BYBIT_LINEAR-1-MINUTE-LAST-EXTERNAL
+        name = entry.name
+        dot = name.find(".")
+        if dot < 0:
+            continue
+        symbol = name[:dot]
+        rest = name[dot + 1 :]
+        venue = rest.split("-")[0]
+        if venue not in _cat_map:
+            continue
+        seen.add((symbol, _cat_map[venue]))
+    return sorted([{"symbol": s, "category": c} for s, c in seen], key=lambda x: x["symbol"])
+
+
 def _catalog_fname_ns(stamp: str) -> int | None:
     """Catalog parquet file name stamp → epoch ns.
 

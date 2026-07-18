@@ -18,6 +18,14 @@
     </div>
     <div class="panel-body">
 
+      {# warnings — en üstte, dikkat çekici #}
+      {% for wn in warnings %}
+        <div class="warning-strip small plan-note">
+          <span>{{ '⚠' if wn.level == 'warn' else 'ℹ' }}</span>
+          <span>{{ wn.text }}</span>
+        </div>
+      {% endfor %}
+
       <div class="plan-split">
 
         {# ── LEFT: interpretation + condition→block mapping ── #}
@@ -44,154 +52,15 @@
           {% endfor %}
         </div>
 
-        {# ── RIGHT: estimated signal chart — where it buys/sells and why ── #}
-        <div class="plan-split-col">
-          {% if chart_data and chart_data.closes %}
-            <div class="small text-muted">Nerede al/sat + indikatörler · BTC 1m (son {{ chart_data.closes|length }} bar)</div>
-            <div class="plan-chart-wrap">
-              <canvas id="plan-signal-canvas"></canvas>
-            </div>
-            {% if chart_data.panes %}
-            <div class="plan-chart-wrap plan-chart-pane">
-              <canvas id="plan-pane-canvas"></canvas>
-            </div>
-            {% endif %}
-            <div class="plan-chart-legend">
-              <span class="lg-long">▲ al (long)</span>
-              <span class="lg-short">▼ sat (short)</span>
-              <span class="lg-exit">● çıkış</span>
-              {% for ov in chart_data.overlays %}
-                <span style="color:{{ ov.color }};">— {{ ov.label }}</span>
-              {% endfor %}
-              {% for pn in chart_data.panes %}
-                <span style="color:{{ pn.color }};">— {{ pn.label }}</span>
-              {% endfor %}
-            </div>
-            {# Distinct trigger conditions actually seen in this window #}
-            <div class="plan-cond-list">
-              {% set seen = [] %}
-              {% for s in chart_data.signals if s.sig and s.reason and s.reason not in seen %}
-                {% if seen.append(s.reason) %}{% endif %}
-                <div class="plan-cond">
-                  <span class="pc-dot {{ 'pc-long' if s.sig == 'long' else 'pc-short' if s.sig == 'short' else 'pc-exit' }}">
-                    {{ '▲' if s.sig == 'long' else '▼' if s.sig == 'short' else '●' }}
-                  </span>
-                  <span class="mono">{{ 'GİRİŞ' if s.sig in ('long','short') else 'ÇIKIŞ' }}:</span>
-                  <span class="text-muted">{{ s.reason }}</span>
-                </div>
-              {% endfor %}
-            </div>
-            <div class="small text-muted plan-note">Tahmini — varsayılan parametreli built-in davranışı; gerçek üretilen bloklar farklı olabilir.</div>
-            <script>
-            (function() {
-              const closes   = {{ chart_data.closes|tojson }};
-              const dates    = {{ chart_data.dates|tojson }};
-              const signals  = {{ chart_data.signals|tojson }};
-              const overlays = {{ chart_data.overlays|tojson }};
-              const panes    = {{ chart_data.panes|tojson }};
-              const longPts  = closes.map((v,i) => signals[i] && signals[i].sig === 'long'  ? v : null);
-              const shortPts = closes.map((v,i) => signals[i] && signals[i].sig === 'short' ? v : null);
-              const exitPts  = closes.map((v,i) => signals[i] && signals[i].sig === 'exit'  ? v : null);
-              if (window.__planSigChart && typeof window.__planSigChart.destroy === 'function') window.__planSigChart.destroy();
-              if (window.__planPaneChart && typeof window.__planPaneChart.destroy === 'function') window.__planPaneChart.destroy();
-
-              const priceSets = [
-                { label: 'Close', data: closes, borderColor: '#e9edf4', borderWidth: 1.4,
-                  backgroundColor: 'rgba(233,237,244,0.04)', fill: true, pointRadius: 0, tension: 0.1, order: 5 },
-              ];
-              // Indicator overlays (MA/EMA/Bollinger) on the price scale.
-              overlays.forEach(ov => priceSets.push({
-                label: ov.label, data: ov.data, borderColor: ov.color, borderWidth: 1.2,
-                borderDash: ov.dashed ? [4,3] : [], pointRadius: 0, tension: 0.1, order: 4, spanGaps: true,
-              }));
-              priceSets.push(
-                { label: 'Long', data: longPts, type: 'scatter', backgroundColor: '#4ade80', pointRadius: 5, pointStyle: 'triangle', rotation: 0, order: 1 },
-                { label: 'Short', data: shortPts, type: 'scatter', backgroundColor: '#f87171', pointRadius: 5, pointStyle: 'triangle', rotation: 180, order: 1 },
-                { label: 'Exit', data: exitPts, type: 'scatter', backgroundColor: '#f0b100', pointRadius: 4, pointStyle: 'circle', order: 2 },
-              );
-
-              const ctx = document.getElementById('plan-signal-canvas');
-              if (ctx && window.Chart) {
-                window.__planSigChart = new Chart(ctx, {
-                  type: 'line',
-                  data: { labels: dates, datasets: priceSets },
-                  options: {
-                    responsive: true, maintainAspectRatio: false, animation: false,
-                    plugins: { legend: { display: false },
-                      tooltip: { callbacks: {
-                        title: (items) => items[0].label || '',
-                        label: (c) => {
-                          const s = signals[c.dataIndex];
-                          if (c.dataset.label === 'Long' || c.dataset.label === 'Short' || c.dataset.label === 'Exit') {
-                            const kind = c.dataset.label === 'Long' ? 'AL' : c.dataset.label === 'Short' ? 'SAT' : 'ÇIKIŞ';
-                            return kind + (s && s.reason ? ' · ' + s.reason : '');
-                          }
-                          return c.dataset.label + ': $' + c.parsed.y.toLocaleString();
-                        },
-                      }, backgroundColor: '#0c0c0c', borderColor: '#242424', borderWidth: 1,
-                         titleFont: { family: 'JetBrains Mono', size: 10 }, bodyFont: { family: 'JetBrains Mono', size: 11 } },
-                    },
-                    scales: {
-                      x: { display: true, ticks: { color: '#8a8a8a', font: { family: 'JetBrains Mono', size: 9 }, maxTicksLimit: 5, maxRotation: 0, autoSkip: true }, grid: { color: '#242424' } },
-                      y: { ticks: { color: '#8a8a8a', font: { family: 'JetBrains Mono', size: 9 }, callback: v => '$' + (v/1000).toFixed(1) + 'k' }, grid: { color: '#242424' } },
-                    },
-                  },
-                });
-              }
-
-              // Oscillator pane (RSI) — separate 0-100 chart below the price chart.
-              const pctx = document.getElementById('plan-pane-canvas');
-              if (pctx && window.Chart && panes.length) {
-                const pn = panes[0];
-                const guideSets = (pn.guides || []).map(g => ({
-                  label: 'g' + g, data: dates.map(() => g), borderColor: '#3a3a3a',
-                  borderWidth: 1, borderDash: [3,3], pointRadius: 0, order: 2,
-                }));
-                window.__planPaneChart = new Chart(pctx, {
-                  type: 'line',
-                  data: { labels: dates, datasets: [
-                    { label: pn.label, data: pn.data, borderColor: pn.color, borderWidth: 1.3, pointRadius: 0, tension: 0.1, order: 1, spanGaps: true },
-                    ...guideSets,
-                  ]},
-                  options: {
-                    responsive: true, maintainAspectRatio: false, animation: false,
-                    plugins: { legend: { display: false },
-                      tooltip: { filter: (it) => !it.dataset.label.startsWith('g'),
-                        callbacks: { title: (items) => items[0].label || '', label: (c) => pn.label + ': ' + c.parsed.y.toFixed(1) },
-                        backgroundColor: '#0c0c0c', borderColor: '#242424', borderWidth: 1,
-                        titleFont: { family: 'JetBrains Mono', size: 10 }, bodyFont: { family: 'JetBrains Mono', size: 11 } },
-                    },
-                    scales: {
-                      x: { display: false, grid: { display: false } },
-                      y: { min: 0, max: 100, ticks: { color: '#8a8a8a', font: { family: 'JetBrains Mono', size: 9 }, stepSize: 50 }, grid: { color: '#242424' } },
-                    },
-                  },
-                });
-              }
-            })();
-            </script>
-          {% else %}
-            <div class="small text-muted">Sinyal grafiği için eşleşen built-in yok ya da BTC 1m verisi bulunamadı.</div>
-          {% endif %}
-        </div>
-
       </div>
 
-      {# (d) what will happen on Generate & Backtest #}
+      {# what will happen on Generate & Backtest #}
       <div class="small text-muted plan-note">
         With <b>Generate &amp; Backtest</b>: a separate Python block is written for each condition,
         saved to disk, the strategy is compiled with {{ entry_logic }}/{{ exit_logic }} logic
         and backtested on the selected timeframes. (This preview is read-only — nothing has
         been generated/saved yet.)
       </div>
-
-      {# (e) warnings #}
-      {% for wn in warnings %}
-        <div class="warning-strip small plan-note">
-          <span>{{ '⚠' if wn.level == 'warn' else 'ℹ' }}</span>
-          <span>{{ wn.text }}</span>
-        </div>
-      {% endfor %}
 
     </div>
   </div>

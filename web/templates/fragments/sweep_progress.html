@@ -45,6 +45,7 @@
         <thead>
           <tr style="text-align:right;color:rgba(255,255,255,0.55);border-bottom:1px solid rgba(255,255,255,0.1);">
             <th style="text-align:left;padding:4px 8px;">TF</th>
+            <th style="text-align:left;padding:4px 8px;font-size:10px;">Date range</th>
             <th style="padding:4px 8px;">PnL %</th>
             <th style="padding:4px 8px;">Sharpe (per-trade)</th>
             <th style="padding:4px 8px;">Max DD %</th>
@@ -64,6 +65,12 @@
               {% else %}<span style="color:rgba(255,255,255,0.3);">○</span>{% endif %}
               {{ r.label }}
             </td>
+            {# date range column #}
+            <td style="text-align:left;padding:4px 8px;font-size:10px;color:rgba(255,255,255,0.45);">
+              {% if r.date_from and r.date_to %}{{ r.date_from }} → {{ r.date_to }}
+              {% elif r.status == 'done' %}full cache
+              {% else %}—{% endif %}
+            </td>
             {% if r.status == 'error' %}
             <td colspan="6" style="padding:4px 8px;color:#f87171;font-size:11px;">{{ r.error }}</td>
             {% elif r.status != 'done' %}
@@ -75,7 +82,13 @@
               {{ '%+.2f'|format(m.pnl_pct * 100) if m.pnl_pct is not none else '—' }}
             </td>
             <td style="text-align:right;padding:4px 8px;{% if best_sh is not none and m.sharpe_per_trade == best_sh %}color:#4ade80;font-weight:700;{% endif %}">
-              {{ '%.2f'|format(m.sharpe_per_trade) if m.sharpe_per_trade is not none else '—' }}
+              {% if m.sharpe_per_trade is not none %}
+                {% if m.sharpe_per_trade != m.sharpe_per_trade %}{# NaN check #}
+                  <span style="color:rgba(255,255,255,0.35);" title="0 trades — no signal fired">nan</span>
+                {% else %}
+                  {{ '%.2f'|format(m.sharpe_per_trade) }}
+                {% endif %}
+              {% else %}—{% endif %}
             </td>
             <td style="text-align:right;padding:4px 8px;{% if best_dd is not none and m.max_dd_pct == best_dd %}color:#4ade80;font-weight:700;{% endif %}">
               {{ '%.2f'|format(m.max_dd_pct) if m.max_dd_pct is not none else '—' }}

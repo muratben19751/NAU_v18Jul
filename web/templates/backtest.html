@@ -10,8 +10,9 @@
   </div>
 {% else %}
 
-<div class="grid-3">
+<div class="grid-2 equal bt-compact" style="align-items:start;">
 
+  {# ── LEFT: form + plan preview ── #}
   <div class="stack">
 
     <div class="panel">
@@ -42,31 +43,80 @@
                    placeholder="E.g.: buy when RSI drops below 30 and turns up while volume is 2x the 20-bar average; exit if it falls by 3x ATR">
           </label>
 
-          <div class="row" style="align-items:flex-end;gap:10px;flex-wrap:wrap;margin-top:12px;">
-            <label class="field" style="flex:1;min-width:150px;">
-              Symbol <span class="text-muted" style="font-size:10px;">(type letters → find)</span>
-              <input type="text" name="symbol" list="bybit-symbols-list"
-                     value="BTCUSDT" autocomplete="off" placeholder="BTC, ETH, SOL…">
+          {# Asset type toggle — Bybit / Index #}
+          <div class="row" style="align-items:center;gap:8px;flex-wrap:wrap;margin-top:12px;">
+            <span class="text-muted mono" style="font-size:11px;">Asset type:</span>
+            <label style="display:inline-flex;align-items:center;gap:4px;font-size:12px;cursor:pointer;">
+              <input type="radio" name="instrument_kind" value="Bybit" checked
+                     onchange="document.getElementById('bybit-fields').style.display='';document.getElementById('index-fields').style.display='none';document.getElementById('tf-row').style.display='';">
+              Bybit
             </label>
-            <label class="field">Category
-              <select name="category">
-                {% for cat in bybit_categories %}
-                <option value="{{ cat }}" {% if cat == 'linear' %}selected{% endif %}>{{ cat }}</option>
-                {% endfor %}
-              </select>
-            </label>
-            <label class="field">Start <span class="text-muted" style="font-size:10px;">(empty=full cache)</span>
-              <input type="date" name="bybit_start">
-            </label>
-            <label class="field">End
-              <input type="date" name="bybit_end">
+            <label style="display:inline-flex;align-items:center;gap:4px;font-size:12px;cursor:pointer;">
+              <input type="radio" name="instrument_kind" value="Index"
+                     onchange="document.getElementById('bybit-fields').style.display='none';document.getElementById('index-fields').style.display='';document.getElementById('tf-row').style.display='none';">
+              Index / Equity (QQQ, SPY…)
             </label>
           </div>
-          <datalist id="bybit-symbols-list">
-            {% for sym in bybit_symbols %}<option value="{{ sym }}">{% endfor %}
-          </datalist>
 
-          <div class="row" style="align-items:center;gap:12px;flex-wrap:wrap;margin-top:14px;">
+          {# Bybit fields #}
+          <div id="bybit-fields">
+            <div class="row" style="align-items:flex-end;gap:10px;flex-wrap:wrap;margin-top:10px;">
+              <label class="field" style="flex:1;min-width:150px;">
+                Symbol <span class="text-muted" style="font-size:10px;">(type letters → find)</span>
+                <input type="text" name="symbol" list="bybit-symbols-list"
+                       value="BTCUSDT" autocomplete="off" placeholder="BTC, ETH, SOL…">
+              </label>
+              <label class="field">Category
+                <select name="category">
+                  {% for cat in bybit_categories %}
+                  <option value="{{ cat }}" {% if cat == 'linear' %}selected{% endif %}>{{ cat }}</option>
+                  {% endfor %}
+                </select>
+              </label>
+              <label class="field">Start <span class="text-muted" style="font-size:10px;">(empty=full cache)</span>
+                <input type="date" name="bybit_start">
+              </label>
+              <label class="field">End
+                <input type="date" name="bybit_end">
+              </label>
+            </div>
+            <datalist id="bybit-symbols-list">
+              {% for s in bybit_symbols %}<option value="{{ s.symbol }}" label="{{ s.symbol }} ({{ s.category }})">{% endfor %}
+            </datalist>
+          </div>
+
+          {# Index / Equity fields #}
+          <div id="index-fields" style="display:none;">
+            <div class="row" style="align-items:flex-end;gap:10px;flex-wrap:wrap;margin-top:10px;">
+              <label class="field" style="flex:1;min-width:150px;">
+                Ticker <span class="text-muted" style="font-size:10px;">(e.g. QQQ, SPY)</span>
+                <input type="text" name="ticker" list="index-tickers-list"
+                       value="" autocomplete="off" placeholder="QQQ"
+                       hx-get="/backtest/tickers" hx-trigger="focus once" hx-target="#index-tickers-list" hx-swap="innerHTML">
+              </label>
+              <label class="field">Start <span class="text-muted" style="font-size:10px;">(empty=full cache)</span>
+                <input type="date" name="start_date">
+              </label>
+              <label class="field">End
+                <input type="date" name="end_date">
+              </label>
+            </div>
+            <datalist id="index-tickers-list">
+              {% for s in index_symbols %}<option value="{{ s }}">{% endfor %}
+            </datalist>
+            <div class="row" style="align-items:center;gap:12px;flex-wrap:wrap;margin-top:10px;">
+              <span class="text-muted mono" style="font-size:11px;">Timeframes:</span>
+              {% for code, tflabel in [('1m','1m'),('5m','5m'),('15m','15m'),('1h','1h'),('1d','1d')] %}
+              <label style="display:inline-flex;align-items:center;gap:4px;font-size:12px;cursor:pointer;">
+                <input type="checkbox" name="granularity" value="{{ code }}"
+                       {% if code == '15m' %}checked{% endif %}>
+                {{ tflabel }}
+              </label>
+              {% endfor %}
+            </div>
+          </div>
+
+          <div id="tf-row" class="row" style="align-items:center;gap:12px;flex-wrap:wrap;margin-top:14px;">
             <span class="text-muted mono" style="font-size:11px;">Timeframes (to be backtested):</span>
             {% for code, tflabel in bybit_intervals %}
             <label style="display:inline-flex;align-items:center;gap:4px;font-size:12px;cursor:pointer;">
@@ -119,12 +169,17 @@
     <span class="htmx-indicator text-muted mono small" id="plan-spinner">Claude is interpreting the description…</span>
     <div id="plan-preview"></div>
 
+  </div>
+
+  {# ── RIGHT: results + robustness + run history ── #}
+  <div class="stack">
+
     <div id="result">
       {% if last %}
         {% include "fragments/backtest_result.html" %}
       {% else %}
         <div class="panel">
-          <div class="panel-body empty-state">Select a strategy and press <b>Run Backtest</b>.</div>
+          <div class="panel-body empty-state">Select a strategy and press <b>Generate &amp; Backtest</b>.</div>
         </div>
       {% endif %}
     </div>
@@ -176,9 +231,6 @@
       </div>
     </div>
 
-  </div>
-
-  <div class="stack">
     {% if recent_runs %}
     <div class="panel">
       <div class="panel-header">
@@ -199,6 +251,7 @@
       </div>
     </div>
     {% endif %}
+
   </div>
 
 </div>

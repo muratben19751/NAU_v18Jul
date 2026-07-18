@@ -25,6 +25,7 @@ from data import (
     BYBIT_SYMBOLS,
     discover_index_tickers,
     external_instrument_object,
+    list_catalog_bybit_symbols,
     list_external_instruments,
     load_external_bars,
     load_index_bars,
@@ -49,6 +50,27 @@ router = APIRouter(prefix="/backtest")
 from web.shared import BACKTEST_LOG, ProgressStore  # noqa: E402
 from web.shared import chart_url as _chart_url  # noqa: E402
 from web.shared import log_backtest as _log_backtest  # noqa: E402
+
+
+def _catalog_index_symbols() -> list[str]:
+    """Return equity/index tickers present in the Nautilus catalog bar/ directory."""
+    from data import NAUTILUS_CATALOG_DIR
+
+    bar_dir = NAUTILUS_CATALOG_DIR / "data" / "bar"
+    if not bar_dir.exists():
+        return []
+    seen: set[str] = set()
+    _bybit = {"BYBIT_LINEAR", "BYBIT_SPOT", "BYBIT_INVERSE"}
+    for entry in bar_dir.iterdir():
+        name = entry.name
+        dot = name.find(".")
+        if dot < 0:
+            continue
+        symbol = name[:dot]
+        venue = name[dot + 1 :].split("-")[0]
+        if venue not in _bybit:
+            seen.add(symbol)
+    return sorted(seen)
 
 _LAST_RESULT: dict[str, Optional] = {
     "r": None,
@@ -278,9 +300,10 @@ def page(request: Request):
             "preferred_spec_id": preferred_spec_id,
             "recent_runs": _recent_runs(6),
             # Main panel: symbol datalist (type-to-find), category selection, multi-TF checkboxes.
-            "bybit_symbols": BYBIT_SYMBOLS,
+            "bybit_symbols": list_catalog_bybit_symbols() or [{"symbol": s, "category": "linear"} for s in BYBIT_SYMBOLS],
             "bybit_categories": BYBIT_CATEGORIES,
             "bybit_intervals": BYBIT_ALL_INTERVALS,
+            "index_symbols": _catalog_index_symbols(),
         },
     )
 
@@ -749,7 +772,7 @@ async def describe(
     bybit_start: str = Form(""),
     bybit_end: str = Form(""),
     ticker: str = Form(""),
-    granularity: str = Form("1d"),
+    granularity: list[str] = Form(default=["1d"]),
     start_date: str = Form(""),
     end_date: str = Form(""),
     ext_instrument: str = Form(""),
@@ -788,6 +811,9 @@ async def describe(
     # Backtest parameters to be chained — spec_id is added at the end of generation.
     # ``intervals``/``intervals_csv``: the multi-TF list for the sweep chain (csv,
     # a robust path that doesn't rely on hx-vals array encoding). ``interval``: single-TF /run.
+    # For Index: granularity is a list of checkboxes; use first for /run chain.
+    gran_list = granularity if isinstance(granularity, list) else [granularity]
+    gran_first = gran_list[0] if gran_list else "1d"
     run_params = {
         "instrument_kind": instrument_kind,
         "symbol": symbol,
@@ -798,7 +824,7 @@ async def describe(
         "bybit_start": bybit_start,
         "bybit_end": bybit_end,
         "ticker": ticker,
-        "granularity": granularity,
+        "granularity": gran_first,
         "start_date": start_date,
         "end_date": end_date,
         "ext_instrument": ext_instrument,
@@ -1470,6 +1496,9 @@ async def sweep(
                     "status": "pending",
                     "error": "",
                     "metrics": _sweep_row_metrics({}),
+                    "n_bars": None,
+                    "date_from": "",
+                    "date_to": "",
                 }
                 for code in picked
             ],
@@ -1538,6 +1567,9 @@ async def sweep(
                 # explicit dates honored in full (see L88).
                 if not bybit_start and not bybit_end and len(bars) > _DEFAULT_MAX_BARS:
                     bars = bars.iloc[-_DEFAULT_MAX_BARS:]
+                # Use actual bar range (after trimming) for display.
+                actual_from = bars.index[0].strftime("%Y-%m-%d") if not bars.empty else ""
+                actual_to = bars.index[-1].strftime("%Y-%m-%d") if not bars.empty else ""
                 result = run_backtest_guarded(
                     spec,
                     bars,
@@ -1559,6 +1591,8 @@ async def sweep(
                         status="done",
                         metrics=_sweep_row_metrics(result.metrics),
                         n_bars=len(bars),
+                        date_from=actual_from,
+                        date_to=actual_to,
                     )
             except Exception as e:
                 _row(code, status="error", error=f"{type(e).__name__}: {e}"[:120])
