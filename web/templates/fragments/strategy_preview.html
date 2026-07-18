@@ -1,0 +1,72 @@
+{# Strategy Preview — canlı akış diyagramı. Draft'lar değiştikçe OOB ile güncellenir.
+   Beklenen context: drafts (list[SignalBlock]), block_catalog, options, name #}
+{% set opts = options if options is defined else {} %}
+{% set entry_blocks = drafts | selectattr('role', 'equalto', 'entry') | list %}
+{% set exit_blocks  = drafts | selectattr('role', 'equalto', 'exit')  | list %}
+{% set entry_logic = opts.get('entry_logic', 'OR') %}
+{% set exit_logic  = opts.get('exit_logic', 'OR') %}
+{% set size_mode   = opts.get('trade_size_mode', 'fixed_usdt') %}
+<div id="strategy-preview" hx-swap-oob="outerHTML:#strategy-preview" class="panel" style="margin-bottom:16px;">
+  <div class="panel-header">
+    <div class="panel-title">Strategy Preview</div>
+    <div class="spacer"></div>
+    <span class="text-muted mono" style="font-size:10.5px;">live</span>
+  </div>
+  <div class="panel-body" style="display:flex;flex-direction:column;align-items:stretch;">
+    <div class="mono" style="font-size:13px;font-weight:600;color:var(--text-primary);text-align:center;margin-bottom:14px;">
+      {{ name if name is defined and name else "My Strategy" }}
+    </div>
+
+    <div style="font-size:9px;letter-spacing:.16em;text-transform:uppercase;color:var(--text-muted);text-align:center;margin-bottom:8px;">
+      Entry signals · {{ entry_logic }}
+    </div>
+    {% if entry_blocks %}
+    <div style="display:flex;flex-wrap:wrap;gap:7px;justify-content:center;">
+      {% for b in entry_blocks %}
+      <div style="border:1px solid rgba(46,212,126,.35);background:rgba(46,212,126,.06);border-radius:7px;padding:7px 11px;text-align:center;">
+        <div style="font-size:11.5px;font-weight:600;color:var(--pnl-up);">{{ block_catalog[b.type].label if b.type in block_catalog else b.type }}</div>
+        <div class="mono" style="font-size:9.5px;color:var(--text-muted);margin-top:1px;">{{ b.params }}</div>
+      </div>
+      {% endfor %}
+    </div>
+    {% else %}
+    <div style="border:1px dashed var(--border-input);border-radius:7px;padding:10px;text-align:center;font-size:11px;color:var(--text-muted);">entry bloğu ekleyin</div>
+    {% endif %}
+
+    <div style="display:flex;justify-content:center;padding:6px 0;">
+      <svg width="12" height="20" viewBox="0 0 12 20"><path d="M6 0v16M2 13l4 5 4-5" style="fill:none;stroke:#3A465C;stroke-width:1.3"></path></svg>
+    </div>
+
+    <div style="align-self:center;border:1px solid var(--border-btn2);background:var(--panel-2);border-radius:8px;padding:9px 16px;text-align:center;">
+      <div class="mono" style="font-size:11px;font-weight:600;color:var(--accent);">
+        {{ opts.get("order_type","market")|upper }} order{% if opts.get("use_bracket") %} + bracket SL/TP{% endif %}
+      </div>
+      <div class="mono" style="font-size:9.5px;color:var(--text-muted);margin-top:2px;">
+        {% if size_mode == 'fixed_usdt' %}{{ opts.get("trade_size_usdt",1000)|int }} USDT / işlem
+        {% elif size_mode == 'percent_equity' %}%{{ opts.get("trade_size_percent",5) }} equity
+        {% elif size_mode == 'atr_target' %}ATR risk %{{ opts.get("trade_size_atr_risk",1) }}
+        {% else %}fixed {{ opts.get("trade_size_btc",0.1) }} BTC{% endif %}
+      </div>
+    </div>
+
+    <div style="display:flex;justify-content:center;padding:6px 0;">
+      <svg width="12" height="20" viewBox="0 0 12 20"><path d="M6 0v16M2 13l4 5 4-5" style="fill:none;stroke:#3A465C;stroke-width:1.3"></path></svg>
+    </div>
+
+    <div style="font-size:9px;letter-spacing:.16em;text-transform:uppercase;color:var(--text-muted);text-align:center;margin-bottom:8px;">
+      Exit signals · {{ exit_logic }}
+    </div>
+    {% if exit_blocks %}
+    <div style="display:flex;flex-wrap:wrap;gap:7px;justify-content:center;">
+      {% for b in exit_blocks %}
+      <div style="border:1px solid rgba(242,92,92,.35);background:rgba(242,92,92,.06);border-radius:7px;padding:7px 11px;text-align:center;">
+        <div style="font-size:11.5px;font-weight:600;color:var(--pnl-down-soft);">{{ block_catalog[b.type].label if b.type in block_catalog else b.type }}</div>
+        <div class="mono" style="font-size:9.5px;color:var(--text-muted);margin-top:1px;">{{ b.params }}</div>
+      </div>
+      {% endfor %}
+    </div>
+    {% else %}
+    <div style="border:1px dashed var(--border-input);border-radius:7px;padding:10px;text-align:center;font-size:11px;color:var(--text-muted);">exit bloğu ekleyin</div>
+    {% endif %}
+  </div>
+</div>

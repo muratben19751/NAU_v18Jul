@@ -1,0 +1,82 @@
+{# TradingView-style price chart panel. #}
+<div class="panel" style="margin-top:14px;">
+  <div class="panel-header" style="align-items:center;">
+    <div style="display:flex;align-items:center;gap:10px;">
+      <span class="panel-title" style="font-size:15px;font-weight:600;">
+        {{ last.spec_name if last is defined and last.spec_name else "Strateji" }}
+      </span>
+      <span class="chip" style="background:rgba(247,147,26,0.12);color:#f7931a;font-size:11px;padding:2px 8px;border-radius:10px;">
+        ● {{ chart_symbol }}
+      </span>
+      <span class="text-muted mono" style="font-size:11px;">{{ chart_category }} · <span class="chart-tf-label">{{ chart_interval }}</span></span>
+    </div>
+    <div style="display:flex;align-items:center;gap:4px;margin-left:auto;">
+      {% for tf, label in [('1','1m'),('5','5m'),('15','15m'),('60','1h'),('240','4h'),('D','1d')] %}
+      <button class="btn btn-secondary chart-tf-btn"
+              style="padding:2px 8px;font-size:10px;border-radius:4px;{% if chart_interval == tf %}background:rgba(255,255,255,0.12);color:#f2f2f2;{% endif %}"
+              data-symbol="{{ chart_symbol }}"
+              data-category="{{ chart_category }}"
+              data-tf="{{ tf }}"
+              onclick="chartChangeTF(this)">{{ label }}</button>
+      {% endfor %}
+    </div>
+  </div>
+  <div class="panel-body" style="padding:8px;">
+    {# forceescape şart: tojson Markup(safe) döndürür, |e no-op kalır ve ham
+       çift tırnak attribute'u ilk '"'de keserdi (data-blocks'taki canlı bug) #}
+    <div id="{{ chart_dom_id | default('price-chart-container') }}"
+         data-price-chart="{{ chart_url|replace('&', '__AMP__') }}"
+         data-price-symbol="{{ chart_symbol }}"
+         data-price-category="{{ chart_category }}"
+         data-price-interval="{{ chart_interval }}"
+         data-price-spec="{{ last.params.spec_id if last is defined and last.params else '' }}"
+         data-price-trades="{% if last is defined and last.trades %}{{ last.trades|tojson|forceescape }}{% else %}[]{% endif %}"
+         style="width:100%; height:560px; border-radius:4px; overflow:hidden;">
+    </div>
+    <div style="display:flex;gap:16px;margin-top:6px;font-size:10px;font-family:var(--mono);color:var(--text-muted);">
+      <span class="text-muted">Stratejinin gerçek indikatörleri ·</span>
+      <span><span style="color:#4ade80;">▲</span> Buy</span>
+      <span><span style="color:#f87171;">▼</span> Sell</span>
+      <span><span style="color:rgba(74,222,128,0.7);">─</span> Kârlı</span>
+      <span><span style="color:rgba(248,113,113,0.6);">─</span> Zararlı</span>
+    </div>
+  </div>
+</div>
+<script>
+function chartChangeTF(btn) {
+  // Panel-scoped: /reports'ta aynı sayfada birden çok grafik olabilir —
+  // sabit id yerine butonun ait olduğu panelin container'ı bulunur.
+  const panel = btn.closest(".panel");
+  const el = panel && panel.querySelector("[data-price-chart]");
+  if (!el) return;
+  const sym = btn.dataset.symbol;
+  const cat = btn.dataset.category;
+  const tf  = btn.dataset.tf;
+  const sid = el.dataset.priceSpec || "";
+  panel.querySelectorAll(".chart-tf-btn").forEach(b => {
+    b.style.background = "";
+    b.style.color = "";
+  });
+  btn.style.background = "rgba(255,255,255,0.12)";
+  btn.style.color = "#f2f2f2";
+  const lbl = panel.querySelector(".chart-tf-label");
+  if (lbl) lbl.textContent = tf;
+  // URL güncelle — spec_id'yi VE backtest zaman penceresini (start_ts/end_ts)
+  // koru: pencere düşerse grafik "son 2000 bar"a atlar ve trade'ler
+  // görünümden çıkar (rapor detayındaki asıl kullanım kırılırdı).
+  const cur = el.getAttribute("data-price-chart") || "";
+  const mS = cur.match(/start_ts=(\d+)/);
+  const mE = cur.match(/end_ts=(\d+)/);
+  let newSrc = `/chart/data?symbol=${sym}__AMP__category=${cat}__AMP__interval=${tf}`;
+  if (mS && mE) {
+    newSrc += `__AMP__start_ts=${mS[1]}__AMP__end_ts=${mE[1]}`;
+  } else {
+    newSrc += `__AMP__bars=2000`;
+  }
+  if (sid) newSrc += `__AMP__spec_id=${sid}`;
+  el.setAttribute("data-price-chart", newSrc);
+  el.setAttribute("data-price-interval", tf);
+  el._chartDone = false;
+  _loadPriceChart(el);
+}
+</script>

@@ -1,0 +1,35 @@
+{% if drafts %}
+<table class="data">
+  <thead>
+    <tr>
+      <th style="width:36px;">#</th>
+      <th>Block</th>
+      <th>Role</th>
+      <th>Parameters</th>
+      <th style="width:44px;"></th>
+    </tr>
+  </thead>
+  <tbody>
+  {% for b in drafts %}
+    <tr>
+      <td class="muted mono">{{ loop.index }}</td>
+      <td>{{ block_catalog[b.type].label }} <span class="text-muted mono" style="font-size:11px;">· {{ b.type }}</span></td>
+      <td><span class="badge {{ b.role }}">{{ b.role }}</span></td>
+      <td class="mono" style="font-size:12px;">{{ b.params }}</td>
+      <td>
+        <button class="btn btn-icon" hx-delete="/strategy/drafts/{{ loop.index0 }}"
+                hx-target="#drafts" hx-swap="innerHTML">🗑</button>
+      </td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<div class="empty-state">
+  No blocks yet.<br>
+  <span style="font-size:11px;">Add one from section 02.</span>
+</div>
+{% endif %}
+
+{# Strategy Preview'ı canlı güncelle (OOB) #}
+{% include "fragments/strategy_preview.html" %}

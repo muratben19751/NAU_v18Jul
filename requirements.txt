@@ -1,0 +1,21 @@
+# NOTE: pyproject.toml is now the canonical dependency source (PEP 621).
+# This file is kept for `pip install -r requirements.txt` compatibility; keep the
+# two in sync, or prefer `pip install -e ".[dev]"` / `uv sync --extra dev`.
+nautilus_trader==1.230.0
+anthropic>=0.40
+yfinance>=0.2.40
+pandas>=2.2
+pyarrow>=17
+numpy>=1.26
+pytest>=8.0
+ddgs>=1.0
+
+# Web UI (FastAPI + HTMX + Jinja2)
+fastapi>=0.115
+uvicorn[standard]>=0.32
+jinja2>=3.1
+python-multipart>=0.0.9
+markdown>=3.6
+
+# Legacy Streamlit (kept for legacy/streamlit_app.py; safe to remove)
+streamlit>=1.36

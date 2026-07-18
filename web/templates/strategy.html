@@ -1,0 +1,238 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="grid-3">
+
+  {# ---- Composer main column ---- #}
+  <div class="stack">
+
+    {% if request.query_params.get("saved") %}
+      <div class="panel" style="border-color: rgba(74,222,128,0.35);">
+        <div class="panel-body">
+          <span class="badge running">✓ SAVED</span>
+          <span class="mono" style="margin-left:8px;">{{ request.query_params.get("saved") }}</span>
+        </div>
+      </div>
+    {% endif %}
+    {% if request.query_params.get("saved_block") %}
+      <div class="panel" style="border-color: rgba(74,222,128,0.35);">
+        <div class="panel-body">
+          <span class="badge running">✓ YENİ BLOK</span>
+          <span class="mono" style="margin-left:8px;">{{ request.query_params.get("saved_block") }}</span>
+          <span class="text-muted" style="margin-left:8px;">→ Add Signal Block dropdown'ında görünüyor</span>
+        </div>
+      </div>
+    {% endif %}
+    {% if request.query_params.get("error") %}
+      <div class="panel" style="border-color: rgba(248,113,113,0.5);">
+        <div class="panel-body">
+          <span class="badge exit">✗ INVALID</span>
+          <span class="text-muted" style="margin-left:8px;">{{ request.query_params.get("error") }}</span>
+        </div>
+      </div>
+    {% endif %}
+
+    {# 0. Claude öner ---- #}
+    <div class="panel pulse-border">
+      <div class="panel-body row">
+        <div style="flex:1;">
+          <div class="section-title" style="margin:0 0 4px">🧠 AI Strategy Designer</div>
+          <div class="text-muted">Claude Fable 5 geçmiş backtest sonuçlarına ve mevcut kataloğa bakarak sana yeni bir strateji önerir — bloklar, roller, parametreler ve isim dahil.</div>
+        </div>
+        <form hx-post="/strategy/suggest" hx-target="#drafts" hx-swap="outerHTML" hx-indicator="#suggest-spinner">
+          <button class="btn btn-primary" type="submit">🧠 Claude'a önerttir</button>
+          <span class="htmx-indicator text-muted mono" id="suggest-spinner" style="font-size:11px;margin-left:8px;">Claude düşünüyor…</span>
+        </form>
+      </div>
+    </div>
+
+    {# 1. Header ---- #}
+    <div class="panel">
+      <div class="panel-header"><div class="panel-title">01 · Strategy Metadata</div></div>
+      <div class="panel-body">
+        <form id="save-form" action="/strategy/save" method="post" class="stack">
+          <div style="display:grid;grid-template-columns:2fr 1fr;gap:12px;">
+            <label class="field">Name
+              <input id="name-input" type="text" name="name" value="My Strategy" required>
+            </label>
+            <label class="field">Trade size (USDT)
+              <input type="number" name="trade_size_usdt" value="1000" step="50" min="1" max="10000000">
+            </label>
+          </div>
+          <label class="field">Description
+            <textarea id="description-input" name="description" rows="2" placeholder="Optional note about what this strategy does…"></textarea>
+          </label>
+        </form>
+      </div>
+    </div>
+
+    {# 2. Add block ---- #}
+    <div class="panel">
+      <div class="panel-header">
+        <div class="panel-title">02 · Add Signal Block</div>
+        <div class="spacer"></div>
+        <span class="text-muted text-mono">kombine mantık: Advanced Options</span>
+      </div>
+      <div class="panel-body">
+        <div id="add-block-form-wrapper">
+        <form id="add-block-form" hx-post="/strategy/drafts" hx-target="#drafts" hx-swap="innerHTML" class="stack">
+          <div style="display:grid;grid-template-columns:2fr 1fr;gap:12px;">
+            <label class="field">Block type
+              <select name="type"
+                      hx-get="/strategy/blocks/form"
+                      hx-target="#block-params"
+                      hx-trigger="change"
+                      hx-include="this"
+                      onchange="loadWiki(this.value)">
+                {% for k, meta in block_catalog.items() %}
+                  <option value="{{ k }}" {% if k == default_type %}selected{% endif %}>{{ meta.label }} · {{ k }}</option>
+                {% endfor %}
+              </select>
+            </label>
+            <label class="field">Role
+              <select name="role">
+                <option value="entry">entry</option>
+                <option value="exit">exit</option>
+              </select>
+            </label>
+          </div>
+          <div id="block-params">
+            {% with btype=default_type, meta=block_catalog[default_type] %}
+              {% include "fragments/block_form.html" %}
+            {% endwith %}
+          </div>
+          <div class="row">
+            <button class="btn btn-primary" type="submit">＋ Add block</button>
+          </div>
+        </form>
+        </div>
+      </div>
+    </div>
+
+    {# 3. Current drafts ---- #}
+    <div class="panel">
+      <div class="panel-header">
+        <div class="panel-title">03 · Current Blocks</div>
+        <div class="spacer"></div>
+        <span class="text-muted text-mono">draft · not yet saved</span>
+      </div>
+      <div id="drafts" class="panel-body tight">
+        {% include "fragments/drafts_list.html" %}
+      </div>
+    </div>
+
+    {# 3.5 Advanced Options (collapsible) ---- #}
+    <div class="panel">
+      <details open>
+        <summary class="panel-header" style="cursor:pointer;list-style:none;">
+          <div class="panel-title">03.5 · Advanced Options</div>
+          <div class="spacer"></div>
+          <span class="text-muted text-mono">Nautilus native · AND/OR · SL/TP · short · dynamic size</span>
+        </summary>
+        <div class="panel-body">
+          {% include "fragments/advanced_options.html" %}
+        </div>
+      </details>
+    </div>
+
+    {# 4. Save ---- #}
+    <div class="panel">
+      <div class="panel-body row">
+        <div>
+          <div class="section-title" style="margin:0 0 4px">04 · Save to catalog</div>
+          <div class="text-muted">Persisted to <span class="mono">~/.cache/nautilus_web_app/strategy_catalog.json</span>. Both the Backtest page and the autonomous Agent (catalog mode) use these.</div>
+        </div>
+        <div class="spacer"></div>
+        <button class="btn btn-primary" type="submit" form="save-form">💾 Save Strategy</button>
+      </div>
+    </div>
+
+    {# 5. Saved catalog ---- #}
+    <div class="panel">
+      <div class="panel-header"><div class="panel-title">05 · Saved Strategies</div></div>
+      <div id="catalog" class="panel-body tight">
+        {% include "fragments/catalog_list.html" %}
+      </div>
+    </div>
+
+    {# 6. Custom Blocks (Beta) — Claude yeni blok tipi üretir ---- #}
+    <div class="panel">
+      <details>
+        <summary class="panel-header" style="cursor:pointer;list-style:none;">
+          <div class="panel-title">06 · Custom Blocks <span class="badge beta">BETA</span></div>
+          <div class="spacer"></div>
+          <span class="text-muted text-mono">Claude üretir · AST doğrulanır · disk-persistent</span>
+        </summary>
+        <div class="panel-body stack" style="gap:12px;">
+          <div class="text-muted" style="font-size:12px;">
+            Doğal dille yeni bir sinyal bloğu tarif edin. Claude Fable 5 bunu Python koduna çevirir,
+            AST doğrulaması geçerse kaydedebilirsiniz. Yeni blok anında <b>02 · Add Signal Block</b>
+            dropdown'ında görünür.
+          </div>
+
+          <form hx-post="/strategy/blocks/generate"
+                hx-target="#custom-generated"
+                hx-swap="innerHTML"
+                hx-indicator="#custom-spinner"
+                class="stack">
+            <label class="field">Label (kısa isim)
+              <input type="text" name="label" placeholder="örn: SMA200 breakout" required>
+            </label>
+            <label class="field">Ne yapsın? (doğal dil)
+              <textarea name="description" rows="3" required
+                        placeholder="örn: close 200-günlük SMA'nın yukarısına geçerse LONG entry"></textarea>
+            </label>
+            <label class="field">Rol
+              <select name="role_hint">
+                <option value="entry" selected>entry (long/short sinyali)</option>
+                <option value="exit">exit</option>
+                <option value="both">her ikisi</option>
+              </select>
+            </label>
+            <div class="row" style="gap:8px;">
+              <button class="btn btn-primary" type="submit">🧠 Claude'a yazdır</button>
+              <span class="htmx-indicator text-muted mono" id="custom-spinner"
+                    style="font-size:11px;">Claude düşünüyor…</span>
+            </div>
+          </form>
+
+          <div id="custom-generated"></div>
+
+          <div>
+            <div class="section-title" style="margin:8px 0 6px;">Kayıtlı Custom Bloklar</div>
+            <div id="custom-blocks-list">
+              {% include "fragments/custom_blocks_list.html" %}
+            </div>
+          </div>
+        </div>
+      </details>
+    </div>
+
+  </div>
+
+  {# ---- Wiki side column ---- #}
+  <div class="stack">
+    {% include "fragments/strategy_preview.html" %}
+    <div class="panel">
+      <div class="panel-header">
+        <div class="panel-title">Nautilus Wiki</div>
+        <div class="spacer"></div>
+        <span class="text-muted text-mono" id="wiki-path">{{ wiki_active }}</span>
+      </div>
+      <div class="panel-body">
+        <div id="wiki-panel" class="wiki-scroll prose">{{ wiki_html|safe }}</div>
+      </div>
+    </div>
+  </div>
+
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  function loadWiki(t) {
+    fetch("/strategy/wiki?type=" + encodeURIComponent(t))
+      .then(r => r.text())
+      .then(html => { document.getElementById("wiki-panel").outerHTML = html; });
+  }
+</script>
+{% endblock %}

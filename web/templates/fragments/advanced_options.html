@@ -1,0 +1,128 @@
+{# Advanced Options fields — all form controls belong to #save-form via `form=` attr. #}
+<div id="advanced-options" class="stack" style="gap:14px;"{% if _oob %} hx-swap-oob="outerHTML"{% endif %}>
+
+  <div class="section-title" style="margin:0;">Signal logic</div>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+    <label class="field">Entry logic
+      <select name="entry_logic" form="save-form">
+        <option value="OR"  {% if options.entry_logic == "OR" %}selected{% endif %}>OR — any block fires</option>
+        <option value="AND" {% if options.entry_logic == "AND" %}selected{% endif %}>AND — all blocks must fire together</option>
+      </select>
+    </label>
+    <label class="field">Exit logic
+      <select name="exit_logic" form="save-form">
+        <option value="OR"  {% if options.exit_logic == "OR" %}selected{% endif %}>OR — any block fires</option>
+        <option value="AND" {% if options.exit_logic == "AND" %}selected{% endif %}>AND — all blocks must fire together</option>
+      </select>
+    </label>
+  </div>
+
+  <div class="section-title" style="margin:8px 0 0;">Order &amp; execution</div>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+    <label class="field">Order type
+      <select name="order_type" form="save-form">
+        <option value="market" {% if options.order_type == "market" %}selected{% endif %}>market</option>
+        <option value="limit"  {% if options.order_type == "limit" %}selected{% endif %}>limit</option>
+      </select>
+    </label>
+    <label class="field">Limit offset (bps)
+      <input type="number" name="limit_offset_bps" form="save-form"
+             value="{{ options.limit_offset_bps }}" step="0.5" min="0" max="100">
+    </label>
+  </div>
+  <label class="field row" style="gap:8px;align-items:center;">
+    <input type="checkbox" name="use_bracket" form="save-form"
+           {% if options.use_bracket %}checked{% endif %}>
+    <span>Attach bracket (SL/TP) to entries</span>
+  </label>
+  <label class="field row" style="gap:8px;align-items:center;margin-left:22px;">
+    <input type="checkbox" name="emulate" form="save-form"
+           {% if options.emulate %}checked{% endif %}>
+    <span>Emulate bracket locally (LAST_PRICE trigger) — SL/TP fires intra-bar on 1m data instead of at bar close</span>
+  </label>
+  <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:12px;">
+    <label class="field">SL type
+      <select name="sl_type" form="save-form">
+        <option value="percent" {% if options.sl_type == "percent" %}selected{% endif %}>percent</option>
+        <option value="atr"     {% if options.sl_type == "atr" %}selected{% endif %}>ATR</option>
+      </select>
+    </label>
+    <label class="field">SL value
+      <input type="number" name="sl_value" form="save-form"
+             value="{{ options.sl_value }}" step="0.1" min="0.1" max="50">
+    </label>
+    <label class="field">TP type
+      <select name="tp_type" form="save-form">
+        <option value="off"     {% if options.tp_type == "off" %}selected{% endif %}>off</option>
+        <option value="percent" {% if options.tp_type == "percent" %}selected{% endif %}>percent</option>
+        <option value="atr"     {% if options.tp_type == "atr" %}selected{% endif %}>ATR</option>
+      </select>
+    </label>
+    <label class="field">TP value
+      <input type="number" name="tp_value" form="save-form"
+             value="{{ options.tp_value }}" step="0.1" min="0.1" max="100">
+    </label>
+  </div>
+  <label class="field">ATR period (used when SL/TP=ATR or sizing=atr_target)
+    <input type="number" name="atr_period" form="save-form"
+           value="{{ options.atr_period }}" step="1" min="5" max="100">
+  </label>
+
+  <div class="section-title" style="margin:8px 0 0;">Position side</div>
+  <label class="field row" style="gap:8px;align-items:center;">
+    <input type="checkbox" name="allow_short" form="save-form"
+           {% if options.allow_short %}checked{% endif %}>
+    <span>Allow SHORT entries (SELL on down-direction blocks; venue must support MARGIN account type)</span>
+  </label>
+
+  <div class="section-title" style="margin:8px 0 0;">Multi-timeframe trend filtresi</div>
+  <label class="check-row">
+    <input type="checkbox" name="trend_filter" form="save-form" id="trend-filter-cb"
+           {% if options.trend_filter %}checked{% endif %}>
+    <span>Üst zaman diliminde trend onayı — ana TF'de işlem açar, seçilen TF'nin
+      EMA'sı yönünde değilse girişi bastırır (30dk işlem + 1d trend gibi).</span>
+  </label>
+  <div class="row" style="gap:10px;flex-wrap:wrap;margin-top:6px;">
+    <label class="field">Trend TF (ana TF'den YÜKSEK olmalı)
+      <select name="trend_interval" form="save-form">
+        <option value="15"  {% if options.trend_interval == "15"  %}selected{% endif %}>15m</option>
+        <option value="60"  {% if options.trend_interval == "60"  %}selected{% endif %}>1h</option>
+        <option value="240" {% if options.trend_interval == "240" %}selected{% endif %}>4h</option>
+        <option value="D"   {% if options.trend_interval == "D"   %}selected{% endif %}>1d</option>
+      </select>
+    </label>
+    <label class="field">Trend EMA periyodu
+      <input type="number" name="trend_ema_period" form="save-form" min="5" max="400" step="1"
+             value="{{ options.trend_ema_period }}">
+    </label>
+  </div>
+  <div class="text-muted" style="font-size:11px;margin-top:2px;">
+    Not: trend TF ana backtest TF'sinden yüksek olmalı; aynı/düşükse motor filtreyi
+    atlar. Look-ahead güvenli — üst-TF barı yalnız kapandığında değerlendirilir.
+  </div>
+
+  <div class="section-title" style="margin:8px 0 0;">Position sizing</div>
+  <label class="field">Sizing mode
+    <select name="trade_size_mode" form="save-form">
+      <option value="fixed_usdt"     {% if options.trade_size_mode == "fixed_usdt" %}selected{% endif %}>fixed USDT (yukarıdaki Trade size — dolar)</option>
+      <option value="fixed"          {% if options.trade_size_mode == "fixed" %}selected{% endif %}>fixed BTC (sabit coin miktarı: {{ options.get('trade_size_btc', 0.1) }})</option>
+      <option value="percent_equity" {% if options.trade_size_mode == "percent_equity" %}selected{% endif %}>percent of equity</option>
+      <option value="atr_target"     {% if options.trade_size_mode == "atr_target" %}selected{% endif %}>ATR-target risk</option>
+    </select>
+  </label>
+  <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;">
+    <label class="field">Coin miktarı (fixed BTC modu)
+      <input type="number" name="trade_size" form="save-form"
+             value="{{ options.get('trade_size_btc', 0.1) }}" step="0.01" min="0.001" max="10">
+    </label>
+    <label class="field">Equity %
+      <input type="number" name="trade_size_percent" form="save-form"
+             value="{{ options.trade_size_percent }}" step="0.1" min="0.1" max="50">
+    </label>
+    <label class="field">ATR risk % (per trade)
+      <input type="number" name="trade_size_atr_risk" form="save-form"
+             value="{{ options.trade_size_atr_risk }}" step="0.05" min="0.05" max="20">
+    </label>
+  </div>
+
+</div>

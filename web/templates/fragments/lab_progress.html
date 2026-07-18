@@ -1,0 +1,69 @@
+{# Lab pipeline progress panel.
+   Polls /lab/progress/{run_id} every second.
+   When done the server returns lab_result.html which has no polling, ending naturally.
+#}
+<div id="lab-progress-panel"
+     {% if not done %}
+     hx-get="/lab/progress/{{ run_id }}"
+     hx-trigger="every 1s"
+     hx-target="#lab-result"
+     hx-swap="innerHTML"
+     {% endif %}>
+
+  <div class="panel" style="border-color: rgba(255,255,255,0.25);">
+    <div class="panel-header">
+      <div class="panel-title" style="display:flex;align-items:center;gap:10px;">
+        ⚗ Pipeline
+        {% if not done and not error %}<span class="dot"></span>{% endif %}
+        {% if done and not error %}✓ Tamamlandı{% endif %}
+        {% if error %}✗ Hata{% endif %}
+      </div>
+      {% if state.strategy_name %}
+        <div class="panel-meta mono small">{{ state.strategy_name }}</div>
+      {% endif %}
+    </div>
+    <div class="panel-body">
+
+      {% if error %}
+        <div class="warning-strip">{{ error }}</div>
+      {% endif %}
+
+      {# Phase timeline #}
+      <div class="lab-phases">
+        {% for p in state.phases %}
+          <div class="lab-phase phase-{{ p.status }}">
+            <div class="lab-phase-icon">
+              {% if p.status == 'done' %}✓
+              {% elif p.status == 'running' %}⟳
+              {% else %}○{% endif %}
+            </div>
+            <div class="lab-phase-body">
+              <div class="lab-phase-label">{{ p.label }}</div>
+              {% if p.detail %}
+                <div class="lab-phase-detail mono small">{{ p.detail }}</div>
+              {% endif %}
+            </div>
+            {% if p.ts %}
+              <div class="lab-phase-ts mono small text-muted">{{ p.ts }}</div>
+            {% endif %}
+          </div>
+        {% endfor %}
+      </div>
+
+      {# Backtest sub-steps (faz 5 çalışırken göster) #}
+      {% if state.backtest_steps %}
+        <div class="progress-steps" style="margin-top:12px;padding-left:28px;">
+          {% for step in state.backtest_steps %}
+            <div class="step-row done">
+              <span class="step-ts mono">{{ step.ts }}</span>
+              <span class="step-tick">›</span>
+              <span class="step-msg">{{ step.msg }}</span>
+            </div>
+          {% endfor %}
+        </div>
+      {% endif %}
+
+    </div>
+  </div>
+
+</div>

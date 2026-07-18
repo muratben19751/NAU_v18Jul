@@ -1,0 +1,75 @@
+{% extends "base.html" %}
+{% block content %}
+
+<div class="panel">
+  <div class="panel-header">
+    <div class="panel-title">⚗ Strategy Lab</div>
+    <div class="panel-meta small">
+      Claude bir strateji fikri üretir · custom bloklar yazar · backtest çalıştırır
+    </div>
+  </div>
+  <div class="panel-body">
+    <form hx-post="/lab/run"
+          hx-target="#lab-result"
+          hx-swap="innerHTML"
+          hx-indicator="#lab-spinner">
+
+      <div class="row" style="align-items:flex-end;flex-wrap:wrap;gap:12px;margin-bottom:12px;">
+        <label class="field" style="flex:2;min-width:220px;">
+          Strateji fikri <span class="text-muted" style="font-weight:400;">(opsiyonel — boş bırak = tamamen otonom)</span>
+          <input type="text" name="hint"
+                 placeholder="Örn: wavetrend with cross, momentum + rsi, supertrend…"
+                 style="font-size:13px;">
+        </label>
+        <label class="field">Symbol
+          <select name="symbol">
+            <option value="BTCUSDT" selected>BTCUSDT</option>
+            <option value="ETHUSDT">ETHUSDT</option>
+            <option value="SOLUSDT">SOLUSDT</option>
+          </select>
+        </label>
+        <label class="field">Category
+          <select name="category">
+            <option value="linear" selected>linear</option>
+            <option value="spot">spot</option>
+          </select>
+        </label>
+        <label class="field">Interval
+          <select name="interval">
+            <option value="1">1m</option>
+            <option value="5">5m</option>
+            <option value="15">15m</option>
+            <option value="60" selected>1h</option>
+            <option value="240">4h</option>
+            <option value="D">1d</option>
+          </select>
+        </label>
+        <label class="field">Başlangıç
+          <input type="date" name="start_date">
+        </label>
+        <label class="field">Bitiş
+          <input type="date" name="end_date">
+        </label>
+        <button class="btn btn-primary" type="submit">⚗ Çalıştır</button>
+        <span class="htmx-indicator text-muted mono" id="lab-spinner" style="font-size:11px;">
+          pipeline başlatılıyor…
+        </span>
+      </div>
+
+      <p class="small text-muted" style="margin:0;">
+        Her çalıştırma yeni custom bloklar üretir ve /strategy ekranına kaydeder.
+        Üretilen strateji /backtest seçicisinde görünür.
+      </p>
+    </form>
+  </div>
+</div>
+
+<div id="lab-result">
+  <div class="panel">
+    <div class="panel-body empty-state">
+      ⚗ Çalıştır'a basarak otonom pipeline'ı başlat.
+    </div>
+  </div>
+</div>
+
+{% endblock %}

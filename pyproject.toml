@@ -1,0 +1,69 @@
+[project]
+name = "nautilus-web-app"
+version = "0.1.0"
+description = "FastAPI + HTMX research lab for composing and backtesting Bybit strategies on nautilus_trader."
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    # The only supported NautilusTrader version. Must match
+    # constants.NAUTILUS_REQUIRED; server.py fails fast if the installed wheel
+    # drifts.
+    "nautilus_trader==1.230.0",
+    "anthropic>=0.40",
+    "pandas>=2.2",
+    "pyarrow>=17",
+    "numpy>=1.26",
+    "ddgs>=1.0",
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "jinja2>=3.1",
+    "python-multipart>=0.0.9",
+    "markdown>=3.6",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.6",
+]
+# Only needed for the retired Streamlit UI under legacy/ (not the FastAPI app).
+legacy = [
+    "streamlit>=1.36",
+    "yfinance>=0.2.40",
+]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 88
+extend-exclude = [
+    "legacy",
+    "design2",
+    "design_handoff_nautilus_lab",
+    "nautilus_wiki",
+    "__pycache__",
+]
+
+[tool.ruff.lint]
+# Pragmatic first-adoption set: pyflakes (real bugs), import order, whitespace,
+# and safe pyupgrade modernizations. Line length is owned by `ruff format`
+# (E501 off), and E402 is off because the app deliberately uses module-level
+# setup (UTF-8 reconfigure) and lazy imports to defer the heavy nautilus load.
+# `B` (flake8-bugbear) is a worthwhile future tightening once its backlog is triaged.
+select = ["E", "F", "I", "W", "UP"]
+ignore = ["E501", "E402"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Üçüncü-parti deprecation gürültüsünü sustur (ikisi de bizim kodumuzda değil,
+# `grep utcnow` → 0; yükseltme dışında düzeltilemez) — gerçek sinyal görünür kalsın.
+#   - Timestamp.utcnow: nautilus_trader 1.230 engine.run() içinden
+#   - httpx/starlette testclient: fastapi TestClient importunda sürüm-el sıkışması
+filterwarnings = [
+    "ignore:.*Timestamp\\.utcnow.*:DeprecationWarning",
+    "ignore:.*utcnow\\(\\) is deprecated.*",
+    "ignore:.*httpx.*starlette\\.testclient.*",
+    "ignore:.*Using `httpx`.*:DeprecationWarning",
+]
+
+# Abstract dependency floors live in [project]; uv.lock (run `uv lock`) pins the
+# exact resolved versions for reproducible installs. Install with:
+#   uv sync --extra dev      (or)   pip install -e ".[dev]"

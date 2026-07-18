@@ -1,0 +1,10 @@
+# build artefacts
+.wiki-build/
+
+# Obsidian per-user UI state — mutable, rewritten on every launch.
+# Track app.json / appearance.json / core-plugins.json as the shared vault
+# contract, but exclude the noisy ones:
+.obsidian/workspace.json
+.obsidian/workspace-mobile.json
+.obsidian/workspaces.json
+.obsidian/graph.json

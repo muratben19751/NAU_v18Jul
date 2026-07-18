@@ -1,0 +1,154 @@
+{% extends "base.html" %}
+{% block content %}
+
+<div class="panel">
+  <div class="panel-header">
+    <div class="panel-title">Instrument Catalog</div>
+    <div class="panel-meta">
+      <span class="small">Nautilus veri modeli · <a href="/wiki/slug/parquet_data_catalog" class="link">📖 parquet_data_catalog</a> · <a href="/wiki/slug/bar_aggregation_and_type_syntax" class="link">📖 bar_type DSL</a></span>
+    </div>
+  </div>
+  <div class="panel-body">
+    <p class="small" style="margin:0 0 6px 0;">
+      Bu ekran <code>data.py</code>'nin ürettiği veri kaynaklarını Nautilus enstrüman modeliyle listeler:
+      <code>InstrumentId</code>, precision (<a href="/wiki/slug/precision_modes" class="link">📖 precision_modes</a>),
+      <code>BarType</code> DSL string'i (5 alan), ve wiki'nin işaretlediği tuzaklar
+      (<a href="/wiki/slug/index_backtest_via_equity_proxy" class="link">📖 size_precision=0 Equity trap</a>).
+    </p>
+  </div>
+</div>
+
+<!-- ─────────────────────────────  BYBIT  ───────────────────────────── -->
+
+<div class="panel">
+  <div class="panel-header">
+    <div class="panel-title">Bybit v5 Klines</div>
+    <div class="panel-meta"><span class="small mono">load_bybit_bars(symbol, category, interval)</span></div>
+  </div>
+  <div class="panel-body">
+    <p class="small text-muted" style="margin:0 0 10px 0;">
+      Sembol × kategori × zaman aralığı ızgarası. Yalnızca <span class="mono">1m</span>/<span class="mono">5m</span>/<span class="mono">15m</span>/<span class="mono">1h</span>/<span class="mono">4h</span>/<span class="mono">1d</span> Bybit v5 <code>_BYBIT_MS</code>'de tanımlı; diğer hücreler gri.
+    </p>
+
+    {% for row in catalog.bybit %}
+      {% include "fragments/data/instrument_row.html" %}
+    {% endfor %}
+  </div>
+</div>
+
+<!-- ─────────────────────────────  US INDICES  ───────────────────────────── -->
+
+<div class="panel">
+  <div class="panel-header">
+    <div class="panel-title">
+      US Indices (Polygon-style ticks)
+      {% if catalog.index_total is not none %}
+        <span class="badge">{{ "{:,}".format(catalog.index_total) }} ticker discovered</span>
+      {% else %}
+        <span class="badge">registry missing</span>
+      {% endif %}
+    </div>
+    <div class="panel-meta">
+      <span class="small mono">discover_index_tickers() · load_index_bars(ticker, granularity)</span>
+    </div>
+  </div>
+  <div class="panel-body">
+
+    <div class="row" style="align-items:flex-end; gap:12px; margin-bottom:12px;">
+      <form method="get" action="/data" class="row" style="gap:8px; flex:1;">
+        <label class="field" style="flex:1;">
+          Ticker filter
+          <input type="text" name="q" value="{{ index_query }}"
+                 placeholder="e.g. AAVE, BSC, SPX"
+                 class="mono" />
+        </label>
+        <button type="submit" class="btn btn-secondary">Filter</button>
+      </form>
+      <form hx-post="/data/index/discover"
+            hx-target="#discover-result"
+            hx-swap="innerHTML">
+        <button type="submit" class="btn btn-secondary" title="Rebuild _tickers.json from INDEX_ROOT (slow)">
+          🔍 Discover tickers
+        </button>
+      </form>
+    </div>
+    <div id="discover-result" class="small text-muted"></div>
+
+    {% if catalog.index_total is none %}
+      <div class="empty-state">
+        Ticker registry (<code>_tickers.json</code>) not built yet. Click <b>Discover tickers</b> to scan
+        <code>NAUTILUS_INDEX_ROOT</code>.
+      </div>
+    {% elif not catalog.index %}
+      <div class="empty-state">
+        {% if index_query %}No tickers match “<span class="mono">{{ index_query }}</span>”.{% else %}No tickers.{% endif %}
+      </div>
+    {% else %}
+      <p class="small text-muted" style="margin:0 0 8px 0;">
+        {{ catalog.index|length }} / {{ "{:,}".format(catalog.index_total) }} ticker gösteriliyor.
+        Wiki: <a href="/wiki/slug/index_backtest_via_equity_proxy" class="link">📖 index_backtest_via_equity_proxy</a>.
+      </p>
+      {% for row in catalog.index %}
+        {% include "fragments/data/instrument_row.html" %}
+      {% endfor %}
+    {% endif %}
+
+  </div>
+</div>
+
+<!-- ─────────────────────  EXTERNAL NAUTILUS CATALOG  ───────────────────── -->
+
+<div class="panel">
+  <div class="panel-header">
+    <div class="panel-title">
+      Harici Nautilus Catalog (NAU_ev)
+      {% if catalog.external_total %}
+        <span class="badge">{{ "{:,}".format(catalog.external_total) }} enstrüman</span>
+      {% else %}
+        <span class="badge">catalog bulunamadı</span>
+      {% endif %}
+    </div>
+    <div class="panel-meta">
+      <span class="small mono">salt-okunur · yol ile referans · NAUTILUS_EXTERNAL_CATALOGS</span>
+    </div>
+  </div>
+  <div class="panel-body">
+
+    <div class="row" style="align-items:flex-end; gap:12px; margin-bottom:12px;">
+      <form method="get" action="/data" class="row" style="gap:8px; flex:1;">
+        <input type="hidden" name="q" value="{{ index_query }}">
+        <label class="field" style="flex:1;">
+          Enstrüman filtresi
+          <input type="text" name="xq" value="{{ external_query }}"
+                 placeholder="örn. AAPL, NVDA, .NASDAQ"
+                 class="mono" />
+        </label>
+        <button type="submit" class="btn btn-secondary">Filter</button>
+      </form>
+    </div>
+
+    {% if not catalog.external_total %}
+      <div class="empty-state">
+        Harici catalog bulunamadı. <code>NAUTILUS_EXTERNAL_CATALOGS</code> ortam
+        değişkeni ile bir veya daha fazla ParquetDataCatalog kökü belirtin
+        (varsayılan: NAU_ev backtest desk catalog'u).
+      </div>
+    {% elif not catalog.external %}
+      <div class="empty-state">
+        {% if external_query %}“<span class="mono">{{ external_query }}</span>” ile eşleşen enstrüman yok.{% else %}Enstrüman yok.{% endif %}
+      </div>
+    {% else %}
+      <p class="small text-muted" style="margin:0 0 8px 0;">
+        {{ catalog.external|length }} / {{ "{:,}".format(catalog.external_matched) }} eşleşen enstrüman gösteriliyor
+        (toplam {{ "{:,}".format(catalog.external_total) }}). Salt-okunur —
+        bu barlar yerinde okunur, kopyalanmaz.
+      </p>
+      {% for row in catalog.external %}
+        {% include "fragments/data/instrument_row.html" %}
+      {% endfor %}
+    {% endif %}
+
+  </div>
+</div>
+
+{% endblock %}

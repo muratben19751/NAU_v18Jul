@@ -1,0 +1,192 @@
+# Wiki Log
+
+Append-only. Her ingest, query veya lint operasyonu bir satır bırakır.
+
+## 2026-07-18 — Sync: birleşik backtest UI + çoklu-TF + MTF trend filtresi (kod → wiki)
+
+- **update** — `wiki/synthesis/webapp_module_map.md`: bu oturumun UI/akış değişiklikleri işlendi. `last_updated: 2026-07-18`.
+  - `web/routes/backtest.py`: **/backtest "01" paneli tarif-odaklı tek akışa indirildi** — kayıtlı-strateji dropdown'ı ve instrument-kind (Bybit/Index/External) seçici kaldırıldı. `POST /backtest/describe` çoklu-TF alır; 2+ TF → `POST /backtest/sweep` (aynı spec her TF'de, karşılaştırma tablosu, cache-yok atlanır), 1 TF → `POST /backtest/run` (tam sonuç + equity). `_normalize_intervals` ortak helper; `intervals_csv` zincir yedeği. Sembol datalist typeahead. Index/External route'ları korundu ama panelden çıktı.
+  - `web/routes/strategy.py` + `composer.py`: **2-TF trend filtresi** manuel composer'a açıldı — `trend_filter`/`trend_interval`/`trend_ema_period`; `ComposedStrategy` üst-TF (`secondary_bar_type`) bar feed'ini subscribe eder, EMA trend onayıyla ana-TF girişlerini kapıya sokar (look-ahead güvenli — üst-TF barı yalnız kapandığında).
+- **verify** — Sayılar kaynaktan doğrulandı: pytest **289 test** (collect), backtest route'ları (`/run`, `/describe`, `/sweep` + progress), `trend_filter`/`secondary_bar_type` composer'da mevcut. Canlı: `/backtest` yeni panel render, eski öğeler yok, POST'lar 422'siz bağlanıyor. README `/backtest` satırı + Advanced Options MTF bülteni güncellendi.
+- **note** — Backtest hesap yolu (engine seçimi, metrikler) değişmedi; yalnız UI akışı ve strateji-giriş yüzeyi değişti. Sembol evreni hâlâ 3 (`BYBIT_SYMBOLS`); datalist genişledikçe otomatik büyür. `wiki/{concepts,entities,tutorials}/**` (upstream Nautilus sentezleri) bu sync'te değişmedi.
+
+## 2026-07-17 — Sync: denetim sağlamlaştırması + NAU per-trade sharpe (kod → wiki)
+
+- **update** — `wiki/synthesis/webapp_module_map.md`: bu oturumdaki ~14 commit işlendi. `last_updated: 2026-07-17`.
+  - `composer.py`: builtin blok **9 → 13** (`adx_threshold`, `stoch_rsi_cross`, `wave_trend_cross`, `donchian_channel` — NAU parite indikatör kütüphanesi `indicators.py`/`ind`, bloklar `highs`/`lows` OHLC serileri görür); **NAU_WINDOW=260 sabit pencere** (recursive bloklar için buffer ≥260); flip yolu (`allow_short`, `_cancel_working` + `close_all_positions(tags=['flip'])`, flat girişte GTC-limit iptali).
+  - `wfo_optimizer.py`/`agent_backtest.py`: **NAU per-trade sharpe hizalaması** — composite skorun 0.3 terimi annualized 252-gün yerine per-trade ((mean/std)×√n); calmar DD_FLOOR/CALMAR_CAP, `MIN_VALID_FOLDS_FRAC=0.6`, embargo 2 gün.
+  - `sandbox.py`: graceful-exit atexit koruması; `codegate.py`: loop-budget yalnız `evaluate()`'te reset (helper içi sonsuz döngü artık yakalanıyor); `data.py`: katalog yazım kilidi + force_refresh cache-merge.
+  - Yeni **Sağlamlaştırma & regresyon** bölümü: NAU-uyum denetimi (çekirdek sadık), 262-test regresyon süiti.
+- **verify** — Sayılar kaynaktan doğrulandı: builtin blok **13** (`BLOCK_REGISTRY builtin:True`), route dosyası 13, pytest **262 test**, `nautilus_trader==1.230.0`, NAU_ev 591 US-equity. README built-in blok listesi 9 → 13 güncellendi.
+- **note** — Backtest metrikleri (pnl/n_trades/sharpe_nautilus) değişmedi; yalnız NAU composite skorun kazanan-seçimi değişti — bu tarihten önceki mutlak skorlar kıyaslanamaz. `wiki/{concepts,entities,tutorials}/**` (upstream Nautilus sentezleri) bu sync'te değişmedi.
+
+## 2026-07-15 — Sync: webapp özellikleri (kod → wiki)
+
+- **update** — `wiki/synthesis/webapp_module_map.md`: 5410393 sonrası (~15 commit) uygulama değişiklikleri modül haritasına işlendi. `last_updated: 2026-07-15`.
+  - `composer.py`: **9 builtin blok** (`volume_spike` eklendi — bloklar artık `indicators["volumes"]` hacim serisi görüyor); **karar günlüğü** (`_decision_log` — her giriş/çıkış kararında ateşleyen blok + params + indikatör değeri, emirlere `dr:`/`xr:`/`sl`/`tp`/`flip`/`eob` tag'i); perf: `_closes`/`_volumes` deque→düz-list buffer + `_current_equity` hızlı-yol cache (sonuç-birebir, parite testli).
+  - `backtest.py`: `_extract_trades` positions↔fills tag join'i ile trade başına giriş/çıkış sebebi (fills lookup tek-geçiş dict).
+  - `web/routes/reports.py`: istemci sayfalama + kolon filtreleri + hızlı sıralama + kalıcı görünüm (`reports_layout.json`); **`GET /reports/detail`** — log satırından deterministik yeniden-koşum (sandbox child, `run_in_executor`) → grafik + sebepli trade tablosu + sadakat rozeti.
+  - `web/routes/agent_backtest.py`: canlı Gantt zaman çizelgesi (span track, /sessions replay); kesilen run için dürüst terminal mesajı.
+  - `web/routes/chart.py`: pencere/TF fizibilite guard'ı (>60k mum reddi).
+- **verify** — Sayılar kaynaktan doğrulandı: builtin blok 9 (`BLOCK_REGISTRY builtin:True`), route dosyası 13, `/reports/detail` endpoint mevcut, sebep alanları (`entry_reason`/`exit_reason`/`exit_kind`) `backtest.py`'de.
+- **flag** — BacktestEngine yolu artık per-trade karar sebebini yakalıyor; BacktestNode yolu (strateji instance tutmaz) hâlâ yalnız özet metrik — "Bilinen boşluklar" güncellendi.
+- **note** — `wiki/{concepts,entities,tutorials}/**` (upstream Nautilus doküman sentezleri) bu sync'te değişmedi; yalnız uygulama-özel `webapp_module_map.md` etkilendi.
+
+## 2026-07-05
+
+- **init** — Wiki iskeleti kuruldu: `sources/`, `wiki/{entities,concepts,synthesis}/`, `CLAUDE.md`, `index.md`, `log.md`.
+- **ingest** — README snapshot alındı → `sources/01_readme_snapshot.md` (kaynak: https://github.com/nautechsystems/nautilus_trader).
+- **ingest** — Architecture docs özeti alındı → `sources/02_architecture_docs.md`.
+- **ingest** — Strategies docs özeti alındı → `sources/03_strategies_docs.md`.
+- **ingest** — Backtesting docs özeti alındı → `sources/04_backtesting_docs.md`.
+- **pages** — Oluşturulan wiki sayfaları:
+  - entities: nautilus_kernel, message_bus, data_engine, execution_engine, risk_engine, cache, adapters, strategy_and_actor
+  - concepts: event_driven_architecture, single_threaded_core, crash_only_design, environment_contexts, order_flow_pipeline, precision_modes
+  - synthesis: backtesting_guide, rust_python_hybrid, getting_started_roadmap
+- **flag** — Sürüm bilgisi: NautilusTrader v2 release-candidate fazında; sürüme özgü iddialar (`v2.x`) etiketlenmeli. Docs URL'leri `latest` üzerinden alındı; ileride sürüm sabitlemeli belge yakalanmalı.
+- **gap** — Şu konular kaynak snapshot'ında henüz yok, sonraki ingest'lerde eklenecek:
+  - Model paketi (Order, Position, Instrument, Currency) ayrıntısı
+  - Indicators paketi
+  - Persistence / ParquetDataCatalog API'si
+  - Live node başlatma ve reconciliation davranışı
+  - Adaptör yazma rehberi
+
+## 2026-07-06
+
+- **synthesis** — `wiki/synthesis/index_backtest_via_equity_proxy.md` eklendi. Motivasyon: `nautilus_web_app`'e US index tick backtest desteği eklendi (Polygon-format CSV.gz'lerden OHLCV). `IndexInstrument` "not directly tradable" olduğu için tradable `Equity` proxy'sine dönüldü.
+- **flag** — Equity `size_precision=0` trap'i: kesirli `trade_size` sessizce sıfır quantity üretir; strateji seviyesinde clamp gerektirir. Sayfada belgelendi.
+- **flag** — Polygon tick verisinde volume yok; `resample.count()` tick-count proxy olarak kullanılıyor. Gerçek volume gerekirse ayrı kaynak lazım.
+- **gap** — Corporate actions, multi-instrument portfolio, exchange-calendar filter hâlâ scope dışı.
+- **ingest** — Resmi tutorials (`https://nautilustrader.io/docs/latest/tutorials/`) taranıp sentezlendi → `wiki/tutorials/` altına 19 sayfa: quickstart, backtest_low_level, backtest_high_level, backtest_fx_bars, backtest_orderbook_binance, backtest_orderbook_bybit, book_imbalance_betfair, loading_external_data, data_catalog_databento (placeholder), fx_mean_reversion_ax, gold_book_imbalance_ax, grid_market_maker_bitmex, grid_market_maker_dydx, hurst_vpin_kraken, options_data_bybit, delta_neutral_bybit, delta_neutral_derive, lighter_rwa_composite_mm, howto_get_started_lighter (placeholder).
+- **flag** — URL yapısı değişmiş: `/tutorials/*` altındaki çoğu path 404 dönüyor; içerik `/getting_started/*` + `/nightly/tutorials/*` + GitHub `docs/tutorials/*.py` kaynak dosyalarına dağılmış. Her sayfanın `sources:` alanında gerçek yakalandığı URL kayıtlı.
+- **flag** — 2 sayfa placeholder: `tutorial_data_catalog_databento.md` (databento catalog rendered olarak yayında değil, kaynak `.py`) ve `howto_get_started_lighter.md` (hiçbir varyantta bulunamadı).
+- **gap** — Tutorial'lardan sürekli referans alınan ama wiki'de dedicated sayfası olmayan konular: `ParquetDataCatalog` (entity), data wrangler ailesi (`QuoteTick/TradeTick/OrderBookDelta/BarDataWrangler` — concept), bar aggregation modes (`TIME/TICK/VOLUME/VALUE × INTERNAL/EXTERNAL` — concept), options greeks pipeline (`OptionChainSlice`, `OptionSeriesId`, `StrikeRange` — concept), `ImportableStrategyConfig` + `BacktestNode` orkestrasyonu (synthesis), BitMEX `deadman's switch` gibi resilience pattern'leri (synthesis).
+- **synthesis** — `wiki/synthesis/v1_to_v2_migration_lessons.md` eklendi. Motivasyon: `nautilus_web_app` canlı olarak v1.230.0 → v2.0.0rc1 port edildi (6 catalog spec bit-identical parite). Plan öncesinde öngörülmeyen breaking-change'ler belgelendi: modül düzleştirmesi (`nautilus_trader.model.data|enums|identifiers|instruments|objects|currencies` hepsi flat), `StrategyConfig` artık msgspec Struct değil (plain class + `__init__`/`**kwargs`), `BarDataWrangler.process(df)` kaldırıldı (Arrow-only ingest; DataFrame projelerinde `Bar()` direkt construction gerekli), `engine.trader` gitti, `portfolio.analyzer` → `portfolio.statistics()`, `BTC`/`USD` sabitleri gitti (`Currency.from_str`).
+- **flag** — v2 rc1 stat bug: `portfolio.statistics().returns` içinde Sharpe/Volatility/RiskReturnRatio nan dönüyor (Sortino, Profit Factor, Avg Win/Loss doğru hesaplanıyor). Trading davranışı etkilenmiyor — istatistik hesaplama boşluğu; RC final'de düzelmesi bekleniyor.
+- **flag** — Plan'da beklenen ama v2 rc1'de **gelmemiş** değişiklikler: `bon` builder pattern (`CurrencyPair.builder().build()`) — rc1'de hâlâ kwargs kalıbı çalışıyor. Bracket order builder-chain — hâlâ 40+ kwarg alan klasik factory metodu. `OrderRef`/`PositionRef` typed cache — attribute access aynı, snapshot gerekmedi. Belki RC2/final'de gelecekler.
+- **gap** — v2 rc1 için hâlâ eksik: adaptörlerin (Bybit/Binance/etc.) v1'e kıyasla env-based config'e taşınıp taşınmadığı (RELEASES.md flag'ledi ama webapp test etmedi), Live TradingNode reconciliation davranışının v2'de nasıl değiştiği, `ParquetDataCatalog` write/read API'sinde precision-mode etkileri.
+
+## 2026-07-07
+
+- **reorg** — Karpathy'nin *"LLM Knowledge Bases"* yaklaşımına göre wiki yeniden yapılandırıldı:
+  - **Bare-name wikilinks**: 35 sayfa, 119 wikilink `[[wiki/section/name.md]]` → `[[name]]` biçimine dönüştürüldü. Obsidian graph view artık native çalışır.
+  - **Per-page summaries**: 38 mevcut sayfaya `summary:` (<=180 karakter, tek satır) ve `key_concepts:` (3–8 slug) frontmatter alanları eklendi; Workflow'da paralel LLM özet çağrılarıyla üretildi (~150k token, 40 subagent).
+  - **Auto-backlinks**: Her wiki sayfasının sonunda `<!-- BACKLINKS:BEGIN -->` bloğu, `tools/wiki_tools.py backlinks` çağrısıyla idempotent şekilde yeniden yazılır. 48 sayfada güncel.
+  - **Frontmatter-driven `index.md`**: Elle bakım yerine `tools/wiki_tools.py index` her sayfanın frontmatter'ından üretir. `*(stub)*` badge'i, kısa özet, dosya yolu.
+  - **10 yeni stub sayfası** consolidated candidate + `log.md` gap listesinden LLM ile draft edildi, adversarially verify edildi (10/10 issue=[], 1 fabricated_claim yakalanıp repair pass ile düzeltildi):
+    - entities: `parquet_data_catalog`, `data_wranglers`, `backtest_node`, `live_node`, `order_emulator`, `execution_algorithms`, `portfolio`
+    - concepts: `bar_aggregation_and_type_syntax`, `option_greeks_pipeline`, `venue_reconciliation`
+  - **`lint/` klasörü**: İki dosya üretildi — `lint/2026-07-07_health.md` deterministic tarama (broken_links/orphans/missing_summary/stubs) ve `lint/2026-07-07_llm_audit.md` Karpathy-tarzı LLM audit (contradictions, stale, underlinked, next_ingest). `tools/wiki_tools.py lint --write` sadece deterministic olanı üretir; LLM audit workflow'dan gelir.
+  - **Tools**: `nautilus_wiki/tools/wiki_tools.py` — subcommands: `index`, `backlinks`, `lint`, `search`, `resolve`, `show`, `stub`.
+  - **Web frontend**: `wiki_helper.py` yeniden yazıldı; `[[bare]]` wikilinks HTML'e dönüştürülürken `/wiki/wiki/section/slug.md` URL'lerine çevrilir. `web/routes/wiki.py` eklendi (`/wiki`, `/wiki/slug/<slug>`, `/wiki/<path>` route'ları); sidebar'a Wiki nav girişi eklendi.
+  - **CLAUDE.md güncellendi**: Karpathy referansı, `lint/` katmanı, frontmatter zorunlu alan olarak `summary`, backlinks bölümü, tools dokümantasyonu.
+- **flag** — Health-check bir çelişki yakaladı: `tutorial_quickstart.md` v1 varsayımıyla `BarDataWrangler.process(df)` çağrısını anlatıyordu; v2 rc1'de bu API kaldırılmış (bkz. `v1_to_v2_migration_lessons`). Satır güncellendi: v1/v2 ayrımı ve `Bar()` doğrudan yapıcısına yönlendirme + `[[data_wranglers]]` cross-link eklendi.
+- **flag** — 10 stub sayfası hâlâ `status: stub`; sonraki ingest'lerde v2 nightly docs ve `nautilus_trader` repo'sundaki README/CHANGES üzerinden doldurulmalı. `lint/2026-07-07_health.md` bunlar için önerdiği kaynakları listeler.
+- **gap** — Wiki'yi Obsidian vault olarak açıp Marp slaytları/plugin bazlı görselleştirme akışını denemek Karpathy pattern'inin diğer yarısı (`Output` bölümü); ayrı bir tur.
+- **review** — Karpathy-tarzı 7-boyutlu full-wiki adversarial review (`Workflow(wiki-full-review)`, 98 subagent, ~2.3M token, 690 tool call). 91 raw finding → adversarial verify sonrası 44 confirmed, 47 rejected (verifier false-positive elimine etti). Ana bulgular:
+  - **blocker**: `tools/wiki_tools.py cmd_backlinks` outgoing-link tarama sırasında zaten yazılmış `<!-- BACKLINKS:BEGIN -->` bloğunu strip etmiyordu — sonuç: backlink kendini besliyor, `lint` orphan sayısı 0 raporluyordu ama 7 sayfa gerçekten orphan'dı. `_strip_backlinks()` helper eklendi, `cmd_backlinks` ve `cmd_lint` her ikisi de body'yi tararken bloğu strip ediyor. Ayrıca code-region (fenced ``` ve `inline`) hariç tutuluyor.
+  - **schema**: 11 sayfada `sources:` alanı Layer 2 wiki/**/*.md yollarına işaret ediyordu — Layer 1 kaynak izlenebilirliği kuralına aykırı. Hepsi `sources: → sources/*.md + upstream URL` ve `related: → wiki/**/*.md` olarak ayrıştırıldı. `CLAUDE.md` şemaya yeni `related:` alanı eklendi.
+  - **link-graph**: 7 stub gerçekten orphan'dı (backlinks kendini besliyordu). `strategy_and_actor`, `execution_engine`, `order_flow_pipeline`, `environment_contexts`, `rust_python_hybrid`, `v1_to_v2_migration_lessons`, `getting_started_roadmap`, 3 opsiyon tutorial'ı — hepsine gerçek body `[[slug]]` wikilinks eklendi.
+  - **v1/v2**: `data_wranglers` stub'ında BarDataWrangler.process kaldırılışı v1/v2 ayrımı olmadan yazılmıştı; `v1 → v2rc1` başlıklı bölüm eklendi. `backtesting_guide.md` `key_concepts` içindeki resolve-etmeyen `backtest_engine` ve `book_type` slug'ları düzeltildi.
+  - **code/security**: `wiki_helper._rewrite_wikilinks` — regex `[[...]]` içinde `[]` reddediyor; label HTML-escape ediliyor; fenced/inline code bloğu içindeki wikilink syntax'ı rewrite edilmiyor. `wiki_tools.py`: UTF-8 encoding tüm read/write'larda, `lint --write` `--date` yoksa bugünkü tarihi kullanıyor (önceki: 'latest' overwrite), `stub tutorial` `tutorial_` prefix'ini otomatik ekliyor, docstring güncel.
+  - **obsidian**: `.gitignore` genişletildi; `workspace.json` ve `graph.json` per-user UI state olduğu için exclude edildi.
+  - **log/lint**: LLM audit output ayrı dosyada (`lint/2026-07-07_llm_audit.md`), deterministic lint çıktısı (`lint/2026-07-07_health.md`) ile karışmıyor.
+- **e2e-run** — Bybit BTCUSDT USDT-perp 1m, 7-day pencere (2026-06-30 → 2026-07-07 UTC) uçtan uca test edildi. Ingest: `load_bybit_bars` (`data.py:272`) — v5/kline üzerinden ~8s'de 10,080 satır, 0 boşluk, parquet cache (`~/.cache/nautilus_web_app/bybit/linear_BTCUSDT_1m.parquet`, 41 KB). Backtest: `run_backtest("ma_crossover", {fast:10, slow:30})` — 0.31s, 191 trade, +$286.16 PnL, win-rate 35.6 %, max_dd -0.02 %.
+- **flag** — `[[v1_to_v2_migration_lessons]]` sayfasında belgelenmiş **v2 rc1 Sharpe nan bug'ı canlı olarak reproduce oldu**: `run_backtest` metriklerinde `sharpe: nan` döndü; aynı çalıştırmada Sortino ve win-rate doğru hesaplanıyor. Sayfadaki iddia bit-identical çıktı — dokümantasyon güncel.
+- **flag** — `run_backtest` (Yahoo BTC-USD instrument) Bybit ham DataFrame'ini kabul ediyor çünkü instrument sadece precision + venue metadata'sı sağlıyor; OHLCV shape aynı olduğu için tag mismatch bar builder'da bir sorun üretmiyor. Gerçek Bybit sembolü + venue eşleşmesi için `run_composed_backtest` yolunun `_make_bybit_instrument` ile çağrılması gerekir — canlı emir gönderimi/adaptör test edilmeyecekse mevcut yol yeterli.
+
+## 2026-07-08
+
+- **reorg** — Wiki'ye göre kod tabanı yeniden düzenlendi (Karpathy loop'un kod→wiki bacağı):
+  - Repo'nun 17 Python modülünün üstüne `Wiki References` bloğu enjekte edildi (deterministic pass, `python3 -c ...`). Her modül artık ait olduğu wiki sayfalarını bare-name wikilink olarak listeliyor.
+  - Yeni: `ARCHITECTURE.md` repo kökünde — katman diyagramı + webapp↔wiki karşılık tablosu + uçtan uca akış.
+  - Yeni: `wiki/synthesis/webapp_module_map.md` — ters yönden aynı köprü; her Python dosyasının wiki karşılığını tek yerde. `[[getting_started_roadmap]]` ve `[[v1_to_v2_migration_lessons]]` sayfaları buradan cross-link ediyor.
+- **flag** — Yeni sayfanın `sources:` alanında ilk denemede absolute local path (`/Users/.../ARCHITECTURE.md`) vardı; schema kuralı (Layer 1 = `sources/*.md` veya URL) gereği repo-relative `sources/02_architecture_docs.md` + upstream repo URL'siyle değiştirildi.
+- **verify** — 49 sayfa üzerinde `tools/wiki_tools.py backlinks` + `lint`: 0 broken, 0 orphan, 0 missing summary, 10 stub (beklenen). `.venv/bin/python -c "import ..."` 10 modül için hata olmadan geçti.
+- **feature** — `/data` "Instrument Catalog" ekranı eklendi. `web/routes/data.py` (6 endpoint: GET /data, POST /data/refresh/{yahoo,bybit,index}, POST /data/index/discover, GET /data/fragments/row/{source}/{key}). `data.py`'ye `list_catalog()` + `refresh_row()` public API'si eklendi; her satır Nautilus enstrüman metadata'sını (`InstrumentId`, `price_precision`, `size_precision`, `price_increment`, `min_quantity`, `asset_class`, `base/quote currency`) `backtest.py`'deki `_make_*_instrument` factory'lerinden okuyor — precision fields hiç duplicate edilmiyor. Wiki-flagged tuzaklar rozet + cross-link olarak render ediliyor: `size_precision=0 ⚠` → [[index_backtest_via_equity_proxy]]. BarType DSL string'i (5 alan: `SYMBOL.VENUE-STEP-AGG-SRC-ORIGIN`) her satırda gösteriliyor — [[bar_aggregation_and_type_syntax]] tarafından tanımlı.
+- **flag** — Bybit UI grid'i Symbol × Category × Interval (3 × 3 × 6 = 54 hücre × sembol) matrisini tam gösteriyor, ama `data.py`'deki `_BYBIT_MS` sözlüğü şu an sadece `"1"`/`"5"` içeriyor. Grid'de desteklenmeyen hücreler dashed border ile "n/a" olarak render — kullanıcı önce `_BYBIT_MS`'yi genişletmeli. Wiki referansı gerekiyor: BybitCategory Literal'ının canlıdaki mapping'i (spot vs linear vs inverse için farklı endpoint semantic'i) hâlâ [[adapters]] altında dokümante değil.
+- **flag** — Index sayfası 10,490 ticker'ı server-side filtreleme + top-50 rendering ile veriyor; UI virtual scroll değil. Full listing için `?q=` query param'ı ekleniyor.
+- **feature** — ParquetDataCatalog entegrasyonu tamamlandı. `data.py`'ye `write_to_nautilus_catalog(source, **kw)` + `nautilus_catalog_bar_state(bar_type_str)` + `get_nautilus_catalog()` eklendi. Catalog `~/.cache/nautilus_web_app/nautilus_catalog/` altında. `backtest.py`'ye `run_backtest_node()` eklendi — `BacktestNode` + `ParquetDataCatalog` high-level yolu. `web/routes/data.py`'ye `POST /data/catalog/write` endpoint'i eklendi; `/data` ekranında cached hücrelerde "→ Catalog" butonu gösteriliyor. BacktestEngine vs BacktestNode karşılaştırması: `win_rate delta = 0.000000` (tam parite). Sharpe `BacktestNode` yolunda NaN değil (v2 rc1 BacktestEngine stats bug bu yolda yok).
+- **flag** — `_bars_from_df` timestamp bug düzeltildi: `df.index.astype("int64")` **ms** veriyordu (Bybit cache `datetime64[ms, UTC]`); Nautilus `ts_event` nanosaniye bekliyor. Fix: `idx.tz_localize(None).astype("datetime64[ns]").astype("int64")`. Bu hata `BacktestEngine` yolunda (kendi `add_data` çağrısı) sessizdi ama katalog yolunda `1970-01-01` backtest üretiyordu.
+- **flag** — `strategies.py` — `cache.instrument(str)` v2 rc1'de `InstrumentId` bekliyor; `ImportableStrategyConfig` serialization `Decimal`'ı str'e çeviriyor → `make_qty(str)` patliyor. Düzeltme: `_iid()` / `_bt()` yardımcı metodları ve `float(self.config.trade_size)`.
+- **flag** — `_prepare_df` OHLC validity filter eklendi: yfinance bazen günlük kısmi bar üretip `low > close` döndürüyor; Nautilus bunu `ValueError` ile reddediyor. Filter drop ediyor.
+- **flag** — `write_to_nautilus_catalog` idempotent: `catalog.delete_data_range(type_name="bars", instrument_id=str(bar_type))` ile mevcut aralık temizlendikten sonra yazıyor. v2rc1'de `type_name="bars"` (lowercase) kullanılmalı; `"Bar"` desteklenmiyor.
+- **gap** — `BacktestNode` `stats_general` sözlüğü `"Total Trade Count"` içermiyor (sadece `"Long Ratio"` görüldü); trade count `stats_pnls` içinde de yok. v2rc1 BacktestNode'da trade istatistikleri ayrı bir mekanizmadan alınacak — henüz çözülmedi.
+
+## 2026-07-09
+
+- **ingest** — `https://nautilustrader.io/docs/latest/` derin araştırması tamamlandı (`deep-research` workflow, 98 subagent, 2.1M token, 924 tool call). 6 adversarial-doğrulanmış bulgu → `sources/05_latest_docs_research.md` olarak kaydedildi.
+- **update** — 8 wiki sayfası güncellendi:
+  - `single_threaded_core.md`: "Within a node, the kernel consumes and dispatches messages on a single thread" — resmi alıntı; background services ayrı thread model dokümante edildi.
+  - `venue_reconciliation.md`: status stub→draft; "Only the LiveExecutionEngine performs reconciliation" kesin ayrım eklendi.
+  - `backtest_node.md`: status stub→draft; resmi öneri alıntısı ("recommended path for production workflows"), BacktestEngine vs BacktestNode karşılaştırma tablosu, v1.229.0 Python binding eklentisi.
+  - `parquet_data_catalog.md`: Dual-backend (Rust 7 tip + PyArrow fallback) resmi olarak belgelendi; `ts_init` = kapanış zamanı zorunluluğu + look-ahead bias uyarısı; v1.231.0 bar aggregation first-tick bug fix (develop branch).
+  - `execution_algorithms.md`: status stub→draft; TWAP zorunlu parametreler (`horizon_secs`, `interval_secs`) doğrulandı; v1.229.0 `add_native_exec_algorithm` binding.
+  - `portfolio.md`: status stub→draft; **Kritik: multi-currency hesaplarda PortfolioAnalyzer sessizce `_empty_returns()` döndürür** — Sharpe NaN bug'ının asıl nedeni. v1.227.0 `PortfolioSnapshot` event + `subscribe_portfolio_snapshot` API eklentisi.
+  - `backtesting_guide.md`: Resmi öneri alıntısı; ts_init look-ahead bias kuralı eklendi.
+  - `v1_to_v2_migration_lessons.md`: Sharpe NaN asıl neden güncellendi — multi-currency hesap root cause, BacktestNode path'inde bu sorun olmadığı (webapp'te doğrulandı).
+- **flag** — `PortfolioAnalyzer` multi-currency sessiz bug'ı: webapp'te `base_currency=None` USDT+BTC çift bakiyeli hesap bu yolu tetikliyordu. BacktestNode path'inde Sharpe doğru hesaplanıyordu çünkü stats yolu farklı. BacktestEngine path için `base_currency=USDT` ile tek-currency hesap önerilir.
+- **flag** — v1.231.0 (develop branch, henüz release edilmedi): bar aggregation'da ilk tick dahil edilmiyordu; bu bug fix yakın zamanda gelecek.
+
+## 2026-07-12
+
+- **feature** — Monokrom siyah tema (design2 handoff): `app.css` `:root` token'ları, `chart.js`, `app.js`, tüm template inline renkleri prototipin saf-siyah/beyaz paletine çekildi. `--accent` mavi → `#f2f2f2` beyaz; `btn-primary` gradient → düz beyaz-zemin/koyu-metin; nav.active beyaz sol-şerit. `static_version` hash'i artık `chart.js+app.css+app.js` üçünü kapsıyor.
+- **feature** — Reports sayfası büyük güncelleme: (1) sütun göster/gizle + sürükle-bırak sıralama + sunucu tarafı kalıcılık (`~/.cache/nautilus_web_app/reports_layout.json`, `GET/POST /reports/layout`); (2) Yatırım Sermayesi (`starting_cash`) sütunu + filtre; (3) her sütun başlığına hover tooltip (tanım, hesaplama, yorum); (4) freze header+filtre barı (sticky); (5) expand ok kaldırıldı, satıra tıklama ile açılıyor; (6) varyant filtresi (Kârlı/Zararlı/Sharpe≥1/WinRate≥50); (7) Süre ve Enstrüman sütunları kaldırıldı.
+- **flag** — `robustness_log.jsonl` sembol bilgisi kaydetmiyor: `_log_robustness` (robustness.py) `symbol`/`category`/`interval` almıyor; aynı stratejiyi farklı sembollerde test edince `spec_id`'ye göre join yapan reports "son ezil" prensibinden dolayı yalnızca en son robustness sonucunu gösteriyor. Cross-instrument test sonuçları reports'ta ayrı satır olarak görünmüyor — bilinen gap, sonraki oturumda çözülecek.
+
+## 2026-07-12
+
+- **feature** — Backtest UI: işlemler tablosu grafiğin **yanına** taşındı (flex-wrap layout; grafik `flex:1 1 560px` solda, işlemler `flex:0 1 396px` sağda, dikey scroll'lu). `chart.js` zaten `ResizeObserver` + `container.clientWidth` ile daralan konteynıra otomatik uyum sağladığı için yan-yana yerleşim ek iş gerektirmedi — [[single_threaded_core]] deterministik render'la ilgisiz, saf frontend. Dar panele sığması için trade tablosu 8→5 kolona indirildi (çıkış detayları satır `title` tooltip'ine).
+- **feature** — Reports sayfasına iki süre kolonu eklendi: **Test Periyodu** (`bars.start → bars.end` farkından türetiliyor; tüm geçmiş kayıtlarda çalışır) ve **Çalışma Süresi** (wall-clock elapsed). `web/routes/reports.py`'ye `_fmt_test_period()` + `_fmt_elapsed()` helper'ları eklendi.
+- **flag** — Backtest wall-clock süresi artık loglanıyor: `web/routes/backtest.py` `_worker` başında `time.perf_counter()`, `_log_backtest(..., elapsed_sec=...)` ile `backtest_log.jsonl`'e yazılıyor. **Retroaktif değil** — eski kayıtlarda `elapsed_sec` yok, reports'ta `—` görünür. Bu, Nautilus'un `avg_duration_mins` (trade ortalama açık kalma süresi, `stats_pnls` benzeri metrik) ile karıştırılmamalı: biri backtest'in ne kadar sürdüğü, diğeri işlemlerin ne kadar açık kaldığı.
+- **feature** — Backtest sonuç metrik bloğu (Realized PnL → Slippage, 18 metrik) yeniden tasarlandı: düz 4-satır KPI grid → hiyerarşik hero kart (Realized PnL öne çıkan büyük değer, kâr/zarara göre renkli) + 3 etiketli grup (Risk · İşlemler · P&L/Maliyet). Saf sunum; metrik hesapları (`Portfolio.equity()`, PnL%, max_dd) değişmedi — bkz [[portfolio]].
+- **flag** — Cache-bust hash'i (`server.py` `_static_version`) sadece `chart.js`'i md5'liyordu; `app.css` değişiklikleri tarayıcı cache'inde takılı kalıyordu. Fix: hash artık `chart.js` + `app.css`'i birlikte md5'liyor. Nautilus ile ilgisiz, saf webapp asset-versioning tuzağı.
+
+## 2026-07-13
+
+- **fix** — Agent altyapısı derinlemesine kod analizi: 4 CRITICAL + 8 HIGH + 9 MEDIUM + 6 LOW olmak üzere 27 bulgu tespit edildi ve düzeltildi. Dosyalar: `agent.py`, `web/routes/agent_backtest.py`, `backtest.py`, `web/routes/backtest.py`, `web/routes/robustness.py`, `loop_runner.py`.
+- **fix C1** — `agent.py:_test_execute_generated` — `exec()` smoke call thread timeout yok; `while True: pass` AST whitelist'ten geçiyor, server kalıcı hang edebiliyordu. `threading.Thread(daemon=True)` + `join(timeout=2.0)` ile sandbox edildi → `GeneratedCodeError("timed out")`.
+- **fix C2** — `agent.py:_fallback_composed` — `random.choice(types)` exit-only bloğu (`atr_stop`) seçince `_validate_composed` ValueError fırlatıyordu (~%1.3 ihtimal). Entry seçim havuzundan `exit_only` set'i çıkarıldı.
+- **fix C3** — `agent.py:propose_composed_strategy` — `hint` parametresi eklendi; `agent_backtest.py` içindeki tüm çağrılar (faz 1 + iterasyon loop fallback'leri) artık `hint=hint` ile çağrılıyor. Önceden hint sadece metadata `description` alanına yazılıyor, Claude prompt'una hiç ulaşmıyordu.
+- **fix C4** — `web/routes/agent_backtest.py:progress` — `_winner_narrative()` sync LLM çağrısı async route içinden yapılıyordu, event loop ~1-5s donduruyordu. `await asyncio.to_thread(_winner_narrative, ...)` ile event loop dışına taşındı.
+- **fix H1** — `web/routes/backtest.py` + `web/routes/robustness.py` — `json.dumps(record, default=str)` NaN float'ları `NaN` token olarak yazıyordu (RFC 8259 ihlali; `JSON.parse` ve `jq` reddeder). `_sanitize_floats()` helper ile `NaN/Inf → None` dönüşümü eklendi.
+- **fix H2** — Concurrent backtest thread'leri aynı JSONL dosyasına lock'suz yazıyordu. `_BACKTEST_LOG_LOCK` ve `_ROBUSTNESS_LOG_LOCK` (`threading.Lock`) eklendi.
+- **fix H3** — `web/routes/backtest.py:_worker` — `_log_backtest()` I/O hatası outer except tarafından yakalanıp backtest sonucunu gizliyordu. Sıra değiştirildi: result önce `_RUN_PROGRESS`'e yazıldı, sonra `_log_backtest` ayrı try/except içine alındı.
+- **fix H4** — `backtest.py` — 4 runner fonksiyonunun hepsinde `LoggerConfig(bypass_logging=True)` hardcode'du; strateji `on_bar()` exception'ları, order rejection'ları tamamen sessizdi. `_BYPASS_LOGGING = not os.getenv("NAUTILUS_DEBUG_LOG")` sabiti eklendi; `NAUTILUS_DEBUG_LOG=1` env var ile debug loglaması açılabiliyor.
+- **fix H5** — `web/routes/agent_backtest.py:_score` — `m.get("pnl_pct")` her zaman `None` dönüyordu (log'da anahtar `"pnl"`); 0.3-ağırlıklı PnL terimi hiçbir zaman score'a katkıda bulunmuyordu. `m.get("pnl_pct") or m.get("pnl") or 0.0` ile düzeltildi.
+- **fix H6** — Phase 3 sıralama ekranında `r.metrics.get()` çağrısı — başarısız backtest'te `metrics=None` olabiliyordu, `AttributeError` crash. `(r.metrics or {}).get(...)` ile guard eklendi.
+- **fix H7** — `_add_step()` adım listesini sınırsız büyütüyordu; continuous mode'da memory leak. `steps[-500:]` cap eklendi.
+- **fix H8** — `propose_custom_block` retry loop (`for attempt in range(2)`) — API hatasında `raise` yapıyordu, `continue` ile retry etmiyordu. Transient 429/503'te retry yok sorunu düzeltildi.
+- **fix M1** — `continuous_mode` `while True:` — stop sinyali yalnızca round başında kontrol ediliyordu; uzun round'larda (30dk+) fark edilmiyordu. `_MAX_CONTINUOUS_ROUNDS = 100` guard + her backtest iterasyonu başında stop check eklendi.
+- **fix M2** — `rob_scan_log` robustness exception'ında kayboluyordu (loop sonunda tek sefer flush). Her candidate sonrası progress dict'e flush + `_run_full_robustness` per-candidate try/except ile sarıldı.
+- **fix M3** — `_score()` `math.isinf` kontrolü eksikti; sonsuz Sharpe +inf score üretiyordu. `if math.isinf(sharpe): sharpe = 0.0` eklendi.
+- **fix M4** — Continuous round reset'te `s["error"]` temizlenmiyordu; eski hata mesajı yeni round'da görünüyordu. Reset block'a `s["error"] = None` eklendi.
+- **fix M5** — `agent.py:_get_client` — iki thread aynı anda `_client is None` görüp çift `Anthropic(...)` örneği oluşturabiliyordu. Double-checked locking (`_client_lock`) eklendi.
+- **fix M6** — `rob_scan_log` entry'sinde key `"mc_dd_p95"` p50 (medyan) değeri tutuyordu. `"mc_dd_p50"` olarak düzeltildi.
+- **fix M7** — Agent worker thread `daemon=True`; server restart'ta `finally` block çalışmıyor, custom block'lar (`agnt_e_*`/`agnt_x_*`) diskte kalıcı oluyordu. `atexit.register(_cleanup_all_agent_blocks)` eklendi.
+- **fix M8** — `robustness.py:_log_robustness` MC error alanı whitelist'te yoktu; `mc_result = {"error": "Trade verisi yok."}` durumu log'a `{}` yazılıyordu. `if "error" in mc_raw: mc_clean["error"] = mc_raw["error"]` eklendi.
+- **fix M9** — `_recent_runs()` her `GET /backtest` isteğinde tüm JSONL'i belleğe okuyordu (şu an 2.3 MB, büyüyor). Son 32 KB tail-read ile değiştirildi.
+- **fix L1-L7** — `propose_strategy` JSON extraction (`_extract_json_object` kullanıyor), proxy URL `rationale`'dan çıkarıldı, `_propose_agent_strategy_idea` sessiz exception `logging.warning`, `_log_backtest` try/except guard, `loop_runner` bars_info parametreli, `content[0].text` AttributeError guard.
+- **update** — `wiki/synthesis/webapp_module_map.md` güncellendi: `web/routes/agent_backtest.py` ve `web/routes/robustness.py` modül tablosuna eklendi; `agent.py` ve `loop_runner.py` satırları yeni davranışı yansıtacak şekilde güncellendi; `backtest.py` satırına `NAUTILUS_DEBUG_LOG` notu eklendi. `last_updated: 2026-07-13`.
+- **flag** — `backtest.py:bypass_logging` varsayılan olarak `True` (prod güvenli); `NAUTILUS_DEBUG_LOG=1` sadece geliştirme/debug için. Nautilus iç hatalarını görünür kılmanın tek yolu bu — [[portfolio]], [[strategy_and_actor]] gibi Nautilus bileşenlerindeki sessiz hataları izlemek için önerilen pattern.
+- **flag** — `_score()` formülü `pnl_pct` yerine `pnl` (mutlak USDT) kullanıyor; bu ölçek uyumsuzluğu potansiyel sorun. Sharpe (birimsiz) ve win_rate (0-1) ile `pnl` (USDT) bir arada ranklama yapılıyor; normalize edilmesi gerekebilir — bilinen gap.
+- **gap** — `_recent_runs` tail-read 32 KB; çok uzun tek-satırlı kayıtlar (büyük equity curve) hâlâ kesilme riski taşıyor. Uzun vadede log rotation veya equity_curve ayrı dosyaya taşıma önerilir.
+
+## 2026-07-13 — paralel motor + harici katalog senkronu
+
+- **update** — `wiki/synthesis/webapp_module_map.md`: yeni **Motor katmanı** bölümü eklendi (`sandbox.py` guarded-subprocess izolasyonu, `backtest_robustness.py` `run_many` fan-out, `parallel_exec.py` ProcessPoolExecutor ~8.7x, `wfo_optimizer.py` deterministik aday üretimi). `data.py` satırına harici salt-okunur katalog (`NAUTILUS_EXTERNAL_CATALOGS`, NAU_ev 591 US-equity, `load_external_bars`) eklendi. `backtest.py` satırına `_BYBIT_SPECS` per-symbol precision + kategori-venue'lar (`BYBIT_SPOT/LINEAR/INVERSE`) eklendi. `agent.py` satırına `NAUTILUS_LLM_BACKEND=auto|api|claude-cli` aboneli̇k backend'i eklendi. Route tablosuna `chart.py`, `lab.py`, `reports.py`, `sessions.py` eklendi. `agent_backtest.py` satırı guarded-subprocess + `_IPC_Q` relay ile güncellendi.
+- **update** — `wiki/synthesis/index_backtest_via_equity_proxy.md`: `Equity(...)` örneği koddan sapmıştı (`price_precision=4/0.0001`) — `price_precision=2 / tick 0.01` olarak düzeltildi (NAU QLAB standardı; `backtest.py:_make_index_instrument` pini). `last_updated: 2026-07-13`.
+- **flag** — Paralel yol determinizmi teste bağlı: `tests/test_parallel_exec.py` parite testleri sıralı ve paralel WFO kazananlarının birebir aynı olduğunu doğrular; `NAUTILUS_PARALLEL=0` kill-switch her fonksiyonu dokunulmamış sıralı yola döndürür.
+
+## 2026-07-13 — Ingest: docs/concepts @ v1.230.0
+
+- **ingest** — `sources/06_concepts_docs_v1230.md`: resmî repo `v1.230.0` tag'inden (kurulu paketle birebir) 23 `docs/concepts` dokümanının yoğunlaştırılmış TR snapshot'ı. Her türetilen sayfanın frontmatter'ında 06 + kendi pinli raw URL'i (`raw.githubusercontent.com/.../v1.230.0/docs/concepts/...`). Önceki "latest/nightly URL sürüm-sabitleme" flag'i bu batch için çözüldü.
+- **pages** — Stub → draft (5): [[live_node]], [[order_emulator]], [[data_wranglers]], [[bar_aggregation_and_type_syntax]], [[option_greeks_pipeline]]. Yeni sayfa (17) — entities: [[orders]], [[instruments]], [[positions]], [[order_book]], [[synthetics]], [[logging]]; concepts: [[accounting]], [[events]], [[event_sourcing]], [[configuration]], [[custom_data]], [[continuous_futures]], [[value_types]], [[plugins]], [[dst]], [[visualization]], [[reports]]. Hub sayfalarına (execution_engine, data_engine, portfolio, nautilus_kernel, event_driven_architecture, precision_modes, backtesting_guide) yeni sayfalara giden gövde linkleri eklendi. Lint: broken_links 0, orphans 0, **stubs 0**. Katalog 49 → 66 sayfa.
+- **fix** — Upstream `dst.md` yaz saati değil **Deterministic Simulation Testing** anlatıyor; sayfa doğru başlıkla yazıldı, [[bar_aggregation_and_type_syntax]]'daki yanlış "yaz saati" bağlamlı link düzeltildi. [[execution_engine]] TIF listesine eksik AT_THE_OPEN/AT_THE_CLOSE eklendi. [[events]] tablo içi `\|` kaçışlı wikilink'ler bare forma çevrildi (lint bunları broken sayıyor — tabloda alias'lı link kullanma).
+- **flag** — [[order_flow_pipeline]] ve [[execution_engine]] emir akışı Risk Engine'i tek aşama gösteriyor; upstream `orders/emulated.md`'ye göre pre-trade kontrol emulator tutuşundan ÖNCE ve release'te İKİNCİ kez çalışıyor — diyagrama iki-aşamalı risk notu eklenmeli (not şimdilik order_emulator'da).
+- **flag** — [[venue_reconciliation]] "Only the LiveExecutionEngine performs reconciliation" atfını architecture'a veriyor; v1.230'da kaynak `concepts/live.md`. Sayfanın "Bilinen boşluklar" kalemlerinin çoğu (partial-fill recovery, lookback, retry politikası, 4 invariant) artık live.md'de belgeli — bu kaynaktan güncellenebilir.
+- **flag** — StrikeRange'e v1.230'da 4. varyant eklendi: `Delta(hedef, tolerans)` + ATM±5 fallback; [[tutorial_options_data_bybit]] üç-varyant iddiası taşıyorsa güncellenmeli. Derive adaptörü resmî Greeks destek tablosunda yok (yalnız Deribit/Bybit/OKX) — [[tutorial_delta_neutral_derive]]'a uyumsuzluk notu düşülmeli.
+- **gap** — Kullanım-düzeyi custom data rehberi (Cython `@customdataclass`, actor `publish_data/subscribe_data` örnekleri) v1.230 concepts doc'unda yok — API referans ingest'i gerektirir. Aynı şekilde `configuration.md` TradingNodeConfig/BacktestEngineConfig ayrıntılarını ve wrangler kurucu parametrelerini (`ts_init_delta` vb.) kapsamıyor.
+- **gap** — [[events]] sayfası upstream `positions.md`'nin tanımladığı `PositionAdjusted` event'ini kapsamıyor; [[adapters]] sayfasında `MarginAccount.apply()` replace-not-merge konvansiyonuna atıf yok; [[crash_only_design]] event-store recovery (boot sweep) ile güncellenebilir; [[rust_python_hybrid]]'e `nautilus-plugin` crate cross-ref'i eklenebilir.
+- **gap** — Gelecek ingest adayı: `how_to/configure_live_trading.md` (adım adım TradingNodeConfig kurulumu, çoklu-venue kablolama).
+- **fix** — `tools/wiki_tools.py:_parse_yaml_lite` blok-skaler (`summary: >-`) desteklemiyordu; `backlinks` yeniden yazarken çok satırlı özet içeriği **sessizce siliniyordu** (CLAUDE.md şablonu tam bu formu öneriyor!). Parser'a `>`/`>-`/`|`/`|-` devam-satırı katlama desteği eklendi; bu batch'te silinen 22 özet tek satır formda yeniden yazıldı. Kural: özetler tek satır tutulabilir, ama `>-` artık güvenli.

@@ -1,0 +1,596 @@
+{% if last.error %}
+<div class="panel" style="border-color: rgba(248,113,113,0.5);">
+  <div class="panel-header"><div class="panel-title">Result · {{ last.spec_name }}</div></div>
+  <div class="panel-body">
+    <span class="badge exit">✗ ERROR</span>
+    <pre class="diagram mt-3">{{ last.error }}</pre>
+  </div>
+</div>
+{% else %}
+<div class="panel">
+  <div class="panel-header">
+    <div class="panel-title">Result · {{ last.spec_name }}</div>
+    <div class="spacer"></div>
+    <span class="text-muted text-mono" style="font-size:11px;">Nautilus {{ last.runner or 'BacktestEngine' }}</span>
+  </div>
+  <div class="panel-body">
+
+    {# ─── Narrative ─── #}
+    {% if last.narrative %}
+    <div class="narrative-box">{{ last.narrative }}</div>
+    {% endif %}
+
+    {# ─── Steps summary (collapsed) ─── #}
+    {% if last.steps %}
+    <details class="steps-details">
+      <summary class="steps-summary mono small">▸ Backtest adımları ({{ last.steps|length }})</summary>
+      <div class="progress-steps" style="margin-top:8px;">
+        {% for step in last.steps %}
+          <div class="step-row done">
+            <span class="step-ts mono">{{ step.ts }}</span>
+            <span class="step-tick">✓</span>
+            <span class="step-msg">{{ step.msg }}</span>
+          </div>
+        {% endfor %}
+      </div>
+    </details>
+    {% endif %}
+
+    {# ─── Hero: Realized PnL + destekleyici metrikler ─── #}
+    <div class="result-hero">
+      <div class="hero-main {{ last.pnl_dir }}">
+        <div class="hero-label">Realized PnL</div>
+        <div class="hero-value">{{ last.pnl_fmt }}</div>
+        <div class="hero-sub">{{ last.pnl_pct_fmt }} · başlangıç {{ last.starting_cash_fmt }}</div>
+      </div>
+      <div class="hero-side">
+        <div class="hero-side-cell">
+          <div class="label">Starting Capital</div>
+          <div class="value">{{ last.starting_cash_fmt }}</div>
+        </div>
+        <div class="hero-side-cell">
+          <div class="label">Max Drawdown</div>
+          <div class="value down">{{ last.max_dd_fmt }}</div>
+        </div>
+      </div>
+    </div>
+
+    {# ─── Grup: Risk oranları ─── #}
+    <div class="metric-section">
+      <div class="metric-section-title">Risk</div>
+      <div class="metric-grid">
+        <div class="metric">
+          <div class="label">Sharpe (252d)</div>
+          <div class="value">{{ last.sharpe_fmt }}</div>
+        </div>
+        <div class="metric">
+          <div class="label">Sortino (252d)</div>
+          <div class="value">{{ last.sortino_fmt }}</div>
+        </div>
+        <div class="metric">
+          <div class="label">Profit Factor</div>
+          <div class="value">{{ last.profit_factor_fmt }}</div>
+        </div>
+        <div class="metric">
+          <div class="label">Volatility (252d)</div>
+          <div class="value">{{ last.volatility_fmt }}</div>
+        </div>
+      </div>
+    </div>
+
+    {# ─── Grup: İşlem istatistikleri ─── #}
+    <div class="metric-section">
+      <div class="metric-section-title">İşlemler</div>
+      <div class="metric-grid">
+        <div class="metric">
+          <div class="label">Trades</div>
+          <div class="value">{{ last.n_trades }}</div>
+        </div>
+        <div class="metric">
+          <div class="label">Wins / Losses</div>
+          <div class="value"><span class="up">{{ last.n_wins }}</span> <span class="metric-slash">/</span> <span class="down">{{ last.n_losses }}</span></div>
+        </div>
+        <div class="metric">
+          <div class="label">Win Rate</div>
+          <div class="value">{{ last.win_rate_fmt }}</div>
+        </div>
+        <div class="metric">
+          <div class="label">Long Ratio</div>
+          <div class="value">{{ last.long_ratio_fmt }}</div>
+        </div>
+        <div class="metric">
+          <div class="label">Avg Duration</div>
+          <div class="value">{{ last.avg_dur_fmt }}</div>
+        </div>
+      </div>
+    </div>
+
+    {# ─── Grup: İşlem başına P&L + maliyetler ─── #}
+    <div class="metric-section">
+      <div class="metric-section-title">P&amp;L / Maliyet</div>
+      <div class="metric-grid">
+        <div class="metric">
+          <div class="label">Avg Win</div>
+          <div class="value up">{{ last.avg_win_fmt }}</div>
+        </div>
+        <div class="metric">
+          <div class="label">Avg Loss</div>
+          <div class="value down">{{ last.avg_loss_fmt }}</div>
+        </div>
+        <div class="metric">
+          <div class="label">Max Winner</div>
+          <div class="value up">{{ last.max_winner_fmt }}</div>
+        </div>
+        <div class="metric">
+          <div class="label">Max Loser</div>
+          <div class="value down">{{ last.max_loser_fmt }}</div>
+        </div>
+        <div class="metric">
+          <div class="label">Commission</div>
+          <div class="value muted">{{ last.commission_fmt }}</div>
+        </div>
+        <div class="metric">
+          <div class="label">Slippage</div>
+          <div class="value muted">{{ last.slippage_fmt }}</div>
+        </div>
+      </div>
+    </div>
+
+    {# ─── Backtest Summary (TradingView-tarzı) ─── #}
+    {% if last.equity_curve and last.equity_curve|length > 1 %}
+    <div style="margin-top:16px;border-top:1px solid #242424;padding-top:14px;">
+      <div style="display:flex;align-items:baseline;gap:10px;margin-bottom:12px;">
+        <span class="section-title" style="margin:0;font-size:15px;font-weight:600;">Backtest Summary</span>
+        {% if last.bars_info and last.bars_info.get('start') %}
+        <span class="text-muted mono" style="font-size:11px;">
+          {{ last.bars_info.start[:10] }} → {{ last.bars_info.end[:10] }}
+        </span>
+        {% endif %}
+      </div>
+
+      {# Tek satır özet KPI şeridi #}
+      <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:20px;margin-bottom:14px;">
+        <div>
+          <div class="label" style="font-size:10px;letter-spacing:0.5px;">NET PROFIT</div>
+          <div style="font-size:20px;font-weight:600;" class="{{ last.pnl_dir }}">{{ last.pnl_fmt }}</div>
+        </div>
+        <div>
+          <div class="label" style="font-size:10px;letter-spacing:0.5px;">TRADES</div>
+          <div style="font-size:20px;font-weight:600;">{{ last.n_trades }}
+            <span class="text-muted mono" style="font-size:11px;font-weight:400;">{{ last.n_wins }} | {{ last.n_losses }}</span>
+          </div>
+        </div>
+        <div>
+          <div class="label" style="font-size:10px;letter-spacing:0.5px;">WIN RATE</div>
+          <div style="font-size:20px;font-weight:600;">{{ last.win_rate_fmt }}</div>
+        </div>
+        <div>
+          <div class="label" style="font-size:10px;letter-spacing:0.5px;">MAX DRAWDOWN</div>
+          <div style="font-size:20px;font-weight:600;" class="down">{{ last.max_dd_fmt }}</div>
+        </div>
+        <div>
+          <div class="label" style="font-size:10px;letter-spacing:0.5px;">PROFIT FACTOR</div>
+          <div style="font-size:20px;font-weight:600;">{{ last.profit_factor_fmt }}</div>
+        </div>
+      </div>
+
+      {# Yeşil dolgulu equity area — L19: bar-MTM serisi varsa ONU çiz
+         (raporlanan max_dd bu seriden gelir; realized basamak-eğrisi
+         pozisyon-içi dipleri göstermiyordu) #}
+      <div id="equity-data"
+           data-pts='{{ last.equity_curve|tojson }}'
+           data-dates='{{ (last.equity_dates or [])|tojson }}'
+           data-mtm='{{ (last.equity_curve_mtm or [])|tojson|forceescape }}'
+           data-pnl='{{ last.pnl or 0 }}'></div>
+      <div class="chart-wrap" style="height:200px;position:relative;">
+        <span id="equity-mtm-badge" class="text-muted mono"
+              style="display:none;position:absolute;top:2px;right:6px;font-size:9px;z-index:2;">MTM</span>
+        <canvas id="equity-single"></canvas>
+      </div>
+
+      {# Drawdown alt-grafiği #}
+      <div style="font-size:9px;letter-spacing:.16em;text-transform:uppercase;color:var(--text-muted);margin:10px 0 4px;">Drawdown</div>
+      <div class="chart-wrap" style="height:70px;"><canvas id="dd-single"></canvas></div>
+
+      {# Aylık getiri ısı haritası #}
+      <div style="font-size:9px;letter-spacing:.16em;text-transform:uppercase;color:var(--text-muted);margin:14px 0 6px;">Monthly Returns</div>
+      <div id="monthly-heatmap" style="overflow-x:auto;"></div>
+    </div>
+    <script>
+      function buildEquityChart() {
+        const el = document.getElementById("equity-data");
+        const canvas = document.getElementById("equity-single");
+        if (!el || !canvas) return;
+        let pts   = JSON.parse(el.dataset.pts   || "[]");
+        let dates = JSON.parse(el.dataset.dates || "[]");
+        const pnl   = parseFloat(el.dataset.pnl || "0");
+        // L19: MTM serisi [(iso_ts, eq)] varsa onu tercih et — max_dd'nin
+        // hesaplandığı gerçek bar-çözünürlüklü eğri.
+        let mtm = [];
+        try { mtm = JSON.parse(el.dataset.mtm || "[]"); } catch (e) {}
+        const mtmBadge = document.getElementById("equity-mtm-badge");
+        if (mtm.length > 1) {
+          dates = mtm.map(p => (p[0] || "").slice(0, 16).replace("T", " "));
+          pts = mtm.map(p => p[1]);
+          if (mtmBadge) mtmBadge.style.display = "";
+        } else if (mtmBadge) {
+          mtmBadge.style.display = "none";
+        }
+        if (!pts.length) return;
+        if (window.__eq && typeof window.__eq.destroy === "function") {
+          window.__eq.destroy(); window.__eq = null;
+        }
+        // Kâr yeşil, zarar kırmızı ton
+        const up = pnl >= 0;
+        const line = up ? "#4ade80" : "#f87171";
+        const fill = up ? "rgba(74,222,128,0.18)" : "rgba(248,113,113,0.15)";
+        const labels   = pts.map((_, i) => dates[i] || "");
+        window.__eq = new Chart(canvas, {
+          type: "line",
+          data: { labels, datasets: [{
+            data: pts, borderColor: line,
+            backgroundColor: fill, borderWidth: 2,
+            fill: true, pointRadius: 0, tension: 0.15,
+          }]},
+          options: {
+            responsive: true, maintainAspectRatio: false,
+            layout: { padding: { bottom: 4 } },
+            plugins: {
+              legend: { display: false },
+              tooltip: {
+                callbacks: {
+                  title: (items) => items[0].label || ("Trade " + items[0].dataIndex),
+                  label: (c) => "$" + c.parsed.y.toLocaleString(undefined,
+                    {minimumFractionDigits:2, maximumFractionDigits:2}),
+                },
+                backgroundColor: "#0c0c0c", borderColor: "#242424", borderWidth: 1,
+                titleFont: { family: "JetBrains Mono", size: 11 },
+                bodyFont:  { family: "JetBrains Mono", size: 12 },
+              },
+            },
+            scales: {
+              x: {
+                display: true,
+                grid: { color: "#242424", drawTicks: false },
+                ticks: {
+                  color: "#8a8a8a", font: { family: "JetBrains Mono", size: 10 },
+                  maxRotation: 0, minRotation: 0,
+                  autoSkip: true, maxTicksLimit: 10, padding: 8,
+                  callback: function(val) { return this.getLabelForValue(val) || null; },
+                },
+              },
+              y: {
+                position: "right",
+                grid: { color: "#242424" },
+                ticks: {
+                  color: "#8a8a8a", font: { family: "JetBrains Mono", size: 10 },
+                  padding: 6, callback: v => "$" + (v/1000).toFixed(1) + "k",
+                },
+              },
+            },
+          },
+        });
+      }
+      function buildDrawdownChart() {
+        const el = document.getElementById("equity-data");
+        const canvas = document.getElementById("dd-single");
+        if (!el || !canvas) return;
+        let pts = JSON.parse(el.dataset.pts || "[]");
+        // L19: DD alt-grafiği de MTM serisini tercih etsin — raporlanan Max DD
+        // (max_dd_mtm) bu bar-çözünürlüklü eğriden gelir; realized basamak
+        // eğrisi pozisyon-içi dipleri göstermezdi (KPI ile çelişirdi).
+        let _mtm = [];
+        try { _mtm = JSON.parse(el.dataset.mtm || "[]"); } catch (e) {}
+        if (_mtm.length > 1) pts = _mtm.map(p => p[1]);
+        if (pts.length < 2) return;
+        // Drawdown = (equity - running peak) / peak  (yüzde, ≤0)
+        let peak = pts[0];
+        const dd = pts.map(v => { peak = Math.max(peak, v); return peak > 0 ? (v - peak) / peak * 100 : 0; });
+        if (window.__dd && typeof window.__dd.destroy === "function") { window.__dd.destroy(); window.__dd = null; }
+        window.__dd = new Chart(canvas, {
+          type: "line",
+          data: { labels: dd.map((_, i) => i), datasets: [{
+            data: dd, borderColor: "#f87171",
+            backgroundColor: "rgba(242,92,92,0.22)", borderWidth: 1,
+            fill: true, pointRadius: 0, tension: 0.1,
+          }]},
+          options: {
+            responsive: true, maintainAspectRatio: false,
+            plugins: { legend: { display: false }, tooltip: {
+              callbacks: { title: () => "", label: c => c.parsed.y.toFixed(2) + "%" },
+              backgroundColor: "#0c0c0c", borderColor: "#242424", borderWidth: 1,
+              bodyFont: { family: "JetBrains Mono", size: 11 },
+            }},
+            scales: {
+              x: { display: false },
+              y: { position: "right", max: 0, grid: { color: "#242424" },
+                   ticks: { color: "#8a8a8a", font: { family: "JetBrains Mono", size: 9 },
+                            callback: v => v.toFixed(0) + "%", maxTicksLimit: 3 } },
+            },
+          },
+        });
+      }
+
+      function buildMonthlyHeatmap() {
+        const el = document.getElementById("equity-data");
+        const host = document.getElementById("monthly-heatmap");
+        if (!el || !host) return;
+        const pts   = JSON.parse(el.dataset.pts   || "[]");
+        const dates = JSON.parse(el.dataset.dates || "[]");
+        if (pts.length < 2) { host.innerHTML = ""; return; }
+        // Tarih başına equity; ay bazında ilk→son % getiri
+        const monthly = {};  // "YYYY-M" → {first, last}
+        for (let i = 0; i < pts.length; i++) {
+          const d = dates[i];
+          if (!d) continue;
+          const dt = new Date(d);
+          if (isNaN(dt)) continue;
+          const key = dt.getUTCFullYear() + "-" + dt.getUTCMonth();
+          if (!(key in monthly)) monthly[key] = { first: pts[i], last: pts[i] };
+          monthly[key].last = pts[i];
+        }
+        const ret = {};  // key → % getiri
+        for (const k in monthly) {
+          const m = monthly[k];
+          ret[k] = m.first > 0 ? (m.last - m.first) / m.first * 100 : 0;
+        }
+        const years = [...new Set(Object.keys(monthly).map(k => +k.split("-")[0]))].sort();
+        if (!years.length) { host.innerHTML = ""; return; }
+        const MON = ["J","F","M","A","M","J","J","A","S","O","N","D"];
+        const MONF = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+        const cell = v => {
+          if (v === undefined) return `<div style="width:22px;height:22px;border-radius:3px;background:#0D1119;"></div>`;
+          const a = Math.min(Math.abs(v) / 7, 1) * 0.5 + 0.08;
+          const bg = v >= 0 ? `rgba(46,212,126,${a})` : `rgba(242,92,92,${a})`;
+          const txt = Math.abs(v) > 2.2 ? `<span style="font-family:'JetBrains Mono';font-size:8.5px;color:#E9EDF4;">${v>=0?"+":""}${v.toFixed(0)}</span>` : "";
+          return `<div title="${v>=0?"+":""}${v.toFixed(2)}%" style="width:22px;height:22px;border-radius:3px;background:${bg};display:flex;align-items:center;justify-content:center;">${txt}</div>`;
+        };
+        let html = `<div style="display:grid;grid-template-columns:44px repeat(12,1fr);gap:3px;">`;
+        html += `<div></div>` + MON.map(m => `<div style="text-align:center;font-family:'JetBrains Mono';font-size:9px;color:#5C6778;">${m}</div>`).join("");
+        for (const y of years) {
+          html += `<div style="font-family:'JetBrains Mono';font-size:9px;color:#5C6778;display:flex;align-items:center;">${y}</div>`;
+          for (let mo = 0; mo < 12; mo++) {
+            const v = ret[y + "-" + mo];
+            html += cell(v !== undefined ? Number(v) : undefined).replace(`title="`, `title="${MONF[mo]} ${y} · `);
+          }
+        }
+        html += `</div>`;
+        host.innerHTML = html;
+      }
+
+      buildEquityChart();
+      buildDrawdownChart();
+      buildMonthlyHeatmap();
+      const _resultEl = document.getElementById("result");
+      if (_resultEl && !_resultEl._chartsBound) {
+        _resultEl._chartsBound = true;  // idempotent — her fragment swap'ında yeni listener eklenmesin
+        _resultEl.addEventListener("htmx:afterSettle", function() {
+          buildEquityChart(); buildDrawdownChart(); buildMonthlyHeatmap();
+        });
+      }
+    </script>
+    {% endif %}
+
+    {# ─── Price Chart + Trade Listesi (yan yana) ─── #}
+    {% if last.chart_url or (last.trades and last.trades|length > 0) %}
+    <div class="chart-trades-layout" style="display:flex;gap:14px;align-items:flex-start;flex-wrap:wrap;">
+
+      {# ── Sol: fiyat grafiği ── #}
+      {% if last.chart_url %}
+      {% set chart_url = last.chart_url %}
+      {% set chart_symbol = last.chart_symbol %}
+      {% set chart_category = last.chart_category %}
+      {% set chart_interval = last.chart_interval %}
+      <div id="price-chart-wrap" style="flex:1 1 560px;min-width:440px;">
+        {% include "fragments/price_chart.html" %}
+      </div>
+      {% endif %}
+
+      {# ── Sağ: işlemler paneli (dikey scroll) ── #}
+      {% if last.trades and last.trades|length > 0 %}
+      <div class="panel trades-side-panel" style="flex:0 1 396px;min-width:300px;margin-top:14px;display:flex;flex-direction:column;max-height:614px;">
+        <div class="panel-header" style="flex-wrap:wrap;gap:6px;">
+          <div class="panel-title" style="font-size:14px;">
+            İşlemler (<span id="trade-count">{{ last.trades|length }}</span>)
+          </div>
+        </div>
+        {# Filtreler #}
+        <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;padding:8px 16px 0;">
+          <select id="trade-filter-result" onchange="filterTrades()" style="font-size:10px;padding:2px 6px;background:var(--inset);border:1px solid #242424;color:var(--text-primary);border-radius:4px;">
+            <option value="all">Tümü</option>
+            <option value="win">Kazanan</option>
+            <option value="loss">Kaybeden</option>
+          </select>
+          <select id="trade-filter-side" onchange="filterTrades()" style="font-size:10px;padding:2px 6px;background:var(--inset);border:1px solid #242424;color:var(--text-primary);border-radius:4px;">
+            <option value="all">Long+Short</option>
+            <option value="BUY">Long</option>
+            <option value="SELL">Short</option>
+          </select>
+          <input id="trade-filter-min" type="number" placeholder="Min PnL" onchange="filterTrades()"
+            style="width:68px;font-size:10px;padding:2px 6px;background:var(--inset);border:1px solid #242424;color:var(--text-primary);border-radius:4px;">
+          <input id="trade-filter-max" type="number" placeholder="Max PnL" onchange="filterTrades()"
+            style="width:68px;font-size:10px;padding:2px 6px;background:var(--inset);border:1px solid #242424;color:var(--text-primary);border-radius:4px;">
+          <span style="font-size:10px;color:var(--text-muted);">TF:</span>
+          <select id="trade-hover-tf" style="font-size:10px;padding:2px 6px;background:var(--inset);border:1px solid #242424;color:var(--text-primary);border-radius:4px;">
+            <option value="auto">Otomatik</option>
+            <option value="1">1m</option>
+            <option value="5">5m</option>
+            <option value="15">15m</option>
+            <option value="60">1h</option>
+            <option value="240">4h</option>
+            <option value="D">1d</option>
+          </select>
+        </div>
+        <div class="text-muted" style="font-size:10px;padding:6px 16px 0;">tıkla → grafikte göster · tekrar tıkla → temizle</div>
+        <div style="overflow:auto;margin-top:6px;flex:1;">
+        <table class="trade-table" id="trade-table">
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Giriş</th>
+              <th>Taraf</th>
+              <th>Fiyat</th>
+              <th>PnL</th>
+              <th>Çıkış</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for t in last.trades %}
+            <tr class="trade-row {% if t.pnl >= 0 %}trade-win{% else %}trade-loss{% endif %}"
+                data-entry-time="{{ t.entry_time }}"
+                data-exit-time="{{ t.exit_time }}"
+                data-entry-price="{{ t.entry_price }}"
+                data-exit-price="{{ t.exit_price }}"
+                data-pnl="{{ t.pnl }}"
+                data-side="{{ t.side }}"
+                data-idx="{{ loop.index0 }}"
+                title="Çıkış: {{ t.exit_time|int|datetimefmt }} · ${{ '%.1f'|format(t.exit_price) }} · Süre: {{ t.dur_min }}m{% if t.entry_reason %}&#10;Giriş: {{ t.entry_reason }}{% endif %}{% if t.exit_reason %}&#10;Çıkış: {{ t.exit_reason }}{% endif %}">
+              <td class="mono text-muted">{{ loop.index }}</td>
+              <td class="mono small">{{ t.entry_time|int|datetimefmt }}</td>
+              <td><span class="chip {% if t.side == 'BUY' %}chip-good{% else %}chip-bad{% endif %}">{{ t.side }}</span></td>
+              <td class="mono">${{ "%.1f"|format(t.entry_price) }}</td>
+              <td class="mono {% if t.pnl >= 0 %}up{% else %}down{% endif %}">
+                {{ "%+.2f"|format(t.pnl) }}
+              </td>
+              <td>
+                {% set k = t.exit_kind %}
+                {% if k == 'sl' %}<span class="chip chip-bad" title="{{ t.exit_reason }}">SL</span>
+                {% elif k == 'tp' %}<span class="chip chip-good" title="{{ t.exit_reason }}">TP</span>
+                {% elif k == 'signal' %}<span class="chip" style="background:rgba(96,165,250,0.18);color:#60a5fa;" title="{{ t.exit_reason }}">Sinyal</span>
+                {% elif k == 'flip' %}<span class="chip" style="background:rgba(251,191,36,0.18);color:#fbbf24;" title="{{ t.exit_reason }}">Flip</span>
+                {% elif k == 'eob' %}<span class="chip" title="{{ t.exit_reason }}">Son</span>
+                {% else %}<span class="text-muted">—</span>{% endif %}
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+        </div>{# overflow:auto #}
+      </div>{# .trades-side-panel #}
+      {% endif %}
+
+    </div>{# .chart-trades-layout #}
+    {% endif %}
+
+    {% if last.trades and last.trades|length > 0 %}
+    <script>
+    function filterTrades() {
+      const result = document.getElementById("trade-filter-result")?.value || "all";
+      const side   = document.getElementById("trade-filter-side")?.value || "all";
+      const _minRaw = parseFloat(document.getElementById("trade-filter-min")?.value);
+      const _maxRaw = parseFloat(document.getElementById("trade-filter-max")?.value);
+      const minPnl = Number.isNaN(_minRaw) ? -Infinity : _minRaw;
+      const maxPnl = Number.isNaN(_maxRaw) ? Infinity : _maxRaw;
+      let visible = 0;
+      document.querySelectorAll("#trade-table .trade-row").forEach(function(row) {
+        const pnl    = parseFloat(row.dataset.pnl);
+        const isWin  = pnl >= 0;
+        const rowSide = row.dataset.side || "BUY";
+        const show = (result === "all" || (result === "win" && isWin) || (result === "loss" && !isWin))
+                  && (side === "all" || rowSide === side)
+                  && pnl >= minPnl && pnl <= maxPnl;
+        row.style.display = show ? "" : "none";
+        if (show) visible++;
+      });
+      const cnt = document.getElementById("trade-count");
+      if (cnt) cnt.textContent = visible;
+    }
+
+    (function(){
+      let _activeRow = null;
+      const rows = document.querySelectorAll("#trade-table .trade-row");
+      rows.forEach(function(row) {
+        row.addEventListener("click", function() {
+          // Aynı satıra tekrar tıklanırsa temizle
+          if (_activeRow === row) {
+            row.style.outline = "";
+            _activeRow = null;
+            if (window._priceChartClearHighlight) window._priceChartClearHighlight();
+            return;
+          }
+          if (_activeRow) _activeRow.style.outline = "";
+          _activeRow = row;
+          row.style.outline = "1px solid rgba(255,255,255,0.5)";
+
+          const entryTime  = parseInt(row.dataset.entryTime);
+          const exitTime   = parseInt(row.dataset.exitTime);
+          const entryPrice = parseFloat(row.dataset.entryPrice);
+          const exitPrice  = parseFloat(row.dataset.exitPrice);
+          const pnl        = parseFloat(row.dataset.pnl);
+          const tfSel      = document.getElementById("trade-hover-tf");
+          const tf         = tfSel ? tfSel.value : "auto";
+          if (window._priceChartHighlight) {
+            window._priceChartHighlight(entryTime, exitTime, entryPrice, exitPrice, pnl, tf);
+          }
+        });
+      });
+    })();
+    </script>
+    {% endif %}
+
+  </div>
+</div>
+
+{# Robustness panelini göster ve form alanlarını güncelle (OOB) #}
+{% if last.bars_info and last.bars_info.get('symbol') %}
+<div id="robustness-section" hx-swap-oob="outerHTML" class="panel">
+  <div class="panel-header">
+    <div class="panel-title">Robustness Analizi</div>
+    <div class="panel-meta text-muted mono small">WFO · Monte Carlo · In/Out-of-Sample</div>
+  </div>
+  <div class="panel-body">
+    <form hx-post="/robustness/run"
+          hx-target="#robustness-result"
+          hx-swap="innerHTML"
+          style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;align-items:end;">
+      <input type="hidden" name="spec_id"     value="{{ last.params.get('spec_id','') if last.params else '' }}">
+      <input type="hidden" name="bybit_start" value="{{ last.bars_info.get('start','')[:10] if last.bars_info.get('start') else '' }}">
+      <input type="hidden" name="bybit_end"   value="{{ last.bars_info.get('end','')[:10] if last.bars_info.get('end') else '' }}">
+      {% set cur_sym = last.bars_info.get('symbol','BTCUSDT') %}
+      {% set cur_cat = last.bars_info.get('category','linear') %}
+      {% set cur_iv  = last.bars_info.get('interval','1') %}
+      <label class="field">Symbol
+        <select name="symbol">
+          {% for s in ['BTCUSDT','ETHUSDT','SOLUSDT'] %}
+          <option value="{{ s }}" {% if s == cur_sym %}selected{% endif %}>{{ s }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label class="field">Category
+        <select name="category">
+          {% for c in ['linear','spot','inverse'] %}
+          <option value="{{ c }}" {% if c == cur_cat %}selected{% endif %}>{{ c }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label class="field">Interval
+        <select name="interval">
+          {% for iv, lbl in [('1','1m'),('5','5m'),('15','15m'),('60','1h'),('240','4h'),('D','1d')] %}
+          <option value="{{ iv }}" {% if iv == cur_iv %}selected{% endif %}>{{ lbl }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label class="field">Train (ay)
+        <input type="number" name="train_months" value="3" min="1" max="24">
+      </label>
+      <label class="field">Test (ay)
+        <input type="number" name="test_months" value="1" min="1" max="12">
+      </label>
+      <label class="field">Monte Carlo N
+        <input type="number" name="n_sims" value="300" min="50" max="1000" step="50">
+      </label>
+      <label class="field">In-sample %
+        <input type="number" name="split_pct" value="0.7" min="0.5" max="0.9" step="0.05">
+      </label>
+      <div>
+        <button class="btn btn-primary" type="submit" style="width:100%;">▶ Analiz Çalıştır</button>
+      </div>
+    </form>
+    <div class="text-muted mono" style="font-size:10px;margin-top:6px;">
+      Farklı sembol/kategori/interval seçerek stratejinin başka enstrümanlarda da sağlam olup olmadığını test edin.
+    </div>
+    <div id="robustness-result" style="margin-top:12px;"></div>
+  </div>
+</div>
+{% endif %}
+{% endif %}

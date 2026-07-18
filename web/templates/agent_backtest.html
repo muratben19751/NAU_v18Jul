@@ -1,0 +1,259 @@
+{% extends "base.html" %}
+{% block content %}
+
+<div class="panel">
+  <div class="panel-header">
+    <div class="panel-title">🤖 Otonom Backtest Ajanı</div>
+    <div class="panel-meta small">
+      Claude strateji üretir · N kez backtest çalıştırır · en iyisini robustness testine sokar
+    </div>
+  </div>
+  <div class="panel-body">
+    <form hx-post="/agent/run"
+          hx-target="#agent-result"
+          hx-swap="innerHTML"
+          hx-indicator="#agent-spinner">
+
+      <div class="row" style="align-items:flex-end;flex-wrap:wrap;gap:12px;margin-bottom:14px;">
+        <label class="field" style="flex:2;min-width:240px;">
+          Strateji ipucu <span class="text-muted" style="font-weight:400;">(opsiyonel — boş = tamamen otonom)</span>
+          <input type="text" name="hint"
+                 placeholder="Örn: momentum + RSI, EMA crossover, supertrend…"
+                 style="font-size:13px;">
+        </label>
+        <label class="field">Kaynak
+          <select name="source" id="agent-source" onchange="onAgentSourceChange(this)">
+            <option value="bybit" selected>Bybit (Kripto)</option>
+            <option value="external">Katalog (US Equity)</option>
+          </select>
+        </label>
+        <span id="agent-bybit-fields" style="display:contents;">
+          <label class="field">Symbol
+            <select name="symbol">
+              <option value="BTCUSDT" selected>BTCUSDT</option>
+              <option value="ETHUSDT">ETHUSDT</option>
+              <option value="SOLUSDT">SOLUSDT</option>
+            </select>
+          </label>
+          <label class="field">Category
+            <select name="category">
+              <option value="linear" selected>linear</option>
+              <option value="spot">spot</option>
+            </select>
+          </label>
+          <label class="field">Interval
+            <select name="interval" id="interval-sel">
+              <option value="1">1m</option>
+              <option value="5">5m</option>
+              <option value="15">15m</option>
+              <option value="60" selected>1h</option>
+              <option value="240">4h</option>
+            </select>
+          </label>
+        </span>
+        <span id="agent-external-fields" style="display:none;">
+          <label class="field" style="min-width:180px;">Instrument
+            <select name="instrument_id" id="agent-ext-instrument"
+                    onchange="onAgentExtInstrumentChange(this)">
+              <option value="">— yükleniyor… —</option>
+            </select>
+          </label>
+          <label class="field">Timeframe
+            <select name="ext_interval" id="agent-ext-interval">
+              <option value="1-DAY" selected>1 day</option>
+              <option value="4-HOUR">4 hours</option>
+              <option value="1-HOUR">1 hour</option>
+              <option value="15-MINUTE">15 minutes</option>
+              <option value="5-MINUTE">5 minutes</option>
+              <option value="1-MINUTE">1 minute</option>
+            </select>
+          </label>
+        </span>
+        <label class="field" style="flex-direction:row;align-items:center;gap:6px;padding-bottom:6px;">
+          <input type="checkbox" name="multi_tf" value="1" id="multi-tf-cb"
+                 onchange="document.getElementById('interval-sel').disabled=this.checked;document.getElementById('agent-ext-interval').disabled=this.checked">
+          <span style="font-size:12px;">Multi-TF <span class="text-muted">(1h·4h·1D dene)</span></span>
+        </label>
+      </div>
+
+      <div class="row" style="align-items:flex-end;flex-wrap:wrap;gap:12px;margin-bottom:14px;">
+        <label class="field" style="min-width:220px;">
+          İterasyon sayısı <span class="text-muted" style="font-weight:400;" id="iter-val">5</span>
+          <input type="range" name="n_iterations" min="2" max="15" value="5"
+                 style="width:100%;margin-top:4px;"
+                 oninput="document.getElementById('iter-val').textContent=this.value">
+        </label>
+        <label class="field">
+          Robustness modu
+          <select name="strict_mode">
+            <option value="strict" selected>Strict — ✓ Sağlam zorunlu</option>
+            <option value="relaxed">Relaxed — ⚠ Dikkat de kabul</option>
+          </select>
+        </label>
+        <label class="field" id="trend-interval-field" style="display:none;">
+          Trend interval
+          <select name="trend_interval">
+            <option value="60" selected>1h</option>
+            <option value="240">4h</option>
+            <option value="D">1d</option>
+          </select>
+        </label>
+        <label class="field" id="ext-trend-interval-field" style="display:none;">
+          Trend interval
+          <select name="ext_trend_interval">
+            <option value="1-HOUR">1h</option>
+            <option value="4-HOUR">4h</option>
+            <option value="1-DAY" selected>1d</option>
+          </select>
+        </label>
+        <label class="field" style="flex-direction:row;align-items:center;gap:6px;padding-bottom:6px;">
+          <input type="checkbox" name="trend_filter" value="1" id="trend-filter-cb"
+                 onchange="updateAgentTrendField()">
+          <span style="font-size:12px;">Trend Filter <span class="text-muted">(multi-TF)</span></span>
+        </label>
+        <label class="field" style="flex-direction:row;align-items:center;gap:6px;padding-bottom:6px;">
+          <input type="checkbox" name="web_research" value="1" id="web-research-cb">
+          <span style="font-size:12px;">Web araştırması <span class="text-muted">(DuckDuckGo'dan strateji fikirleri çek)</span></span>
+        </label>
+        <label class="field" style="flex-direction:row;align-items:center;gap:6px;padding-bottom:6px;">
+          <input type="checkbox" name="continuous" value="1" id="continuous-cb">
+          <span style="font-size:12px;">Sürekli çalış <span class="text-muted">(kazanan bulduktan sonra yeniden başla)</span></span>
+        </label>
+        {# M22: opsiyonel bütçe tavanları — 0/boş = sınırsız (varsayılan davranış) #}
+        <label class="field" style="max-width:110px;">
+          Maks. saat <span class="text-muted" style="font-weight:400;">(0=∞)</span>
+          <input type="number" name="max_hours" min="0" step="0.5" value="0"
+                 style="font-size:12px;" title="Sürekli modda toplam süre tavanı; 0 = sınırsız">
+        </label>
+        <label class="field" style="max-width:140px;">
+          Maks. token <span class="text-muted" style="font-weight:400;">(0=∞)</span>
+          <input type="number" name="max_total_tokens" min="0" step="100000" value="0"
+                 style="font-size:12px;" title="Toplam LLM token tavanı; 0 = sınırsız">
+        </label>
+        <div style="display:flex;gap:8px;align-items:flex-end;padding-bottom:2px;">
+          <button class="btn btn-primary" type="submit">🤖 Çalıştır</button>
+          <span class="htmx-indicator text-muted mono" id="agent-spinner" style="font-size:11px;">
+            pipeline başlatılıyor…
+          </span>
+        </div>
+      </div>
+
+      <p class="small text-muted" style="margin:0;">
+        Her çalıştırma cache'deki <b>tam tarih aralığını</b> kullanır
+        (son 60 gün mühürlü OOS olarak ayrılır).
+        Kazanan strateji otomatik olarak /backtest seçicisine eklenir.
+        Sıralama (NAU fitness): <code>(0.7×Calmar + 0.3×Sharpe) × T/(T+20)</code> ·
+        Karma mod: çift iterasyon builtin blok, tek iterasyon <b>Claude custom blok</b> üretir.
+      </p>
+    </form>
+  </div>
+</div>
+
+<div id="agent-result">
+  {% if active_run_id %}
+  {# Çalışan koşuya otomatik bağlan (restart/refresh sonrası). load'da hemen
+     progress'i çeker, sonra fragment kendi 1s polling'ini sürdürür. #}
+  <div id="agent-progress-panel"
+       hx-get="/agent/progress/{{ active_run_id }}"
+       hx-trigger="load, every 1s"
+       hx-target="#agent-result"
+       hx-swap="innerHTML">
+    <div class="panel">
+      <div class="panel-body empty-state">⏳ Çalışan koşuya bağlanılıyor…</div>
+    </div>
+  </div>
+  {% else %}
+  <div class="panel">
+    <div class="panel-body empty-state">
+      🤖 Çalıştır'a basarak otonom araştırma döngüsünü başlat.
+    </div>
+  </div>
+  {% endif %}
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+  function onAgentSourceChange(sel) {
+    const ext = sel.value === 'external';
+    document.getElementById('agent-bybit-fields').style.display = ext ? 'none' : 'contents';
+    document.getElementById('agent-external-fields').style.display = ext ? 'contents' : 'none';
+    updateAgentTrendField();
+    if (ext && !sel.dataset.loaded) {
+      sel.dataset.loaded = '1';
+      const target = document.getElementById('agent-ext-instrument');
+      fetch('/backtest/external_instruments')
+        .then(r => r.text())
+        .then(html => {
+          target.innerHTML = html;
+          onAgentExtInstrumentChange(target);
+        })
+        .catch(err => {
+          target.innerHTML = '<option value="">error: ' + err + '</option>';
+        });
+    }
+  }
+
+  const AGENT_EXT_GRAN_LABELS = {
+    '1-MINUTE': '1 minute', '5-MINUTE': '5 minutes', '15-MINUTE': '15 minutes',
+    '30-MINUTE': '30 minutes', '1-HOUR': '1 hour', '4-HOUR': '4 hours',
+    '1-DAY': '1 day', '1-WEEK': '1 week',
+  };
+
+  function onAgentExtInstrumentChange(sel) {
+    // Timeframe seçeneklerini seçilen enstrümanın katalog dilimlerine daralt.
+    const opt = sel.options[sel.selectedIndex];
+    if (!opt || !opt.dataset.grans) return;
+    const granSel = document.getElementById('agent-ext-interval');
+    const prev = granSel.value;
+    const grans = opt.dataset.grans.split(',');
+    granSel.innerHTML = grans.map(g =>
+      `<option value="${g}">${AGENT_EXT_GRAN_LABELS[g] || g}</option>`
+    ).join('');
+    granSel.value = grans.includes(prev) ? prev : grans[grans.length - 1];
+  }
+
+  function updateAgentTrendField() {
+    const ext = document.getElementById('agent-source').value === 'external';
+    const on = document.getElementById('trend-filter-cb').checked;
+    document.getElementById('trend-interval-field').style.display = (on && !ext) ? '' : 'none';
+    document.getElementById('ext-trend-interval-field').style.display = (on && ext) ? '' : 'none';
+  }
+
+  // ── Zaman çizelgesi: <details> açık-durumu HTMX swap'larında korunur ──
+  // Poll her saniye #agent-result'ı yeniden yazar; kullanıcının açtığı
+  // detay panelleri (tl-* ve adım günlüğü) swap sonrası geri açılır.
+  (function () {
+    var openIds = [];
+    document.body.addEventListener('htmx:beforeSwap', function (e) {
+      if (!e.target || e.target.id !== 'agent-result') return;
+      openIds = Array.prototype.map.call(
+        document.querySelectorAll('#agent-result details[open][id]'),
+        function (d) { return d.id; }
+      );
+    });
+    document.body.addEventListener('htmx:afterSwap', function (e) {
+      if (!e.target || e.target.id !== 'agent-result') return;
+      openIds.forEach(function (id) {
+        var d = document.getElementById(id);
+        if (d) d.open = true;
+      });
+      var el = document.getElementById('agent-steps');
+      var det = document.getElementById('agent-steps-details');
+      if (det && det.open && el) el.scrollTop = el.scrollHeight;
+    });
+    // Bar tıklaması → ilgili detay panelini aç + görünür kıl.
+    document.body.addEventListener('click', function (e) {
+      var link = e.target.closest ? e.target.closest('a.tl-link') : null;
+      if (!link) return;
+      var id = link.getAttribute('data-tl-target');
+      var d = id && document.getElementById(id);
+      if (d) {
+        d.open = true;
+        d.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+      }
+    });
+  })();
+</script>
+{% endblock %}

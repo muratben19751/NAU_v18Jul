@@ -1,0 +1,928 @@
+{% extends "base.html" %}
+{% block content %}
+<script>window.__COL_LAYOUT__ = {{ (column_layout or {})|tojson }};</script>
+
+<div class="panel" style="position:sticky;top:0;z-index:20;">
+  <div class="panel-header">
+    <div class="panel-title">📋 Backtest Reports</div>
+    <div class="panel-meta small">{{ total }} çalışma · tüm kaynaklar<span id="variant-count" class="text-muted" style="margin-left:8px;"></span></div>
+  </div>
+
+  {# ── Filtre bar ──────────────────────────────────────────────── #}
+  <div class="panel-body" style="padding-bottom:0;">
+    <form method="get" action="/reports" class="row" style="flex-wrap:wrap;gap:10px;align-items:flex-end;">
+      <label class="field" style="min-width:140px;">
+        Çalıştıran
+        <select name="runner" onchange="this.form.submit()">
+          <option value="" {% if not runner_filter %}selected{% endif %}>Tümü</option>
+          <option value="Human"   {% if runner_filter=='Human'   %}selected{% endif %}>Human</option>
+          <option value="Lab"     {% if runner_filter=='Lab'     %}selected{% endif %}>Lab</option>
+          <option value="Agent"   {% if runner_filter=='Agent'   %}selected{% endif %}>Agent</option>
+          <option value="Unknown" {% if runner_filter=='Unknown' %}selected{% endif %}>Unknown</option>
+        </select>
+      </label>
+      <label class="field" style="min-width:160px;">
+        Sembol
+        <select name="symbol" onchange="this.form.submit()">
+          <option value="" {% if not symbol_filter %}selected{% endif %}>Tümü</option>
+          {% for sym in symbols %}
+            <option value="{{ sym }}" {% if symbol_filter==sym %}selected{% endif %}>{{ sym }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label class="field" style="min-width:150px;">
+        Sermaye
+        <select name="capital" onchange="this.form.submit()">
+          <option value="" {% if not capital_filter %}selected{% endif %}>Tümü</option>
+          {% for cap in capitals %}
+            <option value="{{ cap }}" {% if capital_filter == (cap|string) %}selected{% endif %}>{{ "{:,.0f}".format(cap) }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label class="field" style="flex-direction:row;align-items:center;gap:6px;padding-top:14px;">
+        <input type="checkbox" name="errors_only" value="1" {% if errors_only %}checked{% endif %} onchange="this.form.submit()">
+        <span>Sadece hatalar</span>
+      </label>
+      <label class="field" style="min-width:180px;">
+        Varyant
+        <select id="variant-select" onchange="applyVariant()">
+          {# Varsayılan 'Tümü' — 'profitable' ilk açılışta hatalı (pnl=None)
+             satırları da sessizce gizleyip 'Sadece hatalar'la birleşince
+             tabloyu boş gösteriyordu. #}
+          <option value="all" selected>Tümü</option>
+          <option value="profitable">Kârlı (P&amp;L ≥ 0)</option>
+          <option value="loss">Zararlı (P&amp;L &lt; 0)</option>
+          <option value="sharpe1">Sharpe ≥ 1.0</option>
+          <option value="win50">Win Rate ≥ %50</option>
+          <option value="traded">İşlem yapılmış (Trades &gt; 0)</option>
+        </select>
+      </label>
+      <div style="margin-left:auto;display:flex;gap:8px;align-items:flex-end;padding-bottom:2px;">
+        {# ── Sayfalama — DOM'da yalnız görünen sayfa tutulur ── #}
+        <div id="pager" style="display:flex;gap:4px;align-items:center;">
+          <button type="button" class="btn" id="pg-prev" title="Önceki sayfa" style="padding:4px 8px;">‹</button>
+          <span id="pg-info" class="mono text-muted" style="font-size:11px;min-width:86px;text-align:center;">sayfa 1/1</span>
+          <button type="button" class="btn" id="pg-next" title="Sonraki sayfa" style="padding:4px 8px;">›</button>
+          <select id="pg-size" title="Sayfa başına satır" style="font-size:11px;padding:3px 4px;">
+            <option value="100">100</option>
+            <option value="250" selected>250</option>
+            <option value="500">500</option>
+            <option value="1000">1000</option>
+            <option value="0">Tümü</option>
+          </select>
+        </div>
+        {% if runner_filter or symbol_filter or errors_only or capital_filter %}
+          <a href="/reports" class="btn">✕ Temizle</a>
+        {% endif %}
+        <button type="button" class="btn" onclick="toggleColPanel(event)">⚙ Sütunlar</button>
+        {# L24: |urlencode — '&'/'#' içeren filtre değeri sorguyu bölmesin #}
+        <a href="/reports/export.csv?runner={{ runner_filter|urlencode }}&symbol={{ symbol_filter|urlencode }}&capital={{ capital_filter|urlencode }}&errors_only={{ '1' if errors_only else '' }}"
+           class="btn">⬇ CSV</a>
+      </div>
+    </form>
+    {# ── Sütun göster/gizle paneli ── #}
+    <div id="col-panel" style="display:none;margin-top:10px;padding:12px 14px;background:var(--inset);border:1px solid var(--border);border-radius:8px;">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;">
+        <span class="text-muted" style="font-size:11px;">Sütunları gizle/göster · başlıkları sürükleyerek sırala</span>
+        <button type="button" class="btn" style="font-size:10px;padding:2px 8px;margin-left:auto;" onclick="resetColumns()">↺ Sıfırla</button>
+      </div>
+      <div id="col-checks" style="display:flex;flex-wrap:wrap;gap:6px 16px;"></div>
+    </div>
+  </div>
+</div>
+
+{# ── Tablo ───────────────────────────────────────────────────── #}
+{% if rows %}
+<div class="panel" style="overflow:auto;max-height:calc(100vh - 210px);">
+  <table id="rep-table" class="table mono" style="font-size:12px;min-width:1600px;">
+    <thead>
+      <tr>
+        <th class="sortable" data-key="ts" data-col="0" draggable="true"
+            title="Koşum Tarihi — Backtest'in çalıştırıldığı yerel tarih/saat (yıl-ay-gün saat:dk:sn). Tıklayınca bu sütuna göre sıralar.">Tarih ↕</th>
+        <th class="num" data-key="test_period" draggable="true"
+            title="Test Periyodu — Backtest'in kapsadığı veri aralığının uzunluğu (bars.start → bars.end farkı). Örn. '6.3y' = 6.3 yıl, '14ay', '52g'. Stratejinin ne kadar geçmiş veride test edildiğini gösterir.">Test Per.</th>
+        <th data-key="strategy" draggable="true"
+            title="Strateji Adı — Backtest'te kullanılan kayıtlı stratejinin adı. Satıra tıklayarak içindeki sinyal bloklarını (entry/exit) görebilirsiniz.">Strateji</th>
+        <th data-key="symbol" draggable="true"
+            title="Sembol / Enstrüman — İşlem yapılan varlık (örn. BTCUSDT, ETHUSDT). Bybit için sembol kodu, index için ticker.">Sembol</th>
+        <th class="num" data-key="starting_cash" draggable="true"
+            title="Başlangıç Sermayesi — Backtest'in başladığı hesap bakiyesi (yatırım sermayesi). PnL yüzdesi ve getiri bu tutara göre hesaplanır.">Sermaye</th>
+        <th data-key="interval" draggable="true"
+            title="Bar Aralığı (Interval) — Mum/bar zaman dilimi: 1m, 5m, 15m, 60m (1s), 240m (4s), D (günlük). Daha küçük aralık = daha fazla veri noktası + daha hassas ama daha yavaş.">Int.</th>
+        <th data-key="runner" draggable="true"
+            title="Çalıştıran — Bu backtest'i kimin başlattığı: Human (manuel siz), Lab (Strateji Lab parametre taraması), Agent (otonom Claude ajanı).">Çalıştıran</th>
+        <th class="sortable num" data-key="pnl" data-col="7" draggable="true"
+            title="Realized PnL (Kâr/Zarar) — Backtest sonunda gerçekleşen net kâr/zarar (komisyon + slippage dahil), sermaye para biriminde. Yeşil = kâr, kırmızı = zarar. Tıklayınca sıralar.">PnL ↕</th>
+        <th class="num" data-key="pnl_pct" draggable="true"
+            title="PnL Yüzdesi — Net kâr/zararın başlangıç sermayesine oranı (%). Farklı sermaye tutarlarındaki koşumları adil karşılaştırmak için kullanın.">PnL %</th>
+        <th class="sortable num" data-key="max_dd" data-col="9" draggable="true"
+            title="Maksimum Drawdown — Sermaye eğrisinin bir zirveden en dip noktaya kadar yaşadığı en büyük düşüş (%). Stratejinin en kötü kayıp dönemini gösterir; ne kadar küçük (0'a yakın) o kadar iyi. Risk ölçüsüdür.">Max DD ↕</th>
+        <th class="sortable num" data-key="sharpe" data-col="10" draggable="true"
+            title="Sharpe Oranı (252g yıllık) — Riske göre düzeltilmiş getiri: ortalama getiri / getiri oynaklığı. Yüksek = birim risk başına daha çok getiri. Genelde >1 iyi, >2 çok iyi. Tüm oynaklığı (yukarı+aşağı) cezalandırır.">Sharpe ↕</th>
+        <th class="sortable num" data-key="sortino" data-col="11" draggable="true"
+            title="Sortino Oranı (252g yıllık) — Sharpe'a benzer ama yalnızca aşağı yönlü (zarar) oynaklığı cezalandırır. Yukarı yönlü dalgalanmayı risk saymaz, bu yüzden çoğu zaman Sharpe'tan yüksektir. Yüksek = iyi.">Sortino ↕</th>
+        <th class="num" data-key="pfactor" draggable="true"
+            title="Profit Factor (Kâr Faktörü) — Toplam kazançların toplam kayıplara oranı (brüt kâr / brüt zarar). >1 = kârlı, 1.5+ sağlam, 2+ güçlü. 1'in altı = zarar eden strateji.">P.Factor</th>
+        <th class="sortable num" data-key="winrate" data-col="13" draggable="true"
+            title="Kazanma Oranı (Win Rate) — Kârla kapanan işlemlerin toplam işlemlere oranı (%). Tek başına yeterli değil: düşük win rate + büyük kazançlar yine kârlı olabilir. Profit Factor ile birlikte değerlendirin.">W.Rate ↕</th>
+        <th class="sortable num" data-key="trades" data-col="14" draggable="true"
+            title="İşlem Sayısı (Trades) — Backtest boyunca açılıp kapanan toplam pozisyon sayısı. Çok az işlem = istatistiksel olarak güvenilmez sonuç; çok fazla = yüksek komisyon yükü.">Trades ↕</th>
+        <th class="num" data-key="avg_dur" draggable="true"
+            title="Ortalama İşlem Süresi — Bir pozisyonun açık kaldığı ortalama süre (dk/sa/gün). Stratejinin zaman ufkunu gösterir: kısa = scalping/gün-içi, uzun = swing/pozisyon.">Avg Dur</th>
+        <th class="num" data-key="volatility" draggable="true"
+            title="Oynaklık (Volatility, 252g yıllık) — Getirilerin yıllıklaştırılmış standart sapması (%). Sermaye eğrisinin ne kadar dalgalı olduğunu ölçer; yüksek = daha oynak/riskli.">Volatility</th>
+        <th class="num" data-key="commission" draggable="true"
+            title="Toplam Komisyon — Tüm işlemler için ödenen kümülatif işlem ücreti (sermaye para biriminde). Çok işlem yapan stratejilerde net kârı ciddi düşürebilir.">Komis.</th>
+        <th data-key="status" draggable="true"
+            title="Durum — ✓ backtest başarıyla tamamlandı, ✗ hata oluştu (üzerine gelince hata mesajı görünür).">Durum</th>
+        {# ── Robustness sütunları ── #}
+        <th data-key="overfitting" draggable="true" style="border-left:1px solid rgba(255,255,255,0.08);padding-left:8px;"
+            title="Overfitting Etiketi (Aşırı Uyum) — In-sample/out-of-sample karşılaştırmasına göre stratejinin geçmişe aşırı uydurulmuş olup olmadığı. ✓ sağlam, ⚠ şüpheli, ✗ aşırı uyum riski. Yalnızca Robustness analizi çalıştırılmış koşumlarda dolu.">Overfitting</th>
+        <th class="sortable num" data-key="oos_sharpe" data-col="rob_oos_sharpe" draggable="true"
+            title="OOS Sharpe (Örneklem-dışı) — Stratejinin eğitimde görmediği veri diliminde (out-of-sample) ölçülen Sharpe oranı. Gerçek performansa en yakın göstergedir; in-sample Sharpe'a yakınsa strateji sağlamdır.">OOS Sharpe ↕</th>
+        <th class="num" data-key="oos_pnl" draggable="true"
+            title="OOS PnL (Örneklem-dışı Kâr) — Out-of-sample veri diliminde gerçekleşen kâr/zarar. Pozitif ve anlamlıysa strateji ezberlememiş, genellenebilir demektir.">OOS PnL</th>
+        <th class="sortable num" data-key="mc_median" data-col="rob_mc_median" draggable="true"
+            title="Monte Carlo Medyan — İşlem sırası binlerce kez rastgele karıştırılarak üretilen olası sonuç dağılımının medyan (ortanca) final bakiyesi. Şansa değil, tipik beklenen sonuca işaret eder.">MC Median ↕</th>
+        <th class="num" data-key="mc_dd_p95" draggable="true"
+            title="Monte Carlo DD p95 — Monte Carlo simülasyonlarının %95'inde aşılmayan en kötü drawdown (kötü senaryo riski). Örn. -%40 = simülasyonların %95'inde düşüş bundan daha az. Sermaye planlaması için kritik.">MC DD p95</th>
+        <th class="num" data-key="wf_pass" draggable="true"
+            title="Walk-Forward Geçiş — Walk-forward analizinde kaç test penceresinin kârla kapandığı (örn. 4/6 = 6 pencereden 4'ü pozitif). Zaman içinde tutarlılığı ölçer; ne kadar yüksek oran o kadar sağlam.">WF Pass</th>
+        <th data-key="bt_link" draggable="true"
+            title="Backtest'i Aç — ▶ ile bu stratejiyi Backtest sayfasında yeniden açar/çalıştırabilirsiniz."></th>{# backtest link #}
+      </tr>
+      {# ── Kolon filtre satırı — metin: substring · sayısal: >5  <=0  100..500 ── #}
+      <tr class="filter-row">
+        {% for key in ['ts','test_period','strategy','symbol','starting_cash','interval','runner','pnl','pnl_pct','max_dd','sharpe','sortino','pfactor','winrate','trades','avg_dur','volatility','commission','status','overfitting','oos_sharpe','oos_pnl','mc_median','mc_dd_p95','wf_pass'] %}
+        <th data-key="{{ key }}"><input type="text" class="col-filter" data-key="{{ key }}"
+               placeholder="⌕" spellcheck="false" autocomplete="off"
+               title="Filtre — metin: geçen satırlar · sayısal: >5, <=0, =10, 100..500"></th>
+        {% endfor %}
+        <th data-key="bt_link" style="text-align:center;">
+          <button type="button" class="btn" id="clear-filters" title="Tüm kolon filtrelerini temizle"
+                  style="font-size:10px;padding:1px 6px;">✕</button>
+        </th>
+      </tr>
+    </thead>
+    <tbody>
+    {% for r in rows %}
+      <tr class="rep-row" data-idx="{{ loop.index0 }}"
+          onclick="toggleExpand(this, event)"
+          style="cursor:pointer;"
+          data-ts-raw="{{ r.ts_raw }}"
+          {# forceescape şart: tojson Markup(safe) döndürür, |e no-op kalır ve
+             ham çift tırnak attribute'u "[{" noktasında keserdi #}
+          data-blocks="{{ r.blocks | tojson | forceescape }}"
+          data-pnl="{{ r.pnl if r.pnl is not none else '' }}"
+          data-maxdd="{{ r.max_dd if r.max_dd is not none else '' }}"
+          data-sharpe="{{ r.sharpe if r.sharpe is not none else '' }}"
+          data-sortino="{{ r.sortino if r.sortino is not none else '' }}"
+          data-winrate="{{ r.win_rate if r.win_rate is not none else '' }}"
+          data-trades="{{ r.n_trades }}"
+          data-cash="{{ r.starting_cash if r.starting_cash is not none else '' }}"
+          data-rob-oos-sharpe="{{ r.rob_oos_sharpe if r.rob_oos_sharpe is not none else '' }}"
+          data-rob-mc-median="{{ r.rob_mc_median if r.rob_mc_median is not none else '' }}">
+        <td data-key="ts" class="text-muted">{{ r.ts }}</td>
+        <td data-key="test_period" class="num text-muted" title="Test edilen veri aralığı">{{ r.test_period_fmt }}</td>
+        <td data-key="strategy" style="max-width:200px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;"
+            title="{{ r.spec_name }}">{{ r.spec_name }}</td>
+        <td data-key="symbol">{{ r.symbol }}</td>
+        <td data-key="starting_cash" class="num text-muted">{{ r.starting_cash_fmt }}</td>
+        <td data-key="interval" class="text-muted">{{ r.interval }}{% if r.interval and r.interval != 'D' %}m{% endif %}</td>
+        <td data-key="runner">
+          {% if r.runner == 'Human' %}
+            <span class="badge" style="background:rgba(255,255,255,0.08);color:#c8c8c8;">Human</span>
+          {% elif r.runner == 'Lab' %}
+            <span class="badge" style="background:rgba(74,222,128,0.15);color:#4ade80;">Lab</span>
+          {% elif r.runner == 'Agent' %}
+            <span class="badge" style="background:rgba(251,146,60,0.2);color:#fb923c;">Agent</span>
+          {% else %}
+            <span class="badge">{{ r.runner }}</span>
+          {% endif %}
+        </td>
+        <td data-key="pnl" class="num {% if r.pnl is not none %}{% if r.pnl >= 0 %}text-up{% else %}text-down{% endif %}{% endif %}">
+          {{ r.pnl_fmt }}
+        </td>
+        <td data-key="pnl_pct" class="num {% if r.pnl is not none %}{% if r.pnl >= 0 %}text-up{% else %}text-down{% endif %}{% endif %}">
+          {{ r.pnl_pct_fmt }}
+        </td>
+        <td data-key="max_dd" class="num text-down">{{ r.max_dd_fmt }}</td>
+        <td data-key="sharpe" class="num">{{ r.sharpe_fmt }}</td>
+        <td data-key="sortino" class="num">{{ r.sortino_fmt }}</td>
+        <td data-key="pfactor" class="num">{{ r.profit_factor_fmt }}</td>
+        <td data-key="winrate" class="num">{{ r.win_rate_fmt }}</td>
+        <td data-key="trades" class="num">{{ r.n_trades }}</td>
+        <td data-key="avg_dur" class="num text-muted">{{ r.avg_dur_fmt }}</td>
+        <td data-key="volatility" class="num text-muted">{{ r.volatility_fmt }}</td>
+        <td data-key="commission" class="num text-muted">{{ r.commission_fmt }}</td>
+        <td data-key="status">
+          {% if r.error %}
+            <span class="badge exit" title="{{ r.error }}">✗</span>
+          {% else %}
+            <span class="badge running">✓</span>
+          {% endif %}
+        </td>
+        {# ── Robustness hücreleri ── #}
+        <td data-key="overfitting" style="border-left:1px solid rgba(255,255,255,0.08);padding-left:8px;">
+          {% if r.rob_label == '—' %}
+            <span class="text-muted">—</span>
+          {% elif '✓' in r.rob_label %}
+            <span class="badge running">{{ r.rob_label }}</span>
+          {% elif '⚠' in r.rob_label %}
+            <span class="badge" style="background:rgba(251,191,36,0.18);color:#fbbf24;">{{ r.rob_label }}</span>
+          {% elif '✗' in r.rob_label %}
+            <span class="badge exit">{{ r.rob_label }}</span>
+          {% else %}
+            <span class="text-muted">{{ r.rob_label }}</span>
+          {% endif %}
+        </td>
+        <td data-key="oos_sharpe" class="num">{{ r.rob_oos_sharpe_fmt }}</td>
+        <td data-key="oos_pnl" class="num {% if r.rob_oos_sharpe is not none %}{% if r.rob_oos_sharpe >= 0 %}text-up{% else %}text-down{% endif %}{% endif %}">
+          {{ r.rob_oos_pnl_fmt }}
+        </td>
+        <td data-key="mc_median" class="num">{{ r.rob_mc_median_fmt }}</td>
+        <td data-key="mc_dd_p95" class="num text-down">{{ r.rob_mc_dd_p95_fmt }}</td>
+        <td data-key="wf_pass" class="num">{{ r.rob_wf_pass_fmt }}</td>
+        <td data-key="bt_link">
+          {% if r.spec_id %}
+            <a href="/backtest?spec_id={{ r.spec_id }}" class="btn" style="font-size:11px;padding:2px 6px;">▶</a>
+          {% endif %}
+        </td>
+      </tr>
+      {# Expand satırı artık lazy: toggleExpand ihtiyaç anında üretir —
+         3.6k hazır-render gizli satır HTML'i/parse'ı ikiye katlıyordu #}
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% else %}
+  <div class="panel">
+    <div class="panel-body empty-state">
+      Henüz kayıtlı çalışma yok — Backtest, Lab veya Agent çalıştırın.
+    </div>
+  </div>
+{% endif %}
+
+{% endblock %}
+
+{% block scripts %}
+<style>
+  /* ── Reports tablo okunabilirlik ── */
+  #rep-table { border-collapse: collapse; }
+  #rep-table thead th {
+    position: sticky; top: 0; z-index: 2;
+    background: var(--panel-2, #151C2B);
+    color: var(--text-2, #97A1B5);
+    font-weight: 600; font-size: 10.5px;
+    letter-spacing: 0.3px; text-transform: uppercase;
+    padding: 9px 10px; white-space: nowrap;
+    border-bottom: 1.5px solid var(--border, #1C2433);
+    cursor: grab;
+  }
+  #rep-table thead th.col-dragging { opacity: 0.4; cursor: grabbing; }
+  #rep-table thead th.col-drop-target { box-shadow: inset 2px 0 0 0 var(--accent, #f2f2f2); }
+  /* ── Kolon filtre satırı ── */
+  #rep-table thead tr.filter-row th {
+    position: sticky; z-index: 2; cursor: default;
+    background: var(--panel-2, #151C2B);
+    padding: 3px 6px 6px 6px;
+    border-bottom: 1.5px solid var(--border, #1C2433);
+  }
+  #rep-table .col-filter {
+    width: 100%; min-width: 44px; box-sizing: border-box;
+    background: var(--inset, rgba(255,255,255,0.04));
+    border: 1px solid var(--border, #1C2433); border-radius: 4px;
+    color: var(--text, #e2e8f0); font-size: 11px; padding: 2px 6px;
+    font-family: inherit;
+  }
+  #rep-table .col-filter:focus { outline: none; border-color: rgba(255,255,255,0.35); }
+  #rep-table .col-filter::placeholder { color: rgba(255,255,255,0.25); }
+  #col-checks label { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; color: var(--text-secondary); cursor: pointer; }
+  #rep-table tbody td {
+    padding: 7px 10px; white-space: nowrap;
+    border-bottom: 1px solid rgba(255,255,255,0.04);
+  }
+  /* Zebra + hover — sadece veri satırlarına (lazy expand satırı sayılmaz) */
+  #rep-table tbody tr:nth-child(even of .rep-row) { background: rgba(255,255,255,0.015); }
+  #rep-table tbody tr.rep-row:hover { background: rgba(255,255,255,0.05); }
+  #rep-table tbody tr.rep-row { transition: background 0.12s; }
+
+  .sortable { cursor: pointer; user-select: none; }
+  .sortable:hover { color: #f2f2f2; }
+  .num { text-align: right; font-variant-numeric: tabular-nums; }
+  .text-up { color: #4ade80; }
+  .text-down { color: #f87171; }
+  .btn-expand {
+    background: none; border: 1px solid rgba(255,255,255,0.1);
+    color: #8a8a8a; cursor: pointer; padding: 1px 4px; border-radius: 3px;
+    font-size: 10px; transition: color 0.15s;
+  }
+  .btn-expand:hover { color: #e2e8f0; }
+  .btn-expand.open { color: #f2f2f2; border-color: rgba(255,255,255,0.4); }
+  .expand-body {
+    background: rgba(255,255,255,0.03); border-radius: 4px;
+    padding: 8px 12px; font-size: 11px;
+  }
+  .block-pill {
+    display: inline-block; padding: 2px 8px; border-radius: 10px; margin: 2px;
+    font-size: 11px;
+  }
+  .block-pill.entry { background: rgba(74,222,128,0.12); color: #4ade80; }
+  .block-pill.exit  { background: rgba(248,113,113,0.12);  color: #f87171; }
+  /* Expand içeriği: expand satırının td'si tablonun TAM genişliğinde
+     (26 kolon, ~2000px+) — içerik görünür alana sabitlenir; yatay
+     kaydırmada yerinde kalır (sticky-left) ve ekrana sığar. Kesin genişlik
+     _fitExpandBody() ile scroll konteynerinden alınır; calc fallback'tir. */
+  .expand-row .expand-body {
+    position: sticky;
+    left: 8px;
+    max-width: calc(100vw - 300px);
+  }
+</style>
+
+<script>
+  // ── Expandable rows (satıra tıkla → blokları göster) ────────────
+  function _visibleColCount() {
+    return _headerCells().filter(th => th.style.display !== 'none').length;
+  }
+
+  // Expand satırı LAZY üretilir: server 3.6k gizli satırı önden render
+  // ettiğinde HTML/parse maliyeti ikiye katlanıyordu.
+  function toggleExpand(row, evt) {
+    // Satır içindeki link/buton tıklamaları toggle'ı tetiklemesin
+    if (evt && evt.target.closest('a, button')) return;
+    const p = _pairByIdx && _pairByIdx[row.dataset.idx];
+    if (!p) return;
+
+    if (p.erOpen) {
+      p.erOpen = false;
+      if (p.er) p.er.remove();
+      row.classList.remove('open');
+      return;
+    }
+
+    if (!p.er) {
+      const er = document.createElement('tr');
+      er.className = 'expand-row';
+      er.id = 'expand-' + row.dataset.idx;
+      const td = document.createElement('td');
+      td.style.cssText = 'padding:0 8px 8px 28px;';
+      const body = document.createElement('div');
+      body.className = 'expand-body';
+      let blocks = [];
+      try { blocks = JSON.parse(row.dataset.blocks || '[]'); } catch (e) {}
+      if (!blocks.length) {
+        body.innerHTML = '<span class="text-muted">Blok bilgisi yok.</span>';
+      } else {
+        // L11: LLM üretimi spec meta'sı (özellikle param DEĞERLERİ) raw
+        // innerHTML'e giriyordu — esc + role için entry/exit whitelist.
+        const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({
+          '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+        }[c]));
+        body.innerHTML = blocks.map(b => {
+          const roleCls = b.role === 'exit' ? 'exit' : 'entry';
+          const params = Object.entries(b.params || {})
+            .map(([k,v]) => `${esc(k)}=${esc(v)}`).join(', ');
+          return `<span class="block-pill ${roleCls}">${esc((b.role || '').toUpperCase())} · ${esc(b.type)}${params ? ' · ' + params : ''}</span>`;
+        }).join('');
+      }
+      // Trade detayı: butonla yüklenir — yeniden-koşum (~2-5 sn) kazara
+      // satır açmalarında tetiklenmesin (AUTO_LOAD_DETAIL ile değiştirilebilir)
+      const bar = document.createElement('div');
+      bar.style.cssText = 'margin-top:8px;';
+      const btn = document.createElement('button');
+      btn.className = 'btn';
+      btn.textContent = '📊 İşlemleri Göster';
+      btn.style.cssText = 'font-size:11px;padding:3px 10px;';
+      const host = document.createElement('div');
+      host.className = 'rd-host';
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        loadReportDetail(row, btn, host);
+      });
+      bar.appendChild(btn);
+      body.appendChild(bar);
+      body.appendChild(host);
+      td.appendChild(body);
+      er.appendChild(td);
+      p.er = er;
+      if (AUTO_LOAD_DETAIL) loadReportDetail(row, btn, host);
+    }
+    p.er.querySelector('td').colSpan = _visibleColCount();
+    row.after(p.er);
+    _fitExpandBody(p.er);
+    p.erOpen = true;
+    row.classList.add('open');
+  }
+
+  // Expand içeriğini GÖRÜNÜR alana sığdır: td tablonun tam genişliğinde,
+  // içerik scroll konteynerinin genişliğini almalı (grafik ekrana sığsın)
+  function _fitExpandBody(er) {
+    const body = er.querySelector('.expand-body');
+    const scroller = document.querySelector('#rep-table')?.parentElement;
+    if (body && scroller) body.style.maxWidth = (scroller.clientWidth - 28) + 'px';
+  }
+  window.addEventListener('resize', () => {
+    document.querySelectorAll('#rep-table tr.expand-row').forEach(_fitExpandBody);
+  });
+
+  // true → satır açılır açılmaz detayı yükle (her açılış bir yeniden-koşum!)
+  const AUTO_LOAD_DETAIL = false;
+
+  function loadReportDetail(row, btn, host) {
+    const ts = row.dataset.tsRaw;
+    if (!ts) {
+      host.innerHTML = '<div class="empty-state">Kayıt kimliği yok (eski satır).</div>';
+      return;
+    }
+    btn.disabled = true;
+    btn.textContent = '⏳ Backtest yeniden koşuluyor…';
+    // htmx.ajax: fragment'taki inline <script> çalışsın; grafik chart.js
+    // MutationObserver'ı ile otomatik başlar
+    htmx.ajax('GET', '/reports/detail?ts=' + encodeURIComponent(ts), {
+      target: host, swap: 'innerHTML',
+    }).then(() => { btn.style.display = 'none'; })
+      .catch(() => {
+        btn.disabled = false;
+        btn.textContent = '📊 İşlemleri Göster';
+      });
+  }
+
+  // ── Satır cache'i + sayfalama durumu ────────────────────────────
+  // TÜM satırlar JS cache'inde yaşar; DOM'a yalnız görünen sayfa takılır.
+  // (3.6k satırın tamamı DOM'dayken her sort/filtre sonrası style+layout+
+  // paint ~1.2sn sürüyordu; 250-satırlık sayfa ile ~50ms.)
+  let _pairs = null;      // master liste, güncel sort sırasında
+  let _pairByIdx = null;  // idx → pair (expand için O(1))
+  let _view = [];         // filtre+varyanttan geçen alt küme (sıralı)
+  let _page = 1;
+  let _pageSize = 250;    // 0 = Tümü
+
+  // dataset'te ham sayısal değeri hazır olan kolonlar
+  const DATASET_NUM = {
+    pnl:'pnl', max_dd:'maxdd', sharpe:'sharpe', sortino:'sortino',
+    winrate:'winrate', trades:'trades', starting_cash:'cash',
+    oos_sharpe:'robOosSharpe', mc_median:'robMcMedian',
+  };
+  // Metinden sayı çıkarılacak kolonlar (para/%/süre/oran biçimli)
+  const TEXT_NUM = new Set(['pnl_pct','pfactor','avg_dur','volatility',
+    'commission','oos_pnl','mc_dd_p95','wf_pass','test_period','interval']);
+  // Hücrede % gösterilen ama dataset'te ham kesir taşınan kolonlar —
+  // sort/filtre değeri ekrandaki birimle (%) eşleşsin diye 100 ile çarpılır.
+  const PCT_SCALE = new Set(['winrate','max_dd']);
+  // Süre son ekleri → dakika çarpanı. Karışık kaynaklar: test_period Türkçe
+  // (sa/g/ay/y), avg_dur İngilizce (m/h/d — bkz. viewmodels.fmt_dur).
+  const DUR_MULT = { ms:1/60000, sn:1/60, dk:1, sa:60, m:1, h:60, d:1440,
+                     g:1440, ay:43829.1, y:525949 };
+
+  function smartNum(t) {
+    if (!t || t === '—') return null;
+    if (/^d$/i.test(t)) return 1440;                   // interval "D" = günlük
+    if (t === '∞') return Infinity;
+    if (t === '-∞') return -Infinity;
+    let m = t.match(/^(\d+)\s*\/\s*(\d+)$/);           // "4/6" → oran
+    if (m) return +m[2] ? (+m[1]) / (+m[2]) : 0;
+    m = t.match(/^([+-]?[\d.,]+)\s*(ms|sn|dk|sa|ay|m|h|d|g|y)$/); // süre
+    if (m) return parseFloat(m[1].replace(/,/g, '')) * DUR_MULT[m[2]];
+    const v = parseFloat(t.replace(/[,%\s]/g, '').replace(/^\+/, ''));
+    return isNaN(v) ? null : v;
+  }
+
+  function _buildCache() {
+    if (_pairs) return _pairs;
+    // DİKKAT: ilk render'dan ÖNCE çağrılmalı — render tbody'yi sayfaya
+    // kırptığında document'te yalnız görünen satırlar kalır.
+    _pairs = _bodyRows().map(dr => {
+      const num = {}, txt = {};
+      dr.querySelectorAll('td[data-key]').forEach(td => {
+        const k = td.dataset.key;
+        const t = (td.textContent || '').trim();
+        txt[k] = t.toLowerCase();
+        if (DATASET_NUM[k] !== undefined) {
+          const raw = dr.dataset[DATASET_NUM[k]];
+          let n = raw === '' || raw === undefined ? null : parseFloat(raw);
+          if (n !== null && PCT_SCALE.has(k)) n *= 100;  // ekranla aynı birim
+          num[k] = n;
+        } else if (TEXT_NUM.has(k)) {
+          num[k] = smartNum(t);
+        }
+      });
+      return { dr, er: null, erOpen: false, idx: parseInt(dr.dataset.idx), num, txt };
+    });
+    _pairByIdx = {};
+    _pairs.forEach(p => { _pairByIdx[p.idx] = p; });
+    return _pairs;
+  }
+
+  // ── Render: DOM'a yalnız aktif sayfayı tak ──────────────────────
+  function render() {
+    const tbody = document.querySelector('#rep-table tbody');
+    if (!tbody) return;
+    const size = _pageSize > 0 ? _pageSize : Math.max(1, _view.length);
+    const totalPages = Math.max(1, Math.ceil(_view.length / size));
+    if (_page > totalPages) _page = totalPages;
+    if (_page < 1) _page = 1;
+    const slice = _pageSize > 0
+      ? _view.slice((_page - 1) * size, _page * size)
+      : _view;
+    const nodes = [];
+    slice.forEach(p => { nodes.push(p.dr); if (p.er && p.erOpen) nodes.push(p.er); });
+    tbody.replaceChildren(...nodes);
+    const info = document.getElementById('pg-info');
+    if (info) info.textContent = `sayfa ${_page}/${totalPages}`;
+    const prev = document.getElementById('pg-prev');
+    const next = document.getElementById('pg-next');
+    if (prev) prev.disabled = _page <= 1;
+    if (next) next.disabled = _page >= totalPages;
+    const meta = document.getElementById('variant-count');
+    if (meta) meta.textContent = _view.length + ' görünen';
+  }
+
+  // ── Client-side sort (tüm kolonlar, tek-reflow) ─────────────────
+  let _sort = { key: null, asc: true };
+
+  function _sortArrows() {
+    document.querySelectorAll('#rep-table thead tr:first-child th[data-key]').forEach(h => {
+      if (h.dataset.key === 'bt_link') return;
+      const base = h.textContent.replace(/ [↑↓↕]$/, '');
+      h.textContent = base +
+        (h.dataset.key === _sort.key ? (_sort.asc ? ' ↑' : ' ↓') : ' ↕');
+    });
+  }
+
+  function doSort(key, asc, persist) {
+    _sort = { key, asc };
+    _sortArrows();
+    _buildCache();
+    const isNum = key === 'ts' || DATASET_NUM[key] !== undefined || TEXT_NUM.has(key);
+    _pairs.sort((a, b) => {
+      // idx 0 = en yeni satır → tarih artan = idx azalan
+      if (key === 'ts') return asc ? b.idx - a.idx : a.idx - b.idx;
+      if (isNum) {
+        const va = a.num[key], vb = b.num[key];
+        const na = va === null || va === undefined, nb = vb === null || vb === undefined;
+        if (na && nb) return 0;
+        if (na) return 1;   // boşlar hep sonda
+        if (nb) return -1;
+        return asc ? va - vb : vb - va;
+      }
+      const c = (a.txt[key] || '').localeCompare(b.txt[key] || '', 'tr');
+      return asc ? c : -c;
+    });
+    _recomputeView();
+    _page = 1;
+    render();
+    if (persist !== false) saveLayout();
+  }
+
+  document.querySelectorAll('#rep-table thead tr:first-child th[data-key]').forEach(th => {
+    if (th.dataset.key === 'bt_link') return;
+    th.classList.add('sortable');
+    th.addEventListener('click', () => {
+      const key = th.dataset.key;
+      doSort(key, _sort.key === key ? !_sort.asc : true);
+    });
+  });
+
+  // ── Birleşik filtre motoru: kolon filtreleri + varyant ──────────
+  // Sayısal ifadeler: >5  >=5  <0  <=0  =10  100..500 · diğerleri substring.
+  // Kullanıcı sayısı: "1,5" Türkçe ondalık virgül kabul edilir; "1,234.5"
+  // binlik ayraç olarak soyulur.
+  function _userNum(s) {
+    s = s.trim();
+    if (/^[+-]?\d+,\d+$/.test(s)) return parseFloat(s.replace(',', '.'));
+    return parseFloat(s.replace(/,/g, ''));
+  }
+
+  function _compileFilter(expr) {
+    expr = (expr || '').trim();
+    if (!expr) return null;
+    let m = expr.match(/^(>=|<=|>|<|=)\s*([+-]?[\d.,]+)$/);
+    if (m) {
+      const v = _userNum(m[2]);
+      const op = m[1];
+      return { num: (x) => x !== null && x !== undefined && (
+        op === '>'  ? x >  v : op === '>=' ? x >= v :
+        op === '<'  ? x <  v : op === '<=' ? x <= v : x === v) };
+    }
+    m = expr.match(/^([+-]?[\d.,]+)\.\.([+-]?[\d.,]+)$/);
+    if (m) {
+      const lo = _userNum(m[1]), hi = _userNum(m[2]);
+      return { num: (x) => x !== null && x !== undefined && x >= lo && x <= hi };
+    }
+    const needle = expr.toLowerCase();
+    return { text: (t) => (t || '').includes(needle) };
+  }
+
+  function _activeFilters() {
+    const out = {};
+    document.querySelectorAll('.col-filter').forEach(inp => {
+      if (inp.value.trim()) out[inp.dataset.key] = inp.value.trim();
+    });
+    return out;
+  }
+
+  function _recomputeView() {
+    const pairs = _buildCache();
+    const v = document.getElementById('variant-select')?.value || 'all';
+    const variantTest = {
+      all:        () => true,
+      profitable: (p) => p.num.pnl !== null && p.num.pnl >= 0,
+      loss:       (p) => p.num.pnl !== null && p.num.pnl < 0,
+      sharpe1:    (p) => p.num.sharpe !== null && p.num.sharpe >= 1.0,
+      win50:      (p) => p.num.winrate !== null && p.num.winrate >= 50,  // %-birimli (PCT_SCALE)
+      traded:     (p) => p.num.trades !== null && p.num.trades > 0,
+    }[v] || (() => true);
+
+    const compiled = [];
+    Object.entries(_activeFilters()).forEach(([key, expr]) => {
+      const f = _compileFilter(expr);
+      if (f) compiled.push({ key, f });
+    });
+
+    _view = pairs.filter(p => {
+      let show = variantTest(p);
+      for (const { key, f } of compiled) {
+        if (!show) break;
+        if (f.num) {
+          const hasNum = p.num[key] !== undefined;
+          show = f.num(hasNum ? p.num[key] : smartNum((p.txt[key] || '')));
+        } else {
+          show = f.text(p.txt[key]);
+        }
+      }
+      return show;
+    });
+  }
+
+  function applyAll() {
+    _recomputeView();
+    _page = 1;
+    render();
+  }
+
+  // Varyant select onchange bunu çağırıyor (template'te isim korunuyor)
+  function applyVariant() { applyAll(); saveLayout(); }
+
+  // ── Sütun yönetimi (göster/gizle + sürükle-sırala + kalıcı) ──────
+  const COL_LABELS = {
+    ts:'Tarih', test_period:'Test Per.', strategy:'Strateji', symbol:'Sembol',
+    starting_cash:'Sermaye',
+    interval:'Int.', runner:'Çalıştıran', pnl:'PnL', pnl_pct:'PnL %',
+    max_dd:'Max DD', sharpe:'Sharpe', sortino:'Sortino', pfactor:'P.Factor',
+    winrate:'W.Rate', trades:'Trades', avg_dur:'Avg Dur', volatility:'Volatility',
+    commission:'Komis.', status:'Durum', overfitting:'Overfitting',
+    oos_sharpe:'OOS Sharpe', oos_pnl:'OOS PnL', mc_median:'MC Median',
+    mc_dd_p95:'MC DD p95', wf_pass:'WF Pass', bt_link:'Aç',
+  };
+
+  function _headerCells() {
+    // Yalnız başlık satırı (filtre satırındaki th'ler hariç)
+    return Array.from(document.querySelectorAll('#rep-table thead tr:first-child th'));
+  }
+  function _filterCells() {
+    return Array.from(document.querySelectorAll('#rep-table thead tr.filter-row th'));
+  }
+  function _defaultOrder() {
+    return _headerCells().map(th => th.dataset.key);
+  }
+  function _bodyRows() {
+    // rep-row satırları (expand-row hariç)
+    return Array.from(document.querySelectorAll('#rep-table tbody tr.rep-row'));
+  }
+
+  // Görünür sütun sayısına göre (var olan) expand satırlarının colspan'i
+  function _syncColspan() {
+    const visible = _visibleColCount();
+    (_pairs || []).forEach(p => {
+      if (p.er) p.er.querySelector('td').colSpan = visible;
+    });
+  }
+
+  // Sütunları verilen key sırasına göre DOM'da yeniden diz (th + filtre + td'ler).
+  // Key'ler CSS.escape'lenir — bozuk/elle düzenlenmiş layout dosyası
+  // querySelector SyntaxError ile tüm init'i öldürmesin.
+  function applyColumnOrder(order) {
+    const headRow = document.querySelector('#rep-table thead tr:first-child');
+    const filtRow = document.querySelector('#rep-table thead tr.filter-row');
+    order.forEach(key => {
+      const sel = `[data-key="${CSS.escape(String(key))}"]`;
+      const th = headRow.querySelector('th' + sel);
+      if (th) headRow.appendChild(th);
+      const fc = filtRow && filtRow.querySelector('th' + sel);
+      if (fc) filtRow.appendChild(fc);
+    });
+    // Gövde: cache'teki TÜM satırlar (çoğu DOM dışında — sayfalama) —
+    // görünmeyen sayfalar da taşınır ki sayfa geçişinde düzen tutarlı kalsın.
+    const rows = _pairs ? _pairs.map(p => p.dr) : _bodyRows();
+    rows.forEach(row => {
+      const map = {};
+      row.querySelectorAll('td[data-key]').forEach(td => { map[td.dataset.key] = td; });
+      order.forEach(key => { const td = map[key]; if (td) row.appendChild(td); });
+    });
+  }
+
+  // Gizli key listesini uygula (th + filtre hücresi + tüm eşleşen td'ler).
+  // Gizlenen kolonun filtre değeri de TEMİZLENİR — görünmez bir input'un
+  // tabloyu sessizce filtrelemeye devam etmesi (hayalet filtre) engellenir.
+  // Dönüş: filtre temizlendiyse true (çağıran applyAll yapmalı).
+  function applyHidden(hidden) {
+    const set = new Set(hidden || []);
+    let cleared = false;
+    _headerCells().forEach(th => {
+      const on = !set.has(th.dataset.key);
+      th.style.display = on ? '' : 'none';
+    });
+    _filterCells().forEach(fc => {
+      const hide = set.has(fc.dataset.key);
+      fc.style.display = hide ? 'none' : '';
+      if (hide) {
+        const inp = fc.querySelector('.col-filter');
+        if (inp && inp.value) { inp.value = ''; cleared = true; }
+      }
+    });
+    // Gövde hücreleri: cache'teki tüm satırlar (çoğu DOM dışında)
+    const rows = _pairs ? _pairs.map(p => p.dr) : _bodyRows();
+    rows.forEach(row => {
+      row.querySelectorAll('td[data-key]').forEach(td => {
+        td.style.display = set.has(td.dataset.key) ? 'none' : '';
+      });
+    });
+    _syncColspan();
+    return cleared;
+  }
+
+  function _currentOrder() { return _headerCells().map(th => th.dataset.key); }
+  function _currentHidden() {
+    return _headerCells().filter(th => th.style.display === 'none').map(th => th.dataset.key);
+  }
+
+  let _saveTimer = null;
+  function saveLayout() {
+    clearTimeout(_saveTimer);
+    _saveTimer = setTimeout(() => {
+      fetch('/reports/layout', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          order: _currentOrder(),
+          hidden: _currentHidden(),
+          sort: _sort.key ? { key: _sort.key, asc: _sort.asc } : null,
+          filters: _activeFilters(),
+          variant: document.getElementById('variant-select')?.value || 'all',
+          pageSize: _pageSize,
+        }),
+      }).catch(() => {});
+    }, 350);
+  }
+
+  // Göster/gizle checkbox panelini doldur
+  function buildColPanel() {
+    const host = document.getElementById('col-checks');
+    if (!host) return;
+    host.innerHTML = '';
+    const hidden = new Set(_currentHidden());
+    _currentOrder().forEach(key => {
+      const lbl = document.createElement('label');
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.checked = !hidden.has(key);
+      cb.dataset.key = key;
+      cb.addEventListener('change', () => {
+        const h = _currentHidden();
+        const set = new Set(h);
+        if (cb.checked) set.delete(key); else set.add(key);
+        const cleared = applyHidden(Array.from(set));
+        if (cleared) applyAll();  // gizlenen kolonun filtresi düştü → yeniden uygula
+        saveLayout();
+      });
+      lbl.appendChild(cb);
+      lbl.appendChild(document.createTextNode(COL_LABELS[key] || key));
+      host.appendChild(lbl);
+    });
+  }
+
+  function toggleColPanel(evt) {
+    if (evt) evt.preventDefault();
+    const p = document.getElementById('col-panel');
+    if (!p) return;
+    if (p.style.display === 'none') { buildColPanel(); p.style.display = 'block'; }
+    else { p.style.display = 'none'; }
+  }
+
+  function resetColumns() {
+    // Varsayılan (HTML'deki) sıraya + hepsi görünür
+    // Sayfa DOM'u zaten varsayılan sırada oluşturulmadı; bu yüzden HTML sırasını
+    // yeniden kuramayız — ama order'ı COL_LABELS anahtar sırasına çekeriz.
+    applyColumnOrder(Object.keys(COL_LABELS));
+    applyHidden([]);
+    buildColPanel();
+    saveLayout();
+  }
+
+  // ── Başlık sürükle-bırak (reorder) ──────────────────────────────
+  let _dragKey = null;
+  function _bindDrag() {
+    _headerCells().forEach(th => {
+      th.addEventListener('dragstart', (e) => {
+        _dragKey = th.dataset.key;
+        th.classList.add('col-dragging');
+        e.dataTransfer.effectAllowed = 'move';
+      });
+      th.addEventListener('dragend', () => {
+        th.classList.remove('col-dragging');
+        _headerCells().forEach(h => h.classList.remove('col-drop-target'));
+      });
+      th.addEventListener('dragover', (e) => {
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'move';
+        _headerCells().forEach(h => h.classList.remove('col-drop-target'));
+        if (th.dataset.key !== _dragKey) th.classList.add('col-drop-target');
+      });
+      th.addEventListener('drop', (e) => {
+        e.preventDefault();
+        const targetKey = th.dataset.key;
+        if (!_dragKey || _dragKey === targetKey) return;
+        const order = _currentOrder();
+        const from = order.indexOf(_dragKey);
+        const to = order.indexOf(targetKey);
+        order.splice(from, 1);
+        order.splice(to, 0, _dragKey);
+        applyColumnOrder(order);
+        saveLayout();
+        _headerCells().forEach(h => h.classList.remove('col-drop-target'));
+      });
+    });
+  }
+
+  // Sayfa açılışı: ÖNCE cache (tüm satırlar henüz DOM'dayken), sonra
+  // kaydedilmiş görünüm (kolonlar + sort + filtreler + varyant + sayfa
+  // boyutu) ve ilk render — DOM'a yalnız aktif sayfa takılır.
+  document.addEventListener('DOMContentLoaded', function () {
+    const L = window.__COL_LAYOUT__ || {};
+    _buildCache();  // render() tbody'yi kırpmadan önce ZORUNLU
+    if (L.order && L.order.length) applyColumnOrder(L.order);
+    if (L.hidden && L.hidden.length) applyHidden(L.hidden);
+    _bindDrag();
+
+    // Filtre satırı: sticky offset = başlık satırının gerçek yüksekliği
+    const headH = document.querySelector('#rep-table thead tr:first-child th')?.offsetHeight || 31;
+    _filterCells().forEach(fc => { fc.style.top = headH + 'px'; });
+
+    // Filtre input'ları: yazarken uygula (debounce) + kaydet
+    let _filterTimer = null;
+    document.querySelectorAll('.col-filter').forEach(inp => {
+      inp.addEventListener('input', () => {
+        clearTimeout(_filterTimer);
+        _filterTimer = setTimeout(() => { applyAll(); saveLayout(); }, 250);
+      });
+      // Filtre hücresine tıklama sıralama/sürüklemeyi tetiklemesin
+      inp.addEventListener('click', (e) => e.stopPropagation());
+    });
+    document.getElementById('clear-filters')?.addEventListener('click', () => {
+      document.querySelectorAll('.col-filter').forEach(inp => { inp.value = ''; });
+      applyAll(); saveLayout();
+    });
+
+    // Sayfalama kontrolleri
+    document.getElementById('pg-prev')?.addEventListener('click', () => {
+      if (_page > 1) { _page--; render(); }
+    });
+    document.getElementById('pg-next')?.addEventListener('click', () => {
+      _page++; render();
+    });
+    document.getElementById('pg-size')?.addEventListener('change', (e) => {
+      _pageSize = parseInt(e.target.value) || 0;
+      _page = 1;
+      render();
+      saveLayout();
+    });
+
+    // Kaydedilmiş durum: sayfa boyutu + filtreler + varyant + sıralama.
+    // Gizli kolonların filtresi geri YÜKLENMEZ (hayalet filtre olmasın);
+    // key'ler CSS.escape'lenir (bozuk dosya init'i öldürmesin).
+    if (L.pageSize !== undefined && L.pageSize !== null) {
+      const ps = parseInt(L.pageSize);
+      if (!isNaN(ps) && ps >= 0) {
+        _pageSize = ps;
+        const sel = document.getElementById('pg-size');
+        if (sel && Array.from(sel.options).some(o => o.value === String(ps))) sel.value = String(ps);
+      }
+    }
+    const hiddenSet = new Set(L.hidden || []);
+    if (L.filters) {
+      Object.entries(L.filters).forEach(([key, expr]) => {
+        if (hiddenSet.has(key)) return;
+        const inp = document.querySelector(`.col-filter[data-key="${CSS.escape(String(key))}"]`);
+        if (inp) inp.value = String(expr);
+      });
+    }
+    if (L.variant) {
+      const vs = document.getElementById('variant-select');
+      if (vs && Array.from(vs.options).some(o => o.value === L.variant)) vs.value = L.variant;
+    }
+    if (L.sort && L.sort.key) doSort(String(L.sort.key), !!L.sort.asc, false);
+    else { _sortArrows(); applyAll(); }
+  });
+</script>
+{% endblock %}

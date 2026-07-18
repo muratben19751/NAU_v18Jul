@@ -1,0 +1,232 @@
+{% extends "base.html" %}
+{% block content %}
+
+{% if not catalog %}
+  <div class="panel">
+    <div class="panel-body empty-state">
+      No saved strategies yet.<br>
+      <a href="/strategy" class="btn btn-primary mt-3" style="margin-top:14px;">→ Open Strategy Composer</a>
+    </div>
+  </div>
+{% else %}
+
+<div class="grid-3">
+
+  <div class="stack">
+
+    <div class="panel">
+      <div class="panel-header">
+        <div class="panel-title">01 · Select Strategy</div>
+        <div class="panel-meta">
+          <a href="/strategy" class="link small">✎ Composer →</a>
+          <a href="/data" class="link small">◫ Data →</a>
+        </div>
+      </div>
+      <div class="panel-body">
+        {# Tek yol: stratejiyi doğal dille tarif et → Claude YENİ Python blok(ları)
+           yazar (codegate doğrulama + smoke), spec kataloğa kaydedilir ve SEÇİLEN
+           zaman dilimlerinin HEPSİNDE backtest edilir. type="button" + hx-post →
+           native submit yok; hx-include ile tüm form alanları (tarif, sembol,
+           kategori, checkbox'lı intervals, tarihler) taşınır. Kayıtlı strateji
+           kurmak için → Composer. #}
+        <form id="gen-form" onsubmit="return false;">
+          <label class="field">
+            Stratejiyi tarif et — Claude yeni Python blok(ları) yazar
+            <input type="text" name="description"
+                   placeholder="Örn: RSI 30'un altına düşüp yukarı dönerken ve hacim 20-bar ortalamasının 2 katıyken al; ATR'nin 3 katı kadar düşerse çık">
+          </label>
+
+          <div class="row" style="align-items:flex-end;gap:10px;flex-wrap:wrap;margin-top:12px;">
+            <label class="field" style="flex:1;min-width:150px;">
+              Sembol <span class="text-muted" style="font-size:10px;">(harf yaz → bul)</span>
+              <input type="text" name="symbol" list="bybit-symbols-list"
+                     value="BTCUSDT" autocomplete="off" placeholder="BTC, ETH, SOL…">
+            </label>
+            <label class="field">Kategori
+              <select name="category">
+                {% for cat in bybit_categories %}
+                <option value="{{ cat }}" {% if cat == 'linear' %}selected{% endif %}>{{ cat }}</option>
+                {% endfor %}
+              </select>
+            </label>
+            <label class="field">Başlangıç <span class="text-muted" style="font-size:10px;">(boş=tüm cache)</span>
+              <input type="date" name="bybit_start">
+            </label>
+            <label class="field">Bitiş
+              <input type="date" name="bybit_end">
+            </label>
+          </div>
+          <datalist id="bybit-symbols-list">
+            {% for sym in bybit_symbols %}<option value="{{ sym }}">{% endfor %}
+          </datalist>
+
+          <div class="row" style="align-items:center;gap:12px;flex-wrap:wrap;margin-top:14px;">
+            <span class="text-muted mono" style="font-size:11px;">Zaman dilimleri (backtest edilecek):</span>
+            {% for code, tflabel in bybit_intervals %}
+            <label style="display:inline-flex;align-items:center;gap:4px;font-size:12px;cursor:pointer;">
+              <input type="checkbox" name="intervals" value="{{ code }}"
+                     {% if code in ('15','60','240','D') %}checked{% endif %}>
+              {{ tflabel }}
+            </label>
+            {% endfor %}
+          </div>
+
+          <div class="row" style="align-items:center;gap:10px;flex-wrap:wrap;margin-top:14px;">
+            <button class="btn btn-primary" type="button"
+                    hx-post="/backtest/describe"
+                    hx-include="closest form"
+                    hx-target="#result"
+                    hx-swap="innerHTML"
+                    hx-indicator="#gen-spinner"
+                    style="border-color:rgba(129,140,248,0.5);">✨ Üret &amp; Backtest</button>
+            <span class="htmx-indicator text-muted mono" id="gen-spinner" style="font-size:11px;">Claude blok yazıyor…</span>
+            <div class="spacer"></div>
+            <span class="text-muted" style="font-size:11px;">2+ TF → karşılaştırma tablosu · 1 TF → tam sonuç (equity)</span>
+          </div>
+
+          <div class="text-muted" style="margin-top:10px;font-size:11px;">
+            Seçilen her TF için o çözünürlükteki bar'lar <a href="/data" class="link">Data</a>
+            ekranından çekilmiş olmalı; olmayan TF satırı "cache yok" gösterir.
+            Tarih boşsa cache'in tam aralığı kullanılır.
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <div id="result">
+      {% if last %}
+        {% include "fragments/backtest_result.html" %}
+      {% else %}
+        <div class="panel">
+          <div class="panel-body empty-state">Select a strategy and press <b>Run Backtest</b>.</div>
+        </div>
+      {% endif %}
+    </div>
+
+    {# ── Robustness Analizi Paneli ── #}
+    <div class="panel" id="robustness-section" {% if not last %}style="display:none"{% endif %}>
+      <div class="panel-header">
+        <div class="panel-title">Robustness Analizi</div>
+        <div class="panel-meta text-muted mono small">WFO · Monte Carlo · In/Out-of-Sample</div>
+      </div>
+      <div class="panel-body">
+        <form hx-post="/robustness/run"
+              hx-target="#robustness-result"
+              hx-swap="innerHTML"
+              style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;align-items:end;">
+          <input type="hidden" name="spec_id"   id="rob-spec-id">
+          <input type="hidden" name="symbol"    id="rob-symbol">
+          <input type="hidden" name="category"  id="rob-category">
+          <input type="hidden" name="interval"  id="rob-interval">
+          <input type="hidden" name="bybit_start" id="rob-start">
+          <input type="hidden" name="bybit_end"   id="rob-end">
+          <label class="field">Train (ay)
+            <input type="number" name="train_months" value="3" min="1" max="24">
+          </label>
+          <label class="field">Test (ay)
+            <input type="number" name="test_months" value="1" min="1" max="12">
+          </label>
+          <label class="field">Monte Carlo N
+            <input type="number" name="n_sims" value="300" min="50" max="1000" step="50">
+          </label>
+          <label class="field">In-sample %
+            <input type="number" name="split_pct" value="0.7" min="0.5" max="0.9" step="0.05">
+          </label>
+          <label class="field">WFO deneme/window
+            <input type="number" name="n_optimize" value="20" min="1" max="200" step="1">
+          </label>
+          <label class="field">WFO objective
+            <select name="objective">
+              <option value="sharpe">Sharpe</option>
+              <option value="sortino">Sortino</option>
+              <option value="calmar">Calmar (PnL/DD)</option>
+            </select>
+          </label>
+          <div>
+            <button class="btn btn-primary" type="submit" style="width:100%;">▶ Analiz Çalıştır</button>
+          </div>
+        </form>
+        <div id="robustness-result" style="margin-top:12px;"></div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-header"><div class="panel-title">Order Flow (this backtest)</div></div>
+      <div class="panel-body">
+        <pre class="diagram">ComposedStrategy.on_bar(bar)
+        │
+        ▼
+  entry / exit signals evaluated
+        │
+        ▼
+  self.order_factory.market(...)
+        │
+        ▼
+  self.submit_order(order)
+        │
+        ▼
+  [Order Emulator]    (bracket + Emulate opsiyonu açıksa: LAST_PRICE tetikleyene kadar tutar)
+        │
+        ▼
+  [Execution Algorithm]   (skipped — no ExecAlgorithmId)
+        │
+        ▼
+  RiskEngine           ✓ pre-trade validation
+        │
+        ▼
+  BYBIT venue           → SimulatedExchange fill
+        │
+        ▼
+  ExecutionEngine       → Position tracking, PnL</pre>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="stack">
+    {% if recent_runs %}
+    <div class="panel">
+      <div class="panel-header">
+        <div class="panel-title">Run History</div>
+        <div class="spacer"></div>
+        <span class="text-muted mono" style="font-size:10px;">son {{ recent_runs|length }}</span>
+      </div>
+      <div class="panel-body tight">
+        {% for r in recent_runs %}
+        <div style="display:flex;align-items:center;gap:10px;padding:9px 16px;border-bottom:1px solid var(--border-soft);">
+          <span class="mono" style="font-size:10.5px;color:var(--text-muted);">{{ r.time }}</span>
+          <span class="mono" style="font-size:11.5px;color:var(--accent);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{{ r.name }}</span>
+          <span class="mono" style="font-size:11.5px;font-weight:600;color:{% if r.pnl is not none and r.pnl >= 0 %}var(--pnl-up){% elif r.pnl is not none %}var(--pnl-down){% else %}var(--text-muted){% endif %};">
+            {% if r.pnl is not none %}{{ "%+.2f"|format(r.pnl) }}{% else %}—{% endif %}
+          </span>
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+    {% endif %}
+    <div class="panel">
+      <div class="panel-header">
+        <div class="panel-title">Nautilus Wiki</div>
+        <div class="spacer"></div>
+        <span class="text-muted text-mono">Order Flow Pipeline</span>
+      </div>
+      <div class="panel-body">
+        <div class="wiki-scroll prose">{{ wiki_html|safe }}</div>
+      </div>
+    </div>
+  </div>
+
+</div>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script>
+  // Re-init equity chart after every HTMX swap into #result
+  document.addEventListener("htmx:afterSettle", function(evt) {
+    if (evt.detail.target && evt.detail.target.id === "result") {
+      if (typeof buildEquityChart === "function") buildEquityChart();
+    }
+  });
+</script>
+{% endblock %}

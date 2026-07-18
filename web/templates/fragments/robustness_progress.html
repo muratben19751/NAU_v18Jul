@@ -1,0 +1,39 @@
+{% if error %}
+<div class="panel" style="border-color:rgba(248,113,113,0.4);">
+  <div class="panel-header"><div class="panel-title">Robustness · Hata</div></div>
+  <div class="panel-body"><pre class="diagram">{{ error }}</pre></div>
+</div>
+{% else %}
+<div class="panel"
+  {% if not done %}
+    hx-get="/robustness/progress/{{ run_id }}"
+    hx-trigger="every 1s"
+    hx-target="this"
+    hx-swap="outerHTML"
+  {% endif %}>
+  <div class="panel-header">
+    <div class="panel-title">
+      Robustness Analizi
+      {% if not done %}<span class="htmx-indicator text-muted mono" style="font-size:10px;margin-left:8px;">çalışıyor…</span>{% endif %}
+    </div>
+  </div>
+  <div class="panel-body">
+    <div class="progress-steps">
+      {% for step in steps %}
+      <div class="step-row done">
+        <span class="step-ts mono">{{ step.ts }}</span>
+        <span class="step-tick">✓</span>
+        <span class="step-msg">{{ step.msg }}</span>
+      </div>
+      {% endfor %}
+      {% if not done %}
+      <div class="step-row running">
+        <span class="step-ts mono">—</span>
+        <span class="step-tick spinner">⟳</span>
+        <span class="step-msg text-muted">işleniyor…</span>
+      </div>
+      {% endif %}
+    </div>
+  </div>
+</div>
+{% endif %}

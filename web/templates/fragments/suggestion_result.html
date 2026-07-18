@@ -1,0 +1,51 @@
+{# Renders new drafts list; also patches name/description inputs + advanced options via HTMX OOB swaps. #}
+<div id="drafts" class="panel-body tight">
+{% include "fragments/drafts_list.html" %}
+</div>
+
+{# Out-of-band swaps replace the form inputs by id. #}
+<input id="name-input" name="name" type="text" value="{{ name }}" required
+       form="save-form" hx-swap-oob="outerHTML">
+<textarea id="description-input" name="description" rows="2" placeholder="Optional note about what this strategy does…"
+          form="save-form" hx-swap-oob="outerHTML">{{ description }}</textarea>
+
+{# Section 02: Add block formunu ilk bloğun tipi + rolüyle güncelle (OOB) #}
+{% if drafts %}
+{% set first = drafts[0] %}
+<div id="add-block-form-wrapper" hx-swap-oob="outerHTML:#add-block-form-wrapper">
+  <form id="add-block-form" hx-post="/strategy/drafts" hx-target="#drafts" hx-swap="innerHTML" class="stack">
+    <div style="display:grid;grid-template-columns:2fr 1fr;gap:12px;">
+      <label class="field">Block type
+        <select name="type"
+                hx-get="/strategy/blocks/form"
+                hx-target="#block-params"
+                hx-trigger="change"
+                hx-include="this"
+                onchange="loadWiki(this.value)">
+          {% for k, meta in block_catalog.items() %}
+            <option value="{{ k }}" {% if k == first.type %}selected{% endif %}>{{ meta.label }} · {{ k }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label class="field">Role
+        <select name="role">
+          <option value="entry" {% if first.role == 'entry' %}selected{% endif %}>entry</option>
+          <option value="exit" {% if first.role == 'exit' %}selected{% endif %}>exit</option>
+        </select>
+      </label>
+    </div>
+    <div id="block-params">
+      {% with btype=first.type, meta=block_catalog[first.type], prefill=first.params %}
+        {% include "fragments/block_form.html" %}
+      {% endwith %}
+    </div>
+    <div class="row">
+      <button class="btn btn-primary" type="submit">＋ Add block</button>
+    </div>
+  </form>
+</div>
+{% endif %}
+
+{# The fragment renders <div id="advanced-options">...</div>; add OOB attribute inline. #}
+{% set _oob = true %}
+{% include "fragments/advanced_options.html" %}

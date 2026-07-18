@@ -1,0 +1,29 @@
+{# Lab final result — phases summary + backtest KPI.
+   No polling attributes: this replaces the progress panel permanently.
+#}
+<div class="panel" style="border-color:rgba(74,222,128,0.25);margin-bottom:12px;">
+  <div class="panel-header">
+    <div class="panel-title" style="display:flex;align-items:center;gap:8px;">
+      ✓ Pipeline tamamlandı
+    </div>
+    <div class="panel-meta mono small">{{ last.spec_name }}</div>
+  </div>
+  <div class="panel-body">
+    {# Compact phase summary #}
+    <div class="lab-phases lab-phases-compact">
+      {% for p in phases %}
+        <div class="lab-phase phase-{{ p.status }}">
+          <div class="lab-phase-icon">{% if p.status == 'done' %}✓{% else %}○{% endif %}</div>
+          <div class="lab-phase-body">
+            <div class="lab-phase-label">{{ p.label }}</div>
+            {% if p.detail %}<div class="lab-phase-detail mono small">{{ p.detail }}</div>{% endif %}
+          </div>
+          {% if p.ts %}<div class="lab-phase-ts mono small text-muted">{{ p.ts }}</div>{% endif %}
+        </div>
+      {% endfor %}
+    </div>
+  </div>
+</div>
+
+{# Reuse the standard backtest result fragment #}
+{% include "fragments/backtest_result.html" %}

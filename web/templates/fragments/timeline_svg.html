@@ -1,0 +1,89 @@
+{# Zaman çizelgesi (Gantt) macro'su — agent canlı görünümü + sessions replay.
+   tl           : web/viewmodels.timeline_view() çıktısı
+   steps_by_key : web/viewmodels.associate_steps() çıktısı (key → [step])
+   uid          : DOM id ön eki (canlıda run_id, replay'de "s{round}")
+   live         : canlı mod (now imleci + kapasite notunda session linki)
+
+   dataviz notları: status paleti (ok/fail/warn/running) renk-tek-başına değil —
+   her bar <title> içinde durum glifi (✓ ✗ ⚠ ●) taşır, tıklanınca adım detayına
+   açılır; "running" ayrıca pulse animasyonuyla ayrışır. Bar h=12/rx=2 (ince
+   mark), tick/grid recessive, etiketler text token'larında. #}
+{% macro timeline(tl, steps_by_key, uid, live=False) -%}
+{% if tl %}
+<div class="tl-wrap" id="tl-wrap-{{ uid }}">
+
+  {# Eksen: tick etiketleri (recessive) #}
+  <div class="tl-lane">
+    <div class="tl-lane-label"></div>
+    <svg width="100%" height="14" class="tl-axis" aria-hidden="true">
+      {% for tick in tl.ticks %}
+        <text class="tl-tick-label" x="{{ tick.x_pct }}%" y="10"
+              text-anchor="middle">{{ tick.label }}</text>
+      {% endfor %}
+    </svg>
+  </div>
+
+  {% for lane in tl.lanes %}
+  {% set rows = lane.rows|length %}
+  <div class="tl-lane">
+    <div class="tl-lane-label">{{ lane.label }}</div>
+    <svg width="100%" height="{{ rows * 18 + 4 }}" role="img"
+         aria-label="{{ lane.label }} zaman çizelgesi">
+      {# Recessive dikey tick çizgileri #}
+      {% for tick in tl.ticks %}
+        <line class="tl-tick" x1="{{ tick.x_pct }}%" x2="{{ tick.x_pct }}%"
+              y1="0" y2="{{ rows * 18 + 4 }}"/>
+      {% endfor %}
+      {% for row in lane.rows %}
+        {% set y = 4 + loop.index0 * 18 %}
+        {% for bar in row %}
+          <a href="#tl-{{ uid }}-{{ bar.key }}" class="tl-link"
+             data-tl-target="tl-{{ uid }}-{{ bar.key }}">
+            <rect class="tl-bar tl-{{ bar.status }}"
+                  x="{{ bar.x_pct }}%" y="{{ y }}"
+                  width="{{ bar.w_pct }}%" height="12" rx="2">
+              <title>{{ bar.title }}</title>
+            </rect>
+          </a>
+        {% endfor %}
+      {% endfor %}
+      {# Canlı "şimdi" imleci #}
+      {% if tl.now_pct is not none %}
+        <line class="tl-now" x1="{{ tl.now_pct }}%" x2="{{ tl.now_pct }}%"
+              y1="0" y2="{{ rows * 18 + 4 }}"/>
+      {% endif %}
+    </svg>
+  </div>
+  {% endfor %}
+
+  {# Bar → adım detayları (tıkla-aç) #}
+  <div class="tl-details">
+    {% for lane in tl.lanes %}{% for row in lane.rows %}{% for bar in row %}
+    <details id="tl-{{ uid }}-{{ bar.key }}" class="steps-details tl-detail">
+      <summary class="steps-summary mono">
+        <span class="tl-glyph tl-glyph-{{ bar.status }}">{%- if bar.status == 'ok' -%}✓{%- elif bar.status == 'fail' -%}✗{%- elif bar.status == 'warn' -%}⚠{%- else -%}●{%- endif -%}</span>
+        {{ bar.title }}
+      </summary>
+      {% set bar_steps = steps_by_key.get(bar.key, []) %}
+      {% if bar_steps %}
+        {% for st in bar_steps %}
+        <div class="step-row">
+          <span class="step-ts mono">{{ st.ts }}</span>
+          <span class="step-msg mono">{{ st.msg }}</span>
+        </div>
+        {% endfor %}
+      {% else %}
+        <div class="step-row">
+          <span class="step-msg mono text-muted">
+            (adımlar kapasite dışı — tam kayıt
+            {% if live %}<a class="link" href="/sessions/{{ uid }}">Session Log</a>{% else %}Session Log{% endif %}'da)
+          </span>
+        </div>
+      {% endif %}
+    </details>
+    {% endfor %}{% endfor %}{% endfor %}
+  </div>
+
+</div>
+{% endif %}
+{%- endmacro %}

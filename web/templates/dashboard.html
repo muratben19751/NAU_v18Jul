@@ -1,0 +1,91 @@
+{% extends "base.html" %}
+{% block content %}
+
+<div class="stack">
+
+  {# ---- Control strip ---- #}
+  <div class="panel">
+    <div class="panel-body row">
+      <div>
+        <div class="section-title" style="margin:0 0 4px">Autonomous Loop</div>
+        <div class="text-muted text-mono">
+          Iterations: <span id="iter-count-inline">{{ iter_count }}</span> ·
+          Mode: <b>Agent</b> — LLM proposes strategy parameters each iteration; <b>Catalog</b> — cycles through saved specs.
+        </div>
+      </div>
+      <div class="spacer"></div>
+
+      <form hx-post="/loop/start" hx-target="#loop-status" hx-swap="innerHTML" class="row">
+        <label class="field" style="flex-direction:row; align-items:center; gap:8px;">
+          <span>MODE</span>
+          <select name="mode" {% if running %}disabled{% endif %}>
+            <option value="agent">🤖 LLM Agent</option>
+            {% if has_catalog %}<option value="catalog">📦 Catalog cycle</option>{% endif %}
+          </select>
+        </label>
+        <button type="submit" class="btn btn-primary" {% if running %}disabled{% endif %}>▶ Start</button>
+      </form>
+      <form hx-post="/loop/stop" hx-target="#loop-status" hx-swap="innerHTML">
+        <button type="submit" class="btn btn-danger" {% if not running %}disabled{% endif %}>■ Stop</button>
+      </form>
+
+      <div id="loop-status" hx-get="/fragments/loop_status" hx-trigger="every 2s" hx-swap="innerHTML">
+        {% include "fragments/loop_status.html" %}
+      </div>
+    </div>
+  </div>
+
+  {# ---- Grid: iterations left, best right ---- #}
+  <div class="grid-2">
+    <div class="panel">
+      <div class="panel-header">
+        <div class="panel-title">Iterations</div>
+        <div class="spacer"></div>
+        <span class="text-muted text-mono">latest first · polling 2s</span>
+      </div>
+      <div id="iters" hx-get="/fragments/iterations" hx-trigger="load, every 2s" hx-swap="innerHTML">
+        <div class="empty-state">loading…</div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-header">
+        <div class="panel-title">Best So Far</div>
+      </div>
+      <div id="best" hx-get="/fragments/best" hx-trigger="load, every 2s" hx-swap="innerHTML">
+        <div class="empty-state">loading…</div>
+      </div>
+    </div>
+  </div>
+
+  {# ---- Equity chart ---- #}
+  <div class="panel">
+    <div class="panel-header">
+      <div class="panel-title">Best Equity Curve</div>
+      <div class="spacer"></div>
+      <span class="text-muted text-mono">Nautilus BacktestEngine · realized PnL</span>
+    </div>
+    <div class="panel-body">
+      <div class="chart-wrap"><canvas id="equity-canvas"></canvas></div>
+      <div id="equity-marker" data-reload="1" style="display:none;"></div>
+    </div>
+  </div>
+
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+  // Trigger initial equity load
+  fetch("/fragments/equity.json").then(r=>r.json()).then(j=>{
+    if (j.points && j.points.length) NautilusLab.renderEquity("equity-canvas", j.points);
+  });
+  // Refresh equity chart every 4s
+  setInterval(() => {
+    fetch("/fragments/equity.json").then(r=>r.json()).then(j=>{
+      if (j.points && j.points.length) NautilusLab.renderEquity("equity-canvas", j.points);
+    });
+  }, 4000);
+</script>
+{% endblock %}

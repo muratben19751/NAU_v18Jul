@@ -1,0 +1,1289 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="anonymous">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&amp;family=IBM+Plex+Sans:wght@400;500;600;700&amp;display=swap" rel="stylesheet">
+<style>
+*{box-sizing:border-box}
+html,body{margin:0;padding:0;background:#080808;color:#f2f2f2;font-family:"IBM Plex Sans",system-ui,sans-serif;font-size:14px;line-height:1.55;-webkit-font-smoothing:antialiased}
+a{color:#e5e5e5}a:hover{color:#ffffff}
+@keyframes blink{50%{opacity:.25}}
+::-webkit-scrollbar{width:8px;height:8px}
+::-webkit-scrollbar-thumb{background:#2a2a2a;border-radius:4px}
+::-webkit-scrollbar-track{background:transparent}
+select option{background:#161616;color:#f2f2f2}
+details summary::-webkit-details-marker{display:none}
+</style>
+</helmet>
+
+<div style="display:grid;grid-template-columns:236px 1fr;min-height:100vh;background:#080808">
+
+  <!-- ============ SIDEBAR ============ -->
+  <aside style="background:#0e0e0e;border-right:1px solid #222222;padding:22px 0;position:sticky;top:0;height:100vh;display:flex;flex-direction:column">
+    <div style="padding:2px 22px 20px;border-bottom:1px solid #222222;margin-bottom:14px">
+      <div style="font-family:'JetBrains Mono',monospace;font-size:14px;letter-spacing:.18em;font-weight:700;color:#ffffff">NAUTILUS·LAB</div>
+      <div style="font-size:10px;letter-spacing:.15em;text-transform:uppercase;color:#8a8a8a;margin-top:3px">Otonom Backtest Ajanı</div>
+    </div>
+    <nav style="display:flex;flex-direction:column">
+      <sc-for list="{{ navItems }}" as="nv" hint-placeholder-count="3">
+        <a onClick="{{ nv.go }}" style="{{ nv.style }}" style-hover="background:#161616;color:#ffffff">
+          <span style="font-size:15px;width:18px;text-align:center">{{ nv.icon }}</span>
+          <span>{{ nv.label }}</span>
+        </a>
+      </sc-for>
+    </nav>
+    <div style="margin-top:auto;padding:16px 22px 0;border-top:1px solid #1c1c1c">
+      
+    </div>
+  </aside>
+
+  <!-- ============ MAIN ============ -->
+  <div style="display:flex;flex-direction:column;min-height:100vh;min-width:0">
+
+    <!-- Topbar -->
+    <header style="height:60px;background:#0e0e0e;border-bottom:1px solid #222222;display:flex;align-items:center;padding:0 28px;gap:24px;position:sticky;top:0;z-index:10">
+      <div style="font-family:'JetBrains Mono',monospace;font-size:12.5px;letter-spacing:.16em;text-transform:uppercase;color:#d4d4d4;font-weight:600">{{ topTitle }}</div>
+      
+    </header>
+
+    <!-- ============ DASHBOARD ============ -->
+    <sc-if value="{{ isDashboard }}" hint-placeholder-val="{{ true }}">
+    <main data-screen-label="Dashboard" style="padding:26px 28px;display:flex;flex-direction:column;gap:18px;flex:1">
+
+      <!-- Control strip -->
+      <div style="background:#121212;border:1px solid #242424;border-radius:8px;padding:18px 20px;display:flex;align-items:center;gap:18px;flex-wrap:wrap">
+        <div style="flex:1;min-width:240px">
+          <div style="font-size:12px;letter-spacing:.15em;text-transform:uppercase;color:#d4d4d4;font-weight:600;margin-bottom:4px">Autonomous Loop</div>
+          <div style="font-family:'JetBrains Mono',monospace;font-size:12px;color:#9c9c9c">İterasyon: {{ iterCount }} · Claude-4.6 parametre önerir → BacktestEngine koşar → sonuç akar</div>
+        </div>
+        <label style="display:flex;align-items:center;gap:10px;font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;color:#8a8a8a;font-weight:600">Mode
+          <select value="{{ mode }}" onChange="{{ setMode }}" style="background:#0c0c0c;border:1px solid #2c2c2c;color:#f2f2f2;padding:9px 12px;border-radius:6px;font-size:13px;font-family:'IBM Plex Sans',sans-serif;cursor:pointer;outline:none">
+            <option value="agent">🤖 LLM Agent</option>
+            <option value="catalog">📦 Catalog cycle</option>
+          </select>
+        </label>
+        <button onClick="{{ startLoop }}" style="{{ startStyle }}" style-hover="background:#ffffff">▶ Start</button>
+        <button onClick="{{ stopLoop }}" style="{{ stopStyle }}" style-hover="background:rgba(248,113,113,0.16)">■ Stop</button>
+        <div style="display:flex;align-items:center;gap:8px">
+          <span style="{{ statusBadgeStyle }}"><span style="{{ statusDotStyle }}"></span>{{ statusText }}</span>
+          <span style="font-family:'JetBrains Mono',monospace;font-size:12px;color:#8a8a8a">iter #{{ iterCount }}</span>
+        </div>
+      </div>
+
+      <!-- Grid: iterations + best -->
+      <div style="display:grid;grid-template-columns:2fr 1fr;gap:18px;align-items:start">
+
+        <div style="background:#121212;border:1px solid #242424;border-radius:8px;overflow:hidden">
+          <div style="padding:13px 18px;border-bottom:1px solid #242424;display:flex;align-items:center;gap:12px">
+            <div style="font-size:11.5px;letter-spacing:.15em;text-transform:uppercase;color:#c8c8c8;font-weight:600">Iterations</div>
+            <span style="margin-left:auto;font-family:'JetBrains Mono',monospace;font-size:11.5px;color:#8a8a8a">en yeni üstte</span>
+          </div>
+          <div style="max-height:430px;overflow-y:auto">
+            <table style="width:100%;border-collapse:collapse;font-size:13px">
+              <thead>
+                <tr>
+                  <th style="text-align:left;padding:10px 14px;font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:#8a8a8a;border-bottom:1px solid #242424;position:sticky;top:0;background:#121212">#</th>
+                  <th style="text-align:left;padding:10px 14px;font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:#8a8a8a;border-bottom:1px solid #242424;position:sticky;top:0;background:#121212">Time</th>
+                  <th style="text-align:left;padding:10px 14px;font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:#8a8a8a;border-bottom:1px solid #242424;position:sticky;top:0;background:#121212">Strategy · Params</th>
+                  <th style="text-align:right;padding:10px 14px;font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:#8a8a8a;border-bottom:1px solid #242424;position:sticky;top:0;background:#121212">PnL</th>
+                  <th style="text-align:right;padding:10px 14px;font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:#8a8a8a;border-bottom:1px solid #242424;position:sticky;top:0;background:#121212">Sharpe</th>
+                  <th style="text-align:right;padding:10px 14px;font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:#8a8a8a;border-bottom:1px solid #242424;position:sticky;top:0;background:#121212">Trades</th>
+                  <th style="text-align:right;padding:10px 14px;font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:#8a8a8a;border-bottom:1px solid #242424;position:sticky;top:0;background:#121212">Win</th>
+                </tr>
+              </thead>
+              <tbody>
+                <sc-for list="{{ iterRows }}" as="it" hint-placeholder-count="6">
+                  <tr style-hover="background:#171717">
+                    <td style="padding:10px 14px;border-bottom:1px solid #1d1d1d;font-family:'JetBrains Mono',monospace;font-size:12px;color:#8a8a8a">{{ it.idFmt }}</td>
+                    <td style="padding:10px 14px;border-bottom:1px solid #1d1d1d;font-family:'JetBrains Mono',monospace;font-size:12px;color:#9c9c9c">{{ it.ts }}</td>
+                    <td style="padding:10px 14px;border-bottom:1px solid #1d1d1d">
+                      <div style="font-family:'JetBrains Mono',monospace;font-size:12.5px;color:#f2f2f2">{{ it.strategy }}</div>
+                      <div style="font-family:'JetBrains Mono',monospace;font-size:11px;color:#8a8a8a">{{ it.params }}</div>
+                    </td>
+                    <td style="padding:10px 14px;border-bottom:1px solid #1d1d1d;text-align:right;font-family:'JetBrains Mono',monospace;font-size:13px;font-weight:600;color:{{ it.pnlColor }}">{{ it.pnlFmt }}</td>
+                    <td style="padding:10px 14px;border-bottom:1px solid #1d1d1d;text-align:right;font-family:'JetBrains Mono',monospace;font-size:12.5px;color:#d4d4d4">{{ it.sharpeFmt }}</td>
+                    <td style="padding:10px 14px;border-bottom:1px solid #1d1d1d;text-align:right;font-family:'JetBrains Mono',monospace;font-size:12.5px;color:#d4d4d4">{{ it.trades }}</td>
+                    <td style="padding:10px 14px;border-bottom:1px solid #1d1d1d;text-align:right;font-family:'JetBrains Mono',monospace;font-size:12.5px;color:#d4d4d4">{{ it.winFmt }}</td>
+                  </tr>
+                </sc-for>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- Best so far -->
+        <div style="background:#121212;border:1px solid #242424;border-radius:8px;overflow:hidden">
+          <div style="padding:13px 18px;border-bottom:1px solid #242424;display:flex;align-items:center">
+            <div style="font-size:11.5px;letter-spacing:.15em;text-transform:uppercase;color:#c8c8c8;font-weight:600">Best So Far</div>
+            <span style="margin-left:auto;display:inline-block;padding:3px 9px;border-radius:4px;font-size:10px;letter-spacing:.12em;text-transform:uppercase;font-family:'JetBrains Mono',monospace;color:#4ade80;border:1px solid rgba(74,222,128,0.35);background:rgba(74,222,128,0.07)">iter {{ best.idFmt }}</span>
+          </div>
+          <div style="padding:18px 20px;display:flex;flex-direction:column;gap:14px">
+            <div>
+              <div style="font-family:'JetBrains Mono',monospace;font-size:13px;color:#e5e5e5">{{ best.strategy }}</div>
+              <div style="font-family:'JetBrains Mono',monospace;font-size:11px;color:#8a8a8a;margin-top:2px">{{ best.params }}</div>
+            </div>
+            <div>
+              <div style="font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:#8a8a8a;margin-bottom:4px">Realized PnL</div>
+              <div style="font-family:'JetBrains Mono',monospace;font-size:30px;font-weight:600;color:{{ best.pnlColor }};font-variant-numeric:tabular-nums">{{ best.pnlFmt }}</div>
+            </div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+              <div style="background:#0d0d0d;border:1px solid #222222;border-radius:6px;padding:10px 12px">
+                <div style="font-size:9.5px;letter-spacing:.14em;text-transform:uppercase;color:#8a8a8a">Sharpe</div>
+                <div style="font-family:'JetBrains Mono',monospace;font-size:16px;color:#f2f2f2">{{ best.sharpeFmt }}</div>
+              </div>
+              <div style="background:#0d0d0d;border:1px solid #222222;border-radius:6px;padding:10px 12px">
+                <div style="font-size:9.5px;letter-spacing:.14em;text-transform:uppercase;color:#8a8a8a">Trades</div>
+                <div style="font-family:'JetBrains Mono',monospace;font-size:16px;color:#f2f2f2">{{ best.trades }}</div>
+              </div>
+              <div style="background:#0d0d0d;border:1px solid #222222;border-radius:6px;padding:10px 12px">
+                <div style="font-size:9.5px;letter-spacing:.14em;text-transform:uppercase;color:#8a8a8a">Win Rate</div>
+                <div style="font-family:'JetBrains Mono',monospace;font-size:16px;color:#f2f2f2">{{ best.winFmt }}</div>
+              </div>
+              <div style="background:#0d0d0d;border:1px solid #222222;border-radius:6px;padding:10px 12px">
+                <div style="font-size:9.5px;letter-spacing:.14em;text-transform:uppercase;color:#8a8a8a">Max DD</div>
+                <div style="font-family:'JetBrains Mono',monospace;font-size:16px;color:#f87171">{{ best.ddFmt }}</div>
+              </div>
+            </div>
+            <div style="border-top:1px solid #1d1d1d;padding-top:12px">
+              <div style="font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:#8a8a8a;margin-bottom:6px">Claude Rationale</div>
+              <div style="font-size:12.5px;color:#b8b8b8;line-height:1.6">{{ best.rationale }}</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Equity chart -->
+      <div style="background:#121212;border:1px solid #242424;border-radius:8px;overflow:hidden">
+        <div style="padding:13px 18px;border-bottom:1px solid #242424;display:flex;align-items:center">
+          <div style="font-size:11.5px;letter-spacing:.15em;text-transform:uppercase;color:#c8c8c8;font-weight:600">Best Equity Curve</div>
+          <span style="margin-left:auto;font-family:'JetBrains Mono',monospace;font-size:11.5px;color:#8a8a8a">Nautilus BacktestEngine · realized PnL</span>
+        </div>
+        <div style="padding:18px 20px;position:relative">
+          <svg viewBox="0 0 640 220" preserveAspectRatio="none" style="width:100%;height:250px;display:block">
+            <line x1="0" y1="55" x2="640" y2="55" stroke="#1d1d1d" strokeWidth="1"></line>
+            <line x1="0" y1="110" x2="640" y2="110" stroke="#1d1d1d" strokeWidth="1"></line>
+            <line x1="0" y1="165" x2="640" y2="165" stroke="#1d1d1d" strokeWidth="1"></line>
+            <polygon points="{{ dashEq.areaPts }}" fill="{{ dashEq.fill }}"></polygon>
+            <polyline points="{{ dashEq.points }}" fill="none" stroke="{{ dashEq.color }}" strokeWidth="2"></polyline>
+          </svg>
+          <div style="position:absolute;top:14px;left:24px;font-family:'JetBrains Mono',monospace;font-size:11px;color:#8a8a8a">{{ dashEq.max }}</div>
+          <div style="position:absolute;bottom:14px;left:24px;font-family:'JetBrains Mono',monospace;font-size:11px;color:#8a8a8a">{{ dashEq.min }}</div>
+        </div>
+      </div>
+
+    </main>
+    </sc-if>
+
+    <!-- ============ STRATEGY COMPOSER ============ -->
+    <sc-if value="{{ isStrategy }}" hint-placeholder-val="{{ false }}">
+    <main data-screen-label="Strategy Composer" style="padding:26px 28px;display:grid;grid-template-columns:3fr 2fr;gap:18px;align-items:start;flex:1">
+
+      <div style="display:flex;flex-direction:column;gap:18px;min-width:0">
+
+        <sc-if value="{{ hasFlash }}" hint-placeholder-val="{{ false }}">
+          <div style="background:#121212;border:1px solid rgba(74,222,128,0.4);border-radius:8px;padding:14px 20px;display:flex;align-items:center;gap:12px">
+            <span style="display:inline-block;padding:3px 9px;border-radius:4px;font-size:10px;letter-spacing:.12em;text-transform:uppercase;font-family:'JetBrains Mono',monospace;color:#4ade80;border:1px solid rgba(74,222,128,0.35);background:rgba(74,222,128,0.07)">✓ SAVED</span>
+            <span style="font-family:'JetBrains Mono',monospace;font-size:13px;color:#e5e5e5">{{ flash }}</span>
+          </div>
+        </sc-if>
+
+        <!-- AI Designer -->
+        <div style="background:#121212;border:1px solid #363636;border-radius:8px;padding:18px 20px;display:flex;align-items:center;gap:18px;flex-wrap:wrap">
+          <div style="flex:1;min-width:260px">
+            <div style="font-size:12px;letter-spacing:.15em;text-transform:uppercase;color:#f2f2f2;font-weight:600;margin-bottom:4px">🧠 AI Strategy Designer</div>
+            <div style="font-size:12.5px;color:#9c9c9c;line-height:1.55">Claude Sonnet 4.6 geçmiş backtest sonuçlarına ve kataloğa bakarak yeni bir strateji önerir — bloklar, roller, parametreler ve isim dahil.</div>
+          </div>
+          <button onClick="{{ suggest }}" style="display:inline-flex;align-items:center;gap:6px;padding:10px 18px;border-radius:6px;font-family:'IBM Plex Sans',sans-serif;font-size:12.5px;font-weight:600;cursor:pointer;background:#f2f2f2;color:#0a0a0a;border:1px solid #ffffff" style-hover="background:#ffffff">🧠 Claude'a önerttir</button>
+          <span style="display:{{ suggestSpinner }};font-family:'JetBrains Mono',monospace;font-size:11.5px;color:#8a8a8a">Claude düşünüyor…</span>
+        </div>
+
+        <!-- 01 Metadata -->
+        <div style="background:#121212;border:1px solid #242424;border-radius:8px;overflow:hidden">
+          <div style="padding:13px 18px;border-bottom:1px solid #242424">
+            <div style="font-size:11.5px;letter-spacing:.15em;text-transform:uppercase;color:#c8c8c8;font-weight:600">01 · Strategy Metadata</div>
+          </div>
+          <div style="padding:18px 20px;display:flex;flex-direction:column;gap:14px">
+            <div style="display:grid;grid-template-columns:2fr 1fr;gap:14px">
+              <label style="display:flex;flex-direction:column;gap:6px;font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:#9c9c9c;font-weight:600">Name
+                <input type="text" value="{{ stratName }}" onChange="{{ setStratName }}" style="background:#0c0c0c;border:1px solid #2c2c2c;color:#f2f2f2;padding:10px 12px;border-radius:6px;font-size:13.5px;font-family:'IBM Plex Sans',sans-serif;outline:none" style-focus="border-color:#8a8a8a">
+              </label>
+              <label style="display:flex;flex-direction:column;gap:6px;font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:#9c9c9c;font-weight:600">Trade size (BTC)
+                <input type="number" defaultValue="0.1" step="0.01" style="background:#0c0c0c;border:1px solid #2c2c2c;color:#f2f2f2;padding:10px 12px;border-radius:6px;font-size:13.5px;font-family:'JetBrains Mono',monospace;outline:none" style-focus="border-color:#8a8a8a">
+              </label>
+            </div>
+            <label style="display:flex;flex-direction:column;gap:6px;font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:#9c9c9c;font-weight:600">Description
+              <textarea rows="2" placeholder="Bu stratejinin ne yaptığına dair opsiyonel not…" style="background:#0c0c0c;border:1px solid #2c2c2c;color:#f2f2f2;padding:10px 12px;border-radius:6px;font-size:13.5px;font-family:'IBM Plex Sans',sans-serif;outline:none;resize:vertical" style-focus="border-color:#8a8a8a"></textarea>
+            </label>
+          </div>
+        </div>
+
+        <!-- 02 Add block -->
+        <div style="background:#121212;border:1px solid #242424;border-radius:8px;overflow:hidden">
+          <div style="padding:13px 18px;border-bottom:1px solid #242424;display:flex;align-items:center">
+            <div style="font-size:11.5px;letter-spacing:.15em;text-transform:uppercase;color:#c8c8c8;font-weight:600">02 · Add Signal Block</div>
+            <span style="margin-left:auto;font-family:'JetBrains Mono',monospace;font-size:11.5px;color:#8a8a8a">entry OR-combined · exit OR-combined</span>
+          </div>
+          <div style="padding:18px 20px;display:flex;flex-direction:column;gap:14px">
+            <div style="display:grid;grid-template-columns:2fr 1fr;gap:14px">
+              <label style="display:flex;flex-direction:column;gap:6px;font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:#9c9c9c;font-weight:600">Block type
+                <select value="{{ blockType }}" onChange="{{ setBlockType }}" style="background:#0c0c0c;border:1px solid #2c2c2c;color:#f2f2f2;padding:10px 12px;border-radius:6px;font-size:13.5px;font-family:'IBM Plex Sans',sans-serif;cursor:pointer;outline:none">
+                  <option value="ma_cross">MA Crossover · ma_cross</option>
+                  <option value="rsi_threshold">RSI Threshold · rsi_threshold</option>
+                  <option value="bollinger_break">Bollinger Break · bollinger_break</option>
+                  <option value="macd_cross">MACD Cross · macd_cross</option>
+                  <option value="donchian_break">Donchian Break · donchian_break</option>
+                  <option value="atr_stop">ATR Stop · atr_stop</option>
+                  <option value="supertrend_flip">SuperTrend Flip · supertrend_flip</option>
+                  <option value="ema_ribbon">EMA Ribbon · ema_ribbon</option>
+                </select>
+              </label>
+              <label style="display:flex;flex-direction:column;gap:6px;font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:#9c9c9c;font-weight:600">Role
+                <select value="{{ blockRole }}" onChange="{{ setBlockRole }}" style="background:#0c0c0c;border:1px solid #2c2c2c;color:#f2f2f2;padding:10px 12px;border-radius:6px;font-size:13.5px;font-family:'IBM Plex Sans',sans-serif;cursor:pointer;outline:none">
+                  <option value="entry">entry</option>
+                  <option value="exit">exit</option>
+                </select>
+              </label>
+            </div>
+            <div style="display:flex;gap:14px;flex-wrap:wrap">
+              <sc-for list="{{ paramDefs }}" as="p" hint-placeholder-count="2">
+                <label style="display:flex;flex-direction:column;gap:6px;font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:#9c9c9c;font-weight:600;flex:1;min-width:120px">{{ p.label }}
+                  <input type="number" value="{{ p.val }}" onChange="{{ p.set }}" style="background:#0c0c0c;border:1px solid #2c2c2c;color:#f2f2f2;padding:10px 12px;border-radius:6px;font-size:13.5px;font-family:'JetBrains Mono',monospace;outline:none" style-focus="border-color:#8a8a8a">
+                </label>
+              </sc-for>
+            </div>
+            <div style="display:flex;gap:12px">
+              <button onClick="{{ addBlock }}" style="display:inline-flex;align-items:center;gap:6px;padding:10px 18px;border-radius:6px;font-family:'IBM Plex Sans',sans-serif;font-size:12.5px;font-weight:600;cursor:pointer;background:#f2f2f2;color:#0a0a0a;border:1px solid #ffffff" style-hover="background:#ffffff">＋ Add block</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- 03 Current blocks -->
+        <div style="background:#121212;border:1px solid #242424;border-radius:8px;overflow:hidden">
+          <div style="padding:13px 18px;border-bottom:1px solid #242424;display:flex;align-items:center">
+            <div style="font-size:11.5px;letter-spacing:.15em;text-transform:uppercase;color:#c8c8c8;font-weight:600">03 · Current Blocks</div>
+            <span style="margin-left:auto;font-family:'JetBrains Mono',monospace;font-size:11.5px;color:#8a8a8a">draft · henüz kaydedilmedi</span>
+          </div>
+          <table style="width:100%;border-collapse:collapse;font-size:13px">
+            <tbody>
+              <sc-for list="{{ draftRows }}" as="d" hint-placeholder-count="2">
+                <tr style-hover="background:#171717">
+                  <td style="padding:11px 18px;border-bottom:1px solid #1d1d1d;font-family:'JetBrains Mono',monospace;font-size:12px;color:#8a8a8a;width:36px">{{ d.idx }}</td>
+                  <td style="padding:11px 14px;border-bottom:1px solid #1d1d1d">
+                    <span style="color:#f2f2f2">{{ d.label }}</span>
+                    <span style="font-family:'JetBrains Mono',monospace;font-size:11px;color:#8a8a8a"> · {{ d.type }}</span>
+                  </td>
+                  <td style="padding:11px 14px;border-bottom:1px solid #1d1d1d;width:80px">
+                    <span style="{{ d.badgeStyle }}">{{ d.role }}</span>
+                  </td>
+                  <td style="padding:11px 14px;border-bottom:1px solid #1d1d1d;font-family:'JetBrains Mono',monospace;font-size:12px;color:#b8b8b8">{{ d.params }}</td>
+                  <td style="padding:11px 18px;border-bottom:1px solid #1d1d1d;width:44px;text-align:right">
+                    <button onClick="{{ d.remove }}" style="background:transparent;border:1px solid transparent;color:#8a8a8a;cursor:pointer;padding:5px 8px;border-radius:5px;font-size:13px" style-hover="color:#f87171;border-color:rgba(248,113,113,0.3)">✕</button>
+                  </td>
+                </tr>
+              </sc-for>
+            </tbody>
+          </table>
+          <sc-if value="{{ draftsEmpty }}" hint-placeholder-val="{{ false }}">
+            <div style="padding:36px 20px;text-align:center;color:#8a8a8a;font-size:13px">Henüz blok yok.<br><span style="font-size:11.5px">02 numaralı bölümden ekleyin.</span></div>
+          </sc-if>
+        </div>
+
+        <!-- 03.5 Advanced -->
+        <div style="background:#121212;border:1px solid #242424;border-radius:8px;overflow:hidden">
+          <details>
+            <summary style="padding:13px 18px;cursor:pointer;list-style:none;display:flex;align-items:center;border-bottom:1px solid #1d1d1d">
+              <div style="font-size:11.5px;letter-spacing:.15em;text-transform:uppercase;color:#c8c8c8;font-weight:600">03.5 · Advanced Options</div>
+              <span style="margin-left:auto;font-family:'JetBrains Mono',monospace;font-size:11.5px;color:#8a8a8a">AND/OR · SL/TP · short · dynamic size</span>
+            </summary>
+            <div style="padding:18px 20px;display:grid;grid-template-columns:repeat(3,1fr);gap:14px">
+              <label style="display:flex;flex-direction:column;gap:6px;font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:#9c9c9c;font-weight:600">Entry logic
+                <select defaultValue="OR" style="background:#0c0c0c;border:1px solid #2c2c2c;color:#f2f2f2;padding:10px 12px;border-radius:6px;font-size:13.5px;cursor:pointer;outline:none;font-family:'IBM Plex Sans',sans-serif">
+                  <option value="OR">OR</option><option value="AND">AND</option>
+                </select>
+              </label>
+              <label style="display:flex;flex-direction:column;gap:6px;font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:#9c9c9c;font-weight:600">Exit logic
+                <select defaultValue="OR" style="background:#0c0c0c;border:1px solid #2c2c2c;color:#f2f2f2;padding:10px 12px;border-radius:6px;font-size:13.5px;cursor:pointer;outline:none;font-family:'IBM Plex Sans',sans-serif">
+                  <option value="OR">OR</option><option value="AND">AND</option>
+                </select>
+              </label>
+              <label style="display:flex;flex-direction:column;gap:6px;font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:#9c9c9c;font-weight:600">Order type
+                <select defaultValue="market" style="background:#0c0c0c;border:1px solid #2c2c2c;color:#f2f2f2;padding:10px 12px;border-radius:6px;font-size:13.5px;cursor:pointer;outline:none;font-family:'IBM Plex Sans',sans-serif">
+                  <option value="market">market</option><option value="limit">limit</option>
+                </select>
+              </label>
+              <label style="display:flex;flex-direction:column;gap:6px;font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:#9c9c9c;font-weight:600">SL %
+                <input type="number" defaultValue="5" style="background:#0c0c0c;border:1px solid #2c2c2c;color:#f2f2f2;padding:10px 12px;border-radius:6px;font-size:13.5px;font-family:'JetBrains Mono',monospace;outline:none" style-focus="border-color:#8a8a8a">
+              </label>
+              <label style="display:flex;flex-direction:column;gap:6px;font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:#9c9c9c;font-weight:600">TP %
+                <input type="number" defaultValue="12" style="background:#0c0c0c;border:1px solid #2c2c2c;color:#f2f2f2;padding:10px 12px;border-radius:6px;font-size:13.5px;font-family:'JetBrains Mono',monospace;outline:none" style-focus="border-color:#8a8a8a">
+              </label>
+              <label style="display:flex;flex-direction:column;gap:6px;font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:#9c9c9c;font-weight:600">Sizing
+                <select defaultValue="fixed" style="background:#0c0c0c;border:1px solid #2c2c2c;color:#f2f2f2;padding:10px 12px;border-radius:6px;font-size:13.5px;cursor:pointer;outline:none;font-family:'IBM Plex Sans',sans-serif">
+                  <option value="fixed">fixed</option><option value="percent_equity">percent_equity</option><option value="atr_target">atr_target</option>
+                </select>
+              </label>
+              <label style="display:flex;align-items:center;gap:10px;font-size:12.5px;color:#d4d4d4;grid-column:span 3">
+                <input type="checkbox" style="accent-color:#d4d4d4;width:16px;height:16px">
+                Allow short — SELL girişleri, backend otomatik <span style="font-family:'JetBrains Mono',monospace;font-size:11.5px;color:#9c9c9c">AccountType.MARGIN</span>'a geçer
+              </label>
+            </div>
+          </details>
+        </div>
+
+        <!-- 04 Save -->
+        <div style="background:#121212;border:1px solid #242424;border-radius:8px;padding:18px 20px;display:flex;align-items:center;gap:18px;flex-wrap:wrap">
+          <div style="flex:1;min-width:260px">
+            <div style="font-size:12px;letter-spacing:.15em;text-transform:uppercase;color:#d4d4d4;font-weight:600;margin-bottom:4px">04 · Save to catalog</div>
+            <div style="font-size:12.5px;color:#9c9c9c"><span style="font-family:'JetBrains Mono',monospace;font-size:11.5px">~/.cache/nautilus_web_app/strategy_catalog.json</span> dosyasına yazılır; Backtest sayfası ve otonom Agent (catalog mode) bunları kullanır.</div>
+          </div>
+          <button onClick="{{ saveStrategy }}" style="display:inline-flex;align-items:center;gap:6px;padding:10px 18px;border-radius:6px;font-family:'IBM Plex Sans',sans-serif;font-size:12.5px;font-weight:600;cursor:pointer;background:#f2f2f2;color:#0a0a0a;border:1px solid #ffffff" style-hover="background:#ffffff">💾 Save Strategy</button>
+        </div>
+
+        <!-- 05 Saved catalog -->
+        <div style="background:#121212;border:1px solid #242424;border-radius:8px;overflow:hidden">
+          <div style="padding:13px 18px;border-bottom:1px solid #242424">
+            <div style="font-size:11.5px;letter-spacing:.15em;text-transform:uppercase;color:#c8c8c8;font-weight:600">05 · Saved Strategies</div>
+          </div>
+          <table style="width:100%;border-collapse:collapse;font-size:13px">
+            <tbody>
+              <sc-for list="{{ catalogRows }}" as="s" hint-placeholder-count="2">
+                <tr style-hover="background:#171717">
+                  <td style="padding:11px 18px;border-bottom:1px solid #1d1d1d">
+                    <div style="font-family:'JetBrains Mono',monospace;font-size:12.5px;color:#f2f2f2">{{ s.name }}</div>
+                    <div style="font-family:'JetBrains Mono',monospace;font-size:11px;color:#8a8a8a">id={{ s.id }} · {{ s.desc }}</div>
+                  </td>
+                  <td style="padding:11px 14px;border-bottom:1px solid #1d1d1d;text-align:right;font-family:'JetBrains Mono',monospace;font-size:12px;color:#d4d4d4;width:70px">{{ s.blocks }} blok</td>
+                  <td style="padding:11px 14px;border-bottom:1px solid #1d1d1d;font-family:'JetBrains Mono',monospace;font-size:12px;color:#b8b8b8;width:90px">{{ s.tradeSize }}</td>
+                  <td style="padding:11px 14px;border-bottom:1px solid #1d1d1d;font-family:'JetBrains Mono',monospace;font-size:11px;color:#8a8a8a;width:130px">{{ s.created }}</td>
+                  <td style="padding:11px 18px;border-bottom:1px solid #1d1d1d;width:44px;text-align:right">
+                    <button onClick="{{ s.remove }}" style="background:transparent;border:1px solid transparent;color:#8a8a8a;cursor:pointer;padding:5px 8px;border-radius:5px;font-size:13px" style-hover="color:#f87171;border-color:rgba(248,113,113,0.3)">✕</button>
+                  </td>
+                </tr>
+              </sc-for>
+            </tbody>
+          </table>
+        </div>
+
+        <!-- 06 Custom Blocks -->
+        <div style="background:#121212;border:1px solid #242424;border-radius:8px;overflow:hidden">
+          <details>
+            <summary style="padding:13px 18px;cursor:pointer;list-style:none;display:flex;align-items:center;border-bottom:1px solid #1d1d1d">
+              <div style="font-size:11.5px;letter-spacing:.15em;text-transform:uppercase;color:#c8c8c8;font-weight:600">06 · Custom Blocks (Beta)</div>
+              <span style="margin-left:auto;font-family:'JetBrains Mono',monospace;font-size:11.5px;color:#8a8a8a">Claude üretir · AST doğrulanır · disk-persistent</span>
+            </summary>
+            <div style="padding:18px 20px;display:flex;flex-direction:column;gap:14px">
+              <div style="font-size:12.5px;color:#9c9c9c;line-height:1.6">Doğal dille yeni bir sinyal bloğu tarif edin. Claude Sonnet 4.6 bunu Python koduna çevirir; AST doğrulaması geçerse kaydedilir ve anında <b style="color:#d4d4d4">02 · Add Signal Block</b> dropdown'ında görünür.</div>
+              <label style="display:flex;flex-direction:column;gap:6px;font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:#9c9c9c;font-weight:600">Label (kısa isim)
+                <input type="text" placeholder="örn: SMA200 breakout" style="background:#0c0c0c;border:1px solid #2c2c2c;color:#f2f2f2;padding:10px 12px;border-radius:6px;font-size:13.5px;font-family:'IBM Plex Sans',sans-serif;outline:none" style-focus="border-color:#8a8a8a">
+              </label>
+              <label style="display:flex;flex-direction:column;gap:6px;font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:#9c9c9c;font-weight:600">Ne yapsın? (doğal dil)
+                <textarea rows="3" placeholder="örn: close 200-günlük SMA'nın yukarısına geçerse LONG entry" style="background:#0c0c0c;border:1px solid #2c2c2c;color:#f2f2f2;padding:10px 12px;border-radius:6px;font-size:13.5px;font-family:'IBM Plex Sans',sans-serif;outline:none;resize:vertical" style-focus="border-color:#8a8a8a"></textarea>
+              </label>
+              <div style="display:flex;align-items:center;gap:12px">
+                <button onClick="{{ generateBlock }}" style="display:inline-flex;align-items:center;gap:6px;padding:10px 18px;border-radius:6px;font-family:'IBM Plex Sans',sans-serif;font-size:12.5px;font-weight:600;cursor:pointer;background:#f2f2f2;color:#0a0a0a;border:1px solid #ffffff" style-hover="background:#ffffff">🧠 Claude'a yazdır</button>
+                <span style="display:{{ genSpinner }};font-family:'JetBrains Mono',monospace;font-size:11.5px;color:#8a8a8a">Claude düşünüyor…</span>
+              </div>
+              <sc-if value="{{ hasGenBlock }}" hint-placeholder-val="{{ false }}">
+                <div style="background:#0c0c0c;border:1px solid #2c2c2c;border-radius:6px;overflow:hidden">
+                  <div style="padding:10px 14px;border-bottom:1px solid #222222;display:flex;align-items:center;gap:10px">
+                    <span style="display:inline-block;padding:3px 9px;border-radius:4px;font-size:10px;letter-spacing:.12em;text-transform:uppercase;font-family:'JetBrains Mono',monospace;color:#4ade80;border:1px solid rgba(74,222,128,0.35);background:rgba(74,222,128,0.07)">✓ AST OK</span>
+                    <span style="font-family:'JetBrains Mono',monospace;font-size:12px;color:#e5e5e5">{{ genBlockLabel }}</span>
+                    <button style="margin-left:auto;display:inline-flex;align-items:center;gap:6px;padding:7px 13px;border-radius:6px;font-size:11.5px;font-weight:600;cursor:pointer;background:transparent;color:#f2f2f2;border:1px solid #3a3a3a;font-family:'IBM Plex Sans',sans-serif" style-hover="background:#1c1c1c">💾 Kaydet ve Kullan</button>
+                  </div>
+                  <pre style="margin:0;padding:14px 16px;font-family:'JetBrains Mono',monospace;font-size:11.5px;line-height:1.6;color:#c8c8c8;overflow-x:auto;background:#0a0a0a">{{ genBlockCode }}</pre>
+                </div>
+              </sc-if>
+            </div>
+          </details>
+        </div>
+      </div>
+
+      <!-- Wiki column -->
+      <div style="position:sticky;top:86px">
+        <div style="background:#121212;border:1px solid #242424;border-radius:8px;overflow:hidden">
+          <div style="padding:13px 18px;border-bottom:1px solid #242424;display:flex;align-items:center">
+            <div style="font-size:11.5px;letter-spacing:.15em;text-transform:uppercase;color:#c8c8c8;font-weight:600">Nautilus Wiki</div>
+            <span style="margin-left:auto;font-family:'JetBrains Mono',monospace;font-size:11.5px;color:#8a8a8a">{{ wiki.path }}</span>
+          </div>
+          <div style="padding:18px 20px;max-height:560px;overflow-y:auto">
+            <div style="font-size:15px;font-weight:600;color:#f2f2f2;margin-bottom:10px">{{ wiki.title }}</div>
+            <div style="font-size:13px;color:#b8b8b8;line-height:1.7">{{ wiki.body }}</div>
+            <div style="font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:#8a8a8a;margin:18px 0 8px">evaluate sözleşmesi</div>
+            <pre style="margin:0;padding:14px 16px;font-family:'JetBrains Mono',monospace;font-size:11px;line-height:1.65;color:#c8c8c8;overflow-x:auto;background:#0a0a0a;border:1px solid #222222;border-radius:6px">def evaluate(state, block, closes,
+             indicators, portfolio):
+    # state      — bar'lar arası kalıcı dict
+    # block      — .params / .role / .type
+    # closes     — list[float], oldest-first
+    # portfolio  — is_net_long / short / flat
+    return "long" | "short" | "exit" | None</pre>
+          </div>
+        </div>
+      </div>
+
+    </main>
+    </sc-if>
+
+    <!-- ============ BACKTEST ============ -->
+    <sc-if value="{{ isBacktest }}" hint-placeholder-val="{{ false }}">
+    <main data-screen-label="Backtest" style="padding:26px 28px;display:grid;grid-template-columns:3fr 2fr;gap:18px;align-items:start;flex:1">
+
+      <div style="display:flex;flex-direction:column;gap:18px;min-width:0">
+
+        <!-- 01 Select -->
+        <div style="background:#121212;border:1px solid #242424;border-radius:8px;overflow:hidden">
+          <div style="padding:13px 18px;border-bottom:1px solid #242424">
+            <div style="font-size:11.5px;letter-spacing:.15em;text-transform:uppercase;color:#c8c8c8;font-weight:600">01 · Select Strategy</div>
+          </div>
+          <div style="padding:18px 20px;display:flex;gap:14px;align-items:flex-end;flex-wrap:wrap">
+            <label style="display:flex;flex-direction:column;gap:6px;font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:#9c9c9c;font-weight:600;flex:1;min-width:220px">Strategy
+              <select value="{{ btSpec }}" onChange="{{ setBtSpec }}" style="background:#0c0c0c;border:1px solid #2c2c2c;color:#f2f2f2;padding:10px 12px;border-radius:6px;font-size:13.5px;font-family:'IBM Plex Sans',sans-serif;cursor:pointer;outline:none">
+                <sc-for list="{{ catalogOpts }}" as="o" hint-placeholder-count="2">
+                  <option value="{{ o.value }}">{{ o.label }}</option>
+                </sc-for>
+              </select>
+            </label>
+            <label style="display:flex;flex-direction:column;gap:6px;font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:#9c9c9c;font-weight:600">Data
+              <select defaultValue="BTC" style="background:#0c0c0c;border:1px solid #2c2c2c;color:#f2f2f2;padding:10px 12px;border-radius:6px;font-size:13.5px;font-family:'IBM Plex Sans',sans-serif;cursor:pointer;outline:none">
+                <option value="BTC">BTC (Yahoo daily)</option>
+                <option value="Index">US Index (NFS ticks)</option>
+              </select>
+            </label>
+            <button onClick="{{ runBt }}" style="display:inline-flex;align-items:center;gap:6px;padding:10px 18px;border-radius:6px;font-family:'IBM Plex Sans',sans-serif;font-size:12.5px;font-weight:600;cursor:pointer;background:#f2f2f2;color:#0a0a0a;border:1px solid #ffffff" style-hover="background:#ffffff">▶ Run Backtest</button>
+            <span style="display:{{ btSpinner }};font-family:'JetBrains Mono',monospace;font-size:11.5px;color:#8a8a8a;padding-bottom:10px">running BacktestEngine…</span>
+          </div>
+        </div>
+
+        <!-- Result -->
+        <sc-if value="{{ hasBtResult }}" hint-placeholder-val="{{ true }}">
+          <div style="background:#121212;border:1px solid #242424;border-radius:8px;overflow:hidden">
+            <div style="padding:13px 18px;border-bottom:1px solid #242424;display:flex;align-items:center">
+              <div style="font-size:11.5px;letter-spacing:.15em;text-transform:uppercase;color:#c8c8c8;font-weight:600">Result · {{ bt.name }}</div>
+              <span style="margin-left:auto;font-family:'JetBrains Mono',monospace;font-size:11.5px;color:#8a8a8a">Nautilus BacktestEngine</span>
+            </div>
+            <div style="padding:18px 20px">
+              <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:12px">
+                <div style="background:#0d0d0d;border:1px solid #222222;border-radius:6px;padding:13px 15px">
+                  <div style="font-size:9.5px;letter-spacing:.15em;text-transform:uppercase;color:#8a8a8a;margin-bottom:5px">Realized PnL</div>
+                  <div style="font-family:'JetBrains Mono',monospace;font-size:21px;font-weight:600;color:{{ bt.pnlColor }};font-variant-numeric:tabular-nums">{{ bt.pnlFmt }}</div>
+                </div>
+                <div style="background:#0d0d0d;border:1px solid #222222;border-radius:6px;padding:13px 15px">
+                  <div style="font-size:9.5px;letter-spacing:.15em;text-transform:uppercase;color:#8a8a8a;margin-bottom:5px">Sharpe (252d)</div>
+                  <div style="font-family:'JetBrains Mono',monospace;font-size:21px;font-weight:600;color:#f2f2f2">{{ bt.sharpeFmt }}</div>
+                </div>
+                <div style="background:#0d0d0d;border:1px solid #222222;border-radius:6px;padding:13px 15px">
+                  <div style="font-size:9.5px;letter-spacing:.15em;text-transform:uppercase;color:#8a8a8a;margin-bottom:5px">Trades</div>
+                  <div style="font-family:'JetBrains Mono',monospace;font-size:21px;font-weight:600;color:#f2f2f2">{{ bt.trades }}</div>
+                </div>
+                <div style="background:#0d0d0d;border:1px solid #222222;border-radius:6px;padding:13px 15px">
+                  <div style="font-size:9.5px;letter-spacing:.15em;text-transform:uppercase;color:#8a8a8a;margin-bottom:5px">Win Rate</div>
+                  <div style="font-family:'JetBrains Mono',monospace;font-size:21px;font-weight:600;color:#f2f2f2">{{ bt.winFmt }}</div>
+                </div>
+                <div style="background:#0d0d0d;border:1px solid #222222;border-radius:6px;padding:13px 15px">
+                  <div style="font-size:9.5px;letter-spacing:.15em;text-transform:uppercase;color:#8a8a8a;margin-bottom:5px">Max Drawdown</div>
+                  <div style="font-family:'JetBrains Mono',monospace;font-size:21px;font-weight:600;color:#f87171">{{ bt.ddFmt }}</div>
+                </div>
+              </div>
+              <div style="font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:#8a8a8a;margin:20px 0 8px">Equity Curve</div>
+              <div style="position:relative">
+                <svg viewBox="0 0 640 220" preserveAspectRatio="none" style="width:100%;height:230px;display:block">
+                  <line x1="0" y1="55" x2="640" y2="55" stroke="#1d1d1d" strokeWidth="1"></line>
+                  <line x1="0" y1="110" x2="640" y2="110" stroke="#1d1d1d" strokeWidth="1"></line>
+                  <line x1="0" y1="165" x2="640" y2="165" stroke="#1d1d1d" strokeWidth="1"></line>
+                  <polygon points="{{ btEq.areaPts }}" fill="{{ btEq.fill }}"></polygon>
+                  <polyline points="{{ btEq.points }}" fill="none" stroke="{{ btEq.color }}" strokeWidth="2"></polyline>
+                </svg>
+                <div style="position:absolute;top:2px;left:4px;font-family:'JetBrains Mono',monospace;font-size:11px;color:#8a8a8a">{{ btEq.max }}</div>
+                <div style="position:absolute;bottom:2px;left:4px;font-family:'JetBrains Mono',monospace;font-size:11px;color:#8a8a8a">{{ btEq.min }}</div>
+              </div>
+            </div>
+          </div>
+        </sc-if>
+        <sc-if value="{{ btEmpty }}" hint-placeholder-val="{{ false }}">
+          <div style="background:#121212;border:1px solid #242424;border-radius:8px;padding:44px 20px;text-align:center;color:#8a8a8a;font-size:13px">Bir strateji seçip <b style="color:#d4d4d4">Run Backtest</b>'e basın.</div>
+        </sc-if>
+
+        <!-- Order flow -->
+        <div style="background:#121212;border:1px solid #242424;border-radius:8px;overflow:hidden">
+          <div style="padding:13px 18px;border-bottom:1px solid #242424">
+            <div style="font-size:11.5px;letter-spacing:.15em;text-transform:uppercase;color:#c8c8c8;font-weight:600">Order Flow (bu backtest)</div>
+          </div>
+          <div style="padding:18px 20px">
+            <pre style="margin:0;padding:16px 18px;font-family:'JetBrains Mono',monospace;font-size:12px;line-height:1.6;color:#c8c8c8;overflow-x:auto;background:#0a0a0a;border:1px solid #222222;border-radius:6px">ComposedStrategy.on_bar(bar)
+        │
+        ▼
+  entry / exit signals evaluated
+        │
+        ▼
+  self.order_factory.market(...)
+        │
+        ▼
+  self.submit_order(order)
+        │
+        ▼
+  [Order Emulator]      (bracket + Emulate açıksa bekletir)
+        │
+        ▼
+  RiskEngine            ✓ pre-trade validation
+        │
+        ▼
+  YAHOO venue           → SimulatedExchange fill
+        │
+        ▼
+  ExecutionEngine       → Position tracking, PnL</pre>
+          </div>
+        </div>
+      </div>
+
+      <!-- Wiki column -->
+      <div style="position:sticky;top:86px">
+        <div style="background:#121212;border:1px solid #242424;border-radius:8px;overflow:hidden">
+          <div style="padding:13px 18px;border-bottom:1px solid #242424;display:flex;align-items:center">
+            <div style="font-size:11.5px;letter-spacing:.15em;text-transform:uppercase;color:#c8c8c8;font-weight:600">Nautilus Wiki</div>
+            <span style="margin-left:auto;font-family:'JetBrains Mono',monospace;font-size:11.5px;color:#8a8a8a">Order Flow Pipeline</span>
+          </div>
+          <div style="padding:18px 20px;font-size:13px;color:#b8b8b8;line-height:1.7;max-height:560px;overflow-y:auto">
+            <div style="font-size:15px;font-weight:600;color:#f2f2f2;margin-bottom:10px">Order Flow Pipeline</div>
+            <p style="margin:0 0 12px">Her bar kapanışında <span style="font-family:'JetBrains Mono',monospace;font-size:11.5px;background:#1c1c1c;padding:1px 6px;border-radius:4px">ComposedStrategy.on_bar</span> entry ve exit bloklarını değerlendirir. Sinyal üreten bloklar OR/AND mantığıyla birleştirilir.</p>
+            <p style="margin:0 0 12px">Emirler <span style="font-family:'JetBrains Mono',monospace;font-size:11.5px;background:#1c1c1c;padding:1px 6px;border-radius:4px">order_factory</span> üzerinden yaratılır; bracket açıksa SL/TP atomik olarak <span style="font-family:'JetBrains Mono',monospace;font-size:11.5px;background:#1c1c1c;padding:1px 6px;border-radius:4px">submit_order_list</span> ile gönderilir.</p>
+            <p style="margin:0 0 12px">RiskEngine pre-trade doğrulaması geçen emirler SimulatedExchange üzerinde doldurulur; ExecutionEngine pozisyon ve realized PnL takibini yapar.</p>
+            <p style="margin:0">Allow short açıkken venue otomatik olarak <span style="font-family:'JetBrains Mono',monospace;font-size:11.5px;background:#1c1c1c;padding:1px 6px;border-radius:4px">AccountType.MARGIN</span> (netting) moduna geçer.</p>
+          </div>
+        </div>
+      </div>
+
+    </main>
+    </sc-if>
+
+    <!-- ============ AGENT ============ -->
+    <sc-if value="{{ isAgent }}" hint-placeholder-val="{{ false }}">
+    <main data-screen-label="Agent" style="padding:26px 28px;display:flex;flex-direction:column;gap:18px;flex:1">
+
+      <!-- Status strip -->
+      <div style="background:#121212;border:1px solid #242424;border-radius:8px;padding:18px 20px;display:flex;align-items:center;gap:24px;flex-wrap:wrap">
+        <div style="flex:1;min-width:240px">
+          <div style="font-size:12px;letter-spacing:.15em;text-transform:uppercase;color:#d4d4d4;font-weight:600;margin-bottom:4px">Claude Sonnet 4.6</div>
+          <div style="font-family:'JetBrains Mono',monospace;font-size:12px;color:#9c9c9c">Parametre önerisi · tam strateji tasarımı · custom block kod üretimi + AST validation</div>
+        </div>
+        <span style="display:inline-flex;align-items:center;padding:4px 10px;border-radius:4px;font-size:10.5px;letter-spacing:.12em;text-transform:uppercase;font-family:'JetBrains Mono',monospace;color:#4ade80;border:1px solid rgba(74,222,128,0.35);background:rgba(74,222,128,0.08)"><span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:#4ade80;margin-right:7px;animation:blink 1.4s ease-in-out infinite"></span>ONLINE</span>
+        <div style="display:flex;flex-direction:column;align-items:flex-end">
+          <div style="font-size:9.5px;letter-spacing:.14em;text-transform:uppercase;color:#8a8a8a">API Key</div>
+          <div style="font-family:'JetBrains Mono',monospace;font-size:12.5px;color:#f2f2f2">sk-ant-····f81</div>
+        </div>
+        <div style="display:flex;flex-direction:column;align-items:flex-end">
+          <div style="font-size:9.5px;letter-spacing:.14em;text-transform:uppercase;color:#8a8a8a">Toplam Çağrı</div>
+          <div style="font-family:'JetBrains Mono',monospace;font-size:12.5px;color:#f2f2f2">{{ agentStats.calls }}</div>
+        </div>
+        <div style="display:flex;flex-direction:column;align-items:flex-end">
+          <div style="font-size:9.5px;letter-spacing:.14em;text-transform:uppercase;color:#8a8a8a">Son Çağrı</div>
+          <div style="font-family:'JetBrains Mono',monospace;font-size:12.5px;color:#f2f2f2">{{ agentStats.lastCall }}</div>
+        </div>
+      </div>
+
+      <!-- Task cards -->
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:18px">
+        <div style="background:#121212;border:1px solid #242424;border-radius:8px;padding:18px 20px;display:flex;flex-direction:column;gap:8px">
+          <div style="font-size:10.5px;letter-spacing:.15em;text-transform:uppercase;color:#8a8a8a;font-weight:600">Parametre Önerisi</div>
+          <div style="font-family:'JetBrains Mono',monospace;font-size:28px;font-weight:600;color:#f2f2f2">{{ agentStats.params }}</div>
+          <div style="font-size:12.5px;color:#9c9c9c;line-height:1.55">Otonom döngüde ma_crossover / rsi_mean_reversion için parametre önerir; geçmiş sonuçları context olarak alır.</div>
+          <div style="font-family:'JetBrains Mono',monospace;font-size:11px;color:#7a7a7a;margin-top:auto">loop_runner.py · agent.py</div>
+        </div>
+        <div style="background:#121212;border:1px solid #242424;border-radius:8px;padding:18px 20px;display:flex;flex-direction:column;gap:8px">
+          <div style="font-size:10.5px;letter-spacing:.15em;text-transform:uppercase;color:#8a8a8a;font-weight:600">Tam Strateji Önerisi</div>
+          <div style="font-family:'JetBrains Mono',monospace;font-size:28px;font-weight:600;color:#f2f2f2">{{ agentStats.strategies }}</div>
+          <div style="font-size:12.5px;color:#9c9c9c;line-height:1.55">Katalog + backtest geçmişine bakarak bloklar, roller, parametreler ve isim dahil tam spec üretir.</div>
+          <div style="font-family:'JetBrains Mono',monospace;font-size:11px;color:#7a7a7a;margin-top:auto">composer.py · agent.py</div>
+        </div>
+        <div style="background:#121212;border:1px solid #242424;border-radius:8px;padding:18px 20px;display:flex;flex-direction:column;gap:8px">
+          <div style="font-size:10.5px;letter-spacing:.15em;text-transform:uppercase;color:#8a8a8a;font-weight:600">Custom Block Üretimi</div>
+          <div style="font-family:'JetBrains Mono',monospace;font-size:28px;font-weight:600;color:#f2f2f2">{{ agentStats.blocks }}</div>
+          <div style="font-size:12.5px;color:#9c9c9c;line-height:1.55">Doğal dil → Python evaluate(). AST whitelist denetimi; hata olursa Claude'a bir kez düzeltme fırsatı.</div>
+          <div style="font-family:'JetBrains Mono',monospace;font-size:11px;color:#7a7a7a;margin-top:auto">custom_block_store.py · agent.py</div>
+        </div>
+      </div>
+
+      <!-- Log + guardrails -->
+      <div style="display:grid;grid-template-columns:3fr 2fr;gap:18px;align-items:start">
+        <div style="background:#121212;border:1px solid #242424;border-radius:8px;overflow:hidden">
+          <div style="padding:13px 18px;border-bottom:1px solid #242424;display:flex;align-items:center">
+            <div style="font-size:11.5px;letter-spacing:.15em;text-transform:uppercase;color:#c8c8c8;font-weight:600">Activity Log</div>
+            <span style="margin-left:auto;font-family:'JetBrains Mono',monospace;font-size:11.5px;color:#8a8a8a">en yeni üstte</span>
+          </div>
+          <div style="max-height:420px;overflow-y:auto">
+            <table style="width:100%;border-collapse:collapse;font-size:13px">
+              <tbody>
+                <sc-for list="{{ agentRows }}" as="e" hint-placeholder-count="5">
+                  <tr style-hover="background:#171717">
+                    <td style="padding:11px 18px;border-bottom:1px solid #1d1d1d;font-family:'JetBrains Mono',monospace;font-size:12px;color:#9c9c9c;width:80px;white-space:nowrap">{{ e.ts }}</td>
+                    <td style="padding:11px 14px;border-bottom:1px solid #1d1d1d;font-size:12.5px;color:#d4d4d4;width:140px;white-space:nowrap">{{ e.task }}</td>
+                    <td style="padding:11px 14px;border-bottom:1px solid #1d1d1d;font-family:'JetBrains Mono',monospace;font-size:12px;color:#b8b8b8">{{ e.detail }}</td>
+                    <td style="padding:11px 18px;border-bottom:1px solid #1d1d1d;text-align:right;width:90px"><span style="{{ e.statusStyle }}">{{ e.statusText }}</span></td>
+                  </tr>
+                </sc-for>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div style="background:#121212;border:1px solid #242424;border-radius:8px;overflow:hidden">
+          <div style="padding:13px 18px;border-bottom:1px solid #242424">
+            <div style="font-size:11.5px;letter-spacing:.15em;text-transform:uppercase;color:#c8c8c8;font-weight:600">AST Guardrails</div>
+          </div>
+          <div style="padding:18px 20px;display:flex;flex-direction:column;gap:14px">
+            <div>
+              <div style="font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:#f87171;margin-bottom:8px">Yasak</div>
+              <pre style="margin:0;padding:12px 14px;font-family:'JetBrains Mono',monospace;font-size:11.5px;line-height:1.7;color:#c8c8c8;background:#0a0a0a;border:1px solid #222222;border-radius:6px;overflow-x:auto">import · try/except · with · lambda
+global · raise · dunder isim/attr
+eval · exec · open · __import__</pre>
+            </div>
+            <div>
+              <div style="font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:#4ade80;margin-bottom:8px">İzinli</div>
+              <pre style="margin:0;padding:12px 14px;font-family:'JetBrains Mono',monospace;font-size:11.5px;line-height:1.7;color:#c8c8c8;background:#0a0a0a;border:1px solid #222222;border-radius:6px;overflow-x:auto">math · statistics
+abs min max sum len round sorted range
+.params .role .value .upper .lower
+.initialized .get .append .pop</pre>
+            </div>
+            <div style="font-size:12px;color:#9c9c9c;line-height:1.6">Kod kısıtlı <span style="font-family:'JetBrains Mono',monospace;font-size:11px;background:#1c1c1c;padding:1px 6px;border-radius:4px">__builtins__</span> ile smoke-exec edilir; hata olursa Claude'a bir kez düzeltme fırsatı verilir.</div>
+          </div>
+        </div>
+      </div>
+
+    </main>
+    </sc-if>
+
+    <!-- ============ DATA ============ -->
+    <sc-if value="{{ isData }}" hint-placeholder-val="{{ false }}">
+    <main data-screen-label="Data" style="padding:26px 28px;display:flex;flex-direction:column;gap:18px;flex:1">
+
+      <!-- Dataset strip -->
+      <div style="background:#121212;border:1px solid #242424;border-radius:8px;padding:18px 20px;display:flex;align-items:center;gap:24px;flex-wrap:wrap">
+        <div style="flex:1;min-width:240px">
+          <div style="font-size:12px;letter-spacing:.15em;text-transform:uppercase;color:#d4d4d4;font-weight:600;margin-bottom:4px">BTC-USD · Yahoo Finance · Daily</div>
+          <div style="font-family:'JetBrains Mono',monospace;font-size:12px;color:#9c9c9c">Parquet cache: ~/.cache/nautilus_web_app/btc_daily.parquet · silinirse ilk çağrıda yeniden indirilir</div>
+        </div>
+        <div style="display:flex;flex-direction:column;align-items:flex-end">
+          <div style="font-size:9.5px;letter-spacing:.14em;text-transform:uppercase;color:#8a8a8a">Bars</div>
+          <div style="font-family:'JetBrains Mono',monospace;font-size:12.5px;color:#f2f2f2">4,315</div>
+        </div>
+        <div style="display:flex;flex-direction:column;align-items:flex-end">
+          <div style="font-size:9.5px;letter-spacing:.14em;text-transform:uppercase;color:#8a8a8a">Range</div>
+          <div style="font-family:'JetBrains Mono',monospace;font-size:12.5px;color:#f2f2f2">2014-09-17 → 2026-07-11</div>
+        </div>
+        <div style="display:flex;flex-direction:column;align-items:flex-end">
+          <div style="font-size:9.5px;letter-spacing:.14em;text-transform:uppercase;color:#8a8a8a">Son Güncelleme</div>
+          <div style="font-family:'JetBrains Mono',monospace;font-size:12.5px;color:#f2f2f2">{{ dataUpdated }}</div>
+        </div>
+        <button onClick="{{ refreshData }}" style="display:inline-flex;align-items:center;gap:6px;padding:10px 18px;border-radius:6px;font-family:'IBM Plex Sans',sans-serif;font-size:12.5px;font-weight:600;cursor:pointer;background:#f2f2f2;color:#0a0a0a;border:1px solid #ffffff" style-hover="background:#ffffff">↻ Yeniden İndir</button>
+        <span style="display:{{ dataSpinner }};font-family:'JetBrains Mono',monospace;font-size:11.5px;color:#8a8a8a">yfinance download…</span>
+      </div>
+
+      <!-- Price chart -->
+      <div style="background:#121212;border:1px solid #242424;border-radius:8px;overflow:hidden">
+        <div style="padding:13px 18px;border-bottom:1px solid #242424;display:flex;align-items:center">
+          <div style="font-size:11.5px;letter-spacing:.15em;text-transform:uppercase;color:#c8c8c8;font-weight:600">BTC-USD Close · Tüm Geçmiş</div>
+          <span style="margin-left:auto;font-family:'JetBrains Mono',monospace;font-size:11.5px;color:#8a8a8a">yfinance · günlük close</span>
+        </div>
+        <div style="padding:18px 20px;position:relative">
+          <svg viewBox="0 0 640 220" preserveAspectRatio="none" style="width:100%;height:250px;display:block">
+            <line x1="0" y1="55" x2="640" y2="55" stroke="#1d1d1d" strokeWidth="1"></line>
+            <line x1="0" y1="110" x2="640" y2="110" stroke="#1d1d1d" strokeWidth="1"></line>
+            <line x1="0" y1="165" x2="640" y2="165" stroke="#1d1d1d" strokeWidth="1"></line>
+            <polygon points="{{ dataEq.areaPts }}" fill="{{ dataEq.fill }}"></polygon>
+            <polyline points="{{ dataEq.points }}" fill="none" stroke="{{ dataEq.color }}" strokeWidth="2"></polyline>
+          </svg>
+          <div style="position:absolute;top:14px;left:24px;font-family:'JetBrains Mono',monospace;font-size:11px;color:#8a8a8a">{{ dataEq.max }}</div>
+          <div style="position:absolute;bottom:14px;left:24px;font-family:'JetBrains Mono',monospace;font-size:11px;color:#8a8a8a">{{ dataEq.min }}</div>
+        </div>
+      </div>
+
+      <!-- Sources -->
+      <div style="background:#121212;border:1px solid #242424;border-radius:8px;overflow:hidden">
+        <div style="padding:13px 18px;border-bottom:1px solid #242424">
+          <div style="font-size:11.5px;letter-spacing:.15em;text-transform:uppercase;color:#c8c8c8;font-weight:600">Veri Kaynakları</div>
+        </div>
+        <table style="width:100%;border-collapse:collapse;font-size:13px">
+          <thead>
+            <tr>
+              <th style="text-align:left;padding:10px 18px;font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:#8a8a8a;border-bottom:1px solid #242424">Kaynak</th>
+              <th style="text-align:left;padding:10px 14px;font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:#8a8a8a;border-bottom:1px solid #242424">Enstrüman</th>
+              <th style="text-align:left;padding:10px 14px;font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:#8a8a8a;border-bottom:1px solid #242424">Granülarite</th>
+              <th style="text-align:left;padding:10px 14px;font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:#8a8a8a;border-bottom:1px solid #242424">Cache</th>
+              <th style="text-align:right;padding:10px 18px;font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:#8a8a8a;border-bottom:1px solid #242424">Durum</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr style-hover="background:#171717">
+              <td style="padding:11px 18px;border-bottom:1px solid #1d1d1d;color:#f2f2f2">Yahoo Finance</td>
+              <td style="padding:11px 14px;border-bottom:1px solid #1d1d1d;font-family:'JetBrains Mono',monospace;font-size:12.5px;color:#d4d4d4">BTC-USD</td>
+              <td style="padding:11px 14px;border-bottom:1px solid #1d1d1d;font-family:'JetBrains Mono',monospace;font-size:12px;color:#9c9c9c">1d</td>
+              <td style="padding:11px 14px;border-bottom:1px solid #1d1d1d;font-family:'JetBrains Mono',monospace;font-size:11.5px;color:#9c9c9c">btc_daily.parquet</td>
+              <td style="padding:11px 18px;border-bottom:1px solid #1d1d1d;text-align:right"><span style="display:inline-block;padding:3px 9px;border-radius:4px;font-size:10px;letter-spacing:.12em;text-transform:uppercase;font-family:'JetBrains Mono',monospace;color:#4ade80;border:1px solid rgba(74,222,128,0.35);background:rgba(74,222,128,0.07)">CACHED</span></td>
+            </tr>
+            <tr style-hover="background:#171717">
+              <td style="padding:11px 18px;border-bottom:1px solid #1d1d1d;color:#f2f2f2">NFS Ticks</td>
+              <td style="padding:11px 14px;border-bottom:1px solid #1d1d1d;font-family:'JetBrains Mono',monospace;font-size:12.5px;color:#d4d4d4">US Index (ticker discovery)</td>
+              <td style="padding:11px 14px;border-bottom:1px solid #1d1d1d;font-family:'JetBrains Mono',monospace;font-size:12px;color:#9c9c9c">1d · 1m</td>
+              <td style="padding:11px 14px;border-bottom:1px solid #1d1d1d;font-family:'JetBrains Mono',monospace;font-size:11.5px;color:#9c9c9c">—</td>
+              <td style="padding:11px 18px;border-bottom:1px solid #1d1d1d;text-align:right"><span style="display:inline-block;padding:3px 9px;border-radius:4px;font-size:10px;letter-spacing:.12em;text-transform:uppercase;font-family:'JetBrains Mono',monospace;color:#8a8a8a;border:1px solid #262626">ON DEMAND</span></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+    </main>
+    </sc-if>
+
+    <!-- ============ REPORTS ============ -->
+    <sc-if value="{{ isReports }}" hint-placeholder-val="{{ false }}">
+    <main data-screen-label="Reports" style="padding:26px 28px;display:flex;flex-direction:column;gap:18px;flex:1">
+
+      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px">
+        <div style="background:#121212;border:1px solid #242424;border-radius:8px;padding:10px 14px">
+          <div style="font-size:9px;letter-spacing:.15em;text-transform:uppercase;color:#8a8a8a;margin-bottom:3px">Toplam Koşum</div>
+          <div style="font-family:'JetBrains Mono',monospace;font-size:17px;font-weight:600;color:#f2f2f2">{{ repKpi.count }}</div>
+        </div>
+        <div style="background:#121212;border:1px solid #242424;border-radius:8px;padding:10px 14px">
+          <div style="font-size:9px;letter-spacing:.15em;text-transform:uppercase;color:#8a8a8a;margin-bottom:3px">Best PnL</div>
+          <div style="font-family:'JetBrains Mono',monospace;font-size:17px;font-weight:600;color:#4ade80">{{ repKpi.bestFmt }}</div>
+        </div>
+        <div style="background:#121212;border:1px solid #242424;border-radius:8px;padding:10px 14px">
+          <div style="font-size:9px;letter-spacing:.15em;text-transform:uppercase;color:#8a8a8a;margin-bottom:3px">Ort. Sharpe</div>
+          <div style="font-family:'JetBrains Mono',monospace;font-size:17px;font-weight:600;color:#f2f2f2">{{ repKpi.avgSharpe }}</div>
+        </div>
+        <div style="background:#121212;border:1px solid #242424;border-radius:8px;padding:10px 14px">
+          <div style="font-size:9px;letter-spacing:.15em;text-transform:uppercase;color:#8a8a8a;margin-bottom:3px">Ort. Win Rate</div>
+          <div style="font-family:'JetBrains Mono',monospace;font-size:17px;font-weight:600;color:#f2f2f2">{{ repKpi.avgWin }}</div>
+        </div>
+      </div>
+
+      <div style="background:#121212;border:1px solid #242424;border-radius:8px;overflow:hidden">
+        <div style="padding:13px 18px;border-bottom:1px solid #242424;display:flex;align-items:center">
+          <div style="font-size:11.5px;letter-spacing:.15em;text-transform:uppercase;color:#c8c8c8;font-weight:600">Backtest Geçmişi</div>
+          <span style="margin-left:auto;font-family:'JetBrains Mono',monospace;font-size:11.5px;color:#8a8a8a">Nautilus BacktestEngine · realized PnL</span>
+        </div>
+        <table style="width:100%;border-collapse:collapse;font-size:13px">
+          <thead>
+            <tr>
+              <th style="text-align:left;padding:10px 18px;font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:#8a8a8a;border-bottom:1px solid #242424">Tarih</th>
+              <th style="text-align:left;padding:10px 14px;font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:#8a8a8a;border-bottom:1px solid #242424">Strategy</th>
+              <th style="text-align:left;padding:10px 14px;font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:#8a8a8a;border-bottom:1px solid #242424">Data</th>
+              <th style="text-align:right;padding:10px 14px;font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:#8a8a8a;border-bottom:1px solid #242424">PnL</th>
+              <th style="text-align:right;padding:10px 14px;font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:#8a8a8a;border-bottom:1px solid #242424">Sharpe</th>
+              <th style="text-align:right;padding:10px 14px;font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:#8a8a8a;border-bottom:1px solid #242424">Trades</th>
+              <th style="text-align:right;padding:10px 14px;font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:#8a8a8a;border-bottom:1px solid #242424">Win</th>
+              <th style="text-align:right;padding:10px 18px;font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:#8a8a8a;border-bottom:1px solid #242424">Max DD</th>
+            </tr>
+          </thead>
+          <tbody>
+            <sc-for list="{{ reportRows }}" as="r" hint-placeholder-count="6">
+              <tr style-hover="background:#171717">
+                <td style="padding:11px 18px;border-bottom:1px solid #1d1d1d;font-family:'JetBrains Mono',monospace;font-size:12px;color:#9c9c9c;white-space:nowrap">{{ r.date }}</td>
+                <td style="padding:11px 14px;border-bottom:1px solid #1d1d1d;font-family:'JetBrains Mono',monospace;font-size:12.5px;color:#f2f2f2">{{ r.strategy }}</td>
+                <td style="padding:11px 14px;border-bottom:1px solid #1d1d1d;font-family:'JetBrains Mono',monospace;font-size:12px;color:#9c9c9c;white-space:nowrap">{{ r.data }}</td>
+                <td style="padding:11px 14px;border-bottom:1px solid #1d1d1d;text-align:right;font-family:'JetBrains Mono',monospace;font-size:13px;font-weight:600;color:{{ r.pnlColor }}">{{ r.pnlFmt }}</td>
+                <td style="padding:11px 14px;border-bottom:1px solid #1d1d1d;text-align:right;font-family:'JetBrains Mono',monospace;font-size:12.5px;color:#d4d4d4">{{ r.sharpeFmt }}</td>
+                <td style="padding:11px 14px;border-bottom:1px solid #1d1d1d;text-align:right;font-family:'JetBrains Mono',monospace;font-size:12.5px;color:#d4d4d4">{{ r.trades }}</td>
+                <td style="padding:11px 14px;border-bottom:1px solid #1d1d1d;text-align:right;font-family:'JetBrains Mono',monospace;font-size:12.5px;color:#d4d4d4">{{ r.winFmt }}</td>
+                <td style="padding:11px 18px;border-bottom:1px solid #1d1d1d;text-align:right;font-family:'JetBrains Mono',monospace;font-size:12.5px;color:#f87171">{{ r.ddFmt }}</td>
+              </tr>
+            </sc-for>
+          </tbody>
+        </table>
+      </div>
+
+    </main>
+    </sc-if>
+
+  </div>
+</div>
+
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{
+  &quot;simSpeed&quot;: {&quot;editor&quot;: &quot;range&quot;, &quot;default&quot;: 1600, &quot;min&quot;: 400, &quot;max&quot;: 4000, &quot;step&quot;: 100, &quot;unit&quot;: &quot;ms&quot;, &quot;section&quot;: &quot;Simülasyon&quot;, &quot;tsType&quot;: &quot;number&quot;},
+  &quot;chartStyle&quot;: {&quot;editor&quot;: &quot;enum&quot;, &quot;options&quot;: [&quot;area&quot;, &quot;line&quot;], &quot;default&quot;: &quot;area&quot;, &quot;section&quot;: &quot;Grafik&quot;, &quot;tsType&quot;: &quot;string&quot;},
+  &quot;chartColor&quot;: {&quot;editor&quot;: &quot;color&quot;, &quot;default&quot;: &quot;#e5e5e5&quot;, &quot;options&quot;: [&quot;#e5e5e5&quot;, &quot;#4ade80&quot;, &quot;#60a5fa&quot;, &quot;#f0b100&quot;], &quot;section&quot;: &quot;Grafik&quot;, &quot;tsType&quot;: &quot;string&quot;}
+}">
+class Component extends DCLogic {
+  state = this._initial();
+
+  _initial() {
+    this._rs = 987654321;
+    this._eqCache = {};
+    const iters = [];
+    const t0 = Date.now() - 6 * 95000;
+    for (let i = 0; i < 6; i++) {
+      iters.unshift(this._mkIter(i + 1, new Date(t0 + i * 95000)));
+    }
+    return {
+      page: 'dashboard',
+      running: false,
+      mode: 'agent',
+      iterations: iters,
+      drafts: [
+        { type: 'ma_cross', label: 'MA Crossover', role: 'entry', params: 'fast=12 · slow=48' },
+        { type: 'rsi_threshold', label: 'RSI Threshold', role: 'exit', params: 'period=14 · level=70' },
+      ],
+      catalog: [
+        { id: 'a3f2', name: 'supertrend', blocks: 2, tradeSize: '0.25 BTC', created: '2026-07-08 14:12', desc: 'SuperTrend flip long/short', pnl: 6223.85 },
+        { id: 'b7c1', name: 'WebUI-Smoke', blocks: 1, tradeSize: '0.10 BTC', created: '2026-07-10 09:41', desc: 'MA cross smoke test', pnl: 1092.01 },
+      ],
+      stratName: 'My Strategy',
+      blockType: 'ma_cross',
+      blockRole: 'entry',
+      blockParams: null,
+      suggesting: false,
+      flash: null,
+      btSpec: '0',
+      btRunning: false,
+      btResult: { name: 'supertrend', pnl: 6223.85, sharpe: 1.42, trades: 87, win: 0.54, dd: -0.183 },
+      genBusy: false,
+      genBlock: null,
+      dataRefreshing: false,
+      dataUpdated: '2026-07-11 08:00',
+      agentLog: [
+        { ts: '18:42:11', task: 'strategy_proposal', detail: 'Claude Momentum v3 — supertrend_flip + donchian_break + atr_stop', status: 'ok' },
+        { ts: '16:03:57', task: 'custom_block', detail: 'sma200_breakout — AST whitelist geçti (1. deneme)', status: 'ok' },
+        { ts: '15:58:20', task: 'custom_block', detail: 'vwap_pullback — yasaklı import, düzeltme istendi', status: 'retry' },
+        { ts: '14:31:02', task: 'param_proposal', detail: 'rsi_mean_reversion → period=11 low=27 high=74', status: 'ok' },
+        { ts: '14:29:28', task: 'param_proposal', detail: 'ma_crossover → fast=9 slow=72', status: 'ok' },
+      ],
+      reports: [
+        { date: '2026-07-11 18:42', strategy: 'supertrend', data: 'BTC daily', pnl: 6223.85, sharpe: 1.42, trades: 87, win: 0.54, dd: -0.183 },
+        { date: '2026-07-11 16:05', strategy: 'Claude Momentum v3', data: 'BTC daily', pnl: 4817.22, sharpe: 1.18, trades: 64, win: 0.512, dd: -0.211 },
+        { date: '2026-07-10 09:44', strategy: 'WebUI-Smoke', data: 'BTC daily', pnl: 1092.01, sharpe: 0.61, trades: 23, win: 0.478, dd: -0.126 },
+        { date: '2026-07-09 14:30', strategy: 'rsi_mean_reversion', data: 'BTC daily', pnl: -1408.55, sharpe: -0.32, trades: 141, win: 0.397, dd: -0.294 },
+        { date: '2026-07-08 11:19', strategy: 'ma_crossover', data: 'BTC daily', pnl: 2245.9, sharpe: 0.84, trades: 52, win: 0.5, dd: -0.172 },
+        { date: '2026-07-08 09:02', strategy: 'supertrend', data: 'US Index 1m', pnl: 3390.14, sharpe: 1.05, trades: 210, win: 0.463, dd: -0.148 },
+      ],
+    };
+  }
+
+  _rand() { this._rs = (this._rs * 1103515245 + 12345) % 2147483648; return this._rs / 2147483648; }
+
+  _mkIter(id, ts) {
+    const strat = this._rand() < 0.5 ? 'ma_crossover' : 'rsi_mean_reversion';
+    let params;
+    if (strat === 'ma_crossover') {
+      params = 'fast=' + (5 + Math.floor(this._rand() * 20)) + ' slow=' + (30 + Math.floor(this._rand() * 90));
+    } else {
+      params = 'period=' + (7 + Math.floor(this._rand() * 14)) + ' low=' + (20 + Math.floor(this._rand() * 15)) + ' high=' + (65 + Math.floor(this._rand() * 15));
+    }
+    const pnl = Math.round((this._rand() * 11000 - 3000) * 100) / 100;
+    return {
+      id: id,
+      strategy: strat,
+      params: params,
+      pnl: pnl,
+      sharpe: Math.round((pnl / 6000 + this._rand() * 0.6) * 100) / 100,
+      trades: 20 + Math.floor(this._rand() * 140),
+      win: 0.35 + this._rand() * 0.3,
+      dd: -(0.08 + this._rand() * 0.22),
+      ts: ts.toTimeString().slice(0, 8),
+    };
+  }
+
+  _curve(key, target) {
+    if (this._eqCache[key]) return this._eqCache[key];
+    const n = 140;
+    const pts = [100000];
+    let v = 100000;
+    for (let i = 1; i < n; i++) {
+      v += target / n + (this._rand() - 0.48) * Math.abs(target) * 0.06 + (this._rand() - 0.5) * 400;
+      pts.push(v);
+    }
+    const off = 100000 + target - pts[n - 1];
+    for (let i = 0; i < n; i++) pts[i] += off * (i / (n - 1));
+    this._eqCache[key] = pts;
+    return pts;
+  }
+
+  _fmtMoney(v) {
+    const sign = v < 0 ? '-' : '+';
+    return sign + '$' + Math.abs(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  }
+
+  _eqGeom(pts) {
+    const color = this.props.chartColor ?? '#e5e5e5';
+    const style = this.props.chartStyle ?? 'area';
+    const min = Math.min(...pts), max = Math.max(...pts);
+    const span = max - min || 1;
+    const W = 640, H = 220, pad = 8;
+    const coords = pts.map((p, i) => {
+      const x = (i / (pts.length - 1)) * W;
+      const y = pad + (1 - (p - min) / span) * (H - pad * 2);
+      return x.toFixed(1) + ',' + y.toFixed(1);
+    });
+    const points = coords.join(' ');
+    return {
+      points: points,
+      areaPts: points + ' 640,' + (H - 2) + ' 0,' + (H - 2),
+      fill: style === 'line' ? 'none' : color + '14',
+      color: color,
+      max: max >= 10000 ? '$' + Math.round(max / 1000) + 'k' : '$' + Math.round(max),
+      min: min >= 10000 ? '$' + Math.round(min / 1000) + 'k' : '$' + Math.round(min),
+    };
+  }
+
+  _btcCurve() {
+    if (this._eqCache.btc) return this._eqCache.btc;
+    const n = 180;
+    const pts = [];
+    let v = 457;
+    const drift = Math.pow(109384 / 457, 1 / (n - 1));
+    for (let i = 0; i < n; i++) {
+      pts.push(v);
+      v = v * drift * (1 + (this._rand() - 0.5) * 0.09);
+    }
+    pts[n - 1] = 109384;
+    this._eqCache.btc = pts;
+    return pts;
+  }
+
+  refreshData = () => {
+    if (this.state.dataRefreshing) return;
+    this.setState({ dataRefreshing: true });
+    setTimeout(() => {
+      this.setState({
+        dataRefreshing: false,
+        dataUpdated: new Date().toISOString().slice(0, 16).replace('T', ' '),
+      });
+    }, 1200);
+  };
+
+  _paramDefaults(type) {
+    const map = {
+      ma_cross: [['fast', 12], ['slow', 48]],
+      rsi_threshold: [['period', 14], ['level', 30]],
+      bollinger_break: [['period', 20], ['k', 2]],
+      macd_cross: [['fast', 12], ['slow', 26]],
+      donchian_break: [['period', 55]],
+      atr_stop: [['period', 14], ['mult', 3]],
+      supertrend_flip: [['period', 10], ['mult', 3]],
+      ema_ribbon: [['fast', 8], ['slow', 21]],
+    };
+    const obj = {};
+    (map[type] || []).forEach(([k, v]) => { obj[k] = v; });
+    return obj;
+  }
+
+  _blockLabel(type) {
+    return {
+      ma_cross: 'MA Crossover', rsi_threshold: 'RSI Threshold', bollinger_break: 'Bollinger Break',
+      macd_cross: 'MACD Cross', donchian_break: 'Donchian Break', atr_stop: 'ATR Stop',
+      supertrend_flip: 'SuperTrend Flip', ema_ribbon: 'EMA Ribbon',
+    }[type] || type;
+  }
+
+  _wiki(type) {
+    const w = {
+      ma_cross: ['indicators/ma_cross.md', 'Moving Average Crossover', 'Hızlı MA yavaş MA\'yı yukarı kestiğinde long, aşağı kestiğinde exit/short sinyali üretir. Nautilus tarafında ExponentialMovingAverage indikatörleri bar-close ile beslenir; her iki MA da initialized olana kadar blok None döner.'],
+      rsi_threshold: ['indicators/rsi.md', 'RSI Threshold', 'Wilder RSI belirlenen seviyenin altına inince long (mean-reversion), üstüne çıkınca exit sinyali üretir. Period tipik olarak 14; level entry rolünde alt eşik, exit rolünde üst eşik olarak yorumlanır.'],
+      bollinger_break: ['indicators/bollinger.md', 'Bollinger Break', 'Close üst banda taşarsa momentum long, alt banda taşarsa short/exit. Bantlar SMA ± k·σ olarak hesaplanır; k tipik 2.0.'],
+      macd_cross: ['indicators/macd.md', 'MACD Cross', 'MACD çizgisi sinyal çizgisini yukarı kestiğinde long, aşağı kestiğinde exit. Fast/slow EMA periyotları parametredir; sinyal 9-EMA sabittir.'],
+      donchian_break: ['indicators/donchian.md', 'Donchian Break', 'Close son N barın en yükseğini aşarsa long (kanal kırılımı), en düşüğünün altına inerse exit/short. Klasik turtle-trading girişi.'],
+      atr_stop: ['indicators/atr.md', 'ATR Stop', 'Pozisyon açıldıktan sonra close, giriş fiyatından mult·ATR kadar aleyhte hareket ederse exit sinyali üretir. Volatiliteye uyarlanan stop-loss.'],
+      supertrend_flip: ['indicators/supertrend.md', 'SuperTrend Flip', 'SuperTrend çizgisi yön değiştirdiğinde (flip) sinyal üretir: yukarı flip long, aşağı flip exit/short. ATR tabanlı trend takibi; period ve mult parametrik.'],
+      ema_ribbon: ['indicators/ema_ribbon.md', 'EMA Ribbon', 'Hızlı EMA yavaş EMA\'nın üstünde ve aralık genişliyorsa trend long sinyali; sıkışma/ters dönüşte exit. MA cross\'un daha yumuşak varyantı.'],
+    };
+    const e = w[type] || w.ma_cross;
+    return { path: e[0], title: e[1], body: e[2] };
+  }
+
+  startLoop = () => {
+    if (this.state.running) return;
+    this.setState({ running: true });
+    this._timer = setInterval(() => {
+      this.setState((s) => {
+        const nextId = s.iterations.length ? s.iterations[0].id + 1 : 1;
+        const it = this._mkIter(nextId, new Date());
+        const logEntry = { ts: it.ts, task: 'param_proposal', detail: it.strategy + ' → ' + it.params, status: 'ok' };
+        return {
+          iterations: [it].concat(s.iterations).slice(0, 40),
+          agentLog: [logEntry].concat(s.agentLog).slice(0, 30),
+        };
+      });
+    }, this.props.simSpeed ?? 1600);
+  };
+
+  stopLoop = () => {
+    clearInterval(this._timer);
+    this.setState({ running: false });
+  };
+
+  componentWillUnmount() { clearInterval(this._timer); }
+
+  runBt = () => {
+    if (this.state.btRunning) return;
+    this.setState({ btRunning: true });
+    setTimeout(() => {
+      const spec = this.state.catalog[parseInt(this.state.btSpec, 10)] || this.state.catalog[0];
+      if (!spec) { this.setState({ btRunning: false }); return; }
+      const base = spec.pnl != null ? spec.pnl : this._rand() * 9000 - 2000;
+      const pnl = Math.round(base * (0.92 + this._rand() * 0.16) * 100) / 100;
+      this.setState({
+        btRunning: false,
+        btResult: {
+          name: spec.name,
+          pnl: pnl,
+          sharpe: Math.round((pnl / 5000 + 0.2 + this._rand() * 0.4) * 100) / 100,
+          trades: 30 + Math.floor(this._rand() * 120),
+          win: 0.4 + this._rand() * 0.25,
+          dd: -(0.1 + this._rand() * 0.18),
+        },
+      });
+    }, 1100);
+  };
+
+  suggest = () => {
+    if (this.state.suggesting) return;
+    this.setState({ suggesting: true });
+    setTimeout(() => {
+      this.setState({
+        suggesting: false,
+        stratName: 'Claude Momentum v3',
+        drafts: [
+          { type: 'supertrend_flip', label: 'SuperTrend Flip', role: 'entry', params: 'period=10 · mult=2.5' },
+          { type: 'donchian_break', label: 'Donchian Break', role: 'entry', params: 'period=40' },
+          { type: 'atr_stop', label: 'ATR Stop', role: 'exit', params: 'period=14 · mult=3' },
+        ],
+      });
+    }, 1400);
+  };
+
+  generateBlock = () => {
+    if (this.state.genBusy) return;
+    this.setState({ genBusy: true });
+    setTimeout(() => {
+      this.setState({
+        genBusy: false,
+        genBlock: {
+          label: 'sma200_breakout',
+          code: 'def evaluate(state, block, closes, indicators, portfolio):\n    n = int(block.params.get("period", 200))\n    if len(closes) < n + 1:\n        return None\n    sma = sum(closes[-n:]) / n\n    prev_sma = sum(closes[-n-1:-1]) / n\n    if closes[-2] <= prev_sma and closes[-1] > sma:\n        return "long"\n    return None',
+        },
+      });
+    }, 1300);
+  };
+
+  addBlock = () => {
+    const t = this.state.blockType;
+    const params = this.state.blockParams || this._paramDefaults(t);
+    const str = Object.entries(params).map(([k, v]) => k + '=' + v).join(' · ');
+    this.setState((s) => ({
+      drafts: s.drafts.concat([{ type: t, label: this._blockLabel(t), role: s.blockRole, params: str }]),
+    }));
+  };
+
+  saveStrategy = () => {
+    this.setState((s) => {
+      const id = Math.random().toString(16).slice(2, 6);
+      return {
+        catalog: s.catalog.concat([{
+          id: id, name: s.stratName, blocks: s.drafts.length,
+          tradeSize: '0.10 BTC',
+          created: new Date().toISOString().slice(0, 16).replace('T', ' '),
+          desc: 'composer draft', pnl: null,
+        }]),
+        flash: s.stratName + ' · ' + s.drafts.length + ' blok kataloğa yazıldı',
+      };
+    });
+    clearTimeout(this._flashT);
+    this._flashT = setTimeout(() => this.setState({ flash: null }), 3000);
+  };
+
+  renderVals() {
+    const s = this.state;
+    const navBase = 'display:flex;align-items:center;gap:12px;padding:11px 22px;color:#b3b3b3;text-decoration:none;font-size:13.5px;cursor:pointer;border-left:2px solid transparent;transition:background .15s,color .15s';
+    const navActive = 'display:flex;align-items:center;gap:12px;padding:11px 22px;color:#ffffff;text-decoration:none;font-size:13.5px;cursor:pointer;border-left:2px solid #ffffff;background:#1a1a1a;font-weight:600';
+    const pages = [
+      ['dashboard', 'Dashboard', '◉'],
+      ['agent', 'Agent', '◎'],
+      ['strategy', 'Strategy Lab', '◈'],
+      ['backtest', 'Backtest', '▶'],
+      ['data', 'Data', '▤'],
+      ['reports', 'Reports', '▦'],
+    ];
+    const navItems = pages.map(([id, label, icon]) => ({
+      label: label, icon: icon,
+      style: s.page === id ? navActive : navBase,
+      go: () => this.setState({ page: id }),
+    }));
+
+    const fmtIt = (it) => ({
+      idFmt: '#' + String(it.id).padStart(2, '0'),
+      ts: it.ts, strategy: it.strategy, params: it.params,
+      pnlFmt: this._fmtMoney(it.pnl),
+      pnlColor: it.pnl >= 0 ? '#4ade80' : '#f87171',
+      sharpeFmt: it.sharpe.toFixed(2),
+      trades: it.trades,
+      winFmt: (it.win * 100).toFixed(1) + '%',
+      ddFmt: (it.dd * 100).toFixed(1) + '%',
+    });
+
+    const bestRaw = s.iterations.reduce((a, b) => (a && a.pnl >= b.pnl ? a : b), null);
+    const best = bestRaw ? Object.assign(fmtIt(bestRaw), {
+      rationale: bestRaw.strategy === 'ma_crossover'
+        ? 'Yavaş pencereyi genişleterek whipsaw kayıplarını azalttım; hızlı MA\'yı trende duyarlı tutmak için 20 altında bıraktım.'
+        : 'RSI eşiklerini genişleterek aşırı işlem sayısını düşürdüm; mean-reversion girişleri güçlü düşüşlerle sınırlandı.',
+    }) : null;
+
+    const dashEq = this._eqGeom(this._curve('best-' + (bestRaw ? bestRaw.id : 0), bestRaw ? bestRaw.pnl : 0));
+
+    const paramObj = s.blockParams || this._paramDefaults(s.blockType);
+    const paramDefs = Object.entries(paramObj).map(([k, v]) => ({
+      label: k, val: v,
+      set: (e) => {
+        const next = Object.assign({}, this.state.blockParams || this._paramDefaults(this.state.blockType));
+        next[k] = e.target.value;
+        this.setState({ blockParams: next });
+      },
+    }));
+
+    const badge = (role) => 'display:inline-block;padding:3px 9px;border-radius:4px;font-size:10px;letter-spacing:.12em;text-transform:uppercase;font-family:JetBrains Mono,monospace;' +
+      (role === 'entry'
+        ? 'color:#4ade80;border:1px solid rgba(74,222,128,0.35);background:rgba(74,222,128,0.07)'
+        : 'color:#f87171;border:1px solid rgba(248,113,113,0.35);background:rgba(248,113,113,0.07)');
+
+    const draftRows = s.drafts.map((d, i) => Object.assign({}, d, {
+      idx: i + 1,
+      badgeStyle: badge(d.role),
+      remove: () => this.setState((st) => ({ drafts: st.drafts.filter((_, j) => j !== i) })),
+    }));
+
+    const catalogRows = s.catalog.map((c, i) => Object.assign({}, c, {
+      desc: c.desc || '—',
+      remove: () => this.setState((st) => ({ catalog: st.catalog.filter((_, j) => j !== i) })),
+    }));
+
+    const catalogOpts = s.catalog.map((c, i) => ({
+      value: String(i),
+      label: c.name + ' · ' + c.blocks + ' blok · id=' + c.id,
+    }));
+
+    const bt = s.btResult ? {
+      name: s.btResult.name,
+      pnlFmt: this._fmtMoney(s.btResult.pnl),
+      pnlColor: s.btResult.pnl >= 0 ? '#4ade80' : '#f87171',
+      sharpeFmt: s.btResult.sharpe.toFixed(2),
+      trades: s.btResult.trades,
+      winFmt: (s.btResult.win * 100).toFixed(1) + '%',
+      ddFmt: (s.btResult.dd * 100).toFixed(1) + '%',
+    } : null;
+    const btEq = s.btResult ? this._eqGeom(this._curve('bt-' + s.btResult.name + '-' + s.btResult.pnl, s.btResult.pnl)) : null;
+
+    const reportRows = s.reports.map((r) => ({
+      date: r.date, strategy: r.strategy, data: r.data,
+      pnlFmt: this._fmtMoney(r.pnl), pnlColor: r.pnl >= 0 ? '#4ade80' : '#f87171',
+      sharpeFmt: r.sharpe.toFixed(2), trades: r.trades,
+      winFmt: (r.win * 100).toFixed(1) + '%', ddFmt: (r.dd * 100).toFixed(1) + '%',
+    }));
+    const repKpi = {
+      count: s.reports.length,
+      bestFmt: this._fmtMoney(s.reports.reduce((a, b) => Math.max(a, b.pnl), -Infinity)),
+      avgSharpe: (s.reports.reduce((a, b) => a + b.sharpe, 0) / s.reports.length).toFixed(2),
+      avgWin: ((s.reports.reduce((a, b) => a + b.win, 0) / s.reports.length) * 100).toFixed(1) + '%',
+    };
+    const taskLabels = { param_proposal: 'Parametre önerisi', strategy_proposal: 'Strateji önerisi', custom_block: 'Custom block' };
+    const agentRows = s.agentLog.map((e) => ({
+      ts: e.ts, task: taskLabels[e.task] || e.task, detail: e.detail,
+      statusText: e.status === 'ok' ? '✓ OK' : '↻ RETRY',
+      statusStyle: 'display:inline-block;padding:3px 9px;border-radius:4px;font-size:10px;letter-spacing:.12em;font-family:JetBrains Mono,monospace;white-space:nowrap;' +
+        (e.status === 'ok'
+          ? 'color:#4ade80;border:1px solid rgba(74,222,128,0.35);background:rgba(74,222,128,0.07)'
+          : 'color:#f0b100;border:1px solid rgba(240,177,0,0.35);background:rgba(240,177,0,0.07)'),
+    }));
+    const agentStats = {
+      params: 38 + s.agentLog.filter((e) => e.task === 'param_proposal').length,
+      strategies: 6,
+      blocks: 3,
+      calls: 44 + s.agentLog.length,
+      lastCall: s.agentLog.length ? s.agentLog[0].ts : '—',
+    };
+
+    const btnBase = 'display:inline-flex;align-items:center;gap:6px;padding:10px 18px;border-radius:6px;font-family:IBM Plex Sans,sans-serif;font-size:12.5px;font-weight:600;letter-spacing:.02em;';
+    const startStyle = btnBase + (s.running
+      ? 'background:#2a2a2a;color:#6a6a6a;border:1px solid #2a2a2a;cursor:not-allowed'
+      : 'background:#f2f2f2;color:#0a0a0a;border:1px solid #ffffff;cursor:pointer');
+    const stopStyle = btnBase + (s.running
+      ? 'background:rgba(248,113,113,0.1);color:#fca5a5;border:1px solid rgba(248,113,113,0.4);cursor:pointer'
+      : 'background:transparent;color:#5a5a5a;border:1px solid #262626;cursor:not-allowed');
+
+    return {
+      navItems: navItems,
+      topTitle: { dashboard: 'Dashboard', agent: 'Agent', strategy: 'Strategy Lab', backtest: 'Backtest', data: 'Data', reports: 'Reports' }[s.page],
+      isData: s.page === 'data',
+      dataEq: this._eqGeom(this._btcCurve()),
+      dataUpdated: s.dataUpdated,
+      refreshData: this.refreshData,
+      dataSpinner: s.dataRefreshing ? 'inline' : 'none',
+      isDashboard: s.page === 'dashboard',
+      isStrategy: s.page === 'strategy',
+      isBacktest: s.page === 'backtest',
+      isAgent: s.page === 'agent',
+      isReports: s.page === 'reports',
+      agentRows: agentRows,
+      agentStats: agentStats,
+      reportRows: reportRows,
+      repKpi: repKpi,
+
+      mode: s.mode,
+      setMode: (e) => this.setState({ mode: e.target.value }),
+      startLoop: this.startLoop,
+      stopLoop: this.stopLoop,
+      startStyle: startStyle,
+      stopStyle: stopStyle,
+      statusText: s.running ? 'RUNNING · agent thinking' : '◦ idle',
+      statusBadgeStyle: 'display:inline-flex;align-items:center;padding:4px 10px;border-radius:4px;font-size:10.5px;letter-spacing:.12em;text-transform:uppercase;font-family:JetBrains Mono,monospace;' +
+        (s.running ? 'color:#4ade80;border:1px solid rgba(74,222,128,0.35);background:rgba(74,222,128,0.08)' : 'color:#8a8a8a;border:1px solid #262626'),
+      statusDotStyle: s.running
+        ? 'display:inline-block;width:7px;height:7px;border-radius:50%;background:#4ade80;margin-right:7px;animation:blink 1.4s ease-in-out infinite'
+        : 'display:none',
+      iterCount: s.iterations.length,
+      iterRows: s.iterations.map(fmtIt),
+      best: best || { idFmt: '—', strategy: '—', params: '', pnlFmt: '—', pnlColor: '#f2f2f2', sharpeFmt: '—', trades: '—', winFmt: '—', ddFmt: '—', rationale: '' },
+      dashEq: dashEq,
+
+      stratName: s.stratName,
+      setStratName: (e) => this.setState({ stratName: e.target.value }),
+      blockType: s.blockType,
+      setBlockType: (e) => this.setState({ blockType: e.target.value, blockParams: null }),
+      blockRole: s.blockRole,
+      setBlockRole: (e) => this.setState({ blockRole: e.target.value }),
+      paramDefs: paramDefs,
+      addBlock: this.addBlock,
+      draftRows: draftRows,
+      draftsEmpty: s.drafts.length === 0,
+      suggest: this.suggest,
+      suggestSpinner: s.suggesting ? 'inline' : 'none',
+      saveStrategy: this.saveStrategy,
+      hasFlash: !!s.flash,
+      flash: s.flash,
+      catalogRows: catalogRows,
+      wiki: this._wiki(s.blockType),
+      generateBlock: this.generateBlock,
+      genSpinner: s.genBusy ? 'inline' : 'none',
+      hasGenBlock: !!s.genBlock,
+      genBlockLabel: s.genBlock ? s.genBlock.label : '',
+      genBlockCode: s.genBlock ? s.genBlock.code : '',
+
+      catalogOpts: catalogOpts,
+      btSpec: s.btSpec,
+      setBtSpec: (e) => this.setState({ btSpec: e.target.value }),
+      runBt: this.runBt,
+      btSpinner: s.btRunning ? 'inline' : 'none',
+      hasBtResult: !!s.btResult,
+      btEmpty: !s.btResult,
+      bt: bt || {},
+      btEq: btEq || { points: '', areaPts: '', fill: 'none', color: '#e5e5e5', max: '', min: '' },
+    };
+  }
+}
+</script>
+</body>
+</html>

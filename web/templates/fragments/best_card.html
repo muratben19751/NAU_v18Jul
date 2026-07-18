@@ -1,0 +1,45 @@
+{% if best %}
+<div class="panel-body">
+  <div class="kpi-grid" style="grid-template-columns: 1fr 1fr;">
+    <div class="kpi">
+      <div class="label">Realized PnL</div>
+      <div class="value {{ best.pnl_dir }}">{{ best.pnl_fmt }}</div>
+    </div>
+    <div class="kpi">
+      <div class="label">Sharpe (252d)</div>
+      <div class="value">{{ best.sharpe_fmt }}</div>
+    </div>
+    <div class="kpi">
+      <div class="label">Trades</div>
+      <div class="value">{{ best.trades }}</div>
+    </div>
+    <div class="kpi">
+      <div class="label">Win Rate</div>
+      <div class="value">{{ best.win_rate_fmt }}</div>
+    </div>
+    <div class="kpi" style="grid-column: span 2;">
+      <div class="label">Max Drawdown</div>
+      <div class="value down">{{ best.max_dd_fmt }}</div>
+    </div>
+  </div>
+
+  <hr class="divider">
+
+  <div>
+    <div class="section-title" style="margin-bottom:6px;">Strategy</div>
+    <div class="mono" style="color:var(--accent);">{{ best.strategy }}</div>
+    <div class="text-muted mono" style="font-size:11px;margin-top:4px;">{{ best.params }}</div>
+  </div>
+
+  {% if best.rationale %}
+  <div style="margin-top:14px;">
+    <div class="section-title" style="margin-bottom:6px;">Rationale</div>
+    <div class="text-muted" style="font-size:12px;line-height:1.6;">{{ best.rationale }}</div>
+  </div>
+  {% endif %}
+</div>
+{% else %}
+<div class="empty-state">
+  No successful iteration yet.
+</div>
+{% endif %}

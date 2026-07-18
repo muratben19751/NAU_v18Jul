@@ -1,0 +1,277 @@
+{% set r = r %}
+<div class="panel" style="margin-top:14px;">
+  <div class="panel-header">
+    <div class="panel-title">Robustness Analizi · {{ r.spec_name }}</div>
+    <div class="panel-meta mono small">{{ r.symbol }}/{{ r.category }} {{ r.interval }}m · {{ r.start_date }} → {{ r.end_date }} · {{ "{:,}".format(r.n_bars) }} bar</div>
+  </div>
+  <div class="panel-body">
+
+    {# ── Sekme navigasyonu ── #}
+    <div style="display:flex;gap:8px;margin-bottom:14px;border-bottom:1px solid #1a2332;padding-bottom:8px;">
+      <button class="btn btn-secondary rob-tab active" data-tab="wfo" onclick="robTab(this,'wfo')">Walk-Forward</button>
+      <button class="btn btn-secondary rob-tab" data-tab="split" onclick="robTab(this,'split')">In/Out-of-Sample</button>
+      <button class="btn btn-secondary rob-tab" data-tab="mc" onclick="robTab(this,'mc')">Monte Carlo</button>
+    </div>
+
+    {# ══════════════════════════════════════════════════
+       SEKME 1: Walk-Forward
+    ══════════════════════════════════════════════════ #}
+    <div id="rob-tab-wfo" class="rob-tab-content">
+      <div class="section-title" style="margin-bottom:8px;">
+        Walk-Forward Optimization · {{ r.train_months }}ay train / {{ r.test_months }}ay test
+        · {{ r.wfo_windows|length }} window · train'de {{ r.n_optimize }} deneme ({{ r.objective }})
+      </div>
+      {% if not r.wfo_windows %}
+        <div class="empty-state">Yeterli veri yok (en az {{ r.train_months + r.test_months }} ay gerekli).</div>
+      {% else %}
+
+      {# ── WFO özet: optimize vs naive OOS + parametre kararlılığı ── #}
+      {% set ws = r.wfo_summary %}
+      {% if ws and ws.n_windows %}
+      <div class="kpi-grid" style="grid-template-columns:repeat(4,1fr);margin-bottom:12px;">
+        <div class="kpi"><div class="label">OOS Sharpe (optimize)</div>
+          <div class="value">{{ "%.2f"|format(ws.oos_sharpe_optimized) if ws.oos_sharpe_optimized is not none else '—' }}</div></div>
+        <div class="kpi"><div class="label">OOS Sharpe (naive)</div>
+          <div class="value">{{ "%.2f"|format(ws.oos_sharpe_naive) if ws.oos_sharpe_naive is not none else '—' }}</div></div>
+        <div class="kpi"><div class="label">WFO Efficiency</div>
+          <div class="value">{{ "%.2f"|format(ws.wfo_efficiency) if ws.wfo_efficiency is not none else '—' }}</div>
+          <div class="kpi-sub">OOS / in-sample objective</div></div>
+        <div class="kpi"><div class="label">Parametre Kararlılığı</div>
+          <div class="value" style="font-size:13px;color:{% if ws.unstable_params %}#f59e0b{% else %}#22c55e{% endif %}">{{ ws.stability_label }}</div>
+          {% if ws.unstable_params %}<div class="kpi-sub">{{ ws.unstable_params|join(', ') }}</div>{% endif %}</div>
+      </div>
+      {% endif %}
+
+      <div style="overflow-x:auto;">
+        <table class="trade-table">
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Train Aralığı</th>
+              <th>Test Aralığı</th>
+              <th>Seçilen Parametreler</th>
+              <th>Train Obj.</th>
+              <th>Test PnL (opt)</th>
+              <th>Test PnL (naive)</th>
+              <th>Test Sharpe</th>
+              <th>Test WR</th>
+              <th>Test #T</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for w in r.wfo_windows %}
+            {% set xm = w.test_metrics %}
+            {% set nm = w.test_metrics_naive %}
+            {% set test_ok = xm and xm.get('pnl') is not none %}
+            {% set naive_ok = nm and nm.get('pnl') is not none %}
+            <tr class="{% if test_ok and xm.get('pnl',0) >= 0 %}trade-win{% elif test_ok %}trade-loss{% endif %}">
+              <td class="mono text-muted">{{ w.window }}</td>
+              <td class="mono small">{{ w.train_start }} → {{ w.train_end }}</td>
+              <td class="mono small">{{ w.test_start }} → {{ w.test_end }}</td>
+              <td class="mono small">
+                {%- if w.chosen_params -%}
+                  {%- for k, v in w.chosen_params.items() -%}
+                    {{ k }}={{ v }}{% if not loop.last %} · {% endif %}
+                  {%- endfor -%}
+                {%- else -%}—{%- endif -%}
+              </td>
+              <td class="mono">{{ "%.2f"|format(w.train_objective) if w.train_objective is not none else '—' }}</td>
+              <td class="mono {% if test_ok and xm.get('pnl',0) >= 0 %}up{% else %}down{% endif %}">
+                {{ "%+.1f"|format(xm.get('pnl',0)) if test_ok else '—' }}
+              </td>
+              <td class="mono text-muted">
+                {{ "%+.1f"|format(nm.get('pnl',0)) if naive_ok else '—' }}
+              </td>
+              <td class="mono">{{ "%.2f"|format(xm.get('sharpe',0)) if test_ok else '—' }}</td>
+              <td class="mono">{{ "%.0f%%"|format(xm.get('win_rate',0)*100) if test_ok else '—' }}</td>
+              <td class="mono">{{ w.test_n_trades }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+
+      {# WFO Equity Chart #}
+      <div style="margin-top:14px;">
+        <div class="section-title" style="margin-bottom:6px;">Test Window Equity Curves</div>
+        <div style="height:220px;"><canvas id="wfo-chart"></canvas></div>
+      </div>
+      {% endif %}
+    </div>
+
+    {# ══════════════════════════════════════════════════
+       SEKME 2: In/Out-of-Sample
+    ══════════════════════════════════════════════════ #}
+    <div id="rob-tab-split" class="rob-tab-content" style="display:none;">
+      {% set sp = r.split %}
+      {% if sp.error is defined and sp.error %}
+        <div class="empty-state">{{ sp.error }}</div>
+      {% else %}
+      {# Overfitting skoru #}
+      <div style="display:flex;align-items:center;gap:16px;margin-bottom:14px;padding:10px 14px;background:rgba(26,35,50,0.5);border-radius:6px;">
+        <div>
+          <div class="label" style="font-size:10px;">Overfitting Skoru</div>
+          <div class="value" style="font-size:22px;font-weight:700;
+            color:{% if sp.overfitting_score is not none and sp.overfitting_score >= 0.7 %}#22c55e{% elif sp.overfitting_score is not none and sp.overfitting_score >= 0.4 %}#f59e0b{% else %}#ef4444{% endif %}">
+            {% if sp.overfitting_score is not none %}{{ "%.2f"|format(sp.overfitting_score) }}{% else %}—{% endif %}
+          </div>
+        </div>
+        <div>
+          <div class="label" style="font-size:10px;">Karar</div>
+          <div class="value" style="font-size:14px;">{{ sp.overfitting_label }}</div>
+        </div>
+        <div class="text-muted mono" style="font-size:10px;margin-left:auto;">
+          OOS Sharpe / In-sample Sharpe<br>
+          ≥0.7 sağlam · 0.4-0.7 dikkat · &lt;0.4 overfitting şüphesi
+        </div>
+      </div>
+
+      <div class="kpi-grid" style="grid-template-columns:repeat(4,1fr);margin-bottom:12px;">
+        {% set im = sp.in_sample_metrics %}
+        {% set om = sp.oos_metrics %}
+        <div class="kpi"><div class="label">In-Sample PnL</div>
+          <div class="value {% if im.get('pnl',0) >= 0 %}up{% else %}down{% endif %}">
+            {{ "%+.2f"|format(im.get('pnl',0)) if im else '—' }} USDT</div>
+          <div class="kpi-sub">{{ sp.in_sample_n_bars|default(0) }} bar · {{ sp.split_date }}e kadar</div>
+        </div>
+        <div class="kpi"><div class="label">OOS PnL</div>
+          <div class="value {% if om.get('pnl',0) >= 0 %}up{% else %}down{% endif %}">
+            {{ "%+.2f"|format(om.get('pnl',0)) if om else '—' }} USDT</div>
+          <div class="kpi-sub">{{ sp.oos_n_bars|default(0) }} bar · {{ sp.split_date }} sonrası</div>
+        </div>
+        <div class="kpi"><div class="label">In-Sample Sharpe</div>
+          <div class="value">{{ "%.2f"|format(im.get('sharpe',0)) if im else '—' }}</div></div>
+        <div class="kpi"><div class="label">OOS Sharpe</div>
+          <div class="value">{{ "%.2f"|format(om.get('sharpe',0)) if om else '—' }}</div></div>
+      </div>
+
+      <div style="height:220px;"><canvas id="split-chart"></canvas></div>
+      {% endif %}
+    </div>
+
+    {# ══════════════════════════════════════════════════
+       SEKME 3: Monte Carlo
+    ══════════════════════════════════════════════════ #}
+    <div id="rob-tab-mc" class="rob-tab-content" style="display:none;">
+      {% set mc = r.mc %}
+      {% if mc.error is defined and mc.error %}
+        <div class="empty-state">{{ mc.error }}</div>
+      {% else %}
+      <div class="kpi-grid" style="grid-template-columns:repeat(5,1fr);margin-bottom:12px;">
+        <div class="kpi"><div class="label">P5 Final</div>
+          <div class="value {% if mc.p5_final >= mc.starting_cash %}up{% else %}down{% endif %}">
+            ${{ "{:,.0f}".format(mc.p5_final) }}</div></div>
+        <div class="kpi"><div class="label">Median Final</div>
+          <div class="value {% if mc.median_final >= mc.starting_cash %}up{% else %}down{% endif %}">
+            ${{ "{:,.0f}".format(mc.median_final) }}</div></div>
+        <div class="kpi"><div class="label">P95 Final</div>
+          <div class="value up">${{ "{:,.0f}".format(mc.p95_final) }}</div></div>
+        <div class="kpi"><div class="label">Max DD p50</div>
+          <div class="value down">{{ "%.1f%%"|format(mc.max_dd_p50|abs) }}</div></div>
+        <div class="kpi"><div class="label">Max DD p95</div>
+          <div class="value down">{{ "%.1f%%"|format(mc.max_dd_p95|abs) }}</div></div>
+      </div>
+      <div class="text-muted mono" style="font-size:10px;margin-bottom:8px;">
+        {{ mc.n_sims }} simülasyon · {{ mc.n_trades }} trade · {{ mc.method|default('bootstrap') }} ·
+        Gerçek: ${{ "{:,.0f}".format(mc.original_final) }} ·
+        Win rate: {{ "%.1f%%"|format(mc.win_rate_mean) }} ± {{ "%.1f%%"|format(mc.win_rate_std) }}
+      </div>
+      <div style="height:280px;"><canvas id="mc-chart"></canvas></div>
+      {% endif %}
+    </div>
+
+  </div>
+</div>
+
+<script>
+// ── Sekme yönetimi ──────────────────────────────────────────────────────────
+function robTab(btn, tab) {
+  document.querySelectorAll(".rob-tab").forEach(b => b.classList.remove("active"));
+  document.querySelectorAll(".rob-tab-content").forEach(c => c.style.display = "none");
+  btn.classList.add("active");
+  document.getElementById("rob-tab-" + tab).style.display = "";
+  if (tab === "wfo")   buildWFOChart();
+  if (tab === "split") buildSplitChart();
+  if (tab === "mc")    buildMCChart();
+}
+
+// ── Chart.js ortak config ───────────────────────────────────────────────────
+const _chartDefaults = {
+  responsive: true, maintainAspectRatio: false,
+  plugins: { legend: { labels: { color: "#6b7280", font: { family: "JetBrains Mono", size: 10 } } } },
+  scales: {
+    x: { grid: { color: "#1a2332" }, ticks: { color: "#6b7280", font: { family: "JetBrains Mono", size: 9 }, maxTicksLimit: 8 } },
+    y: { grid: { color: "#1a2332" }, ticks: { color: "#6b7280", font: { family: "JetBrains Mono", size: 9 }, callback: v => "$" + (v/1000).toFixed(0) + "k" } },
+  },
+};
+let _charts = {};
+function _destroyChart(id) { if (_charts[id]) { _charts[id].destroy(); delete _charts[id]; } }
+
+// ── WFO Chart ───────────────────────────────────────────────────────────────
+function buildWFOChart() {
+  _destroyChart("wfo-chart");
+  const canvas = document.getElementById("wfo-chart");
+  if (!canvas) return;
+  const windows = {{ r.wfo_windows|tojson }};
+  if (!windows.length) return;
+  const colors = ["#60a5fa","#34d399","#f59e0b","#a78bfa","#f97316","#ec4899"];
+  const datasets = windows.map((w, i) => ({
+    label: `W${w.window} test`,
+    data: (w.test_equity || []).map((v, j) => ({ x: j, y: v })),
+    borderColor: colors[i % colors.length],
+    backgroundColor: "transparent",
+    borderWidth: 1.5, pointRadius: 0, tension: 0.1,
+  }));
+  _charts["wfo-chart"] = new Chart(canvas, {
+    type: "line",
+    data: { datasets },
+    options: { ..._chartDefaults, parsing: false },
+  });
+}
+
+// ── Split Chart ─────────────────────────────────────────────────────────────
+function buildSplitChart() {
+  _destroyChart("split-chart");
+  const canvas = document.getElementById("split-chart");
+  if (!canvas) return;
+  const sp = {{ r.split|tojson }};
+  if (!sp.in_sample_equity || !sp.in_sample_equity.length) return;
+  const inEq  = sp.in_sample_equity.map((v, i) => ({ x: i, y: v }));
+  const oosEq = sp.oos_equity.map((v, i) => ({ x: i, y: v }));
+  _charts["split-chart"] = new Chart(canvas, {
+    type: "line",
+    data: { datasets: [
+      { label: `In-sample (${sp.in_sample_n_bars} bar)`, data: inEq,  borderColor: "#60a5fa", backgroundColor: "rgba(96,165,250,0.08)", borderWidth: 2, pointRadius: 0, fill: true, tension: 0.1 },
+      { label: `OOS (${sp.oos_n_bars} bar)`,             data: oosEq, borderColor: "#f59e0b", backgroundColor: "rgba(245,158,11,0.08)",  borderWidth: 2, pointRadius: 0, fill: true, tension: 0.1 },
+    ]},
+    options: { ..._chartDefaults, parsing: false },
+  });
+}
+
+// ── Monte Carlo Fan Chart ────────────────────────────────────────────────────
+function buildMCChart() {
+  _destroyChart("mc-chart");
+  const canvas = document.getElementById("mc-chart");
+  if (!canvas) return;
+  const mc = {{ r.mc|tojson }};
+  if (!mc.percentile_curves) return;
+  const pc = mc.percentile_curves;
+  const labels = pc.p50.map((_, i) => i);
+  _charts["mc-chart"] = new Chart(canvas, {
+    type: "line",
+    data: { labels, datasets: [
+      { label: "P95", data: pc.p95, borderColor: "rgba(34,197,94,0.3)",  backgroundColor: "rgba(34,197,94,0.05)",  borderWidth: 1, pointRadius: 0, fill: "+1", tension: 0.1 },
+      { label: "P75", data: pc.p75, borderColor: "rgba(34,197,94,0.5)",  backgroundColor: "rgba(34,197,94,0.08)",  borderWidth: 1, pointRadius: 0, fill: "+1", tension: 0.1 },
+      { label: "P50", data: pc.p50, borderColor: "#60a5fa",              backgroundColor: "rgba(96,165,250,0.1)", borderWidth: 2, pointRadius: 0, fill: false, tension: 0.1 },
+      { label: "P25", data: pc.p25, borderColor: "rgba(239,68,68,0.5)",  backgroundColor: "rgba(239,68,68,0.08)", borderWidth: 1, pointRadius: 0, fill: "-1", tension: 0.1 },
+      { label: "P5",  data: pc.p5,  borderColor: "rgba(239,68,68,0.3)",  backgroundColor: "rgba(239,68,68,0.05)", borderWidth: 1, pointRadius: 0, fill: "-1", tension: 0.1 },
+      { label: "Gerçek", data: mc.real_curve || [],
+        borderColor: "#f59e0b", borderWidth: 2, borderDash: [4,4], pointRadius: 0, fill: false, tension: 0.1 },
+    ]},
+    options: { ..._chartDefaults },
+  });
+}
+
+// İlk sekme chart'ını başlat
+buildWFOChart();
+</script>

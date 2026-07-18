@@ -1,0 +1,1322 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<meta charset="utf-8">
+<title>Nautilus Lab — Autonomous Backtest Agent</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="anonymous">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&amp;family=JetBrains+Mono:wght@400;500;600;700&amp;display=swap" rel="stylesheet">
+<style>
+html,body{margin:0;padding:0;background:#0A0D14;color:#E9EDF4;font-family:'IBM Plex Sans',ui-sans-serif,system-ui,sans-serif;font-size:14px;line-height:1.5;-webkit-font-smoothing:antialiased}
+a{color:#5EA0F6;text-decoration:none}
+a:hover{color:#8FBDFC}
+@keyframes nlBlink{50%{opacity:.25}}
+@keyframes nlFade{from{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:none}}
+@keyframes nlSpin{to{transform:rotate(360deg)}}
+@keyframes nlPulse{0%,100%{border-color:#1C2433}50%{border-color:#3672E8}}
+::-webkit-scrollbar{width:8px;height:8px}
+::-webkit-scrollbar-thumb{background:#232C3E;border-radius:4px}
+::-webkit-scrollbar-track{background:transparent}
+select,input,textarea{accent-color:#5EA0F6;color-scheme:dark}
+input:focus,select:focus,textarea:focus{border-color:#3672E8 !important}
+</style>
+</helmet>
+
+<div style="display:grid;grid-template-columns:228px 1fr;min-height:100vh;background:#0A0D14">
+
+  <!-- ============ SIDEBAR ============ -->
+  <aside style="background:#0D1119;border-right:1px solid #1C2433;position:sticky;top:0;height:100vh;display:flex;flex-direction:column">
+    <div style="padding:22px 20px 18px;border-bottom:1px solid #1C2433">
+      <div style="display:flex;align-items:center;gap:10px">
+        <div style="width:30px;height:30px;border-radius:8px;background:linear-gradient(135deg,#3672E8,#5EA0F6);display:flex;align-items:center;justify-content:center;flex:none">
+          <svg width="16" height="16" viewBox="0 0 16 16"><path d="M8 1.5a6.5 6.5 0 1 0 6.5 6.5H8V1.5Z" style="fill:none;stroke:#fff;stroke-width:1.4"></path><path d="M8 8 12 4" style="stroke:#fff;stroke-width:1.4"></path></svg>
+        </div>
+        <div>
+          <div style="font-family:'JetBrains Mono',monospace;font-size:13px;font-weight:700;letter-spacing:.14em;color:#E9EDF4">NAUTILUS·LAB</div>
+          <div style="font-size:9.5px;letter-spacing:.16em;text-transform:uppercase;color:#5C6778;margin-top:1px">Autonomous Backtest Agent</div>
+        </div>
+      </div>
+    </div>
+
+    <nav style="display:flex;flex-direction:column;padding:12px 10px;gap:2px">
+      <div onClick="{{ goDash }}" style-hover="background:#131A28" style="display:flex;align-items:center;gap:11px;padding:9px 12px;border-radius:7px;font-size:13px;font-weight:500;cursor:pointer;background:{{ navBgDash }};color:{{ navColorDash }};box-shadow:{{ navShadowDash }}">
+        <svg width="15" height="15" viewBox="0 0 15 15"><rect x="1.5" y="1.5" width="5" height="5" rx="1" style="fill:none;stroke:currentColor;stroke-width:1.3"></rect><rect x="8.5" y="1.5" width="5" height="5" rx="1" style="fill:none;stroke:currentColor;stroke-width:1.3"></rect><rect x="1.5" y="8.5" width="5" height="5" rx="1" style="fill:none;stroke:currentColor;stroke-width:1.3"></rect><rect x="8.5" y="8.5" width="5" height="5" rx="1" style="fill:none;stroke:currentColor;stroke-width:1.3"></rect></svg>
+        <span>Dashboard</span>
+        <sc-if value="{{ loopRunning }}" hint-placeholder-val="{{ false }}"><span style="margin-left:auto;width:7px;height:7px;border-radius:50%;background:#2ED47E;animation:nlBlink 1.4s ease-in-out infinite"></span></sc-if>
+      </div>
+      <div onClick="{{ goStrat }}" style-hover="background:#131A28" style="display:flex;align-items:center;gap:11px;padding:9px 12px;border-radius:7px;font-size:13px;font-weight:500;cursor:pointer;background:{{ navBgStrat }};color:{{ navColorStrat }};box-shadow:{{ navShadowStrat }}">
+        <svg width="15" height="15" viewBox="0 0 15 15"><rect x="1.5" y="2" width="12" height="4" rx="1.2" style="fill:none;stroke:currentColor;stroke-width:1.3"></rect><rect x="1.5" y="9" width="7" height="4" rx="1.2" style="fill:none;stroke:currentColor;stroke-width:1.3"></rect><path d="M11.5 9v4M9.5 11h4" style="stroke:currentColor;stroke-width:1.3"></path></svg>
+        <span>Strategy Composer</span>
+      </div>
+      <div onClick="{{ goBt }}" style-hover="background:#131A28" style="display:flex;align-items:center;gap:11px;padding:9px 12px;border-radius:7px;font-size:13px;font-weight:500;cursor:pointer;background:{{ navBgBt }};color:{{ navColorBt }};box-shadow:{{ navShadowBt }}">
+        <svg width="15" height="15" viewBox="0 0 15 15"><path d="M4 2.5v10l8-5-8-5Z" style="fill:none;stroke:currentColor;stroke-width:1.3;stroke-linejoin:round"></path></svg>
+        <span>Backtest</span>
+      </div>
+    </nav>
+
+    <div style="margin-top:auto;padding:14px 16px;border-top:1px solid #1C2433">
+      <div style="background:#10151F;border:1px solid #1C2433;border-radius:8px;padding:11px 12px">
+        <div style="font-size:9px;letter-spacing:.16em;text-transform:uppercase;color:#5C6778;margin-bottom:5px">Engine</div>
+        <div style="display:flex;align-items:center;gap:7px;font-family:'JetBrains Mono',monospace;font-size:11px;color:#97A1B5">
+          <span style="width:6px;height:6px;border-radius:50%;background:{{ engineDotColor }};flex:none"></span>
+          <span>{{ engineStatus }}</span>
+        </div>
+        <div style="font-family:'JetBrains Mono',monospace;font-size:10px;color:#5C6778;margin-top:3px">Claude Sonnet 4.6 · Nautilus</div>
+      </div>
+    </div>
+  </aside>
+
+  <!-- ============ MAIN ============ -->
+  <div style="display:flex;flex-direction:column;min-height:100vh;min-width:0">
+
+    <!-- Topbar -->
+    <header style="height:58px;background:rgba(13,17,25,.85);backdrop-filter:blur(8px);border-bottom:1px solid #1C2433;display:flex;align-items:center;padding:0 24px;gap:24px;position:sticky;top:0;z-index:10">
+      <div style="font-family:'JetBrains Mono',monospace;font-size:12px;letter-spacing:.14em;text-transform:uppercase;color:#97A1B5;font-weight:600">{{ pageTitle }}</div>
+      <div style="display:flex;gap:26px;margin-left:auto;align-items:center">
+        <div style="display:flex;align-items:center;gap:10px">
+          <svg width="86" height="26" viewBox="0 0 86 26" preserveAspectRatio="none" style="display:block">
+            <path d="{{ sparkArea }}" style="fill:rgba(94,160,246,.10)"></path>
+            <path d="{{ sparkPath }}" style="fill:none;stroke:#5EA0F6;stroke-width:1.4;vector-effect:non-scaling-stroke"></path>
+          </svg>
+          <div style="display:flex;flex-direction:column;align-items:flex-end">
+            <div style="font-size:9px;letter-spacing:.14em;text-transform:uppercase;color:#5C6778">Instrument</div>
+            <div style="font-family:'JetBrains Mono',monospace;font-size:12px;color:#E9EDF4">BTC/USD · YAHOO</div>
+          </div>
+        </div>
+        <div style="display:flex;flex-direction:column;align-items:flex-end">
+          <div style="font-size:9px;letter-spacing:.14em;text-transform:uppercase;color:#5C6778">Bars</div>
+          <div style="font-family:'JetBrains Mono',monospace;font-size:12px;color:#E9EDF4">4,315</div>
+        </div>
+        <div style="display:flex;flex-direction:column;align-items:flex-end">
+          <div style="font-size:9px;letter-spacing:.14em;text-transform:uppercase;color:#5C6778">Range</div>
+          <div style="font-family:'JetBrains Mono',monospace;font-size:12px;color:#E9EDF4">2014-09-17 → 2026-07-10</div>
+        </div>
+        <div style="display:flex;flex-direction:column;align-items:flex-end">
+          <div style="font-size:9px;letter-spacing:.14em;text-transform:uppercase;color:#5C6778">Last</div>
+          <div style="font-family:'JetBrains Mono',monospace;font-size:12px;font-weight:600;color:#2ED47E">$117,248</div>
+        </div>
+      </div>
+    </header>
+
+    <main style="padding:24px;flex:1;min-width:0">
+
+      <!-- ==================== DASHBOARD ==================== -->
+      <sc-if value="{{ isDashboard }}" hint-placeholder-val="{{ true }}">
+        <div data-screen-label="Dashboard" style="display:flex;flex-direction:column;gap:16px">
+
+          <!-- Control strip -->
+          <div style="background:#10151F;border:1px solid #1C2433;border-radius:10px;padding:16px 18px;display:flex;align-items:center;gap:14px;flex-wrap:wrap">
+            <div style="min-width:220px">
+              <div style="font-size:11px;letter-spacing:.15em;text-transform:uppercase;color:#97A1B5;font-weight:600;margin-bottom:4px">Autonomous Loop</div>
+              <div style="font-family:'JetBrains Mono',monospace;font-size:11.5px;color:#5C6778">Claude-4.6 parametre önerir · BacktestEngine koşar · sonuç akışa düşer</div>
+            </div>
+            <div style="flex:1"></div>
+            <label style="display:flex;align-items:center;gap:8px;font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:#5C6778;font-weight:600">
+              <span>Mode</span>
+              <select value="{{ loopMode }}" onChange="{{ onMode }}" style="background:#0A0E16;border:1px solid #232C3E;color:#E9EDF4;padding:8px 11px;border-radius:6px;font-family:'IBM Plex Sans',sans-serif;font-size:12.5px;outline:none;cursor:pointer">
+                <option value="agent">LLM Agent</option>
+                <option value="catalog">Catalog cycle</option>
+              </select>
+            </label>
+            <button onClick="{{ startLoop }}" disabled="{{ loopRunning }}" style-hover="filter:brightness(1.1)" style="display:inline-flex;align-items:center;gap:7px;padding:9px 16px;border-radius:7px;border:1px solid #3672E8;background:linear-gradient(180deg,#4A8CF0,#3672E8);color:#fff;font-family:'IBM Plex Sans',sans-serif;font-size:12.5px;font-weight:600;cursor:pointer;opacity:{{ startOpacity }}">
+              <svg width="10" height="10" viewBox="0 0 10 10"><path d="M2 1v8l7-4-7-4Z" style="fill:currentColor"></path></svg>
+              <span>Start</span>
+            </button>
+            <button onClick="{{ stopLoop }}" disabled="{{ notRunning }}" style-hover="background:rgba(242,92,92,.16)" style="display:inline-flex;align-items:center;gap:7px;padding:9px 16px;border-radius:7px;border:1px solid rgba(242,92,92,.35);background:rgba(242,92,92,.08);color:#F79090;font-family:'IBM Plex Sans',sans-serif;font-size:12.5px;font-weight:600;cursor:pointer;opacity:{{ stopOpacity }}">
+              <svg width="9" height="9" viewBox="0 0 9 9"><rect x="1" y="1" width="7" height="7" rx="1" style="fill:currentColor"></rect></svg>
+              <span>Stop</span>
+            </button>
+            <div style="display:flex;align-items:center;gap:9px;padding:7px 12px;border-radius:7px;border:1px solid {{ statusBorder }};background:{{ statusBg }}">
+              <sc-if value="{{ loopRunning }}" hint-placeholder-val="{{ false }}">
+                <span style="width:7px;height:7px;border-radius:50%;background:#2ED47E;animation:nlBlink 1.4s ease-in-out infinite"></span>
+              </sc-if>
+              <span style="font-family:'JetBrains Mono',monospace;font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;color:{{ statusColor }}">{{ statusText }}</span>
+              <span style="font-family:'JetBrains Mono',monospace;font-size:10.5px;color:#5C6778">iter #{{ iterCount }}</span>
+            </div>
+          </div>
+
+          <!-- KPI strip -->
+          <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px">
+            <sc-for list="{{ kpis }}" as="k" hint-placeholder-count="4">
+              <div style="background:#10151F;border:1px solid #1C2433;border-radius:10px;padding:15px 17px">
+                <div style="font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:#5C6778;margin-bottom:7px">{{ k.label }}</div>
+                <div style="font-family:'JetBrains Mono',monospace;font-size:23px;font-weight:600;font-variant-numeric:tabular-nums;color:{{ k.color }}">{{ k.value }}</div>
+                <div style="font-size:11px;color:#5C6778;margin-top:4px">{{ k.sub }}</div>
+              </div>
+            </sc-for>
+          </div>
+
+          <!-- Iterations + Best -->
+          <div style="display:grid;grid-template-columns:3fr 2fr;gap:16px;align-items:start">
+            <div style="background:#10151F;border:1px solid #1C2433;border-radius:10px;overflow:hidden">
+              <div style="padding:12px 16px;border-bottom:1px solid #1C2433;display:flex;align-items:center;gap:10px">
+                <div style="font-size:11px;letter-spacing:.15em;text-transform:uppercase;color:#97A1B5;font-weight:600">Iterations</div>
+                <div style="flex:1"></div>
+                <span style="font-family:'JetBrains Mono',monospace;font-size:10.5px;color:#5C6778">latest first · live</span>
+              </div>
+              <div style="display:grid;grid-template-columns:62px 1.15fr 1.5fr 96px 62px 60px;padding:8px 16px;border-bottom:1px solid #171E2B;font-size:9.5px;letter-spacing:.14em;text-transform:uppercase;color:#5C6778;font-weight:600">
+                <div>Time</div><div>Strategy</div><div>Params</div><div style="text-align:right">PnL</div><div style="text-align:right">Sharpe</div><div style="text-align:right">WR</div>
+              </div>
+              <sc-if value="{{ hasIters }}" hint-placeholder-val="{{ true }}">
+                <div style="max-height:378px;overflow-y:auto">
+                  <sc-for list="{{ iterRows }}" as="it" hint-placeholder-count="5">
+                    <div style-hover="background:#131A28" style="display:grid;grid-template-columns:62px 1.15fr 1.5fr 96px 62px 60px;padding:10px 16px;border-bottom:1px solid #171E2B;align-items:center;animation:nlFade .3s ease">
+                      <div style="font-family:'JetBrains Mono',monospace;font-size:11px;color:#5C6778">{{ it.time }}</div>
+                      <div style="font-family:'JetBrains Mono',monospace;font-size:11.5px;color:#5EA0F6;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding-right:8px">{{ it.strat }}</div>
+                      <div style="font-family:'JetBrains Mono',monospace;font-size:10.5px;color:#5C6778;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding-right:8px">{{ it.params }}</div>
+                      <div style="font-family:'JetBrains Mono',monospace;font-size:12px;font-weight:600;text-align:right;font-variant-numeric:tabular-nums;color:{{ it.pnlColor }}">{{ it.pnl }}</div>
+                      <div style="font-family:'JetBrains Mono',monospace;font-size:11.5px;text-align:right;color:#97A1B5;font-variant-numeric:tabular-nums">{{ it.sharpe }}</div>
+                      <div style="font-family:'JetBrains Mono',monospace;font-size:11.5px;text-align:right;color:#97A1B5;font-variant-numeric:tabular-nums">{{ it.wr }}</div>
+                    </div>
+                  </sc-for>
+                </div>
+              </sc-if>
+              <sc-if value="{{ noIters }}" hint-placeholder-val="{{ false }}">
+                <div style="padding:44px 20px;text-align:center;color:#5C6778;font-size:13px">Henüz iterasyon yok — döngüyü başlatın.</div>
+              </sc-if>
+            </div>
+
+            <div style="background:#10151F;border:1px solid #1C2433;border-radius:10px;overflow:hidden">
+              <div style="padding:12px 16px;border-bottom:1px solid #1C2433;display:flex;align-items:center;gap:10px">
+                <div style="font-size:11px;letter-spacing:.15em;text-transform:uppercase;color:#97A1B5;font-weight:600">Best So Far</div>
+                <div style="flex:1"></div>
+                <span style="font-family:'JetBrains Mono',monospace;font-size:9.5px;letter-spacing:.1em;padding:3px 8px;border-radius:4px;color:#2ED47E;border:1px solid rgba(46,212,126,.35);background:rgba(46,212,126,.07)">TOP PNL</span>
+              </div>
+              <sc-if value="{{ hasBest }}" hint-placeholder-val="{{ true }}">
+                <div style="padding:16px">
+                  <div style="font-family:'JetBrains Mono',monospace;font-size:14px;font-weight:600;color:#5EA0F6">{{ bestName }}</div>
+                  <div style="font-family:'JetBrains Mono',monospace;font-size:10.5px;color:#5C6778;margin-top:3px;word-break:break-all">{{ bestParams }}</div>
+                  <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin:14px 0">
+                    <div style="background:#0A0E16;border:1px solid #171E2B;border-radius:7px;padding:9px 10px">
+                      <div style="font-size:8.5px;letter-spacing:.14em;text-transform:uppercase;color:#5C6778;margin-bottom:3px">PnL</div>
+                      <div style="font-family:'JetBrains Mono',monospace;font-size:13px;font-weight:600;color:{{ bestPnlColor }}">{{ bestPnl }}</div>
+                    </div>
+                    <div style="background:#0A0E16;border:1px solid #171E2B;border-radius:7px;padding:9px 10px">
+                      <div style="font-size:8.5px;letter-spacing:.14em;text-transform:uppercase;color:#5C6778;margin-bottom:3px">Sharpe</div>
+                      <div style="font-family:'JetBrains Mono',monospace;font-size:13px;font-weight:600;color:#E9EDF4">{{ bestSharpe }}</div>
+                    </div>
+                    <div style="background:#0A0E16;border:1px solid #171E2B;border-radius:7px;padding:9px 10px">
+                      <div style="font-size:8.5px;letter-spacing:.14em;text-transform:uppercase;color:#5C6778;margin-bottom:3px">Win rate</div>
+                      <div style="font-family:'JetBrains Mono',monospace;font-size:13px;font-weight:600;color:#E9EDF4">{{ bestWr }}</div>
+                    </div>
+                    <div style="background:#0A0E16;border:1px solid #171E2B;border-radius:7px;padding:9px 10px">
+                      <div style="font-size:8.5px;letter-spacing:.14em;text-transform:uppercase;color:#5C6778;margin-bottom:3px">Max DD</div>
+                      <div style="font-family:'JetBrains Mono',monospace;font-size:13px;font-weight:600;color:#F79090">{{ bestDd }}</div>
+                    </div>
+                  </div>
+                  <div style="font-size:9.5px;letter-spacing:.14em;text-transform:uppercase;color:#5C6778;margin-bottom:6px">Claude rationale</div>
+                  <div style="font-size:12px;line-height:1.55;color:#97A1B5;background:#0A0E16;border:1px solid #171E2B;border-radius:7px;padding:11px 13px">{{ bestRationale }}</div>
+                </div>
+              </sc-if>
+            </div>
+          </div>
+
+          <!-- Equity chart -->
+          <div style="background:#10151F;border:1px solid #1C2433;border-radius:10px;overflow:hidden">
+            <div style="padding:12px 16px;border-bottom:1px solid #1C2433;display:flex;align-items:center;gap:10px">
+              <div style="font-size:11px;letter-spacing:.15em;text-transform:uppercase;color:#97A1B5;font-weight:600">Best Equity Curve</div>
+              <div style="flex:1"></div>
+              <span style="font-family:'JetBrains Mono',monospace;font-size:10.5px;color:#5C6778">Nautilus BacktestEngine · realized PnL</span>
+            </div>
+            <div style="padding:18px 16px 8px;display:flex;gap:12px">
+              <div style="display:flex;flex-direction:column;justify-content:space-between;padding-bottom:4px;font-family:'JetBrains Mono',monospace;font-size:10px;color:#5C6778;text-align:right;min-width:52px">
+                <span>{{ eqYMax }}</span><span>{{ eqYMid }}</span><span>{{ eqYMin }}</span>
+              </div>
+              <svg viewBox="0 0 860 220" preserveAspectRatio="none" style="display:block;width:100%;height:220px;flex:1">
+                <defs>
+                  <linearGradient id="nlEqG" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0" style="stop-color:#5EA0F6;stop-opacity:.22"></stop>
+                    <stop offset="1" style="stop-color:#5EA0F6;stop-opacity:0"></stop>
+                  </linearGradient>
+                </defs>
+                <line x1="0" y1="1" x2="860" y2="1" style="stroke:#171E2B;stroke-width:1;vector-effect:non-scaling-stroke"></line>
+                <line x1="0" y1="110" x2="860" y2="110" style="stroke:#171E2B;stroke-width:1;vector-effect:non-scaling-stroke"></line>
+                <line x1="0" y1="219" x2="860" y2="219" style="stroke:#171E2B;stroke-width:1;vector-effect:non-scaling-stroke"></line>
+                <path d="{{ eqArea }}" style="fill:url(#nlEqG)"></path>
+                <path d="{{ eqPath }}" style="fill:none;stroke:#5EA0F6;stroke-width:2;vector-effect:non-scaling-stroke"></path>
+              </svg>
+            </div>
+            <sc-if value="{{ showDrawdown }}" hint-placeholder-val="{{ true }}">
+              <div style="padding:4px 16px 16px;display:flex;gap:12px">
+                <div style="display:flex;flex-direction:column;justify-content:space-between;font-family:'JetBrains Mono',monospace;font-size:10px;color:#5C6778;text-align:right;min-width:52px">
+                  <span>0%</span><span>{{ ddMinLbl }}</span>
+                </div>
+                <svg viewBox="0 0 860 54" preserveAspectRatio="none" style="display:block;width:100%;height:54px;flex:1">
+                  <path d="{{ ddArea }}" style="fill:rgba(242,92,92,.22)"></path>
+                  <line x1="0" y1="1" x2="860" y2="1" style="stroke:#171E2B;stroke-width:1;vector-effect:non-scaling-stroke"></line>
+                </svg>
+              </div>
+              <div style="padding:0 16px 12px 80px;font-family:'JetBrains Mono',monospace;font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;color:#5C6778">Drawdown</div>
+            </sc-if>
+          </div>
+
+        </div>
+      </sc-if>
+
+      <!-- ==================== STRATEGY COMPOSER ==================== -->
+      <sc-if value="{{ isStrategy }}" hint-placeholder-val="{{ false }}">
+        <div data-screen-label="Strategy Composer" style="display:grid;grid-template-columns:3fr 2fr;gap:16px;align-items:start">
+
+          <div style="display:flex;flex-direction:column;gap:16px;min-width:0">
+
+            <!-- AI designer -->
+            <div style="background:linear-gradient(180deg,rgba(54,114,232,.08),rgba(54,114,232,.02)),#10151F;border:1px solid #1C2433;border-radius:10px;padding:16px 18px;display:flex;align-items:center;gap:16px;animation:nlPulse 2.6s ease-in-out infinite">
+              <div style="width:36px;height:36px;border-radius:9px;background:rgba(94,160,246,.1);border:1px solid rgba(94,160,246,.25);display:flex;align-items:center;justify-content:center;flex:none">
+                <svg width="18" height="18" viewBox="0 0 18 18"><path d="M9 1.5 10.8 6.4 15.8 7.2 12.2 10.7 13.1 15.8 9 13.3 4.9 15.8 5.8 10.7 2.2 7.2 7.2 6.4Z" style="fill:none;stroke:#5EA0F6;stroke-width:1.2;stroke-linejoin:round"></path></svg>
+              </div>
+              <div style="flex:1;min-width:0">
+                <div style="font-size:12.5px;font-weight:600;color:#E9EDF4;margin-bottom:2px">AI Strategy Designer</div>
+                <div style="font-size:12px;color:#97A1B5;line-height:1.45">Claude Sonnet 4.6 geçmiş backtest sonuçlarına ve kataloğa bakarak yeni bir strateji önerir — bloklar, parametreler ve isim dahil.</div>
+              </div>
+              <button onClick="{{ suggest }}" disabled="{{ suggesting }}" style-hover="filter:brightness(1.1)" style="display:inline-flex;align-items:center;gap:8px;padding:9px 16px;border-radius:7px;border:1px solid #3672E8;background:linear-gradient(180deg,#4A8CF0,#3672E8);color:#fff;font-family:'IBM Plex Sans',sans-serif;font-size:12.5px;font-weight:600;cursor:pointer;flex:none">
+                <sc-if value="{{ suggesting }}" hint-placeholder-val="{{ false }}">
+                  <span style="width:12px;height:12px;border:2px solid rgba(255,255,255,.35);border-top-color:#fff;border-radius:50%;animation:nlSpin .8s linear infinite;display:inline-block"></span>
+                </sc-if>
+                <span>{{ suggestLabel }}</span>
+              </button>
+            </div>
+
+            <!-- 01 Metadata -->
+            <div style="background:#10151F;border:1px solid #1C2433;border-radius:10px;overflow:hidden">
+              <div style="padding:12px 16px;border-bottom:1px solid #1C2433"><div style="font-size:11px;letter-spacing:.15em;text-transform:uppercase;color:#97A1B5;font-weight:600">01 · Strategy Metadata</div></div>
+              <div style="padding:16px;display:flex;flex-direction:column;gap:13px">
+                <div style="display:grid;grid-template-columns:2fr 1fr;gap:12px">
+                  <label style="display:flex;flex-direction:column;gap:6px;font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:#5C6778;font-weight:600">Name
+                    <input type="text" value="{{ specName }}" onChange="{{ onName }}" style="background:#0A0E16;border:1px solid #232C3E;color:#E9EDF4;padding:9px 12px;border-radius:6px;font-family:'IBM Plex Sans',sans-serif;font-size:13px;outline:none">
+                  </label>
+                  <label style="display:flex;flex-direction:column;gap:6px;font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:#5C6778;font-weight:600">Trade size (BTC)
+                    <input type="number" value="{{ tradeSize }}" onChange="{{ onTradeSize }}" step="0.01" min="0.001" max="10" style="background:#0A0E16;border:1px solid #232C3E;color:#E9EDF4;padding:9px 12px;border-radius:6px;font-family:'JetBrains Mono',monospace;font-size:13px;outline:none">
+                  </label>
+                </div>
+                <label style="display:flex;flex-direction:column;gap:6px;font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:#5C6778;font-weight:600">Description
+                  <textarea rows="2" value="{{ specDesc }}" onChange="{{ onDesc }}" placeholder="Bu stratejinin ne yaptığına dair kısa not…" style="background:#0A0E16;border:1px solid #232C3E;color:#E9EDF4;padding:9px 12px;border-radius:6px;font-family:'IBM Plex Sans',sans-serif;font-size:13px;outline:none;resize:vertical"></textarea>
+                </label>
+              </div>
+            </div>
+
+            <!-- 02 Add block -->
+            <div style="background:#10151F;border:1px solid #1C2433;border-radius:10px;overflow:hidden">
+              <div style="padding:12px 16px;border-bottom:1px solid #1C2433;display:flex;align-items:center;gap:10px">
+                <div style="font-size:11px;letter-spacing:.15em;text-transform:uppercase;color:#97A1B5;font-weight:600">02 · Add Signal Block</div>
+                <div style="flex:1"></div>
+                <span style="font-family:'JetBrains Mono',monospace;font-size:10.5px;color:#5C6778">{{ logicHint }}</span>
+              </div>
+              <div style="padding:16px;display:flex;flex-direction:column;gap:13px">
+                <div style="display:grid;grid-template-columns:2fr 1fr;gap:12px">
+                  <label style="display:flex;flex-direction:column;gap:6px;font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:#5C6778;font-weight:600">Block type
+                    <select value="{{ blockType }}" onChange="{{ onBlockType }}" style="background:#0A0E16;border:1px solid #232C3E;color:#E9EDF4;padding:9px 12px;border-radius:6px;font-family:'IBM Plex Sans',sans-serif;font-size:13px;outline:none;cursor:pointer">
+                      <sc-for list="{{ blockOptions }}" as="bo" hint-placeholder-count="3">
+                        <option value="{{ bo.value }}">{{ bo.label }}</option>
+                      </sc-for>
+                    </select>
+                  </label>
+                  <label style="display:flex;flex-direction:column;gap:6px;font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:#5C6778;font-weight:600">Role
+                    <select value="{{ blockRole }}" onChange="{{ onRole }}" style="background:#0A0E16;border:1px solid #232C3E;color:#E9EDF4;padding:9px 12px;border-radius:6px;font-family:'IBM Plex Sans',sans-serif;font-size:13px;outline:none;cursor:pointer">
+                      <option value="entry">entry</option>
+                      <option value="exit">exit</option>
+                    </select>
+                  </label>
+                </div>
+                <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px">
+                  <sc-for list="{{ paramFields }}" as="pf" hint-placeholder-count="3">
+                    <label style="display:flex;flex-direction:column;gap:6px;font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:#5C6778;font-weight:600">{{ pf.name }}
+                      <sc-if value="{{ pf.isEnum }}" hint-placeholder-val="{{ false }}">
+                        <select value="{{ pf.value }}" onChange="{{ pf.onChange }}" style="background:#0A0E16;border:1px solid #232C3E;color:#E9EDF4;padding:9px 12px;border-radius:6px;font-family:'JetBrains Mono',monospace;font-size:12.5px;outline:none;cursor:pointer">
+                          <sc-for list="{{ pf.options }}" as="opt" hint-placeholder-count="2">
+                            <option value="{{ opt }}">{{ opt }}</option>
+                          </sc-for>
+                        </select>
+                      </sc-if>
+                      <sc-if value="{{ pf.isNumber }}" hint-placeholder-val="{{ true }}">
+                        <input type="number" value="{{ pf.value }}" onChange="{{ pf.onChange }}" min="{{ pf.min }}" max="{{ pf.max }}" step="{{ pf.step }}" style="background:#0A0E16;border:1px solid #232C3E;color:#E9EDF4;padding:9px 12px;border-radius:6px;font-family:'JetBrains Mono',monospace;font-size:12.5px;outline:none">
+                      </sc-if>
+                    </label>
+                  </sc-for>
+                </div>
+                <div style="font-size:12px;color:#5C6778;line-height:1.5;border-left:2px solid #232C3E;padding-left:11px">{{ blockHelp }}</div>
+                <div>
+                  <button onClick="{{ addBlock }}" style-hover="background:#1A2334" style="display:inline-flex;align-items:center;gap:7px;padding:9px 16px;border-radius:7px;border:1px solid #2A3550;background:#151C2B;color:#E9EDF4;font-family:'IBM Plex Sans',sans-serif;font-size:12.5px;font-weight:600;cursor:pointer">
+                    <span style="font-size:14px;line-height:1;color:#5EA0F6">＋</span><span>Add block</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <!-- 03 Current blocks -->
+            <div style="background:#10151F;border:1px solid #1C2433;border-radius:10px;overflow:hidden">
+              <div style="padding:12px 16px;border-bottom:1px solid #1C2433;display:flex;align-items:center;gap:10px">
+                <div style="font-size:11px;letter-spacing:.15em;text-transform:uppercase;color:#97A1B5;font-weight:600">03 · Current Blocks</div>
+                <div style="flex:1"></div>
+                <span style="font-family:'JetBrains Mono',monospace;font-size:10.5px;color:#5C6778">draft · not yet saved</span>
+              </div>
+              <sc-if value="{{ hasDrafts }}" hint-placeholder-val="{{ false }}">
+                <sc-for list="{{ draftRows }}" as="d" hint-placeholder-count="2">
+                  <div style-hover="background:#131A28" style="display:flex;align-items:center;gap:12px;padding:11px 16px;border-bottom:1px solid #171E2B;animation:nlFade .3s ease">
+                    <span style="font-family:'JetBrains Mono',monospace;font-size:11px;color:#5C6778;width:18px">{{ d.idx }}</span>
+                    <div style="flex:1;min-width:0">
+                      <span style="font-size:13px;font-weight:500;color:#E9EDF4">{{ d.label }}</span>
+                      <span style="font-family:'JetBrains Mono',monospace;font-size:10.5px;color:#5C6778"> · {{ d.type }}</span>
+                      <div style="font-family:'JetBrains Mono',monospace;font-size:10.5px;color:#5C6778;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ d.paramsStr }}</div>
+                    </div>
+                    <span style="font-family:'JetBrains Mono',monospace;font-size:9.5px;letter-spacing:.1em;text-transform:uppercase;padding:3px 8px;border-radius:4px;color:{{ d.roleColor }};border:1px solid {{ d.roleBorder }};background:{{ d.roleBg }};flex:none">{{ d.roleName }}</span>
+                    <button onClick="{{ d.onDelete }}" style-hover="color:#F25C5C;border-color:rgba(242,92,92,.35)" style="background:transparent;border:1px solid transparent;border-radius:6px;color:#5C6778;cursor:pointer;padding:5px 7px;display:flex;align-items:center;flex:none">
+                      <svg width="13" height="13" viewBox="0 0 13 13"><path d="M2 3.5h9M5 3.5V2h3v1.5M3.5 3.5l.6 7.5h4.8l.6-7.5" style="fill:none;stroke:currentColor;stroke-width:1.1"></path></svg>
+                    </button>
+                  </div>
+                </sc-for>
+              </sc-if>
+              <sc-if value="{{ noDrafts }}" hint-placeholder-val="{{ true }}">
+                <div style="padding:34px 20px;text-align:center;color:#5C6778;font-size:12.5px">Henüz blok yok — 02 bölümünden ekleyin ya da Claude'a önerttirin.</div>
+              </sc-if>
+            </div>
+
+            <!-- 03.5 Advanced -->
+            <div style="background:#10151F;border:1px solid #1C2433;border-radius:10px;overflow:hidden">
+              <div onClick="{{ toggleAdv }}" style-hover="background:#131A28" style="padding:12px 16px;display:flex;align-items:center;gap:10px;cursor:pointer">
+                <div style="font-size:11px;letter-spacing:.15em;text-transform:uppercase;color:#97A1B5;font-weight:600">03.5 · Advanced Options</div>
+                <div style="flex:1"></div>
+                <span style="font-family:'JetBrains Mono',monospace;font-size:10.5px;color:#5C6778">AND/OR · SL/TP · short · dynamic size</span>
+                <span style="font-family:'JetBrains Mono',monospace;font-size:11px;color:#5C6778">{{ advChevron }}</span>
+              </div>
+              <sc-if value="{{ advOpen }}" hint-placeholder-val="{{ false }}">
+                <div style="padding:16px;border-top:1px solid #1C2433;display:flex;flex-direction:column;gap:14px">
+                  <div style="font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:#5C6778;font-weight:600">Signal logic</div>
+                  <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+                    <label style="display:flex;flex-direction:column;gap:6px;font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:#5C6778;font-weight:600">Entry logic
+                      <select value="{{ adv.entry_logic }}" onChange="{{ advOn.entry_logic }}" style="background:#0A0E16;border:1px solid #232C3E;color:#E9EDF4;padding:9px 12px;border-radius:6px;font-size:12.5px;font-family:'IBM Plex Sans',sans-serif;outline:none;cursor:pointer">
+                        <option value="OR">OR — any block fires</option>
+                        <option value="AND">AND — all blocks must fire</option>
+                      </select>
+                    </label>
+                    <label style="display:flex;flex-direction:column;gap:6px;font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:#5C6778;font-weight:600">Exit logic
+                      <select value="{{ adv.exit_logic }}" onChange="{{ advOn.exit_logic }}" style="background:#0A0E16;border:1px solid #232C3E;color:#E9EDF4;padding:9px 12px;border-radius:6px;font-size:12.5px;font-family:'IBM Plex Sans',sans-serif;outline:none;cursor:pointer">
+                        <option value="OR">OR — any block fires</option>
+                        <option value="AND">AND — all blocks must fire</option>
+                      </select>
+                    </label>
+                  </div>
+                  <div style="font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:#5C6778;font-weight:600;margin-top:2px">Order &amp; execution</div>
+                  <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+                    <label style="display:flex;flex-direction:column;gap:6px;font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:#5C6778;font-weight:600">Order type
+                      <select value="{{ adv.order_type }}" onChange="{{ advOn.order_type }}" style="background:#0A0E16;border:1px solid #232C3E;color:#E9EDF4;padding:9px 12px;border-radius:6px;font-size:12.5px;font-family:'IBM Plex Sans',sans-serif;outline:none;cursor:pointer">
+                        <option value="market">market</option>
+                        <option value="limit">limit</option>
+                      </select>
+                    </label>
+                    <label style="display:flex;flex-direction:column;gap:6px;font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:#5C6778;font-weight:600">Limit offset (bps)
+                      <input type="number" value="{{ adv.limit_offset_bps }}" onChange="{{ advOn.limit_offset_bps }}" step="0.5" min="0" max="100" style="background:#0A0E16;border:1px solid #232C3E;color:#E9EDF4;padding:9px 12px;border-radius:6px;font-family:'JetBrains Mono',monospace;font-size:12.5px;outline:none">
+                    </label>
+                  </div>
+                  <label style="display:flex;align-items:center;gap:9px;font-size:12.5px;color:#97A1B5;cursor:pointer">
+                    <input type="checkbox" checked="{{ adv.use_bracket }}" onChange="{{ advOn.use_bracket }}" style="width:15px;height:15px;cursor:pointer">
+                    <span>Attach bracket (SL/TP) to entries — atomik <span style="font-family:'JetBrains Mono',monospace;font-size:11px">order_factory.bracket</span></span>
+                  </label>
+                  <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:12px">
+                    <label style="display:flex;flex-direction:column;gap:6px;font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:#5C6778;font-weight:600">SL type
+                      <select value="{{ adv.sl_type }}" onChange="{{ advOn.sl_type }}" style="background:#0A0E16;border:1px solid #232C3E;color:#E9EDF4;padding:9px 12px;border-radius:6px;font-size:12.5px;font-family:'IBM Plex Sans',sans-serif;outline:none;cursor:pointer">
+                        <option value="percent">percent</option>
+                        <option value="atr">ATR</option>
+                      </select>
+                    </label>
+                    <label style="display:flex;flex-direction:column;gap:6px;font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:#5C6778;font-weight:600">SL value
+                      <input type="number" value="{{ adv.sl_value }}" onChange="{{ advOn.sl_value }}" step="0.1" min="0.1" max="50" style="background:#0A0E16;border:1px solid #232C3E;color:#E9EDF4;padding:9px 12px;border-radius:6px;font-family:'JetBrains Mono',monospace;font-size:12.5px;outline:none">
+                    </label>
+                    <label style="display:flex;flex-direction:column;gap:6px;font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:#5C6778;font-weight:600">TP type
+                      <select value="{{ adv.tp_type }}" onChange="{{ advOn.tp_type }}" style="background:#0A0E16;border:1px solid #232C3E;color:#E9EDF4;padding:9px 12px;border-radius:6px;font-size:12.5px;font-family:'IBM Plex Sans',sans-serif;outline:none;cursor:pointer">
+                        <option value="off">off</option>
+                        <option value="percent">percent</option>
+                        <option value="atr">ATR</option>
+                      </select>
+                    </label>
+                    <label style="display:flex;flex-direction:column;gap:6px;font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:#5C6778;font-weight:600">TP value
+                      <input type="number" value="{{ adv.tp_value }}" onChange="{{ advOn.tp_value }}" step="0.1" min="0.1" max="100" style="background:#0A0E16;border:1px solid #232C3E;color:#E9EDF4;padding:9px 12px;border-radius:6px;font-family:'JetBrains Mono',monospace;font-size:12.5px;outline:none">
+                    </label>
+                  </div>
+                  <div style="font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:#5C6778;font-weight:600;margin-top:2px">Position side &amp; sizing</div>
+                  <label style="display:flex;align-items:center;gap:9px;font-size:12.5px;color:#97A1B5;cursor:pointer">
+                    <input type="checkbox" checked="{{ adv.allow_short }}" onChange="{{ advOn.allow_short }}" style="width:15px;height:15px;cursor:pointer">
+                    <span>Allow SHORT entries — backend otomatik <span style="font-family:'JetBrains Mono',monospace;font-size:11px">MARGIN</span> hesabına geçer</span>
+                  </label>
+                  <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px">
+                    <label style="display:flex;flex-direction:column;gap:6px;font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:#5C6778;font-weight:600">Sizing mode
+                      <select value="{{ adv.trade_size_mode }}" onChange="{{ advOn.trade_size_mode }}" style="background:#0A0E16;border:1px solid #232C3E;color:#E9EDF4;padding:9px 12px;border-radius:6px;font-size:12.5px;font-family:'IBM Plex Sans',sans-serif;outline:none;cursor:pointer">
+                        <option value="fixed">fixed</option>
+                        <option value="percent_equity">percent of equity</option>
+                        <option value="atr_target">ATR-target risk</option>
+                      </select>
+                    </label>
+                    <label style="display:flex;flex-direction:column;gap:6px;font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:#5C6778;font-weight:600">Equity %
+                      <input type="number" value="{{ adv.trade_size_percent }}" onChange="{{ advOn.trade_size_percent }}" step="0.1" min="0.1" max="50" style="background:#0A0E16;border:1px solid #232C3E;color:#E9EDF4;padding:9px 12px;border-radius:6px;font-family:'JetBrains Mono',monospace;font-size:12.5px;outline:none">
+                    </label>
+                    <label style="display:flex;flex-direction:column;gap:6px;font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:#5C6778;font-weight:600">ATR risk %
+                      <input type="number" value="{{ adv.trade_size_atr_risk }}" onChange="{{ advOn.trade_size_atr_risk }}" step="0.05" min="0.05" max="20" style="background:#0A0E16;border:1px solid #232C3E;color:#E9EDF4;padding:9px 12px;border-radius:6px;font-family:'JetBrains Mono',monospace;font-size:12.5px;outline:none">
+                    </label>
+                  </div>
+                </div>
+              </sc-if>
+            </div>
+
+            <!-- 04 Save -->
+            <div style="background:#10151F;border:1px solid #1C2433;border-radius:10px;padding:15px 18px;display:flex;align-items:center;gap:14px">
+              <div style="flex:1;min-width:0">
+                <div style="font-size:11px;letter-spacing:.15em;text-transform:uppercase;color:#97A1B5;font-weight:600;margin-bottom:3px">04 · Save to catalog</div>
+                <div style="font-size:11.5px;color:#5C6778"><span style="font-family:'JetBrains Mono',monospace;font-size:10.5px">~/.cache/nautilus_web_app/strategy_catalog.json</span> — Backtest sayfası ve catalog-mode agent bunları kullanır.</div>
+              </div>
+              <button onClick="{{ saveStrategy }}" style-hover="filter:brightness(1.1)" style="display:inline-flex;align-items:center;gap:8px;padding:10px 18px;border-radius:7px;border:1px solid #3672E8;background:linear-gradient(180deg,#4A8CF0,#3672E8);color:#fff;font-family:'IBM Plex Sans',sans-serif;font-size:12.5px;font-weight:600;cursor:pointer;flex:none">
+                <svg width="13" height="13" viewBox="0 0 13 13"><path d="M2 2h7l2 2v7H2V2Z" style="fill:none;stroke:currentColor;stroke-width:1.2"></path><path d="M4 2v3h4V2M4 8h5v3" style="fill:none;stroke:currentColor;stroke-width:1.2"></path></svg>
+                <span>Save Strategy</span>
+              </button>
+            </div>
+
+            <!-- 05 Catalog -->
+            <div style="background:#10151F;border:1px solid #1C2433;border-radius:10px;overflow:hidden">
+              <div style="padding:12px 16px;border-bottom:1px solid #1C2433"><div style="font-size:11px;letter-spacing:.15em;text-transform:uppercase;color:#97A1B5;font-weight:600">05 · Saved Strategies</div></div>
+              <sc-if value="{{ hasCatalog }}" hint-placeholder-val="{{ true }}">
+                <sc-for list="{{ catalogRows }}" as="c" hint-placeholder-count="2">
+                  <div style-hover="background:#131A28" style="display:flex;align-items:center;gap:12px;padding:12px 16px;border-bottom:1px solid #171E2B">
+                    <div style="flex:1;min-width:0">
+                      <div style="font-family:'JetBrains Mono',monospace;font-size:12.5px;font-weight:600;color:#5EA0F6">{{ c.name }}</div>
+                      <div style="font-family:'JetBrains Mono',monospace;font-size:10.5px;color:#5C6778;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">id={{ c.id }} · {{ c.desc }}</div>
+                    </div>
+                    <div style="font-family:'JetBrains Mono',monospace;font-size:11px;color:#97A1B5;flex:none">{{ c.blocks }} blocks</div>
+                    <div style="font-family:'JetBrains Mono',monospace;font-size:11px;color:#97A1B5;flex:none">{{ c.size }} BTC</div>
+                    <div style="font-family:'JetBrains Mono',monospace;font-size:10.5px;color:#5C6778;flex:none">{{ c.created }}</div>
+                    <button onClick="{{ c.onDelete }}" style-hover="color:#F25C5C;border-color:rgba(242,92,92,.35)" style="background:transparent;border:1px solid transparent;border-radius:6px;color:#5C6778;cursor:pointer;padding:5px 7px;display:flex;align-items:center;flex:none">
+                      <svg width="13" height="13" viewBox="0 0 13 13"><path d="M2 3.5h9M5 3.5V2h3v1.5M3.5 3.5l.6 7.5h4.8l.6-7.5" style="fill:none;stroke:currentColor;stroke-width:1.1"></path></svg>
+                    </button>
+                  </div>
+                </sc-for>
+              </sc-if>
+              <sc-if value="{{ noCatalog }}" hint-placeholder-val="{{ false }}">
+                <div style="padding:34px 20px;text-align:center;color:#5C6778;font-size:12.5px">Henüz kayıtlı strateji yok.</div>
+              </sc-if>
+            </div>
+
+            <!-- 06 Custom blocks -->
+            <div style="background:#10151F;border:1px solid #1C2433;border-radius:10px;overflow:hidden">
+              <div onClick="{{ toggleCustom }}" style-hover="background:#131A28" style="padding:12px 16px;display:flex;align-items:center;gap:10px;cursor:pointer">
+                <div style="font-size:11px;letter-spacing:.15em;text-transform:uppercase;color:#97A1B5;font-weight:600">06 · Custom Blocks <span style="color:#E8B44C;font-size:9px;letter-spacing:.12em;border:1px solid rgba(232,180,76,.35);background:rgba(232,180,76,.07);padding:2px 6px;border-radius:4px;margin-left:4px">BETA</span></div>
+                <div style="flex:1"></div>
+                <span style="font-family:'JetBrains Mono',monospace;font-size:10.5px;color:#5C6778">Claude üretir · AST doğrulanır · disk-persistent</span>
+                <span style="font-family:'JetBrains Mono',monospace;font-size:11px;color:#5C6778">{{ customChevron }}</span>
+              </div>
+              <sc-if value="{{ customOpen }}" hint-placeholder-val="{{ false }}">
+                <div style="padding:16px;border-top:1px solid #1C2433;display:flex;flex-direction:column;gap:13px">
+                  <div style="font-size:12px;color:#97A1B5;line-height:1.5">Doğal dille yeni bir sinyal bloğu tarif edin. Claude Sonnet 4.6 bunu Python koduna çevirir; AST doğrulaması geçerse kaydedebilirsiniz. Yeni blok anında <b>02 · Add Signal Block</b> dropdown'ında görünür.</div>
+                  <label style="display:flex;flex-direction:column;gap:6px;font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:#5C6778;font-weight:600">Label (kısa isim)
+                    <input type="text" value="{{ customLabel }}" onChange="{{ onCustomLabel }}" placeholder="örn: SMA200 breakout" style="background:#0A0E16;border:1px solid #232C3E;color:#E9EDF4;padding:9px 12px;border-radius:6px;font-family:'IBM Plex Sans',sans-serif;font-size:13px;outline:none">
+                  </label>
+                  <label style="display:flex;flex-direction:column;gap:6px;font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:#5C6778;font-weight:600">Ne yapsın? (doğal dil)
+                    <textarea rows="3" value="{{ customDesc }}" onChange="{{ onCustomDesc }}" placeholder="örn: close 200-günlük SMA'nın yukarısına geçerse LONG entry" style="background:#0A0E16;border:1px solid #232C3E;color:#E9EDF4;padding:9px 12px;border-radius:6px;font-family:'IBM Plex Sans',sans-serif;font-size:13px;outline:none;resize:vertical"></textarea>
+                  </label>
+                  <div>
+                    <button onClick="{{ customGenerate }}" disabled="{{ customGenerating }}" style-hover="filter:brightness(1.1)" style="display:inline-flex;align-items:center;gap:8px;padding:9px 16px;border-radius:7px;border:1px solid #3672E8;background:linear-gradient(180deg,#4A8CF0,#3672E8);color:#fff;font-family:'IBM Plex Sans',sans-serif;font-size:12.5px;font-weight:600;cursor:pointer">
+                      <sc-if value="{{ customGenerating }}" hint-placeholder-val="{{ false }}">
+                        <span style="width:12px;height:12px;border:2px solid rgba(255,255,255,.35);border-top-color:#fff;border-radius:50%;animation:nlSpin .8s linear infinite;display:inline-block"></span>
+                      </sc-if>
+                      <span>{{ customBtnLabel }}</span>
+                    </button>
+                  </div>
+                  <sc-if value="{{ hasGenerated }}" hint-placeholder-val="{{ false }}">
+                    <div style="background:#0A0E16;border:1px solid rgba(46,212,126,.3);border-radius:8px;overflow:hidden;animation:nlFade .3s ease">
+                      <div style="padding:10px 14px;border-bottom:1px solid #171E2B;display:flex;align-items:center;gap:10px">
+                        <span style="font-family:'JetBrains Mono',monospace;font-size:9.5px;letter-spacing:.1em;padding:3px 8px;border-radius:4px;color:#2ED47E;border:1px solid rgba(46,212,126,.35);background:rgba(46,212,126,.07)">✓ AST VALID</span>
+                        <span style="font-family:'JetBrains Mono',monospace;font-size:11.5px;color:#E9EDF4">{{ genName }}</span>
+                        <div style="flex:1"></div>
+                        <button onClick="{{ saveCustom }}" style-hover="filter:brightness(1.1)" style="display:inline-flex;align-items:center;gap:6px;padding:6px 12px;border-radius:6px;border:1px solid rgba(46,212,126,.4);background:rgba(46,212,126,.1);color:#2ED47E;font-family:'IBM Plex Sans',sans-serif;font-size:11.5px;font-weight:600;cursor:pointer">Kaydet ve Kullan</button>
+                      </div>
+                      <pre style="margin:0;padding:14px 16px;font-family:'JetBrains Mono',monospace;font-size:11.5px;line-height:1.6;color:#B7C2D4;overflow-x:auto">{{ genCode }}</pre>
+                    </div>
+                  </sc-if>
+                  <sc-if value="{{ hasCustom }}" hint-placeholder-val="{{ false }}">
+                    <div style="font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:#5C6778;font-weight:600">Kayıtlı custom bloklar</div>
+                    <sc-for list="{{ customRows }}" as="cb" hint-placeholder-count="1">
+                      <div style="display:flex;align-items:center;gap:10px;padding:9px 12px;background:#0A0E16;border:1px solid #171E2B;border-radius:7px">
+                        <div style="flex:1;min-width:0">
+                          <div style="font-family:'JetBrains Mono',monospace;font-size:12px;color:#E9EDF4"><b>{{ cb.name }}</b> · <span style="color:#5C6778">{{ cb.label }}</span></div>
+                          <div style="font-size:11px;color:#5C6778;margin-top:1px">{{ cb.help }}</div>
+                        </div>
+                        <button onClick="{{ cb.onDelete }}" style-hover="color:#F25C5C" style="background:transparent;border:none;color:#5C6778;cursor:pointer;font-size:11px;font-family:'IBM Plex Sans',sans-serif">Sil</button>
+                      </div>
+                    </sc-for>
+                  </sc-if>
+                </div>
+              </sc-if>
+            </div>
+
+          </div>
+
+          <!-- Right column: live preview -->
+          <div style="display:flex;flex-direction:column;gap:16px;position:sticky;top:82px">
+            <div style="background:#10151F;border:1px solid #1C2433;border-radius:10px;overflow:hidden">
+              <div style="padding:12px 16px;border-bottom:1px solid #1C2433;display:flex;align-items:center;gap:10px">
+                <div style="font-size:11px;letter-spacing:.15em;text-transform:uppercase;color:#97A1B5;font-weight:600">Strategy Preview</div>
+                <div style="flex:1"></div>
+                <span style="font-family:'JetBrains Mono',monospace;font-size:10.5px;color:#5C6778">live</span>
+              </div>
+              <div style="padding:18px 16px;display:flex;flex-direction:column;gap:0;align-items:stretch">
+                <div style="font-family:'JetBrains Mono',monospace;font-size:13px;font-weight:600;color:#E9EDF4;text-align:center;margin-bottom:14px">{{ specName }}</div>
+
+                <div style="font-size:9px;letter-spacing:.16em;text-transform:uppercase;color:#5C6778;text-align:center;margin-bottom:8px">Entry signals · {{ entryLogicLbl }}</div>
+                <sc-if value="{{ hasEntryChips }}" hint-placeholder-val="{{ false }}">
+                  <div style="display:flex;flex-wrap:wrap;gap:7px;justify-content:center">
+                    <sc-for list="{{ entryChips }}" as="ch" hint-placeholder-count="1">
+                      <div style="border:1px solid rgba(46,212,126,.35);background:rgba(46,212,126,.06);border-radius:7px;padding:7px 11px;text-align:center">
+                        <div style="font-size:11.5px;font-weight:600;color:#2ED47E">{{ ch.label }}</div>
+                        <div style="font-family:'JetBrains Mono',monospace;font-size:9.5px;color:#5C6778;margin-top:1px">{{ ch.params }}</div>
+                      </div>
+                    </sc-for>
+                  </div>
+                </sc-if>
+                <sc-if value="{{ noEntryChips }}" hint-placeholder-val="{{ true }}">
+                  <div style="border:1px dashed #232C3E;border-radius:7px;padding:10px;text-align:center;font-size:11px;color:#5C6778">entry bloğu ekleyin</div>
+                </sc-if>
+
+                <div style="display:flex;justify-content:center;padding:6px 0"><svg width="12" height="20" viewBox="0 0 12 20"><path d="M6 0v16M2 13l4 5 4-5" style="fill:none;stroke:#3A465C;stroke-width:1.3"></path></svg></div>
+
+                <div style="align-self:center;border:1px solid #2A3550;background:#151C2B;border-radius:8px;padding:9px 16px;text-align:center">
+                  <div style="font-family:'JetBrains Mono',monospace;font-size:11px;font-weight:600;color:#5EA0F6">{{ orderSummary }}</div>
+                  <div style="font-family:'JetBrains Mono',monospace;font-size:9.5px;color:#5C6778;margin-top:2px">{{ sizingSummary }}</div>
+                </div>
+
+                <div style="display:flex;justify-content:center;padding:6px 0"><svg width="12" height="20" viewBox="0 0 12 20"><path d="M6 0v16M2 13l4 5 4-5" style="fill:none;stroke:#3A465C;stroke-width:1.3"></path></svg></div>
+
+                <div style="font-size:9px;letter-spacing:.16em;text-transform:uppercase;color:#5C6778;text-align:center;margin-bottom:8px">Exit signals · {{ exitLogicLbl }}</div>
+                <sc-if value="{{ hasExitChips }}" hint-placeholder-val="{{ false }}">
+                  <div style="display:flex;flex-wrap:wrap;gap:7px;justify-content:center">
+                    <sc-for list="{{ exitChips }}" as="ch" hint-placeholder-count="1">
+                      <div style="border:1px solid rgba(242,92,92,.35);background:rgba(242,92,92,.06);border-radius:7px;padding:7px 11px;text-align:center">
+                        <div style="font-size:11.5px;font-weight:600;color:#F79090">{{ ch.label }}</div>
+                        <div style="font-family:'JetBrains Mono',monospace;font-size:9.5px;color:#5C6778;margin-top:1px">{{ ch.params }}</div>
+                      </div>
+                    </sc-for>
+                  </div>
+                </sc-if>
+                <sc-if value="{{ noExitChips }}" hint-placeholder-val="{{ true }}">
+                  <div style="border:1px dashed #232C3E;border-radius:7px;padding:10px;text-align:center;font-size:11px;color:#5C6778">{{ exitFallback }}</div>
+                </sc-if>
+              </div>
+            </div>
+
+            <div style="background:#10151F;border:1px solid #1C2433;border-radius:10px;overflow:hidden">
+              <div style="padding:12px 16px;border-bottom:1px solid #1C2433;display:flex;align-items:center;gap:10px">
+                <div style="font-size:11px;letter-spacing:.15em;text-transform:uppercase;color:#97A1B5;font-weight:600">Block Reference</div>
+                <div style="flex:1"></div>
+                <span style="font-family:'JetBrains Mono',monospace;font-size:10.5px;color:#5EA0F6">{{ blockType }}</span>
+              </div>
+              <div style="padding:16px">
+                <div style="font-size:13px;font-weight:600;color:#E9EDF4;margin-bottom:6px">{{ selBlockLabel }}</div>
+                <div style="font-size:12px;line-height:1.6;color:#97A1B5;margin-bottom:14px">{{ blockHelp }}</div>
+                <div style="font-size:9.5px;letter-spacing:.14em;text-transform:uppercase;color:#5C6778;margin-bottom:7px">Parameters</div>
+                <sc-for list="{{ selBlockParams }}" as="sp" hint-placeholder-count="3">
+                  <div style="display:flex;align-items:center;gap:10px;padding:6px 0;border-bottom:1px solid #171E2B">
+                    <span style="font-family:'JetBrains Mono',monospace;font-size:11.5px;color:#5EA0F6;flex:1">{{ sp.name }}</span>
+                    <span style="font-family:'JetBrains Mono',monospace;font-size:10.5px;color:#5C6778">{{ sp.range }}</span>
+                  </div>
+                </sc-for>
+              </div>
+            </div>
+          </div>
+
+        </div>
+      </sc-if>
+
+      <!-- ==================== BACKTEST ==================== -->
+      <sc-if value="{{ isBacktest }}" hint-placeholder-val="{{ false }}">
+        <div data-screen-label="Backtest" style="display:grid;grid-template-columns:3fr 2fr;gap:16px;align-items:start">
+
+          <div style="display:flex;flex-direction:column;gap:16px;min-width:0">
+
+            <!-- Run form -->
+            <div style="background:#10151F;border:1px solid #1C2433;border-radius:10px;overflow:hidden">
+              <div style="padding:12px 16px;border-bottom:1px solid #1C2433"><div style="font-size:11px;letter-spacing:.15em;text-transform:uppercase;color:#97A1B5;font-weight:600">01 · Select Strategy</div></div>
+              <div style="padding:16px;display:flex;flex-direction:column;gap:12px">
+                <div style="display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap">
+                  <label style="display:flex;flex-direction:column;gap:6px;font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:#5C6778;font-weight:600;flex:1;min-width:200px">Strategy
+                    <select value="{{ btSpecId }}" onChange="{{ onBtSpec }}" style="background:#0A0E16;border:1px solid #232C3E;color:#E9EDF4;padding:9px 12px;border-radius:6px;font-family:'JetBrains Mono',monospace;font-size:12.5px;outline:none;cursor:pointer">
+                      <sc-for list="{{ specOptions }}" as="so" hint-placeholder-count="2">
+                        <option value="{{ so.value }}">{{ so.label }}</option>
+                      </sc-for>
+                    </select>
+                  </label>
+                  <label style="display:flex;flex-direction:column;gap:6px;font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:#5C6778;font-weight:600">Data
+                    <select value="{{ btKind }}" onChange="{{ onBtKind }}" style="background:#0A0E16;border:1px solid #232C3E;color:#E9EDF4;padding:9px 12px;border-radius:6px;font-family:'IBM Plex Sans',sans-serif;font-size:12.5px;outline:none;cursor:pointer">
+                      <option value="BTC">BTC (Yahoo daily)</option>
+                      <option value="Index">US Index (NFS ticks)</option>
+                    </select>
+                  </label>
+                  <button onClick="{{ runBt }}" disabled="{{ btRunning }}" style-hover="filter:brightness(1.1)" style="display:inline-flex;align-items:center;gap:8px;padding:10px 18px;border-radius:7px;border:1px solid #3672E8;background:linear-gradient(180deg,#4A8CF0,#3672E8);color:#fff;font-family:'IBM Plex Sans',sans-serif;font-size:12.5px;font-weight:600;cursor:pointer">
+                    <sc-if value="{{ btRunning }}" hint-placeholder-val="{{ false }}">
+                      <span style="width:12px;height:12px;border:2px solid rgba(255,255,255,.35);border-top-color:#fff;border-radius:50%;animation:nlSpin .8s linear infinite;display:inline-block"></span>
+                    </sc-if>
+                    <sc-if value="{{ btIdle }}" hint-placeholder-val="{{ true }}">
+                      <svg width="10" height="10" viewBox="0 0 10 10"><path d="M2 1v8l7-4-7-4Z" style="fill:currentColor"></path></svg>
+                    </sc-if>
+                    <span>{{ btBtnLabel }}</span>
+                  </button>
+                </div>
+                <sc-if value="{{ isIndexKind }}" hint-placeholder-val="{{ false }}">
+                  <div style="display:grid;grid-template-columns:2fr 1fr 1fr 1fr;gap:12px">
+                    <label style="display:flex;flex-direction:column;gap:6px;font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:#5C6778;font-weight:600">Ticker
+                      <select style="background:#0A0E16;border:1px solid #232C3E;color:#E9EDF4;padding:9px 12px;border-radius:6px;font-family:'JetBrains Mono',monospace;font-size:12.5px;outline:none;cursor:pointer">
+                        <option value="ES">ES · E-mini S&amp;P 500</option>
+                        <option value="NQ">NQ · E-mini Nasdaq-100</option>
+                      </select>
+                    </label>
+                    <label style="display:flex;flex-direction:column;gap:6px;font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:#5C6778;font-weight:600">Granularity
+                      <select style="background:#0A0E16;border:1px solid #232C3E;color:#E9EDF4;padding:9px 12px;border-radius:6px;font-family:'IBM Plex Sans',sans-serif;font-size:12.5px;outline:none;cursor:pointer">
+                        <option value="1d">1 day</option>
+                        <option value="1m">1 minute</option>
+                      </select>
+                    </label>
+                    <label style="display:flex;flex-direction:column;gap:6px;font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:#5C6778;font-weight:600">Start
+                      <input type="date" style="background:#0A0E16;border:1px solid #232C3E;color:#E9EDF4;padding:8px 12px;border-radius:6px;font-family:'JetBrains Mono',monospace;font-size:12px;outline:none">
+                    </label>
+                    <label style="display:flex;flex-direction:column;gap:6px;font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:#5C6778;font-weight:600">End
+                      <input type="date" style="background:#0A0E16;border:1px solid #232C3E;color:#E9EDF4;padding:8px 12px;border-radius:6px;font-family:'JetBrains Mono',monospace;font-size:12px;outline:none">
+                    </label>
+                  </div>
+                </sc-if>
+              </div>
+            </div>
+
+            <!-- Result -->
+            <sc-if value="{{ hasResult }}" hint-placeholder-val="{{ true }}">
+              <div style="background:#10151F;border:1px solid #1C2433;border-radius:10px;overflow:hidden;animation:nlFade .35s ease">
+                <div style="padding:12px 16px;border-bottom:1px solid #1C2433;display:flex;align-items:center;gap:10px">
+                  <div style="font-size:11px;letter-spacing:.15em;text-transform:uppercase;color:#97A1B5;font-weight:600">Result · {{ btName }}</div>
+                  <div style="flex:1"></div>
+                  <span style="font-family:'JetBrains Mono',monospace;font-size:10.5px;color:#5C6778">Nautilus BacktestEngine</span>
+                </div>
+                <div style="padding:16px">
+                  <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:10px">
+                    <sc-for list="{{ btKpis }}" as="k" hint-placeholder-count="5">
+                      <div style="background:#0A0E16;border:1px solid #171E2B;border-radius:8px;padding:12px 13px">
+                        <div style="font-size:9px;letter-spacing:.15em;text-transform:uppercase;color:#5C6778;margin-bottom:5px">{{ k.label }}</div>
+                        <div style="font-family:'JetBrains Mono',monospace;font-size:17px;font-weight:600;font-variant-numeric:tabular-nums;color:{{ k.color }}">{{ k.value }}</div>
+                      </div>
+                    </sc-for>
+                  </div>
+
+                  <div style="font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:#5C6778;font-weight:600;margin:18px 0 10px">Equity curve</div>
+                  <div style="display:flex;gap:12px">
+                    <div style="display:flex;flex-direction:column;justify-content:space-between;padding-bottom:2px;font-family:'JetBrains Mono',monospace;font-size:10px;color:#5C6778;text-align:right;min-width:52px">
+                      <span>{{ btYMax }}</span><span>{{ btYMid }}</span><span>{{ btYMin }}</span>
+                    </div>
+                    <svg viewBox="0 0 760 210" preserveAspectRatio="none" style="display:block;width:100%;height:210px;flex:1">
+                      <defs>
+                        <linearGradient id="nlBtG" x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="0" style="stop-color:#2ED47E;stop-opacity:.2"></stop>
+                          <stop offset="1" style="stop-color:#2ED47E;stop-opacity:0"></stop>
+                        </linearGradient>
+                      </defs>
+                      <line x1="0" y1="1" x2="760" y2="1" style="stroke:#171E2B;stroke-width:1;vector-effect:non-scaling-stroke"></line>
+                      <line x1="0" y1="105" x2="760" y2="105" style="stroke:#171E2B;stroke-width:1;vector-effect:non-scaling-stroke"></line>
+                      <line x1="0" y1="209" x2="760" y2="209" style="stroke:#171E2B;stroke-width:1;vector-effect:non-scaling-stroke"></line>
+                      <path d="{{ btEqArea }}" style="fill:url(#nlBtG)"></path>
+                      <path d="{{ btEqPath }}" style="fill:none;stroke:#2ED47E;stroke-width:2;vector-effect:non-scaling-stroke"></path>
+                    </svg>
+                  </div>
+
+                  <div style="font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:#5C6778;font-weight:600;margin:16px 0 8px">Drawdown <span style="font-family:'JetBrains Mono',monospace;text-transform:none;letter-spacing:0;color:#F79090">min {{ btDdMin }}</span></div>
+                  <div style="display:flex;gap:12px">
+                    <div style="min-width:52px"></div>
+                    <svg viewBox="0 0 760 50" preserveAspectRatio="none" style="display:block;width:100%;height:50px;flex:1">
+                      <path d="{{ btDdArea }}" style="fill:rgba(242,92,92,.22)"></path>
+                      <line x1="0" y1="1" x2="760" y2="1" style="stroke:#171E2B;stroke-width:1;vector-effect:non-scaling-stroke"></line>
+                    </svg>
+                  </div>
+
+                  <div style="font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:#5C6778;font-weight:600;margin:18px 0 10px">Monthly returns</div>
+                  <div style="display:flex;flex-direction:column;gap:3px">
+                    <div style="display:grid;grid-template-columns:44px repeat(12,1fr);gap:3px;font-family:'JetBrains Mono',monospace;font-size:9px;color:#5C6778;text-transform:uppercase">
+                      <div></div>
+                      <sc-for list="{{ monthLabels }}" as="m" hint-placeholder-count="12"><div style="text-align:center">{{ m }}</div></sc-for>
+                    </div>
+                    <sc-for list="{{ hmRows }}" as="hr" hint-placeholder-count="4">
+                      <div style="display:grid;grid-template-columns:44px repeat(12,1fr);gap:3px;align-items:stretch">
+                        <div style="font-family:'JetBrains Mono',monospace;font-size:10px;color:#5C6778;display:flex;align-items:center">{{ hr.year }}</div>
+                        <sc-for list="{{ hr.cells }}" as="cell" hint-placeholder-count="12">
+                          <div title="{{ cell.title }}" style="height:22px;border-radius:3px;background:{{ cell.bg }};display:flex;align-items:center;justify-content:center;font-family:'JetBrains Mono',monospace;font-size:8.5px;color:{{ cell.fg }}">{{ cell.txt }}</div>
+                        </sc-for>
+                      </div>
+                    </sc-for>
+                  </div>
+                </div>
+              </div>
+            </sc-if>
+
+          </div>
+
+          <!-- Right: order flow + history -->
+          <div style="display:flex;flex-direction:column;gap:16px;position:sticky;top:82px">
+            <div style="background:#10151F;border:1px solid #1C2433;border-radius:10px;overflow:hidden">
+              <div style="padding:12px 16px;border-bottom:1px solid #1C2433;display:flex;align-items:center;gap:10px">
+                <div style="font-size:11px;letter-spacing:.15em;text-transform:uppercase;color:#97A1B5;font-weight:600">Order Flow Pipeline</div>
+                <div style="flex:1"></div>
+                <span style="font-family:'JetBrains Mono',monospace;font-size:10.5px;color:#5C6778">Nautilus wiki</span>
+              </div>
+              <div style="padding:16px 18px">
+                <sc-for list="{{ flowSteps }}" as="fs" hint-placeholder-count="6">
+                  <div style="display:flex;gap:13px">
+                    <div style="display:flex;flex-direction:column;align-items:center;flex:none">
+                      <div style="width:9px;height:9px;border-radius:50%;border:2px solid {{ fs.dot }};background:#10151F;margin-top:4px;flex:none"></div>
+                      <sc-if value="{{ fs.notLast }}" hint-placeholder-val="{{ true }}">
+                        <div style="width:1px;flex:1;background:#232C3E;min-height:18px"></div>
+                      </sc-if>
+                    </div>
+                    <div style="padding-bottom:16px;min-width:0">
+                      <div style="font-family:'JetBrains Mono',monospace;font-size:12px;font-weight:600;color:{{ fs.titleColor }}">{{ fs.title }}</div>
+                      <div style="font-size:11px;color:#5C6778;margin-top:2px;line-height:1.45">{{ fs.sub }}</div>
+                    </div>
+                  </div>
+                </sc-for>
+              </div>
+            </div>
+
+            <div style="background:#10151F;border:1px solid #1C2433;border-radius:10px;overflow:hidden">
+              <div style="padding:12px 16px;border-bottom:1px solid #1C2433"><div style="font-size:11px;letter-spacing:.15em;text-transform:uppercase;color:#97A1B5;font-weight:600">Run History</div></div>
+              <sc-if value="{{ hasRuns }}" hint-placeholder-val="{{ true }}">
+                <sc-for list="{{ runsRows }}" as="rr" hint-placeholder-count="3">
+                  <div style="display:flex;align-items:center;gap:10px;padding:10px 16px;border-bottom:1px solid #171E2B">
+                    <span style="font-family:'JetBrains Mono',monospace;font-size:10.5px;color:#5C6778;flex:none">{{ rr.time }}</span>
+                    <span style="font-family:'JetBrains Mono',monospace;font-size:11.5px;color:#5EA0F6;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ rr.name }}</span>
+                    <span style="font-family:'JetBrains Mono',monospace;font-size:11.5px;font-weight:600;font-variant-numeric:tabular-nums;color:{{ rr.color }}">{{ rr.pnl }}</span>
+                  </div>
+                </sc-for>
+              </sc-if>
+              <sc-if value="{{ noRuns }}" hint-placeholder-val="{{ false }}">
+                <div style="padding:26px 20px;text-align:center;color:#5C6778;font-size:12px">Henüz koşu yok.</div>
+              </sc-if>
+            </div>
+          </div>
+
+        </div>
+      </sc-if>
+
+    </main>
+  </div>
+</div>
+
+<!-- Toast -->
+<sc-if value="{{ toastVisible }}" hint-placeholder-val="{{ false }}">
+  <div style="position:fixed;top:70px;right:22px;z-index:100;background:#10151F;border:1px solid {{ toastBorder }};border-radius:9px;padding:12px 16px;display:flex;align-items:center;gap:10px;box-shadow:0 8px 28px rgba(0,0,0,.45);animation:nlFade .25s ease;max-width:380px">
+    <span style="font-family:'JetBrains Mono',monospace;font-size:12px;color:{{ toastColor }}">{{ toastIcon }}</span>
+    <span style="font-size:12.5px;color:#E9EDF4">{{ toastText }}</span>
+  </div>
+</sc-if>
+
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;loopIntervalMs&quot;:{&quot;editor&quot;:&quot;range&quot;,&quot;default&quot;:1800,&quot;min&quot;:600,&quot;max&quot;:5000,&quot;step&quot;:100,&quot;unit&quot;:&quot;ms&quot;,&quot;section&quot;:&quot;Simülasyon&quot;,&quot;tsType&quot;:&quot;number&quot;},&quot;seedIterations&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;section&quot;:&quot;Simülasyon&quot;,&quot;tsType&quot;:&quot;boolean&quot;},&quot;showDrawdown&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;section&quot;:&quot;Grafikler&quot;,&quot;tsType&quot;:&quot;boolean&quot;}}">
+class Component extends DCLogic {
+  constructor(props) {
+    super(props);
+    this._timer = null;
+    this._advOnCache = null;
+    this._pfCache = {};
+    this.BLOCKS = {
+      ma_cross: { label: "MA Kesişimi", params: { fast: { type: "int", min: 2, max: 100, default: 10 }, slow: { type: "int", min: 5, max: 300, default: 30 }, direction: { type: "enum", options: ["up", "down"], default: "up" } }, help: "Hızlı ve yavaş hareketli ortalama kesişimi. `up` = hızlı yavaşı yukarı keserse tetiklenir. on_bar'da her yeni kapanışla yeniden hesaplanır." },
+      rsi_threshold: { label: "RSI Eşik", params: { period: { type: "int", min: 2, max: 50, default: 14 }, threshold: { type: "float", min: 5, max: 95, default: 30 }, cross: { type: "enum", options: ["below", "above"], default: "below" } }, help: "RSI belirtilen eşiği yukarı/aşağı geçtiğinde tetiklenir. `below` = eşiğin altına inince (aşırı satım sinyali)." },
+      price_breakout: { label: "Fiyat Kırılımı", params: { lookback: { type: "int", min: 3, max: 200, default: 20 }, direction: { type: "enum", options: ["high", "low"], default: "high" } }, help: "Son N barın en yüksek/düşük kapanışı kırıldığında tetiklenir. Donchian mantığı." },
+      momentum: { label: "Momentum İşareti", params: { lookback: { type: "int", min: 2, max: 100, default: 10 }, sign: { type: "enum", options: ["positive", "negative"], default: "positive" } }, help: "Son N bar getirisinin işareti. `positive` = son N barda net yükseliş." },
+      ema_cross: { label: "EMA Kesişimi (Nautilus)", params: { fast: { type: "int", min: 2, max: 100, default: 12 }, slow: { type: "int", min: 5, max: 300, default: 26 }, direction: { type: "enum", options: ["up", "down"], default: "up" } }, help: "Nautilus native ExponentialMovingAverage indicator kullanır. EMA son barlara daha fazla ağırlık verir. `up` = fast EMA slow EMA'yı yukarı keser." },
+      bollinger_break: { label: "Bollinger Kırılımı (Nautilus)", params: { period: { type: "int", min: 5, max: 200, default: 20 }, k: { type: "float", min: 0.5, max: 5, default: 2 }, side: { type: "enum", options: ["upper", "lower"], default: "lower" } }, help: "Nautilus BollingerBands(period, k) indicator. Fiyat üst banda değerse `upper` (breakout), alt banda değerse `lower` (mean reversion)." },
+      macd_cross: { label: "MACD Kesişimi (Nautilus)", params: { fast: { type: "int", min: 2, max: 60, default: 12 }, slow: { type: "int", min: 5, max: 200, default: 26 }, signal: { type: "int", min: 2, max: 60, default: 9 }, direction: { type: "enum", options: ["up", "down"], default: "up" } }, help: "Nautilus MACD indicator. MACD çizgisi sıfırı yukarı keserse `up`, aşağı keserse `down` tetiklenir." },
+      atr_stop: { label: "ATR Stop (yalnız exit)", params: { period: { type: "int", min: 5, max: 100, default: 14 }, mult: { type: "float", min: 0.5, max: 10, default: 3 } }, help: "Nautilus AverageTrueRange indicator kullanır. Fiyat tepe close'dan ATR × mult kadar çekildiğinde exit tetiklenir. Yalnız exit rolünde kullanılır." },
+    };
+    this.state = this.initState();
+  }
+
+  rng(seed) {
+    let a = seed >>> 0;
+    return () => {
+      a |= 0; a = (a + 0x6D2B79F5) | 0;
+      let t = Math.imul(a ^ (a >>> 15), 1 | a);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+  hash(s) { let h = 9; for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 387420489); return (h ^ (h >>> 9)) >>> 0; }
+
+  eqCurve(seed, q, n) {
+    const r = this.rng(seed);
+    const pts = [1000000];
+    const drift = q * 0.00035, vol = 0.0055;
+    for (let i = 1; i < n; i++) {
+      const g = (r() + r() + r() - 1.5) * vol;
+      pts.push(Math.max(900000, pts[i - 1] * (1 + drift + g)));
+    }
+    return pts;
+  }
+  ddSeries(curve) {
+    let peak = curve[0]; const dd = [];
+    for (const v of curve) { peak = Math.max(peak, v); dd.push((v - peak) / peak); }
+    return dd;
+  }
+  maxDd(curve) { return Math.min(...this.ddSeries(curve)); }
+
+  chart(data, w, h) {
+    const lo0 = Math.min(...data), hi0 = Math.max(...data);
+    const pad = (hi0 - lo0) * 0.08 || 1;
+    const lo = lo0 - pad, hi = hi0 + pad;
+    const step = w / (data.length - 1);
+    let d = "";
+    for (let i = 0; i < data.length; i++) {
+      const x = (i * step).toFixed(1);
+      const y = (h - ((data[i] - lo) / (hi - lo)) * h).toFixed(1);
+      d += (i === 0 ? "M" : "L") + x + "," + y;
+    }
+    return { line: d, area: d + "L" + w + "," + h + "L0," + h + "Z", lo: lo0, hi: hi0 };
+  }
+  ddChart(curve, w, h) {
+    const dd = this.ddSeries(curve);
+    const minDd = Math.min(...dd, -0.001);
+    const step = w / (dd.length - 1);
+    let d = "M0,0";
+    for (let i = 0; i < dd.length; i++) {
+      d += "L" + (i * step).toFixed(1) + "," + ((dd[i] / minDd) * h).toFixed(1);
+    }
+    d += "L" + w + ",0Z";
+    return { area: d, min: minDd };
+  }
+
+  fmtMoney(v) { const s = v < 0 ? "-" : "+"; return s + "$" + Math.abs(v).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
+  fmtK(v) { return "$" + (v / 1000).toFixed(0) + "k"; }
+  fmtPct(v) { return (v * 100).toFixed(2) + "%"; }
+
+  makeIter(id, seed, pool) {
+    const r = this.rng(seed);
+    const strat = pool[Math.floor(r() * pool.length)];
+    let params;
+    if (strat === "ma_crossover") { const f = 5 + Math.floor(r() * 25); params = "fast=" + f + " slow=" + (f + 10 + Math.floor(r() * 60)); }
+    else if (strat === "rsi_mean_reversion") { params = "period=" + (7 + Math.floor(r() * 14)) + " buy<" + (20 + Math.floor(r() * 15)) + " sell>" + (65 + Math.floor(r() * 20)); }
+    else { params = "catalog spec · " + (2 + Math.floor(r() * 3)) + " blocks"; }
+    const q = r() * 2.4 - 0.8;
+    const curve = this.eqCurve(seed + 7, q, 240);
+    const pnl = curve[curve.length - 1] - 1000000;
+    const now = new Date();
+    return {
+      id, strat, params, pnl,
+      sharpe: Math.max(-0.9, q * 0.9 + (r() - 0.5) * 0.4),
+      wr: Math.min(0.68, Math.max(0.3, 0.44 + q * 0.07 + (r() - 0.5) * 0.06)),
+      trades: 18 + Math.floor(r() * 150),
+      maxDd: this.maxDd(curve),
+      curve,
+      time: now.toTimeString().slice(0, 8),
+    };
+  }
+
+  computeResult(spec) {
+    const seed = this.hash(spec.id + spec.name);
+    const r = this.rng(seed);
+    const q = 0.6 + r() * 1.5;
+    const curve = this.eqCurve(seed + 3, q, 300);
+    const pnl = curve[curve.length - 1] - 1000000;
+    const dd = this.maxDd(curve);
+    const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    const hm = [];
+    for (let y = 2019; y <= 2026; y++) {
+      const cells = [];
+      const lastM = y === 2026 ? 7 : 12;
+      for (let m = 0; m < 12; m++) {
+        if (m >= lastM) { cells.push({ bg: "#0D1119", fg: "transparent", txt: "", title: "" }); continue; }
+        const v = (r() + r() - 1) * 7 + q * 0.55;
+        const a = Math.min(Math.abs(v) / 7, 1) * 0.5 + 0.08;
+        cells.push({
+          bg: v >= 0 ? "rgba(46,212,126," + a.toFixed(2) + ")" : "rgba(242,92,92," + a.toFixed(2) + ")",
+          fg: Math.abs(v) > 2.2 ? "#E9EDF4" : "transparent",
+          txt: (v >= 0 ? "+" : "") + v.toFixed(0),
+          title: months[m] + " " + y + " · " + (v >= 0 ? "+" : "") + v.toFixed(2) + "%",
+        });
+      }
+      hm.push({ year: String(y), cells });
+    }
+    return {
+      name: spec.name, curve, pnl, dd,
+      sharpe: Math.max(0.2, q * 0.85 + (r() - 0.5) * 0.3),
+      trades: 24 + Math.floor(r() * 160),
+      wr: Math.min(0.66, Math.max(0.34, 0.45 + q * 0.06)),
+      hm,
+    };
+  }
+
+  initState() {
+    const catalog = [
+      { id: "a3f19c02d8e1", name: "supertrend", desc: "ATR-band trend follower, bracket SL", blocks: [{ type: "ema_cross", role: "entry", params: { fast: 12, slow: 48, direction: "up" } }, { type: "atr_stop", role: "exit", params: { period: 14, mult: 3 } }], trade_size: 0.1, created: "2026-06-30 14:02" },
+      { id: "b7c4e551a09f", name: "WebUI-Smoke", desc: "MA cross smoke test", blocks: [{ type: "ma_cross", role: "entry", params: { fast: 10, slow: 30, direction: "up" } }, { type: "ma_cross", role: "exit", params: { fast: 10, slow: 30, direction: "down" } }], trade_size: 0.1, created: "2026-07-02 09:41" },
+    ];
+    const seedIters = this.props.seedIterations !== false;
+    const iters = [];
+    if (seedIters) {
+      for (let i = 0; i < 6; i++) iters.unshift(this.makeIter(i + 1, 101 + i * 13, ["ma_crossover", "rsi_mean_reversion"]));
+    }
+    let best = null;
+    for (const it of iters) if (!best || it.pnl > best.pnl) best = it;
+    const firstSpec = catalog[0];
+    const result = this.computeResult(firstSpec);
+    return {
+      page: "dashboard",
+      loopMode: "agent", loopRunning: false, loopStatus: "idle", iterCount: iters.length,
+      iterations: iters, best,
+      specName: "My Strategy", tradeSize: "0.1", specDesc: "",
+      blockType: "ma_cross", blockRole: "entry",
+      params: this.defaultParams("ma_cross"),
+      drafts: [],
+      advOpen: false, customOpen: false,
+      adv: { entry_logic: "OR", exit_logic: "OR", order_type: "market", limit_offset_bps: "0", use_bracket: false, sl_type: "percent", sl_value: "2", tp_type: "off", tp_value: "4", atr_period: "14", allow_short: false, trade_size_mode: "fixed", trade_size_percent: "5", trade_size_atr_risk: "1" },
+      catalog,
+      suggesting: false,
+      customLabel: "", customDesc: "", customGenerating: false, generated: null, customBlocks: [], customTypes: {},
+      btSpecId: firstSpec.id, btKind: "BTC", btRunning: false,
+      btResult: result,
+      runs: [{ time: "19:04:12", name: firstSpec.name, pnl: result.pnl }],
+      toast: null,
+    };
+  }
+
+  defaultParams(type) {
+    const p = {};
+    const meta = this.BLOCKS[type] || (this.state && this.state.customTypes[type]);
+    if (meta) for (const [k, v] of Object.entries(meta.params)) p[k] = v.default;
+    return p;
+  }
+  blockMeta(type) { return this.BLOCKS[type] || this.state.customTypes[type] || { label: type, params: {}, help: "" }; }
+
+  componentWillUnmount() { if (this._timer) clearInterval(this._timer); if (this._toastT) clearTimeout(this._toastT); }
+
+  showToast(text, kind) {
+    if (this._toastT) clearTimeout(this._toastT);
+    this.setState({ toast: { text, kind } });
+    this._toastT = setTimeout(() => this.setState({ toast: null }), 3200);
+  }
+
+  startLoop() {
+    if (this.state.loopRunning) return;
+    const interval = Number(this.props.loopIntervalMs ?? 1800);
+    this.setState({ loopRunning: true, loopStatus: "proposing params…" });
+    this._timer = setInterval(() => {
+      this.setState((s) => {
+        const pool = s.loopMode === "catalog" ? s.catalog.map((c) => c.name) : ["ma_crossover", "rsi_mean_reversion"];
+        const it = this.makeIter(s.iterCount + 1, Date.now() % 100000 + s.iterCount * 37, pool);
+        const best = !s.best || it.pnl > s.best.pnl ? it : s.best;
+        const statuses = ["proposing params…", "running BacktestEngine…", "extracting metrics…"];
+        return {
+          iterations: [it, ...s.iterations].slice(0, 60),
+          iterCount: s.iterCount + 1,
+          best,
+          loopStatus: statuses[s.iterCount % 3],
+        };
+      });
+    }, interval);
+  }
+  stopLoop() {
+    if (this._timer) clearInterval(this._timer);
+    this._timer = null;
+    this.setState({ loopRunning: false, loopStatus: "idle" });
+  }
+
+  advHandlers() {
+    if (this._advOnCache) return this._advOnCache;
+    const bools = new Set(["use_bracket", "allow_short"]);
+    const out = {};
+    for (const k of ["entry_logic", "exit_logic", "order_type", "limit_offset_bps", "use_bracket", "sl_type", "sl_value", "tp_type", "tp_value", "atr_period", "allow_short", "trade_size_mode", "trade_size_percent", "trade_size_atr_risk"]) {
+      out[k] = (e) => {
+        const v = bools.has(k) ? e.target.checked : e.target.value;
+        this.setState((s) => ({ adv: { ...s.adv, [k]: v } }));
+      };
+    }
+    this._advOnCache = out;
+    return out;
+  }
+
+  paramHandler(name) {
+    if (!this._pfCache[name]) this._pfCache[name] = (e) => {
+      const v = e.target.value;
+      this.setState((s) => ({ params: { ...s.params, [name]: v } }));
+    };
+    return this._pfCache[name];
+  }
+
+  addBlock() {
+    const s = this.state;
+    if (s.blockType === "atr_stop" && s.blockRole !== "exit") { this.showToast("atr_stop bloğu yalnızca exit rolünde kullanılabilir.", "err"); return; }
+    const meta = this.blockMeta(s.blockType);
+    if ((meta.params.fast !== undefined) && Number(s.params.slow) <= Number(s.params.fast)) { this.showToast(s.blockType + ": slow > fast olmalı.", "err"); return; }
+    this.setState({ drafts: [...s.drafts, { type: s.blockType, role: s.blockRole, params: { ...s.params } }] });
+  }
+
+  suggest() {
+    if (this.state.suggesting) return;
+    this.setState({ suggesting: true });
+    setTimeout(() => {
+      this.setState((s) => ({
+        suggesting: false,
+        specName: "Claude Trend Rider v" + (s.catalog.length + 1),
+        specDesc: "EMA trend girişi + RSI aşırı alım filtresi, ATR trailing stop ile korunuyor. Geçmiş iterasyonlarda 12/48 EMA en iyi Sharpe'ı verdi.",
+        drafts: [
+          { type: "ema_cross", role: "entry", params: { fast: 12, slow: 48, direction: "up" } },
+          { type: "rsi_threshold", role: "exit", params: { period: 14, threshold: 78, cross: "above" } },
+          { type: "atr_stop", role: "exit", params: { period: 14, mult: 3 } },
+        ],
+        adv: { ...s.adv, use_bracket: true, sl_type: "atr", sl_value: "2.5", exit_logic: "OR" },
+        advOpen: true,
+      }));
+      this.showToast("Claude yeni bir strateji önerdi — bloklar ve parametreler dolduruldu.", "ok");
+    }, 1700);
+  }
+
+  saveStrategy() {
+    const s = this.state;
+    if (!s.drafts.length) { this.showToast("En az bir sinyal bloğu gerekli.", "err"); return; }
+    if (!s.drafts.some((d) => d.role === "entry")) { this.showToast("En az bir 'entry' bloğu gerekli.", "err"); return; }
+    const id = Array.from({ length: 12 }, () => "0123456789abcdef"[Math.floor(Math.random() * 16)]).join("");
+    const now = new Date();
+    const spec = { id, name: s.specName, desc: s.specDesc || "—", blocks: s.drafts.map((d) => ({ ...d })), trade_size: Number(s.tradeSize) || 0.1, created: now.toISOString().slice(0, 16).replace("T", " ") };
+    this.setState({ catalog: [...s.catalog, spec] });
+    this.showToast("'" + s.specName + "' kataloğa kaydedildi → Backtest sayfasında hazır.", "ok");
+  }
+
+  customGenerate() {
+    const s = this.state;
+    if (!s.customLabel.trim() || !s.customDesc.trim()) { this.showToast("Label ve açıklama gerekli.", "err"); return; }
+    if (s.customGenerating) return;
+    this.setState({ customGenerating: true });
+    setTimeout(() => {
+      const slug = s.customLabel.trim().toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "") || "custom_block";
+      const code = 'def evaluate(state, block, closes, indicators, portfolio):\n    n = int(block.params.get("period", 100))\n    if len(closes) < n + 1:\n        return None\n    sma = sum(closes[-n:]) / n\n    prev = state.get("prev_diff", 0.0)\n    diff = closes[-1] - sma\n    state["prev_diff"] = diff\n    if prev <= 0 < diff:\n        return "long"\n    return None';
+      this.setState({ customGenerating: false, generated: { name: slug, label: s.customLabel.trim(), help: s.customDesc.trim(), code } });
+    }, 1900);
+  }
+  saveCustom() {
+    const g = this.state.generated;
+    if (!g) return;
+    this.setState((s) => ({
+      customBlocks: [...s.customBlocks, g],
+      customTypes: { ...s.customTypes, [g.name]: { label: g.label, params: { period: { type: "int", min: 5, max: 300, default: 100 } }, help: g.help } },
+      generated: null, customLabel: "", customDesc: "",
+    }));
+    this.showToast("'" + g.label + "' kaydedildi — blok dropdown'ında hazır.", "ok");
+  }
+
+  runBt() {
+    const s = this.state;
+    if (s.btRunning) return;
+    this.setState({ btRunning: true });
+    setTimeout(() => {
+      const spec = this.state.catalog.find((c) => c.id === this.state.btSpecId) || this.state.catalog[0];
+      const result = this.computeResult(spec);
+      const now = new Date();
+      this.setState((st) => ({
+        btRunning: false, btResult: result,
+        runs: [{ time: now.toTimeString().slice(0, 8), name: spec.name, pnl: result.pnl }, ...st.runs].slice(0, 6),
+      }));
+    }, 1400);
+  }
+
+  renderVals() {
+    const s = this.state;
+    const setPage = (p) => () => this.setState({ page: p });
+    const activeBg = "linear-gradient(180deg,rgba(74,140,240,.16),rgba(54,114,232,.08))";
+    const nav = (key) => ({
+      bg: s.page === key ? activeBg : "transparent",
+      color: s.page === key ? "#E9EDF4" : "#97A1B5",
+      shadow: s.page === key ? "inset 0 0 0 1px rgba(94,160,246,.3)" : "none",
+    });
+    const nd = nav("dashboard"), ns = nav("strategy"), nb = nav("backtest");
+    const titles = { dashboard: "Dashboard", strategy: "Strategy Composer", backtest: "Backtest" };
+
+    // topbar sparkline
+    const spark = this.eqCurve(42, 1.6, 90);
+    const sc = this.chart(spark, 86, 24);
+
+    // dashboard
+    const best = s.best;
+    const bestCurve = best ? best.curve : this.eqCurve(1, 0.5, 240);
+    const eq = this.chart(bestCurve, 860, 218);
+    const dd = this.ddChart(bestCurve, 860, 52);
+    const avgWr = s.iterations.length ? s.iterations.reduce((a, b) => a + b.wr, 0) / s.iterations.length : 0;
+    const kpis = [
+      { label: "Best PnL", value: best ? this.fmtMoney(best.pnl) : "—", color: best && best.pnl >= 0 ? "#2ED47E" : "#F25C5C", sub: best ? best.strat : "no iterations" },
+      { label: "Best Sharpe", value: best ? best.sharpe.toFixed(2) : "—", color: "#E9EDF4", sub: "annualized · 252d" },
+      { label: "Avg Win Rate", value: s.iterations.length ? this.fmtPct(avgWr) : "—", color: "#E9EDF4", sub: "across " + s.iterations.length + " runs" },
+      { label: "Iterations", value: String(s.iterCount), color: "#5EA0F6", sub: s.loopRunning ? "loop running" : "loop idle" },
+    ];
+    const iterRows = s.iterations.map((it) => ({
+      time: it.time, strat: it.strat, params: it.params,
+      pnl: this.fmtMoney(it.pnl), pnlColor: it.pnl >= 0 ? "#2ED47E" : "#F25C5C",
+      sharpe: it.sharpe.toFixed(2), wr: (it.wr * 100).toFixed(0) + "%",
+    }));
+
+    // strategy composer
+    const meta = this.blockMeta(s.blockType);
+    const paramFields = Object.entries(meta.params).map(([name, spec]) => ({
+      name,
+      isEnum: spec.type === "enum",
+      isNumber: spec.type !== "enum",
+      value: s.params[name] !== undefined ? String(s.params[name]) : "",
+      min: spec.min, max: spec.max, step: spec.type === "float" ? 0.1 : 1,
+      options: spec.options || [],
+      onChange: this.paramHandler(name),
+    }));
+    const blockOptions = [
+      ...Object.entries(this.BLOCKS).map(([k, v]) => ({ value: k, label: v.label + " · " + k })),
+      ...Object.entries(s.customTypes).map(([k, v]) => ({ value: k, label: v.label + " · " + k + " (custom)" })),
+    ];
+    const roleStyle = (role) => role === "entry"
+      ? { roleColor: "#2ED47E", roleBorder: "rgba(46,212,126,.35)", roleBg: "rgba(46,212,126,.06)" }
+      : { roleColor: "#F79090", roleBorder: "rgba(242,92,92,.35)", roleBg: "rgba(242,92,92,.06)" };
+    const pstr = (p) => Object.entries(p).map(([k, v]) => k + "=" + v).join(" · ");
+    const draftRows = s.drafts.map((d, i) => ({
+      idx: String(i + 1), label: this.blockMeta(d.type).label, type: d.type,
+      paramsStr: pstr(d.params), roleName: d.role, ...roleStyle(d.role),
+      onDelete: () => this.setState((st) => ({ drafts: st.drafts.filter((_, j) => j !== i) })),
+    }));
+    const catalogRows = s.catalog.map((c) => ({
+      name: c.name, id: c.id, desc: c.desc, blocks: String(c.blocks.length), size: String(c.trade_size), created: c.created,
+      onDelete: () => this.setState((st) => ({ catalog: st.catalog.filter((x) => x.id !== c.id) })),
+    }));
+    const entryChips = s.drafts.filter((d) => d.role === "entry").map((d) => ({ label: this.blockMeta(d.type).label, params: pstr(d.params) }));
+    const exitChips = s.drafts.filter((d) => d.role === "exit").map((d) => ({ label: this.blockMeta(d.type).label, params: pstr(d.params) }));
+    const selBlockParams = Object.entries(meta.params).map(([name, spec]) => ({
+      name,
+      range: spec.type === "enum" ? spec.options.join(" | ") : spec.min + " – " + spec.max + " (default " + spec.default + ")",
+    }));
+    const orderSummary = (s.adv.order_type === "limit" ? "LIMIT" : "MARKET") + " order" + (s.adv.use_bracket ? " + bracket SL/TP" : "");
+    const sizingMap = { fixed: s.tradeSize + " BTC fixed", percent_equity: s.adv.trade_size_percent + "% of equity", atr_target: "ATR-target " + s.adv.trade_size_atr_risk + "% risk" };
+    const customRows = s.customBlocks.map((cb) => ({
+      name: cb.name, label: cb.label, help: cb.help,
+      onDelete: () => this.setState((st) => {
+        const ct = { ...st.customTypes }; delete ct[cb.name];
+        return { customBlocks: st.customBlocks.filter((x) => x.name !== cb.name), customTypes: ct };
+      }),
+    }));
+
+    // backtest
+    const res = s.btResult;
+    const btEq = this.chart(res.curve, 760, 208);
+    const btDd = this.ddChart(res.curve, 760, 48);
+    const btKpis = [
+      { label: "Realized PnL", value: this.fmtMoney(res.pnl), color: res.pnl >= 0 ? "#2ED47E" : "#F25C5C" },
+      { label: "Sharpe (252d)", value: res.sharpe.toFixed(2), color: "#E9EDF4" },
+      { label: "Trades", value: String(res.trades), color: "#E9EDF4" },
+      { label: "Win rate", value: this.fmtPct(res.wr), color: "#E9EDF4" },
+      { label: "Max drawdown", value: this.fmtPct(res.dd), color: "#F79090" },
+    ];
+    const specOptions = s.catalog.map((c) => ({ value: c.id, label: c.name + " · " + c.blocks.length + " blocks · id=" + c.id }));
+    const flowRaw = [
+      ["ComposedStrategy.on_bar(bar)", "entry / exit sinyalleri her barda değerlendirilir", "#5EA0F6"],
+      ["order_factory.market(...)", "sinyal tetiklenince order oluşturulur", "#5EA0F6"],
+      ["submit_order(order)", "default Risk Engine rotası", "#97A1B5"],
+      ["RiskEngine", "pre-trade validation ✓", "#97A1B5"],
+      ["SimulatedExchange · YAHOO", "venue fill simülasyonu", "#97A1B5"],
+      ["ExecutionEngine", "position tracking → realized PnL", "#2ED47E"],
+    ];
+    const flowSteps = flowRaw.map(([title, sub, c], i) => ({ title, sub, titleColor: c, dot: c, notLast: i < flowRaw.length - 1 }));
+    const runsRows = s.runs.map((r) => ({ time: r.time, name: r.name, pnl: this.fmtMoney(r.pnl), color: r.pnl >= 0 ? "#2ED47E" : "#F25C5C" }));
+
+    const toast = s.toast;
+    const toastErr = toast && toast.kind === "err";
+
+    return {
+      // nav / shell
+      goDash: setPage("dashboard"), goStrat: setPage("strategy"), goBt: setPage("backtest"),
+      navBgDash: nd.bg, navColorDash: nd.color, navShadowDash: nd.shadow,
+      navBgStrat: ns.bg, navColorStrat: ns.color, navShadowStrat: ns.shadow,
+      navBgBt: nb.bg, navColorBt: nb.color, navShadowBt: nb.shadow,
+      isDashboard: s.page === "dashboard", isStrategy: s.page === "strategy", isBacktest: s.page === "backtest",
+      pageTitle: titles[s.page],
+      engineDotColor: s.loopRunning ? "#2ED47E" : "#5C6778",
+      engineStatus: s.loopRunning ? "BacktestEngine · busy" : "BacktestEngine · ready",
+      sparkPath: sc.line, sparkArea: sc.area,
+
+      // dashboard
+      loopMode: s.loopMode, onMode: (e) => this.setState({ loopMode: e.target.value }),
+      loopRunning: s.loopRunning, notRunning: !s.loopRunning,
+      startLoop: () => this.startLoop(), stopLoop: () => this.stopLoop(),
+      startOpacity: s.loopRunning ? 0.35 : 1, stopOpacity: s.loopRunning ? 1 : 0.35,
+      statusText: s.loopRunning ? "RUNNING · " + s.loopStatus : "IDLE",
+      statusColor: s.loopRunning ? "#2ED47E" : "#5C6778",
+      statusBorder: s.loopRunning ? "rgba(46,212,126,.3)" : "#232C3E",
+      statusBg: s.loopRunning ? "rgba(46,212,126,.05)" : "transparent",
+      iterCount: String(s.iterCount),
+      kpis, iterRows, hasIters: s.iterations.length > 0, noIters: s.iterations.length === 0,
+      hasBest: !!best,
+      bestName: best ? best.strat : "", bestParams: best ? best.params : "",
+      bestPnl: best ? this.fmtMoney(best.pnl) : "", bestPnlColor: best && best.pnl >= 0 ? "#2ED47E" : "#F25C5C",
+      bestSharpe: best ? best.sharpe.toFixed(2) : "", bestWr: best ? (best.wr * 100).toFixed(0) + "%" : "",
+      bestDd: best ? this.fmtPct(best.maxDd) : "",
+      bestRationale: best ? "Önceki iterasyonlarda kısa lookback'ler gürültüye takıldı; " + best.strat + " için pencereyi genişletip sinyal onayını bekledim. Sharpe/DD dengesi bu konfigürasyonda en iyi." : "",
+      eqPath: eq.line, eqArea: eq.area,
+      eqYMax: this.fmtK(eq.hi), eqYMid: this.fmtK((eq.hi + eq.lo) / 2), eqYMin: this.fmtK(eq.lo),
+      showDrawdown: this.props.showDrawdown !== false,
+      ddArea: dd.area, ddMinLbl: (dd.min * 100).toFixed(1) + "%",
+
+      // strategy
+      suggest: () => this.suggest(), suggesting: s.suggesting,
+      suggestLabel: s.suggesting ? "Claude düşünüyor…" : "Claude'a önerttir",
+      specName: s.specName, onName: (e) => this.setState({ specName: e.target.value }),
+      tradeSize: s.tradeSize, onTradeSize: (e) => this.setState({ tradeSize: e.target.value }),
+      specDesc: s.specDesc, onDesc: (e) => this.setState({ specDesc: e.target.value }),
+      blockType: s.blockType,
+      onBlockType: (e) => this.setState({ blockType: e.target.value, params: this.defaultParams(e.target.value) }),
+      blockRole: s.blockRole, onRole: (e) => this.setState({ blockRole: e.target.value }),
+      blockOptions, paramFields, blockHelp: meta.help,
+      logicHint: "entry " + s.adv.entry_logic + "-combined · exit " + s.adv.exit_logic + "-combined",
+      addBlock: () => this.addBlock(),
+      draftRows, hasDrafts: s.drafts.length > 0, noDrafts: s.drafts.length === 0,
+      advOpen: s.advOpen, toggleAdv: () => this.setState({ advOpen: !s.advOpen }), advChevron: s.advOpen ? "▲" : "▼",
+      adv: s.adv, advOn: this.advHandlers(),
+      saveStrategy: () => this.saveStrategy(),
+      catalogRows, hasCatalog: s.catalog.length > 0, noCatalog: s.catalog.length === 0,
+      entryChips, exitChips,
+      hasEntryChips: entryChips.length > 0, noEntryChips: entryChips.length === 0,
+      hasExitChips: exitChips.length > 0, noExitChips: exitChips.length === 0,
+      exitFallback: s.adv.use_bracket ? "bracket SL/TP devrede" : "exit bloğu yok — pozisyon açık kalır",
+      entryLogicLbl: s.adv.entry_logic, exitLogicLbl: s.adv.exit_logic,
+      orderSummary, sizingSummary: sizingMap[s.adv.trade_size_mode],
+      selBlockLabel: meta.label, selBlockParams,
+      customOpen: s.customOpen, toggleCustom: () => this.setState({ customOpen: !s.customOpen }), customChevron: s.customOpen ? "▲" : "▼",
+      customLabel: s.customLabel, onCustomLabel: (e) => this.setState({ customLabel: e.target.value }),
+      customDesc: s.customDesc, onCustomDesc: (e) => this.setState({ customDesc: e.target.value }),
+      customGenerate: () => this.customGenerate(), customGenerating: s.customGenerating,
+      customBtnLabel: s.customGenerating ? "Claude düşünüyor…" : "Claude'a yazdır",
+      hasGenerated: !!s.generated,
+      genName: s.generated ? s.generated.name + ".py" : "", genCode: s.generated ? s.generated.code : "",
+      saveCustom: () => this.saveCustom(),
+      customRows, hasCustom: s.customBlocks.length > 0,
+
+      // backtest
+      btSpecId: s.btSpecId, onBtSpec: (e) => this.setState({ btSpecId: e.target.value }),
+      btKind: s.btKind, onBtKind: (e) => this.setState({ btKind: e.target.value }),
+      isIndexKind: s.btKind === "Index",
+      specOptions,
+      runBt: () => this.runBt(), btRunning: s.btRunning, btIdle: !s.btRunning,
+      btBtnLabel: s.btRunning ? "running BacktestEngine…" : "Run Backtest",
+      hasResult: !!res && !s.btRunning,
+      btName: res.name, btKpis,
+      btEqPath: btEq.line, btEqArea: btEq.area,
+      btYMax: this.fmtK(btEq.hi), btYMid: this.fmtK((btEq.hi + btEq.lo) / 2), btYMin: this.fmtK(btEq.lo),
+      btDdArea: btDd.area, btDdMin: (btDd.min * 100).toFixed(1) + "%",
+      monthLabels: ["J", "F", "M", "A", "M", "J", "J", "A", "S", "O", "N", "D"],
+      hmRows: res.hm,
+      flowSteps, runsRows, hasRuns: s.runs.length > 0, noRuns: s.runs.length === 0,
+
+      // toast
+      toastVisible: !!toast,
+      toastText: toast ? toast.text : "",
+      toastBorder: toastErr ? "rgba(242,92,92,.4)" : "rgba(46,212,126,.4)",
+      toastColor: toastErr ? "#F25C5C" : "#2ED47E",
+      toastIcon: toastErr ? "✗" : "✓",
+    };
+  }
+}
+</script>
+</body>
+</html>

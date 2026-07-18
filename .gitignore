@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtualenv
+.venv/
+venv/
+env/
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Secrets & local env
+.env
+.env.*
+
+# Local caches produced at runtime
+*.log
+.nautilus_proxy_key
+
+# Claude Code — personal permission settings (project settings.json is tracked)
+.claude/settings.local.json
+
+# Design source archives (extracted content lives in design_handoff_nautilus_lab/)
+*.zip

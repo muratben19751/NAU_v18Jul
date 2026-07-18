@@ -1,0 +1,172 @@
+{# Custom block generation preview — shown after Claude produces a proposal. #}
+{% if error %}
+  <div class="panel" style="border-color: rgba(239,68,68,0.5); margin-top:8px;">
+    <div class="panel-body">
+      <span class="badge exit">✗ HATA</span>
+      <span class="text-muted" style="margin-left:8px;">{{ error }}</span>
+    </div>
+  </div>
+{% elif proposal %}
+  <div class="panel" style="border-color: rgba(34,197,94,0.35); margin-top:8px;">
+    <div class="panel-header">
+      <div class="panel-title">ÖNİZLEME · <span class="mono">{{ proposal.name }}</span></div>
+    </div>
+    <div class="panel-body stack" style="gap:12px;">
+
+      {# Meta #}
+      <div>
+        <div class="section-title" style="margin:0 0 4px;">META</div>
+        <div class="text-muted mono" style="font-size:11px;">label: {{ proposal.meta.label }}</div>
+        <div class="text-muted" style="font-size:12px; margin-top:4px;">{{ proposal.meta.help }}</div>
+      </div>
+
+      {# Params #}
+      <div>
+        <div class="section-title" style="margin:0 0 4px;">PARAMS</div>
+        {% if proposal.meta.params %}
+          <ul class="mono" style="font-size:11px; padding-left:16px; margin:0;">
+            {% for pname, pspec in proposal.meta.params.items() %}
+              <li>
+                <b>{{ pname }}</b>:
+                {% if pspec.type == "enum" %}enum {{ pspec.options }} (default {{ pspec.default }})
+                {% else %}{{ pspec.type }} [{{ pspec.min }}..{{ pspec.max }}] (default {{ pspec.default }}){% endif %}
+              </li>
+            {% endfor %}
+          </ul>
+        {% else %}
+          <div class="text-muted" style="font-size:11px;">(parametre yok)</div>
+        {% endif %}
+      </div>
+
+      {# Code + Signal chart side by side #}
+      <div style="display:grid; grid-template-columns:1fr 1fr; gap:14px; align-items:start;">
+
+        {# Code panel #}
+        <div>
+          <div class="section-title" style="margin:0 0 4px;">KOD</div>
+          <pre class="mono" style="background:rgba(0,0,0,0.3); padding:10px 12px; border-radius:6px;
+               overflow-x:auto; font-size:10.5px; margin:0; max-height:320px;
+               border:1px solid var(--border); line-height:1.55;">{{ proposal.code }}</pre>
+        </div>
+
+        {# Signal chart #}
+        <div>
+          <div class="section-title" style="margin:0 0 4px;">SİNYAL ÖNİZLEMESİ · BTC 1m (son 150 bar)</div>
+          {% if chart_data and chart_data.closes %}
+            <div style="position:relative; height:280px; background:var(--bg-950);
+                        border:1px solid var(--border); border-radius:6px; padding:4px;">
+              <canvas id="signal-preview-canvas"></canvas>
+            </div>
+            <div style="font-size:10px; color:var(--text-muted); margin-top:5px; font-family:var(--mono);">
+              <span style="color:#22c55e;">▲ long</span> &nbsp;
+              <span style="color:#ef4444;">▼ short</span> &nbsp;
+              <span style="color:#f59e0b;">● exit</span>
+            </div>
+            <script>
+            (function() {
+              const closes  = {{ chart_data.closes|tojson }};
+              const dates   = {{ chart_data.dates|tojson }};
+              const signals = {{ chart_data.signals|tojson }};
+
+              // Build annotation points
+              const longPts  = closes.map((v,i) => signals[i] && signals[i].sig === 'long'  ? v : null);
+              const shortPts = closes.map((v,i) => signals[i] && signals[i].sig === 'short' ? v : null);
+              const exitPts  = closes.map((v,i) => signals[i] && signals[i].sig === 'exit'  ? v : null);
+
+              if (window.__sigChart && typeof window.__sigChart.destroy === 'function') {
+                window.__sigChart.destroy();
+              }
+
+              const ctx = document.getElementById('signal-preview-canvas');
+              window.__sigChart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                  labels: dates,
+                  datasets: [
+                    {
+                      label: 'Close', data: closes,
+                      borderColor: '#60a5fa', borderWidth: 1.5,
+                      backgroundColor: 'rgba(96,165,250,0.05)',
+                      fill: true, pointRadius: 0, tension: 0.1, order: 3,
+                    },
+                    {
+                      label: 'Long', data: longPts, type: 'scatter',
+                      backgroundColor: '#22c55e', pointRadius: 5,
+                      pointStyle: 'triangle', rotation: 0, order: 1,
+                    },
+                    {
+                      label: 'Short', data: shortPts, type: 'scatter',
+                      backgroundColor: '#ef4444', pointRadius: 5,
+                      pointStyle: 'triangle', rotation: 180, order: 1,
+                    },
+                    {
+                      label: 'Exit', data: exitPts, type: 'scatter',
+                      backgroundColor: '#f59e0b', pointRadius: 4,
+                      pointStyle: 'circle', order: 2,
+                    },
+                  ]
+                },
+                options: {
+                  responsive: true, maintainAspectRatio: false,
+                  animation: false,
+                  plugins: {
+                    legend: { display: false },
+                    tooltip: {
+                      callbacks: {
+                        title: (items) => items[0].label || '',
+                        label: (c) => {
+                          if (c.dataset.label === 'Close') return '$' + c.parsed.y.toLocaleString();
+                          return c.dataset.label + ' signal';
+                        },
+                      },
+                      backgroundColor: '#0a0e17', borderColor: '#1a2332', borderWidth: 1,
+                      titleFont: { family: 'JetBrains Mono', size: 10 },
+                      bodyFont:  { family: 'JetBrains Mono', size: 11 },
+                    },
+                  },
+                  scales: {
+                    x: {
+                      display: true,
+                      ticks: {
+                        color: '#6b7280', font: { family: 'JetBrains Mono', size: 9 },
+                        maxTicksLimit: 6, maxRotation: 0, autoSkip: true,
+                      },
+                      grid: { color: '#1a2332' },
+                    },
+                    y: {
+                      ticks: {
+                        color: '#6b7280', font: { family: 'JetBrains Mono', size: 9 },
+                        callback: v => '$' + (v/1000).toFixed(0) + 'k',
+                      },
+                      grid: { color: '#1a2332' },
+                    },
+                  },
+                },
+              });
+            })();
+            </script>
+          {% else %}
+            <div style="height:100px; display:flex; align-items:center; justify-content:center;
+                        color:var(--text-muted); font-size:12px; border:1px solid var(--border);
+                        border-radius:6px; background:var(--bg-950);">
+              BTC 1m verisi bulunamadı (önce Data ekranından fetch edin)
+            </div>
+          {% endif %}
+        </div>
+
+      </div>
+
+      {# Save form #}
+      <form hx-post="/strategy/blocks/save-custom" hx-swap="none" class="row" style="gap:8px;">
+        <input type="hidden" name="name" value="{{ proposal.name }}">
+        <textarea name="meta_json" hidden>{{ proposal.meta|tojson }}</textarea>
+        <textarea name="code" hidden>{{ proposal.code }}</textarea>
+        <textarea name="prompt" hidden>{{ description }}</textarea>
+        <button class="btn btn-primary" type="submit">💾 Kaydet ve Kullan</button>
+        <button class="btn" type="button"
+                onclick="document.getElementById('custom-generated').innerHTML=''">İptal</button>
+      </form>
+
+    </div>
+  </div>
+{% endif %}

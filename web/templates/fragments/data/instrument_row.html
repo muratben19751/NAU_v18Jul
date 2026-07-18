@@ -1,0 +1,152 @@
+{# Instrument row card — used by Bybit and US-Index.
+   The shape switches on `row.source`:
+     - index → simple list of bar_types
+     - bybit → grid grouped by category
+#}
+<div class="instrument-row"
+     id="row-{{ row.source }}-{{ row.key|replace(':', '_')|replace('/', '_') }}">
+
+  <div class="instrument-head">
+    <div class="instrument-id-block">
+      <span class="badge role">{{ row.asset_class }}</span>
+      <span class="mono instrument-id">{{ row.instrument_id }}</span>
+      {% if row.base_currency %}
+        <span class="small text-muted">{{ row.base_currency }} / {{ row.quote_currency }}</span>
+      {% else %}
+        <span class="small text-muted">{{ row.quote_currency }}</span>
+      {% endif %}
+    </div>
+
+    <div class="instrument-precision">
+      <span class="chip">price_precision {{ row.price_precision }}</span>
+      <span class="chip {% if row.size_precision == 0 %}chip-warn{% endif %}">
+        size_precision {{ row.size_precision }}
+      </span>
+      <span class="chip">price_increment {{ row.price_increment }}</span>
+      {% if row.min_quantity %}
+        <span class="chip">min_qty {{ row.min_quantity }}</span>
+      {% endif %}
+    </div>
+  </div>
+
+  {% if row.warnings %}
+    {% for w in row.warnings %}
+      <div class="warning-strip">
+        ⚠ {{ w.text }}
+        <a href="/wiki/slug/{{ w.slug }}" class="link small">📖 {{ w.slug }}</a>
+      </div>
+    {% endfor %}
+  {% endif %}
+
+  {# ─── Bybit grid ─── #}
+  {% if row.source == 'bybit' %}
+    <div class="bybit-grid">
+      {# Build category → intervals map from row.bar_types #}
+      {% set by_cat = {} %}
+      {% for bt in row.bar_types %}
+        {% set _ = by_cat.setdefault(bt.category, []).append(bt) %}
+      {% endfor %}
+
+      {% for cat, cells in by_cat.items() %}
+        <div class="bybit-cat">
+          <div class="bybit-cat-label">{{ cat }}</div>
+          <div class="bybit-cells">
+            {% for cell in cells %}
+              <form class="bybit-cell state-{{ cell.state }} {% if not cell.supported %}unsupported{% endif %}"
+                    hx-post="/data/refresh/bybit"
+                    hx-target="#row-{{ row.source }}-{{ row.key }}"
+                    hx-swap="outerHTML"
+                    {% if not cell.supported %}onsubmit="return false;"{% endif %}>
+                <input type="hidden" name="symbol" value="{{ row.key }}">
+                <input type="hidden" name="category" value="{{ cat }}">
+                <input type="hidden" name="interval" value="{{ cell.interval_code }}">
+                <button type="submit" class="cell-btn" {% if not cell.supported %}disabled{% endif %}>
+                  <div class="cell-label mono">{{ cell.interval_label }}</div>
+                  {% if cell.state == 'ingested' %}
+                    <div class="cell-state good">
+                      <span class="mono">{{ "{:,}".format(cell.rows) }}</span> bars
+                    </div>
+                    <div class="cell-last small mono text-muted">
+                      {{ cell.last[:16] if cell.last else '—' }}
+                    </div>
+                    {% if cell.in_nautilus_catalog %}
+                      <div class="cell-catalog-badge">✓ catalog</div>
+                    {% endif %}
+                  {% elif cell.state == 'available' %}
+                    <div class="cell-state small text-muted">Fetch</div>
+                  {% else %}
+                    <div class="cell-state small text-muted">n/a</div>
+                  {% endif %}
+                </button>
+              </form>
+              {# "→ Catalog" write button — only shown for ingested cells #}
+              {% if cell.state == 'ingested' and not cell.in_nautilus_catalog %}
+                <form hx-post="/data/catalog/write"
+                      hx-target="#row-{{ row.source }}-{{ row.key }}"
+                      hx-swap="outerHTML"
+                      hx-on::after-request="if(event.detail.successful){this.closest('.bybit-cell-wrap')?.remove()}"
+                      style="margin-top:4px;">
+                  <input type="hidden" name="source" value="{{ row.source }}">
+                  <input type="hidden" name="symbol" value="{{ row.key }}">
+                  <input type="hidden" name="category" value="{{ cat }}">
+                  <input type="hidden" name="interval" value="{{ cell.interval_code }}">
+                  <button type="submit" class="btn btn-secondary" style="width:100%;font-size:10px;padding:3px 6px;">
+                    → Catalog
+                  </button>
+                </form>
+              {% endif %}
+            {% endfor %}
+          </div>
+        </div>
+      {% endfor %}
+    </div>
+
+  {# ─── Index bar list ─── #}
+  {% else %}
+    <div class="bar-list">
+      {% for bt in row.bar_types %}
+        <div class="bar-row state-{{ bt.state }}">
+          <div class="bar-dsl mono">{{ bt.dsl }}</div>
+          <div class="bar-stats">
+            {% if bt.state == 'ingested' %}
+              <span class="chip chip-good">ingested</span>
+              <span class="small mono">{{ "{:,}".format(bt.rows) }} rows</span>
+              {% if bt.first and bt.last %}
+                <span class="small text-muted mono">{{ bt.first[:10] }} → {{ bt.last[:10] }}</span>
+              {% endif %}
+              {% if bt.in_nautilus_catalog %}
+                <span class="chip chip-good">✓ catalog {{ "{:,}".format(bt.catalog_rows) }} bars</span>
+              {% endif %}
+            {% else %}
+              <span class="chip">{{ bt.state }}</span>
+            {% endif %}
+          </div>
+          <div class="bar-actions" style="display:flex;gap:6px;flex-wrap:wrap;">
+            {% if row.source == 'index' %}
+              <form class="row" style="gap:6px;"
+                    hx-post="/data/refresh/index"
+                    hx-target="#row-{{ row.source }}-{{ row.key|replace(':','_') }}"
+                    hx-swap="outerHTML">
+                <input type="hidden" name="ticker" value="{{ row.key }}">
+                <input type="hidden" name="granularity" value="{{ bt.granularity }}">
+                <button type="submit" class="btn btn-secondary">
+                  {% if bt.state == 'ingested' %}⟳{% else %}Fetch{% endif %} {{ bt.granularity }}
+                </button>
+              </form>
+              {% if bt.state == 'ingested' %}
+                <form hx-post="/data/catalog/write"
+                      hx-target="#row-{{ row.source }}-{{ row.key|replace(':','_') }}"
+                      hx-swap="outerHTML">
+                  <input type="hidden" name="source" value="index">
+                  <input type="hidden" name="ticker" value="{{ row.key }}">
+                  <input type="hidden" name="granularity" value="{{ bt.granularity }}">
+                  <button type="submit" class="btn btn-secondary">→ Catalog</button>
+                </form>
+              {% endif %}
+            {% endif %}
+          </div>
+        </div>
+      {% endfor %}
+    </div>
+  {% endif %}
+</div>

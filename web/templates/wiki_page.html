@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel">
+  <div class="panel-header">
+    <div class="panel-title">{{ wiki_title }}</div>
+    <div class="panel-meta">
+      <span class="mono small">{{ wiki_active }}</span>
+      &nbsp;·&nbsp;
+      <a href="/wiki" class="link small">← Index</a>
+    </div>
+  </div>
+  <div class="panel-body">
+    <article class="wiki-page prose">{{ wiki_html|safe }}</article>
+  </div>
+</div>
+{% endblock %}

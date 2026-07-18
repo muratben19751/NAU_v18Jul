@@ -1,0 +1,6 @@
+{% if running %}
+<span class="badge running"><span class="dot"></span>RUNNING · {{ status }}</span>
+{% else %}
+<span class="badge idle">◦ {{ status }}</span>
+{% endif %}
+<span class="text-muted text-mono" style="margin-left:8px;">iter #{{ iter_count }}</span>

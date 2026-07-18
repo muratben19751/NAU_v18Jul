@@ -1,0 +1,25 @@
+{# Dynamic parameter inputs for a given block type. Rendered on <select> change.
+   Optional: pass prefill=dict to override default values. #}
+<div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(160px, 1fr));gap:12px;">
+  {% for pname, pspec in meta.params.items() %}
+    {% set val = prefill[pname] if prefill is defined and pname in prefill else pspec.default %}
+    <label class="field">{{ pname }}
+      {% if pspec.type == "int" %}
+        <input type="number" name="p_{{ pname }}"
+               value="{{ val }}"
+               min="{{ pspec.min }}" max="{{ pspec.max }}" step="1">
+      {% elif pspec.type == "float" %}
+        <input type="number" name="p_{{ pname }}"
+               value="{{ val }}"
+               min="{{ pspec.min }}" max="{{ pspec.max }}" step="0.1">
+      {% elif pspec.type == "enum" %}
+        <select name="p_{{ pname }}">
+          {% for opt in pspec.options %}
+            <option value="{{ opt }}" {% if opt == val %}selected{% endif %}>{{ opt }}</option>
+          {% endfor %}
+        </select>
+      {% endif %}
+    </label>
+  {% endfor %}
+</div>
+<div class="text-muted mt-3" style="font-size:12px;">{{ meta.help }}</div>

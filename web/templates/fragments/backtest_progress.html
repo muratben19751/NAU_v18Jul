@@ -1,0 +1,44 @@
+{# Real-time backtest progress panel.
+   Polls /backtest/progress/{run_id} every second; when done the server
+   returns the final backtest_result.html fragment instead of this one,
+   so the auto-refresh naturally replaces itself with the result.
+#}
+<div id="progress-panel"
+     {% if not done %}
+     hx-get="/backtest/progress/{{ run_id }}"
+     hx-trigger="every 1s"
+     hx-target="#result"
+     hx-swap="innerHTML"
+     {% endif %}>
+
+  <div class="panel" style="border-color: rgba(255,255,255,0.25);">
+    <div class="panel-header">
+      <div class="panel-title" style="display:flex;align-items:center;gap:10px;">
+        Backtest çalışıyor
+        {% if not done %}<span class="dot"></span>{% endif %}
+      </div>
+    </div>
+    <div class="panel-body">
+
+      <div class="progress-steps">
+        {% for step in steps %}
+          <div class="step-row done">
+            <span class="step-ts mono">{{ step.ts }}</span>
+            <span class="step-tick">✓</span>
+            <span class="step-msg">{{ step.msg }}</span>
+          </div>
+        {% endfor %}
+
+        {% if not done %}
+          <div class="step-row pending">
+            <span class="step-ts mono"></span>
+            <span class="step-tick">⟳</span>
+            <span class="step-msg text-muted">Devam ediyor…</span>
+          </div>
+        {% endif %}
+      </div>
+
+    </div>
+  </div>
+
+</div>

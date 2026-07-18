@@ -1,0 +1,34 @@
+{% if catalog %}
+<table class="data">
+  <thead>
+    <tr>
+      <th>Name</th>
+      <th class="num">Blocks</th>
+      <th>Trade size</th>
+      <th>Created</th>
+      <th style="width:44px;"></th>
+    </tr>
+  </thead>
+  <tbody>
+  {% for s in catalog %}
+    <tr>
+      <td>
+        <div class="mono" style="color:var(--accent);">{{ s.name }}</div>
+        <div class="text-muted mono" style="font-size:11px;">id={{ s.id }}{% if s.description %} · {{ s.description[:60] }}{% endif %}</div>
+      </td>
+      <td class="num">{{ s.blocks|length }}</td>
+      <td class="mono" style="font-size:12px;">{{ s.trade_size }} BTC</td>
+      <td class="text-muted mono" style="font-size:11px;">{{ s.created_at[:16] }}</td>
+      <td>
+        <button class="btn btn-icon" hx-delete="/strategy/{{ s.id }}" hx-target="#catalog" hx-swap="innerHTML"
+                hx-confirm="Delete '{{ s.name }}'?">🗑</button>
+      </td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<div class="empty-state">
+  No saved strategies yet.
+</div>
+{% endif %}

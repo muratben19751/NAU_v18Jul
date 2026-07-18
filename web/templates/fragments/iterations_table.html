@@ -1,0 +1,44 @@
+{% if rows %}
+<div style="max-height: 520px; overflow-y:auto;">
+  <table class="data">
+    <thead>
+      <tr>
+        <th style="width:44px;">#</th>
+        <th>Strategy</th>
+        <th class="num">PnL</th>
+        <th class="num">Sharpe</th>
+        <th class="num">Trades</th>
+        <th class="num">Win Rate</th>
+        <th class="num">Max Drawdown</th>
+        <th>Time</th>
+      </tr>
+    </thead>
+    <tbody>
+    {% for r in rows %}
+      <tr>
+        <td class="muted mono">{{ r.id }}</td>
+        <td>
+          <div class="strat">{{ r.strategy }}</div>
+          {% if r.error %}
+            <div class="text-muted" style="font-size:11px;color:#f87171;">{{ r.error[:80] }}</div>
+          {% else %}
+            <div class="text-muted mono" style="font-size:11px;">{{ r.params }}</div>
+          {% endif %}
+        </td>
+        <td class="num {{ r.pnl_dir }}">{{ r.pnl_fmt }}</td>
+        <td class="num">{{ r.sharpe_fmt }}</td>
+        <td class="num">{{ r.n_trades if r.n_trades is not none else "—" }}</td>
+        <td class="num">{{ r.win_rate_fmt }}</td>
+        <td class="num down">{{ r.max_dd_fmt }}</td>
+        <td class="text-muted mono">{{ r.timestamp }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% else %}
+<div class="empty-state">
+  No iterations yet.<br>
+  <span style="font-size:11px;">Choose a mode and press <b>Start</b>.</span>
+</div>
+{% endif %}

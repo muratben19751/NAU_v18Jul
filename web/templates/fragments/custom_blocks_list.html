@@ -1,0 +1,21 @@
+{# Compact list of saved custom blocks (with delete button). #}
+{% if custom_blocks %}
+  <div class="stack" style="gap:6px;">
+    {% for cb in custom_blocks %}
+      <div class="row" style="gap:8px; align-items:center; padding:6px 8px; background:rgba(255,255,255,0.03); border-radius:6px;">
+        <div style="flex:1;">
+          <div class="mono" style="font-size:12px;"><b>{{ cb.name }}</b> · <span class="text-muted">{{ cb.meta.label }}</span></div>
+          <div class="text-muted" style="font-size:11px;">{{ cb.meta.help }}</div>
+        </div>
+        <button class="btn btn-ghost"
+                hx-delete="/strategy/blocks/custom/{{ cb.name }}"
+                hx-target="#custom-blocks-list"
+                hx-swap="innerHTML"
+                hx-confirm="Bu bloğu silmek istediğinize emin misiniz? ({{ cb.name }})"
+                style="font-size:11px;">🗑 Sil</button>
+      </div>
+    {% endfor %}
+  </div>
+{% else %}
+  <div class="text-muted" style="font-size:12px;">Henüz custom blok yok. Yukarıdan Claude'a bir tane yazdırın.</div>
+{% endif %}
