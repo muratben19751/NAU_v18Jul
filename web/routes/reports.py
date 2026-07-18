@@ -26,8 +26,11 @@ from web.viewmodels import fmt_dur, fmt_money, fmt_num, fmt_pct
 
 router = APIRouter(prefix="/reports")
 
-BACKTEST_LOG = Path.home() / ".cache" / "nautilus_web_app" / "backtest_log.jsonl"
-ROBUSTNESS_LOG = Path.home() / ".cache" / "nautilus_web_app" / "robustness_log.jsonl"
+# Log paths come from web.shared (single source of truth; they were duplicated
+# with the writer modules). reports.py reads these via its own module globals,
+# so tests can still monkeypatch reports.BACKTEST_LOG / .ROBUSTNESS_LOG.
+from web.shared import BACKTEST_LOG, ROBUSTNESS_LOG  # noqa: E402
+
 REPORTS_LAYOUT = Path.home() / ".cache" / "nautilus_web_app" / "reports_layout.json"
 
 
@@ -614,7 +617,7 @@ async def detail(request: Request, ts: str):
         and abs(float(old_pnl) - float(new_pnl)) < 0.01
     )
 
-    from web.routes.backtest import _chart_url
+    from web.shared import chart_url as _chart_url
 
     chart_url = _chart_url(result.bars_info or bi, spec.id)
     # _chart_url uzun aralıkta TF'i otomatik büyütür (örn. 6y → D) —

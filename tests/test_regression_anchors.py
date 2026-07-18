@@ -37,6 +37,21 @@ class TestCodegateRejectionMatrix:
             (_ev("return eval('1')"), "disallowed function: eval"),
             (_ev("return exec('x')"), "disallowed function: exec"),
             (_ev("return __import__('os')"), "disallowed function: __import__"),
+            # M#1: subscript/dict/call-chain callees bypassed the direct-Name
+            # gate (`[exec][0](...)` fell into `else: pass`). Now denied.
+            (_ev("return [exec][0]('x')"), "non-name callee"),
+            (_ev("return [open][0]('f')"), "non-name callee"),
+            (_ev("return [getattr][0](block, 'x')"), "non-name callee"),
+            # M#1: a dangerous builtin passed as an arg to an allowed callee
+            # (`sorted(..., key=eval)`) or aliased (`f = eval; f(...)`) is now
+            # rejected at the reference site, not just at a direct call.
+            (_ev("return sorted(closes, key=eval)"), "reference to disallowed builtin"),
+            (
+                "def evaluate(state, block, closes, indicators, portfolio):\n"
+                "    f = eval\n"
+                "    return f('1')",
+                "reference to disallowed builtin",
+            ),
             (_ev("return closes.system"), "attribute not in whitelist"),
             (_ev("return __x"), "leading underscore"),
             (
@@ -74,6 +89,18 @@ class TestCodegateRejectionMatrix:
                 _ev("return ().__class__.__bases__[0].__subclasses__()")
             )
 
+    def test_legit_block_with_subscript_indexing_and_builtins_passes(self):
+        # Tightening the callee/reference checks must NOT reject normal blocks:
+        # subscript INDEXING (closes[-1]) is a Load, not a Call callee, and the
+        # builtins used here are all whitelisted.
+        from codegate import validate_generated_code
+
+        src = _ev(
+            "return closes[-1] > (sum(closes) / len(closes)) "
+            "if len(closes) > 0 else None"
+        )
+        validate_generated_code(src)  # must not raise
+
     def test_valid_block_passes(self):
         # Pozitif kontrol: whitelist içi kod (builtin + ind.* + container ops)
         # AST döndürmeli — red-matrisinin fazla-geniş olmadığının kanıtı.
@@ -86,6 +113,55 @@ class TestCodegateRejectionMatrix:
             "    return closes[-1] > sum(closes) / n and fast > 0\n"
         )
         assert isinstance(validate_generated_code(src), ast.Module)
+
+
+# ---------------------------------------------------------------------------
+# #3 (security) — data._bybit_cache_path path-traversal
+# /lab, /backtest, /robustness pass RAW form symbol/category/interval to the
+# cache-path builder (unlike /data, which whitelists). Windows `\` was not
+# sanitized, so "..\..\evil" created dirs/lockfiles/parquet OUTSIDE the cache
+# root. A crafted value must now stay inside BYBIT_CACHE_DIR or raise.
+# ---------------------------------------------------------------------------
+class TestBybitCachePathTraversal:
+    def test_legit_paths_unchanged(self):
+        from data import BYBIT_CACHE_DIR, _bybit_cache_path
+
+        p = _bybit_cache_path("linear", "BTCUSDT", "1")
+        assert p == BYBIT_CACHE_DIR / "linear_BTCUSDT_1m.parquet"
+        assert (
+            _bybit_cache_path("spot", "ETHUSDT", "D").name == "spot_ETHUSDT_1d.parquet"
+        )
+        # historical "/"->"_" behaviour preserved
+        assert (
+            _bybit_cache_path("linear", "BTC/USDT", "1").name
+            == "linear_BTC_USDT_1m.parquet"
+        )
+
+    @pytest.mark.parametrize(
+        "bad_symbol",
+        ["..\\..\\..\\evil", "../../../../etc/passwd", "a/../../b", "....//x"],
+    )
+    def test_traversal_symbol_stays_inside_cache_dir(self, bad_symbol):
+        from data import BYBIT_CACHE_DIR, _bybit_cache_path
+
+        p = _bybit_cache_path("linear", bad_symbol, "1")
+        assert p.parent == BYBIT_CACHE_DIR  # no directory component escapes
+        assert ".." not in p.parts
+
+    @pytest.mark.parametrize(
+        "category, symbol, interval",
+        [
+            ("../evil", "BTCUSDT", "1"),  # category not in the closed set
+            ("linear", "BTCUSDT", "../x"),  # interval not in the closed set
+            ("linear", "....", "1"),  # symbol collapses to all-underscore
+            ("linear", "///", "1"),
+        ],
+    )
+    def test_invalid_components_raise(self, category, symbol, interval):
+        from data import _bybit_cache_path
+
+        with pytest.raises(ValueError):
+            _bybit_cache_path(category, symbol, interval)
 
 
 # ---------------------------------------------------------------------------

@@ -222,6 +222,28 @@ def has_builtin(name: str) -> bool:
     return hasattr(builtins, name)
 
 
+def safe_builtins() -> dict:
+    """Restricted ``__builtins__`` mapping for exec'ing validated block code.
+
+    Exposes ONLY the whitelisted builtins, plus ``RuntimeError`` (the injected
+    loop-budget guard raises it). Both the generation-time smoke test and the
+    on-disk loader use this so a codegate miss can't reach
+    ``eval``/``exec``/``open``/``getattr`` at runtime — the process boundary is
+    not a security sandbox, so the language-level restriction has to hold.
+    Dunder attribute access is already rejected at the AST level, so exposing
+    ``RuntimeError`` does not enable the ``RuntimeError.__subclasses__()`` escape.
+    """
+    import builtins
+
+    d = {
+        name: getattr(builtins, name)
+        for name in _ALLOWED_BUILTINS
+        if hasattr(builtins, name)
+    }
+    d["RuntimeError"] = builtins.RuntimeError
+    return d
+
+
 def validate_generated_code(src: str) -> ast.Module:
     """Parse ``src`` and enforce the whitelist. Returns the AST on success.
 
@@ -264,6 +286,15 @@ def validate_generated_code(src: str) -> ast.Module:
                 raise GeneratedCodeError(
                     f"disallowed name (leading underscore): {node.id}"
                 )
+            # Reject any REFERENCE to a non-whitelisted builtin, not just a
+            # direct call. Closes the escapes where a dangerous builtin
+            # (eval/exec/open/getattr/compile/globals/…) is *named* without being
+            # a direct `Name` callee: `[exec][0](...)`, `sorted(data, key=eval)`,
+            # `x = eval` then `x(...)`. Whitelisted builtins, allowed module names
+            # (math/statistics/ind), helper functions and locals are non-builtins
+            # or in the whitelist, so they pass through untouched.
+            if node.id not in _ALLOWED_BUILTINS and has_builtin(node.id):
+                raise GeneratedCodeError(f"reference to disallowed builtin: {node.id}")
         if isinstance(node, ast.arg):
             if node.arg.startswith("_"):
                 raise GeneratedCodeError(
@@ -284,12 +315,17 @@ def validate_generated_code(src: str) -> ast.Module:
                     raise GeneratedCodeError(f"call to disallowed function: {fn.id}()")
             elif isinstance(fn, ast.Attribute):
                 # e.g. math.sqrt(x) or closes.append(x) — the outer walk already
-                # validates the .attr; the base must be a whitelisted module or a
-                # known local name (parameter/local). Attribute filter handles the rest.
+                # validates the .attr against `_ALLOWED_ATTRS` (and rejects any
+                # dunder), and the base object can't be a dangerous builtin
+                # because bare-Name references to those are now rejected above.
                 pass
             else:
-                # e.g. func()() or subscript(...)() — allow, subject to inner checks
-                pass
+                # Callee is a Subscript/Call/etc. — e.g. `[exec][0](...)`,
+                # `{0: eval}[0](...)`, `factory()()`. The resolved callable can't
+                # be whitelisted statically, so deny outright.
+                raise GeneratedCodeError(
+                    f"call with non-name callee not allowed: {type(fn).__name__}"
+                )
     return tree
 
 

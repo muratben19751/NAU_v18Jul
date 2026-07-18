@@ -10,11 +10,9 @@ Bkz: [[backtesting_guide]], [[environment_contexts]]
 from __future__ import annotations
 
 import json
-import math
 import threading
 import uuid
 from datetime import UTC, date, datetime
-from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, Form, Request
@@ -47,6 +45,11 @@ except Exception:  # pragma: no cover
 
 router = APIRouter(prefix="/backtest")
 
+# Leaf shared module — keeps the route→shared dependency arrow one-directional.
+from web.shared import BACKTEST_LOG, ProgressStore  # noqa: E402
+from web.shared import chart_url as _chart_url  # noqa: E402
+from web.shared import log_backtest as _log_backtest  # noqa: E402
+
 _LAST_RESULT: dict[str, Optional] = {
     "r": None,
     "spec_name": None,
@@ -56,17 +59,19 @@ _LAST_RESULT: dict[str, Optional] = {
 _LAST_RESULT_LOCK = threading.Lock()
 
 # Progress store: run_id → {steps, done, result, error, spec_name}
-# A lock prevents torn reads between the worker thread and the async handler.
-_RUN_PROGRESS: dict[str, dict] = {}
-_RUN_PROGRESS_LOCK = threading.Lock()
-_MAX_RUN_PROGRESS_ENTRIES = 50  # evict oldest when exceeded
+# ProgressStore holds the dict + lock + capped done-first eviction; the
+# _RUN_PROGRESS / _RUN_PROGRESS_LOCK aliases keep every existing direct-access
+# site (worker thread ↔ async handler) unchanged.
+_RUN_STORE = ProgressStore(50)
+_RUN_PROGRESS = _RUN_STORE.raw()
+_RUN_PROGRESS_LOCK = _RUN_STORE.lock
 
 # Açıklamadan-strateji üretimi (Claude → custom Python blok). Ayrı store: üretim
 # backtest'ten ÖNCE gelen, LLM-bağımlı ve yavaş bir faz; bittiğinde fragment
 # mevcut /backtest/run'a zincirlenir (280 satırlık run worker'ı değişmez).
-_GEN_PROGRESS: dict[str, dict] = {}
-_GEN_LOCK = threading.Lock()
-_MAX_GEN_PROGRESS_ENTRIES = 20
+_GEN_STORE = ProgressStore(20)
+_GEN_PROGRESS = _GEN_STORE.raw()
+_GEN_LOCK = _GEN_STORE.lock
 
 _GEN_PHASES = [
     "Koşullar ayrıştırılıyor",
@@ -79,140 +84,19 @@ _GEN_MAX_BLOCKS = 5  # runaway breakdown'a karşı (5 koşul = 5 LLM çağrısı
 # Çoklu-TF taraması: aynı stratejiyi birden çok bar aralığında AYRI koşup
 # karşılaştır (robustness'taki multi-symbol taramasının TF versiyonu). Ayrı
 # store; her interval sırayla _worker'da koşar, panel canlı doldurulur.
-_SWEEP_PROGRESS: dict[str, dict] = {}
-_SWEEP_LOCK = threading.Lock()
-_MAX_SWEEP_ENTRIES = 20
+_SWEEP_STORE = ProgressStore(20)
+_SWEEP_PROGRESS = _SWEEP_STORE.raw()
+_SWEEP_LOCK = _SWEEP_STORE.lock
 
-BACKTEST_LOG = Path.home() / ".cache" / "nautilus_web_app" / "backtest_log.jsonl"
-_BACKTEST_LOG_LOCK = threading.Lock()
+# Perf: a blank date range used to default to the ENTIRE cache (1M+ 1m bars →
+# the backtest blows past the sandbox wall). When the user gives NO explicit
+# start/end, bound the run to the most recent N bars so the default completes;
+# an explicit range is always honored in full. Interval-agnostic (bar count).
+_DEFAULT_MAX_BARS = 100_000
 
-# Append-only JSONL loglar sınırsız büyüyordu (backtest_log ~10MB, robustness
-# ~5MB). Eşik aşımında tek nesil arşive devir: aktif dosya temiz başlar,
-# okuyucular (tail-read / tam okuma) yalnız aktif dosyayı görür.
-_LOG_ROTATE_BYTES = 20 * 1024 * 1024
-
-
-def _rotate_if_large(path: Path, max_bytes: int | None = None) -> None:
-    """Dosya eşiği aştıysa `<ad>.jsonl.1`'e devir (mevcut arşivi ezerek).
-
-    Eşik çağrı anında çözülür (test'te monkeypatch edilebilir olsun diye)."""
-    limit = max_bytes if max_bytes is not None else _LOG_ROTATE_BYTES
-    try:
-        if path.exists() and path.stat().st_size >= limit:
-            archive = path.with_name(path.name + ".1")
-            if archive.exists():
-                archive.unlink()
-            path.rename(archive)
-    except OSError:
-        pass  # rotation başarısızlığı log yazımını engellememeli
-
-
-def _sanitize_floats(obj):
-    """Replace NaN/Inf floats with None so json.dumps produces valid JSON."""
-    if isinstance(obj, float):
-        if math.isnan(obj) or math.isinf(obj):
-            return None
-        return obj
-    if isinstance(obj, dict):
-        return {k: _sanitize_floats(v) for k, v in obj.items()}
-    if isinstance(obj, list):
-        return [_sanitize_floats(v) for v in obj]
-    return obj
-
-
-def _chart_url(bi: dict, spec_id: str = "") -> str:
-    """Build chart URL scoped to the backtest's actual time window + interval.
-
-    Interval → chart TF mapping picks a resolution that keeps bar count sane
-    while covering the full backtest range so trade markers land on-screen.
-    spec_id → chart, stratejinin gerçek indikatörlerini çizer.
-    """
-    sym = bi.get("symbol")
-    if not sym:
-        return ""  # Index path (no symbol) — chart not supported
-    cat = bi.get("category", "linear")
-    interval = bi.get("interval", "60")
-    sid = f"&spec_id={spec_id}" if spec_id else ""
-    # Backtest zaman aralığını timestamp'e çevir
-    start_ts = end_ts = None
-    try:
-        from pandas import Timestamp
-
-        if bi.get("start"):
-            start_ts = int(Timestamp(bi["start"]).timestamp())
-        if bi.get("end"):
-            end_ts = int(Timestamp(bi["end"]).timestamp())
-    except Exception:
-        pass
-    if start_ts and end_ts:
-        # Aralık uzunsa daha büyük TF seç (bar sayısını ~2000 altında tut)
-        span_days = (end_ts - start_ts) / 86400
-        tf = interval
-        if span_days > 400:
-            tf = "D"
-        elif span_days > 60:
-            tf = "240"
-        elif span_days > 14:
-            tf = "60"
-        elif span_days > 3:
-            tf = "15"
-        return f"/chart/data?symbol={sym}&category={cat}&interval={tf}&start_ts={start_ts}&end_ts={end_ts}{sid}"
-    return f"/chart/data?symbol={sym}&category={cat}&interval={interval}&bars=2000{sid}"
-
-
-def _log_backtest(
-    spec,
-    result,
-    instrument_kind: str,
-    bars_info: dict,
-    elapsed_sec: float | None = None,
-) -> None:
-    BACKTEST_LOG.parent.mkdir(parents=True, exist_ok=True)
-    record = {
-        "ts": datetime.now(UTC).isoformat(),
-        "elapsed_sec": round(elapsed_sec, 3) if elapsed_sec is not None else None,
-        "spec": {
-            "id": spec.id,
-            "name": spec.name,
-            "blocks": [
-                {"type": b.type, "role": b.role, "params": b.params}
-                for b in spec.blocks
-            ],
-            "entry_logic": spec.entry_logic,
-            "exit_logic": spec.exit_logic,
-            "order_type": spec.order_type,
-            "trade_size": float(spec.trade_size),
-            "trade_size_mode": spec.trade_size_mode,
-            "use_bracket": spec.use_bracket,
-            "sl_type": spec.sl_type,
-            "sl_value": spec.sl_value,
-            "tp_type": spec.tp_type,
-            "tp_value": spec.tp_value,
-            "allow_short": spec.allow_short,
-            "emulate": spec.emulate,
-            # Deterministik yeniden-koşum (reports/detail) için kalan spec
-            # alanları — getattr: testlerdeki duck-typed sahte spec kırılmasın.
-            "limit_offset_bps": getattr(spec, "limit_offset_bps", 0.0),
-            "atr_period": getattr(spec, "atr_period", 14),
-            "trade_size_percent": getattr(spec, "trade_size_percent", 5.0),
-            "trade_size_atr_risk": getattr(spec, "trade_size_atr_risk", 1.0),
-            "trade_size_usdt": getattr(spec, "trade_size_usdt", 1000.0),
-            "trend_filter": getattr(spec, "trend_filter", False),
-            "trend_interval": getattr(spec, "trend_interval", "60"),
-            "trend_ema_period": getattr(spec, "trend_ema_period", 50),
-            "delay_fill": getattr(spec, "delay_fill", True),
-        },
-        "instrument": instrument_kind,
-        "bars": bars_info,
-        "rationale": result.rationale,
-        "error": result.error,
-        "metrics": _sanitize_floats(result.metrics),
-        "n_equity_points": len(result.equity_curve),
-    }
-    with _BACKTEST_LOG_LOCK:
-        _rotate_if_large(BACKTEST_LOG)
-        with open(BACKTEST_LOG, "a") as f:
-            f.write(json.dumps(record, default=str) + "\n")
+# BACKTEST_LOG, _rotate_if_large, _sanitize_floats, _chart_url and _log_backtest
+# now live in web.shared (imported above as re-export aliases) — single source
+# of truth; they were duplicated / cross-imported across the route modules.
 
 
 def _recent_runs(limit: int = 6) -> list[dict]:
@@ -291,7 +175,10 @@ def _generate_narrative(last_row: dict) -> str:
 
 
 @router.get("", response_class=HTMLResponse)
-async def page(request: Request):
+def page(request: Request):
+    # Sync handler → FastAPI runs it in a threadpool, so its blocking disk I/O
+    # (load_catalog + read_wiki_page + _recent_runs) doesn't stall the event
+    # loop. (reports/data pages already offload via asyncio.to_thread.)
     from server import get_market_info, templates
 
     catalog = load_catalog()
@@ -404,17 +291,10 @@ async def run(
 
     # Capture all form params for the worker (no I/O in this handler)
     run_id = uuid.uuid4().hex[:8]
-    with _RUN_PROGRESS_LOCK:
-        # Evict oldest entries to prevent unbounded memory growth.
-        # L10: done-öncelikli — hâlâ koşan run'ın slotunu atmak canlı panel
-        # sonucunu sessizce kaybettiriyordu; hepsi koşuyorsa son çare en eski.
-        if len(_RUN_PROGRESS) >= _MAX_RUN_PROGRESS_ENTRIES:
-            oldest = next(
-                (k for k, v in _RUN_PROGRESS.items() if v.get("done")),
-                next(iter(_RUN_PROGRESS)),
-            )
-            _RUN_PROGRESS.pop(oldest, None)
-        _RUN_PROGRESS[run_id] = {
+    # Evict to stay within cap (done-first, else oldest — see ProgressStore).
+    _RUN_STORE.create_evicting(
+        run_id,
+        {
             "steps": [],
             "done": False,
             "result": None,
@@ -422,7 +302,8 @@ async def run(
             "spec_name": spec.name,
             "bars_info": {},
             "narrative": "",
-        }
+        },
+    )
 
     def _progress(msg: str) -> None:
         ts = datetime.now(UTC).strftime("%H:%M:%S")
@@ -494,6 +375,14 @@ async def run(
                         "Fetch them first from the Data catalog."
                     )
                     return
+                # Perf: cap the DEFAULT (blank-range) run to recent bars so it
+                # completes; explicit dates are honored in full (see L88).
+                if not bybit_start and not bybit_end and len(bars) > _DEFAULT_MAX_BARS:
+                    _progress(
+                        f"Varsayılan aralık son {_DEFAULT_MAX_BARS:,} bara "
+                        "sınırlandı (tam geçmiş için tarih aralığı girin)"
+                    )
+                    bars = bars.iloc[-_DEFAULT_MAX_BARS:]
                 # Infer base currency from symbol (ETHUSDT → ETH, SOLUSDT → SOL).
                 base_guess = "BTC"
                 for suffix in ("USDT", "USDC", "USD"):
@@ -818,9 +707,7 @@ async def describe(
 
     # Çoklu-TF: checkbox'lar → normalize; boşsa tekil interval'e düş; o da yoksa 1h.
     norm_intervals = (
-        _normalize_intervals(intervals)
-        or _normalize_intervals([interval])
-        or ["60"]
+        _normalize_intervals(intervals) or _normalize_intervals([interval]) or ["60"]
     )
 
     gen_id = uuid.uuid4().hex[:8]
@@ -845,14 +732,9 @@ async def describe(
         "ext_start": ext_start,
         "ext_end": ext_end,
     }
-    with _GEN_LOCK:
-        if len(_GEN_PROGRESS) >= _MAX_GEN_PROGRESS_ENTRIES:
-            oldest = next(
-                (k for k, v in _GEN_PROGRESS.items() if v.get("done")),
-                next(iter(_GEN_PROGRESS)),
-            )
-            _GEN_PROGRESS.pop(oldest, None)
-        _GEN_PROGRESS[gen_id] = {
+    _GEN_STORE.create_evicting(
+        gen_id,
+        {
             "phases": [
                 {"label": p, "status": "pending", "detail": "", "ts": ""}
                 for p in _GEN_PHASES
@@ -862,7 +744,8 @@ async def describe(
             "spec_id": "",
             "spec_name": "",
             "run_params": run_params,
-        }
+        },
+    )
 
     def _worker() -> None:
         from agent import (
@@ -1089,14 +972,9 @@ async def sweep(
 
     label_of = dict(BYBIT_ALL_INTERVALS)
     sweep_id = uuid.uuid4().hex[:8]
-    with _SWEEP_LOCK:
-        if len(_SWEEP_PROGRESS) >= _MAX_SWEEP_ENTRIES:
-            oldest = next(
-                (k for k, v in _SWEEP_PROGRESS.items() if v.get("done")),
-                next(iter(_SWEEP_PROGRESS)),
-            )
-            _SWEEP_PROGRESS.pop(oldest, None)
-        _SWEEP_PROGRESS[sweep_id] = {
+    _SWEEP_STORE.create_evicting(
+        sweep_id,
+        {
             "spec_name": spec.name,
             "symbol": symbol,
             "category": category,
@@ -1112,7 +990,8 @@ async def sweep(
                 }
                 for code in picked
             ],
-        }
+        },
+    )
 
     def _row(code: str, **upd) -> None:
         with _SWEEP_LOCK:
@@ -1125,83 +1004,90 @@ async def sweep(
                     return
 
     def _worker() -> None:
+        from concurrent.futures import ThreadPoolExecutor
         from datetime import timedelta
 
         import pandas as _pd
 
         from data import _base_ccy, _bybit_cache_path, load_bybit_bars
+        from parallel_exec import get_worker_count, parallel_enabled
         from sandbox import run_backtest_guarded
 
         base = _base_ccy(symbol)
+
+        def _run_one(code: str) -> None:
+            _row(code, status="running")
+            try:
+                cp = _bybit_cache_path(category, symbol, code)
+                if not cp.exists():
+                    _row(code, status="error", error="cache yok — Data ekranından çek")
+                    return
+                # Tarih boşsa cache'in tam aralığı (deterministik).
+                if bybit_start:
+                    s_dt = datetime.fromisoformat(bybit_start).replace(tzinfo=UTC)
+                else:
+                    s_dt = None
+                if bybit_end:
+                    e_dt = datetime.fromisoformat(bybit_end).replace(
+                        hour=23, minute=59, second=59, tzinfo=UTC
+                    )
+                else:
+                    e_dt = None
+                if s_dt is None or e_dt is None:
+                    _df = _pd.read_parquet(cp)
+                    if not _df.empty:
+                        s_dt = s_dt or _df.index[0].to_pydatetime().replace(tzinfo=UTC)
+                        e_dt = e_dt or _df.index[-1].to_pydatetime().replace(tzinfo=UTC)
+                    else:
+                        s_dt = s_dt or datetime.now(UTC) - timedelta(days=7)
+                        e_dt = e_dt or datetime.now(UTC)
+                bars = load_bybit_bars(
+                    symbol=symbol,
+                    interval=code,
+                    category=category,
+                    start=s_dt,
+                    end=e_dt,
+                )
+                if bars.empty:
+                    _row(code, status="error", error="bar yok")
+                    return
+                # Perf: bound the DEFAULT (blank-range) sweep run to recent bars;
+                # explicit dates honored in full (see L88).
+                if not bybit_start and not bybit_end and len(bars) > _DEFAULT_MAX_BARS:
+                    bars = bars.iloc[-_DEFAULT_MAX_BARS:]
+                result = run_backtest_guarded(
+                    spec,
+                    bars,
+                    recipe={
+                        "symbol": symbol,
+                        "base": base,
+                        "category": category,
+                        "interval": code,
+                    },
+                    iteration_id=0,
+                    rationale=f"tf-sweep · {symbol} {category} {code}",
+                    force_subprocess=True,
+                )
+                if result.error:
+                    _row(code, status="error", error=result.error[:120])
+                else:
+                    _row(
+                        code,
+                        status="done",
+                        metrics=_sweep_row_metrics(result.metrics),
+                        n_bars=len(bars),
+                    )
+            except Exception as e:
+                _row(code, status="error", error=f"{type(e).__name__}: {e}"[:120])
+
         try:
-            for code in picked:
-                _row(code, status="running")
-                try:
-                    cp = _bybit_cache_path(category, symbol, code)
-                    if not cp.exists():
-                        _row(
-                            code,
-                            status="error",
-                            error="cache yok — Data ekranından çek",
-                        )
-                        continue
-                    # Tarih boşsa cache'in tam aralığı (deterministik).
-                    if bybit_start:
-                        s_dt = datetime.fromisoformat(bybit_start).replace(tzinfo=UTC)
-                    else:
-                        s_dt = None
-                    if bybit_end:
-                        e_dt = datetime.fromisoformat(bybit_end).replace(
-                            hour=23, minute=59, second=59, tzinfo=UTC
-                        )
-                    else:
-                        e_dt = None
-                    if s_dt is None or e_dt is None:
-                        _df = _pd.read_parquet(cp)
-                        if not _df.empty:
-                            s_dt = s_dt or _df.index[0].to_pydatetime().replace(
-                                tzinfo=UTC
-                            )
-                            e_dt = e_dt or _df.index[-1].to_pydatetime().replace(
-                                tzinfo=UTC
-                            )
-                        else:
-                            s_dt = s_dt or datetime.now(UTC) - timedelta(days=7)
-                            e_dt = e_dt or datetime.now(UTC)
-                    bars = load_bybit_bars(
-                        symbol=symbol,
-                        interval=code,
-                        category=category,
-                        start=s_dt,
-                        end=e_dt,
-                    )
-                    if bars.empty:
-                        _row(code, status="error", error="bar yok")
-                        continue
-                    result = run_backtest_guarded(
-                        spec,
-                        bars,
-                        recipe={
-                            "symbol": symbol,
-                            "base": base,
-                            "category": category,
-                            "interval": code,
-                        },
-                        iteration_id=0,
-                        rationale=f"tf-sweep · {symbol} {category} {code}",
-                        force_subprocess=True,
-                    )
-                    if result.error:
-                        _row(code, status="error", error=result.error[:120])
-                    else:
-                        _row(
-                            code,
-                            status="done",
-                            metrics=_sweep_row_metrics(result.metrics),
-                            n_bars=len(bars),
-                        )
-                except Exception as e:
-                    _row(code, status="error", error=f"{type(e).__name__}: {e}"[:120])
+            # Intervals are INDEPENDENT full backtests on different bars, so run
+            # them concurrently — each force_subprocess child runs in parallel
+            # while its supervisor thread just blocks. Bounded + kill-switchable
+            # (NAUTILUS_PARALLEL=0 → sequential). Per-row errors handled inside.
+            workers = min(len(picked), get_worker_count()) if parallel_enabled() else 1
+            with ThreadPoolExecutor(max_workers=max(1, workers)) as ex:
+                list(ex.map(_run_one, picked))
         except Exception as e:
             with _SWEEP_LOCK:
                 if sweep_id in _SWEEP_PROGRESS:

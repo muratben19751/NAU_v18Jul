@@ -875,7 +875,7 @@ from codegate import (  # noqa: E402
     _ALLOWED_BUILTINS,
     GeneratedCodeError,
 )
-from codegate import has_builtin as _has_builtin  # noqa: E402
+from codegate import safe_builtins as _safe_builtins  # noqa: E402
 from codegate import (
     validate_generated_code as _validate_generated_code,
 )
@@ -907,13 +907,10 @@ def _test_execute_generated(
     from codegate import compile_with_loop_budget
 
     safe_globals = {
-        "__builtins__": {
-            k: __builtins__[k]
-            if isinstance(__builtins__, dict)
-            else getattr(__builtins__, k)
-            for k in _ALLOWED_BUILTINS
-            if _has_builtin(k)
-        },
+        # Single source of truth shared with composer._load_module_from_path so
+        # smoke and runtime resolve the SAME restricted builtins (incl. the
+        # RuntimeError the injected loop-budget guard raises).
+        "__builtins__": _safe_builtins(),
         "math": _math,
         "statistics": _stats,
         "ind": _ind_mod,

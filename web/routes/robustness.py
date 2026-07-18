@@ -6,38 +6,23 @@ GET  /robustness/progress/{run_id} → poll → sonuç gelince result.html
 
 from __future__ import annotations
 
-import json
 import threading
 import uuid
 from datetime import UTC, datetime
-from pathlib import Path
 
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse
 
 router = APIRouter(prefix="/robustness")
 
-_PROGRESS: dict[str, dict] = {}
-_LOCK = threading.Lock()
-_MAX_PROGRESS_ENTRIES = 20  # terkedilmiş run'ları sınırla (#21)
+from web.shared import ProgressStore  # noqa: E402
+from web.shared import log_robustness as _log_robustness  # noqa: E402
 
-ROBUSTNESS_LOG = Path.home() / ".cache" / "nautilus_web_app" / "robustness_log.jsonl"
-_ROBUSTNESS_LOG_LOCK = threading.Lock()
-
-
-def _sanitize_floats(obj):
-    """Replace NaN/Inf floats with None for valid JSON output."""
-    import math
-
-    if isinstance(obj, float):
-        if math.isnan(obj) or math.isinf(obj):
-            return None
-        return obj
-    if isinstance(obj, dict):
-        return {k: _sanitize_floats(v) for k, v in obj.items()}
-    if isinstance(obj, list):
-        return [_sanitize_floats(v) for v in obj]
-    return obj
+# ProgressStore holds dict + lock + capped eviction; aliases keep existing
+# direct-access sites unchanged. Log writer/path now live in web.shared.
+_STORE = ProgressStore(20)  # terkedilmiş run'ları sınırla (#21)
+_PROGRESS = _STORE.raw()
+_LOCK = _STORE.lock
 
 
 def _add_step(run_id: str, msg: str) -> None:
@@ -48,114 +33,9 @@ def _add_step(run_id: str, msg: str) -> None:
             s["steps"].append({"ts": ts, "msg": msg})
 
 
-def _log_robustness(
-    spec_id: str,
-    spec_name: str,
-    result: dict,
-    *,
-    symbol: str | None = None,
-    category: str | None = None,
-    interval: str | None = None,
-    venue: str | None = None,
-) -> None:
-    """Skalar robustness özetini diske yaz (equity curve'leri hariç tut).
-
-    Kimlik alanları (symbol/category/interval/venue) kayda eklenir; verilmezse
-    ``result`` içinden okunur. Bunlar olmadan aynı spec'in farklı sembol/TF
-    koşuları raporda son-yazan-kazanır şeklinde ezişiyordu.
-    """
-    try:
-        ROBUSTNESS_LOG.parent.mkdir(parents=True, exist_ok=True)
-
-        # Walk-forward: equity curve'siz
-        wf_clean = []
-        for w in result.get("wfo_windows") or []:
-            wf_clean.append(
-                {
-                    "window": w.get("window"),
-                    "train_start": w.get("train_start"),
-                    "train_end": w.get("train_end"),
-                    "test_start": w.get("test_start"),
-                    "test_end": w.get("test_end"),
-                    "chosen_params": w.get("chosen_params") or {},
-                    "train_objective": w.get("train_objective"),
-                    "objective_metric": w.get("objective_metric"),
-                    "train_metrics": w.get("train_metrics") or {},
-                    "test_metrics": w.get("test_metrics") or {},
-                    "test_metrics_naive": w.get("test_metrics_naive") or {},
-                    "train_n_trades": w.get("train_n_trades"),
-                    "test_n_trades": w.get("test_n_trades"),
-                }
-            )
-
-        # Monte Carlo: büyük listeler hariç
-        mc_raw = result.get("mc") or {}
-        mc_clean = {
-            k: mc_raw[k]
-            for k in (
-                "n_sims",
-                "n_trades",
-                "starting_cash",
-                "original_final",
-                "p5_final",
-                "p25_final",
-                "median_final",
-                "p75_final",
-                "p95_final",
-                "max_dd_p50",
-                "max_dd_p95",
-                "win_rate_mean",
-                "win_rate_std",
-                "method",
-            )
-            if k in mc_raw
-        }
-        # Preserve error field so log accurately reflects MC failures.
-        if "error" in mc_raw:
-            mc_clean["error"] = mc_raw["error"]
-
-        # In/Out-of-Sample: equity curve'siz
-        sp_raw = result.get("split") or {}
-        sp_clean = {
-            k: sp_raw[k]
-            for k in (
-                "split_pct",
-                "split_date",
-                "in_sample_n_bars",
-                "oos_n_bars",
-                "overfitting_score",
-                "overfitting_label",
-                "in_sample_error",
-                "oos_error",
-            )
-            if k in sp_raw
-        }
-        sp_clean["in_sample_metrics"] = sp_raw.get("in_sample_metrics") or {}
-        sp_clean["oos_metrics"] = sp_raw.get("oos_metrics") or {}
-
-        record = _sanitize_floats(
-            {
-                "ts": datetime.now(UTC).isoformat(),
-                "spec_id": spec_id,
-                "spec_name": spec_name,
-                "symbol": symbol or result.get("symbol"),
-                "category": category or result.get("category"),
-                "interval": interval or result.get("interval"),
-                "venue": venue or result.get("venue"),
-                "walk_forward": wf_clean,
-                "wfo_summary": result.get("wfo_summary") or {},
-                "monte_carlo": mc_clean,
-                "in_out_split": sp_clean,
-            }
-        )
-        from web.routes.backtest import _rotate_if_large
-
-        with _ROBUSTNESS_LOG_LOCK:
-            _rotate_if_large(ROBUSTNESS_LOG)
-            with open(ROBUSTNESS_LOG, "a") as f:
-                f.write(json.dumps(record, default=str) + "\n")
-    except Exception:
-        pass
+# _log_robustness now lives in web.shared (imported above as a re-export alias)
+# — single source of truth; the robustness log path + write helper were
+# duplicated / cross-imported with backtest.py and reports.py.
 
 
 @router.post("/run", response_class=HTMLResponse)
@@ -196,23 +76,18 @@ async def run(
         )
 
     run_id = uuid.uuid4().hex[:8]
-    with _LOCK:
-        # done-öncelikli evict (backtest.py L10) — #21: hâlâ koşan run'ı atmak
-        # worker'ın korumasız _PROGRESS yazımlarında KeyError'a ve poll'de
-        # kalıcı 'Bilinmeyen run ID'ye yol açıyordu. Hepsi koşuyorsa en eski.
-        while len(_PROGRESS) >= _MAX_PROGRESS_ENTRIES:
-            oldest = next(
-                (k for k, v in _PROGRESS.items() if v.get("done")),
-                next(iter(_PROGRESS)),
-            )
-            _PROGRESS.pop(oldest, None)
-        _PROGRESS[run_id] = {
+    # done-first eviction (#21: dropping a still-running run caused KeyError in
+    # the worker's unguarded writes + a permanent 'Unknown run ID' on poll).
+    _STORE.create_evicting(
+        run_id,
+        {
             "steps": [],
             "done": False,
             "result": None,
             "error": None,
             "spec_name": spec.name,
-        }
+        },
+    )
 
     def _worker():
         from datetime import timedelta

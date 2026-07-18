@@ -1093,6 +1093,7 @@ def _load_module_from_path(name: str, path: Path):
     from codegate import (
         GeneratedCodeError,
         compile_with_loop_budget,
+        safe_builtins,
         validate_generated_code,
     )
 
@@ -1115,6 +1116,11 @@ def _load_module_from_path(name: str, path: Path):
     module.__dict__["math"] = _math
     module.__dict__["statistics"] = _statistics
     module.__dict__["ind"] = _ind_mod
+    # Restrict builtins to the same whitelist the smoke test uses (parity is
+    # asserted by this module's own docstring). Setting `__builtins__` here stops
+    # CPython from injecting the FULL builtins on exec, so even a codegate miss
+    # cannot resolve eval/exec/open/getattr at runtime — defense in depth.
+    module.__dict__["__builtins__"] = safe_builtins()
     # M25: doğrulanmış kaynak döngü-bütçeli AST ile derlenir — `while True`
     # sınıfı sonsuz döngüler 5M adımda RuntimeError üretir. Bütçe module-level
     # validate/max_lookback hook'larını da kapsar (sunucuda timeout'suz
@@ -1383,16 +1389,43 @@ def _catalog_is_valid(spec: ComposedStrategySpec, custom_names: set[str]) -> boo
     return spec.validate() is None
 
 
-def load_catalog() -> list[ComposedStrategySpec]:
-    if not CATALOG_FILE.exists():
-        return []
+# Perf: memoize the parsed catalog.json by (mtime, size). load_catalog runs on
+# hot paths (~18 call sites incl. the agent inner loop) and re-read + re-parsed
+# the file every call. The cache stores ONLY the raw list of dicts — fresh
+# ComposedStrategySpec objects are rebuilt from it on every call (from_dict is
+# read-only over the dicts), so no caller can mutate a shared/cached spec. A
+# save (mtime change) invalidates the cache automatically.
+_CATALOG_RAW_CACHE: tuple[int, int, list] | None = None
+
+
+def _read_catalog_raw() -> list | None:
+    """Return catalog.json's raw list of dicts, memoized by (mtime, size).
+
+    Returns None for a missing / unparseable / non-list file — callers treat
+    that as an empty catalog and NEVER save (M1342), matching the old inline
+    behaviour byte-for-byte.
+    """
+    global _CATALOG_RAW_CACHE
+    try:
+        st = CATALOG_FILE.stat()
+    except OSError:
+        return None
+    cached = _CATALOG_RAW_CACHE
+    if cached is not None and cached[0] == st.st_mtime_ns and cached[1] == st.st_size:
+        return cached[2]
     try:
         raw = json.loads(CATALOG_FILE.read_text())
     except Exception:
-        # Dosya JSON olarak bile parse edilemiyor — [] dön ama ASLA save etme
-        # (çağıran RMW yaparsa dosyayı ezmesin; M1342).
-        return []
+        return None
     if not isinstance(raw, list):
+        return None
+    _CATALOG_RAW_CACHE = (st.st_mtime_ns, st.st_size, raw)
+    return raw
+
+
+def load_catalog() -> list[ComposedStrategySpec]:
+    raw = _read_catalog_raw()
+    if raw is None:
         return []
     import custom_block_store as cbs
 

@@ -24,14 +24,16 @@ from fastapi.responses import HTMLResponse
 
 router = APIRouter(prefix="/lab")
 
-# Phase state per run. Separate from backtest.py's _RUN_PROGRESS so the
-# two features don't interfere with each other.
-_LAB_PROGRESS: dict[str, dict] = {}
-_LAB_LOCK = threading.Lock()
-# M11: sınırsız dict, terminal poll gelmeyen (sekmesi kapanan) koşuların full
-# IterationResult'ını (equity+trades) süresiz tutuyordu — backtest.py'deki
-# 50'lik FIFO kalıbı.
-_MAX_LAB_PROGRESS_ENTRIES = 50
+from web.shared import ProgressStore  # noqa: E402
+from web.shared import chart_url as _chart_url  # noqa: E402
+from web.shared import log_backtest as _log_backtest  # noqa: E402
+
+# Phase state per run. Separate from backtest.py's _RUN_PROGRESS so the two
+# features don't interfere. ProgressStore holds dict+lock+capped eviction (M11:
+# unbounded dict kept full IterationResults for runs whose tab closed).
+_LAB_STORE = ProgressStore(50)
+_LAB_PROGRESS = _LAB_STORE.raw()
+_LAB_LOCK = _LAB_STORE.lock
 
 _PHASES = [
     "Strateji fikri üretiliyor",
@@ -255,8 +257,6 @@ def _lab_worker(
 
         # Log to shared backtest_log.jsonl so /reports picks this up
         try:
-            from web.routes.backtest import _log_backtest
-
             _log_backtest(
                 spec,
                 result,
@@ -415,18 +415,12 @@ async def run(
     parsed_end = _parse_date(end_date)
 
     run_id = uuid.uuid4().hex[:8]
-    with _LAB_LOCK:
-        # M11: done-öncelikli eviction (backtest.py L10 ile aynı) — hâlâ koşan
-        # run'ın slotunu atmak canlı paneli kalıcı 'Bilinmeyen run ID'ye
-        # düşürüyordu (worker yazımları 'in dict' korumalı — crash yok, ama
-        # sonuç kaybı). Hepsi koşuyorsa son çare en eski.
-        while len(_LAB_PROGRESS) >= _MAX_LAB_PROGRESS_ENTRIES:
-            oldest = next(
-                (k for k, v in _LAB_PROGRESS.items() if v.get("done")),
-                next(iter(_LAB_PROGRESS)),
-            )
-            _LAB_PROGRESS.pop(oldest, None)
-        _LAB_PROGRESS[run_id] = {
+    # M11: done-first eviction (dropping a still-running run left the live panel
+    # on a permanent 'Unknown run ID'; worker writes are 'in dict'-guarded so no
+    # crash, just result loss). See ProgressStore.
+    _LAB_STORE.create_evicting(
+        run_id,
+        {
             "phases": [
                 {"n": i, "label": lbl, "status": "pending", "detail": "", "ts": ""}
                 for i, lbl in enumerate(_PHASES)
@@ -437,7 +431,8 @@ async def run(
             "error": None,
             "strategy_name": "",
             "hint": hint.strip(),
-        }
+        },
+    )
 
     threading.Thread(
         target=_lab_worker,
@@ -516,8 +511,6 @@ async def progress(request: Request, run_id: str):
         # Chart URL — use symbol/category/interval from the worker
         bi = state.get("bars_info", {})
         if bi.get("symbol"):
-            from web.routes.backtest import _chart_url
-
             last_row["chart_url"] = _chart_url(bi)
             last_row["chart_symbol"] = bi["symbol"]
             last_row["chart_category"] = bi["category"]

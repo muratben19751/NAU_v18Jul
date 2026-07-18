@@ -129,7 +129,9 @@ class TestTFSweep:
         page = _poll(c, sid)
 
         # '1' (1m) cache yok → koşulmaz; kalan 3 koşar.
-        assert wired["made"] == ["15", "240", "D"]
+        # Sweep runs intervals concurrently → completion order is nondeterministic
+        # (display rows stay in interval order). Assert the SET of runs.
+        assert sorted(wired["made"]) == ["15", "240", "D"]
         assert "cache yok" in page.text  # 1m satırı
         assert "engine crashed on D" in page.text  # D motor hatası satırda
         # En iyi PnL 15m (%20) ve 4h (%5) tabloda.
@@ -150,7 +152,9 @@ class TestTFSweep:
         assert r.status_code == 200
         sid = re.search(r"sweep/progress/([0-9a-f]+)", r.text).group(1)
         _poll(c, sid)
-        assert wired["made"] == ["15", "240", "D"]
+        # Sweep runs intervals concurrently → completion order is nondeterministic
+        # (display rows stay in interval order). Assert the SET of runs.
+        assert sorted(wired["made"]) == ["15", "240", "D"]
 
     def test_unknown_spec_404(self, wired):
         c = _client()

@@ -31,9 +31,16 @@ from fastapi.responses import HTMLResponse
 
 router = APIRouter(prefix="/agent")
 
-_AGENT_PROGRESS: dict[str, dict] = {}
-_AGENT_LOCK = threading.Lock()
-_MAX_ENTRIES = 50
+from web.shared import ProgressStore  # noqa: E402
+from web.shared import chart_url as _chart_url  # noqa: E402
+from web.shared import log_backtest as _log_backtest  # noqa: E402
+from web.shared import log_robustness as _log_robustness  # noqa: E402
+
+# ProgressStore holds dict + lock + capped eviction; aliases keep the many
+# existing direct-access sites (worker ↔ pollers ↔ session log) unchanged.
+_AGENT_STORE = ProgressStore(50)
+_AGENT_PROGRESS = _AGENT_STORE.raw()
+_AGENT_LOCK = _AGENT_STORE.lock
 # İstatistiksel olarak güvenilir sayılması için minimum trade sayısı. Bunun
 # altındaki koşular _score'da -inf ile elenir (kazanan olamaz). Değer NAU_ev
 # backtest optimizer'ının JUNK_MIN_TRADES=20 eşiğiyle hizalı (bkz. NAU wiki
@@ -1078,8 +1085,6 @@ def _agent_worker(
     from composer import load_catalog
     from data import _bybit_cache_path
     from sandbox import run_backtest_guarded, run_robustness_guarded
-    from web.routes.backtest import _log_backtest
-    from web.routes.robustness import _log_robustness
 
     is_external = source == "external"
     # LLM'e geçen pazar bağlamı — Bybit'te None (mevcut prompt bayt-bayt korunur).
@@ -2510,24 +2515,19 @@ async def run(
         intervals = ["60", "240", "D"] if is_multi_tf else [interval]
 
     run_id = uuid.uuid4().hex[:8]
-    with _AGENT_LOCK:
-        # L16: eviction done-öncelikli — aktif (continuous) bir koşunun state'i
-        # asla atılmaz; hepsi aktifse yeni koşu reddedilir. L3: atılan run_id'nin
-        # session-log kilidi de bırakılır (sınırsız Lock birikimi olmasın).
-        while len(_AGENT_PROGRESS) >= _MAX_ENTRIES:
-            evict_id = next(
-                (k for k, v in _AGENT_PROGRESS.items() if v.get("done")), None
-            )
-            if evict_id is None:
-                return HTMLResponse(
-                    "<div class='empty-state'>⚠ 50 aktif koşu sınırı — yeni koşu "
-                    "başlatılamadı. Önce mevcut koşulardan birini durdurun.</div>",
-                    status_code=429,
-                )
-            _AGENT_PROGRESS.pop(evict_id, None)
-            with _SESSION_LOG_META:
-                _SESSION_LOG_LOCKS.pop(evict_id, None)
-        _AGENT_PROGRESS[run_id] = {
+
+    def _release_session_lock(evict_id: str) -> None:
+        # L3: an evicted run's session-log lock is released too (no unbounded
+        # Lock buildup). Runs under _AGENT_LOCK, preserving the lock-nesting
+        # order (_AGENT_LOCK → _SESSION_LOG_META) that test_lock_nesting pins.
+        with _SESSION_LOG_META:
+            _SESSION_LOG_LOCKS.pop(evict_id, None)
+
+    # L16: done-first — an active (continuous) run's state is never dropped; if
+    # every slot is active the new run is refused (429).
+    created = _AGENT_STORE.create_or_refuse(
+        run_id,
+        {
             "phases": [
                 {"n": i, "label": lbl, "status": "pending", "detail": "", "ts": ""}
                 for i, lbl in enumerate(_PHASES)
@@ -2556,7 +2556,15 @@ async def run(
             "backtest_results": [],
             # Zaman çizelgesi span'ları (SVG Gantt — bkz. _tl_begin/_tl_end)
             "timeline": [],
-        }
+        },
+        on_evict=_release_session_lock,
+    )
+    if not created:
+        return HTMLResponse(
+            "<div class='empty-state'>⚠ 50 aktif koşu sınırı — yeni koşu "
+            "başlatılamadı. Önce mevcut koşulardan birini durdurun.</div>",
+            status_code=429,
+        )
 
     threading.Thread(
         target=_agent_worker,
@@ -2774,8 +2782,6 @@ async def progress(request: Request, run_id: str):
         # Chart URL
         bi = result.bars_info or {}
         if bi.get("symbol"):
-            from web.routes.backtest import _chart_url
-
             _sid = state.get("winner_spec_id", "")
             last_row["chart_url"] = _chart_url(bi, _sid)
             last_row["chart_symbol"] = bi["symbol"]

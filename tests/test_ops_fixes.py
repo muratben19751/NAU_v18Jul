@@ -11,11 +11,11 @@ import json
 
 class TestRobustnessLogIdentity:
     def test_writer_persists_identity_fields(self, tmp_path, monkeypatch):
-        import web.routes.robustness as rb
+        import web.shared as sh
 
         log = tmp_path / "robustness_log.jsonl"
-        monkeypatch.setattr(rb, "ROBUSTNESS_LOG", log)
-        rb._log_robustness(
+        monkeypatch.setattr(sh, "ROBUSTNESS_LOG", log)
+        sh.log_robustness(
             "spec1",
             "Test Spec",
             {"wfo_windows": [], "wfo_summary": {}, "mc": {}, "split": {}},
@@ -29,11 +29,11 @@ class TestRobustnessLogIdentity:
         assert rec["interval"] == "60"
 
     def test_writer_falls_back_to_result_fields(self, tmp_path, monkeypatch):
-        import web.routes.robustness as rb
+        import web.shared as sh
 
         log = tmp_path / "robustness_log.jsonl"
-        monkeypatch.setattr(rb, "ROBUSTNESS_LOG", log)
-        rb._log_robustness(
+        monkeypatch.setattr(sh, "ROBUSTNESS_LOG", log)
+        sh.log_robustness(
             "spec1",
             "Test Spec",
             {"symbol": "SOLUSDT", "category": "spot", "interval": "240"},
@@ -86,7 +86,7 @@ class TestRobustnessLogIdentity:
 
 class TestLogRotation:
     def test_rotates_when_over_threshold(self, tmp_path):
-        from web.routes.backtest import _rotate_if_large
+        from web.shared import rotate_if_large as _rotate_if_large
 
         log = tmp_path / "x.jsonl"
         log.write_text("a" * 1000)
@@ -96,7 +96,7 @@ class TestLogRotation:
         assert archive.exists() and archive.stat().st_size == 1000
 
     def test_no_rotation_under_threshold(self, tmp_path):
-        from web.routes.backtest import _rotate_if_large
+        from web.shared import rotate_if_large as _rotate_if_large
 
         log = tmp_path / "x.jsonl"
         log.write_text("a" * 100)
@@ -104,7 +104,7 @@ class TestLogRotation:
         assert log.exists() and not (tmp_path / "x.jsonl.1").exists()
 
     def test_second_rotation_replaces_archive(self, tmp_path):
-        from web.routes.backtest import _rotate_if_large
+        from web.shared import rotate_if_large as _rotate_if_large
 
         log = tmp_path / "x.jsonl"
         archive = tmp_path / "x.jsonl.1"
@@ -115,12 +115,12 @@ class TestLogRotation:
 
     def test_writer_applies_rotation(self, tmp_path, monkeypatch):
         """_log_backtest eşik aşımında dosyayı devirip temiz başlar."""
-        import web.routes.backtest as bt
+        import web.shared as sh
 
         log = tmp_path / "backtest_log.jsonl"
         log.write_text("x" * 2000)
-        monkeypatch.setattr(bt, "BACKTEST_LOG", log)
-        monkeypatch.setattr(bt, "_LOG_ROTATE_BYTES", 1000)
+        monkeypatch.setattr(sh, "BACKTEST_LOG", log)
+        monkeypatch.setattr(sh, "LOG_ROTATE_BYTES", 1000)
 
         class _Spec:
             id = "s"
@@ -144,7 +144,7 @@ class TestLogRotation:
             metrics = {}
             equity_curve = []
 
-        bt._log_backtest(_Spec(), _Res(), "Bybit", {})
+        sh.log_backtest(_Spec(), _Res(), "Bybit", {})
         assert (tmp_path / "backtest_log.jsonl.1").exists()
         lines = log.read_text().strip().splitlines()
         assert len(lines) == 1  # yeni dosya tek taze kayıtla başladı

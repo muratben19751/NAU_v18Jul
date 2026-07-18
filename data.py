@@ -440,7 +440,22 @@ _BYBIT_MS = {
 
 
 def _bybit_cache_path(category: str, symbol: str, interval: str) -> Path:
-    safe = symbol.replace("/", "_")
+    # Path-traversal guard. `/lab`, `/backtest` and `/robustness` pass raw form
+    # input here without whitelisting the symbol (unlike `/data`), so a crafted
+    # value like "..\\..\\evil" must not escape BYBIT_CACHE_DIR. `category` and
+    # `interval` are closed sets; `symbol` is reduced to a filesystem-safe
+    # charset (ASCII alnum + underscore), which also preserves the old
+    # "BTC/USDT" -> "BTC_USDT" behaviour. A crafted value raises ValueError
+    # BEFORE any directory/lockfile/parquet is created (see load_bybit_bars).
+    if category not in BYBIT_CATEGORIES:
+        raise ValueError(f"unsupported bybit category: {category!r}")
+    if interval not in _BYBIT_MS:
+        raise ValueError(f"unsupported bybit interval: {interval!r}")
+    safe = "".join(
+        c if ((c.isascii() and c.isalnum()) or c == "_") else "_" for c in symbol
+    )
+    if not safe.strip("_"):
+        raise ValueError(f"invalid bybit symbol: {symbol!r}")
     label = "1d" if interval == "D" else f"{interval}m"
     return BYBIT_CACHE_DIR / f"{category}_{safe}_{label}.parquet"
 
