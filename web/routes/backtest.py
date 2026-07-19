@@ -655,8 +655,9 @@ async def run(
                     return
                 # Resolve dates — if blank, use the full cache range.
                 try:
-                    from data import INDEX_CACHE_DIR, _ticker_to_filename
                     import pandas as _pd2
+
+                    from data import INDEX_CACHE_DIR, _ticker_to_filename
                     if start_date and end_date:
                         start_d = date.fromisoformat(start_date)
                         end_d = date.fromisoformat(end_date)
@@ -1871,6 +1872,7 @@ async def plan_preview(
             "chart_data": chart_data,
             "refined": refined_result.get("refined") or desc,
             "refine_notes": refined_result.get("notes") or "",
+            "suggestions": refined_result.get("suggestions") or [],
         },
     )
 

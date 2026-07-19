@@ -365,6 +365,25 @@
     }
   });
 
+  // Copy the AI-refined description to the clipboard (COPY button in plan preview).
+  window.btCopyRefined = function(btn) {
+    const ta = document.getElementById("refined-description");
+    if (!ta) return;
+    const text = ta.value;
+    const done = () => {
+      const orig = btn.innerHTML;
+      btn.innerHTML = "✓ Kopyalandı";
+      setTimeout(() => { btn.innerHTML = orig; }, 1500);
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(done).catch(() => { ta.select(); document.execCommand("copy"); done(); });
+    } else {
+      ta.select();
+      document.execCommand("copy");
+      done();
+    }
+  };
+
   // Toggle strategy mode: describe (Claude) ↔ vol-targeted-trend
   function btToggleStrategyMode(mode) {
     const isVtt = mode === 'vtt';

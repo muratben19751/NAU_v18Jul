@@ -18,11 +18,18 @@
     </div>
     <div class="panel-body">
 
-      {# ── AI önerisi — düzenlenebilir + "Tamam" onayı ── #}
+      {# ── AI önerisi — düzenlenebilir + kopyala + "Tamam" onayı ── #}
       {% if llm_ok and refined %}
         <div class="panel" style="margin-bottom:12px;border-color:rgba(129,140,248,0.4);">
           <div class="panel-header">
             <div class="panel-title">✨ AI önerisi — düzenleyebilirsiniz</div>
+            <div class="spacer"></div>
+            <button class="btn btn-ghost" type="button"
+                    style="font-size:11px;padding:3px 10px;"
+                    onclick="btCopyRefined(this);"
+                    title="Önerilen metni panoya kopyala">
+              ⧉ COPY
+            </button>
           </div>
           <div class="panel-body">
             <textarea id="refined-description" rows="4"
@@ -35,6 +42,22 @@
                 <span>ℹ</span> <span>{{ refine_notes }}</span>
               </div>
             {% endif %}
+
+            {# İlave öneriler + uyarılar (AI) #}
+            {% if suggestions %}
+              <div class="small text-muted" style="margin-top:10px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;">
+                İlave öneriler &amp; uyarılar
+              </div>
+              <ul style="margin:6px 0 0;padding-left:2px;list-style:none;display:flex;flex-direction:column;gap:5px;">
+                {% for s in suggestions %}
+                  <li class="small" style="display:flex;gap:7px;align-items:flex-start;line-height:1.4;">
+                    <span style="flex:none;">{{ '⚠️' if s.kind == 'uyari' else '💡' }}</span>
+                    <span style="color:{{ '#fbbf24' if s.kind == 'uyari' else 'var(--text)' }};">{{ s.text }}</span>
+                  </li>
+                {% endfor %}
+              </ul>
+            {% endif %}
+
             <div class="row" style="align-items:center;gap:10px;margin-top:10px;">
               <button class="btn btn-primary" type="button"
                       hx-post="/backtest/describe"

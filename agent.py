@@ -1305,27 +1305,39 @@ def propose_condition_breakdown(description: str) -> dict:
     }
 
 
-_REFINE_SYSTEM_PROMPT = """You are a trading strategy editor.
-The user has typed a rough natural-language description of a trading strategy.
-Rewrite it as a single clear, precise, testable rule set — correct grammar, add
-missing exit conditions if absent, remove ambiguity, keep it concise (2-4 sentences max).
-Do NOT change the core logic the user described; only clarify it.
-Return JSON only:
-{"refined": "<improved description>", "notes": "<one short sentence: what you changed>"}
-If the input is already clear, return it unchanged with notes="No changes needed."
+_REFINE_SYSTEM_PROMPT = """Sen bir alım-satım (trading) stratejisi editörüsün.
+Kullanıcı, doğal dilde kabaca bir strateji tarifi yazdı. TÜM çıktıların TÜRKÇE olmalı.
+
+Görevlerin:
+1. Tarifi tek, net, kesin ve test edilebilir bir kural setine dönüştür — dilbilgisini
+   düzelt, eksik çıkış (exit) koşulu varsa ekle, belirsizliği gider, kısa tut (en fazla
+   2-4 cümle). Kullanıcının anlattığı çekirdek mantığı DEĞİŞTİRME; yalnızca netleştir.
+2. Stratejiyi güçlendirebilecek 2-4 SOMUT ilave ÖNERİ ver (ör. bir trend filtresi,
+   hacim teyidi, uygun stop/take-profit, parametre aralığı). Her öneri kısa ve
+   uygulanabilir olsun.
+3. Olası TUZAKLARA/RİSKLERE dair uyarılar ver (ör. çok sıkı AND koşulu → az işlem,
+   Bollinger tam kesişimi → 0 işlem, aşırı optimizasyon riski, düşük likidite).
+   Uyarı yoksa boş liste döndür.
+
+Yalnızca JSON döndür:
+{"refined": "<iyileştirilmiş tarif>",
+ "notes": "<tek kısa cümle: neyi değiştirdin>",
+ "suggestions": [{"kind": "oneri|uyari", "text": "<kısa madde>"}]}
+Girdi zaten netse, tarifi aynen döndür ve notes="Değişiklik gerekmedi." yaz.
 """
 
 
 def propose_refined_description(raw_description: str) -> dict:
     """Rewrite the user's raw strategy description into a cleaner, more precise version.
 
-    Returns: {refined: str, notes: str}. Falls back to original text on any error.
+    Returns: {refined: str, notes: str, suggestions: list[{kind, text}]}.
+    Falls back to original text (empty suggestions) on any error.
     """
     client = _get_client()
     try:
         resp = _create_message(
             client,
-            max_tokens=400,
+            max_tokens=700,
             system=_REFINE_SYSTEM_PROMPT,
             messages=[{"role": "user", "content": raw_description.strip()}],
         )
@@ -1333,11 +1345,23 @@ def propose_refined_description(raw_description: str) -> dict:
         data = json.loads(_extract_json_object(text))
         refined = str(data.get("refined") or "").strip()
         notes = str(data.get("notes") or "").strip()
+        # Normalize suggestions: keep only {kind in oneri|uyari, non-empty text}.
+        suggestions: list[dict] = []
+        for s in data.get("suggestions") or []:
+            if not isinstance(s, dict):
+                continue
+            stext = str(s.get("text") or "").strip()
+            if not stext:
+                continue
+            kind = str(s.get("kind") or "oneri").strip().lower()
+            if kind not in ("oneri", "uyari"):
+                kind = "oneri"
+            suggestions.append({"kind": kind, "text": stext})
         if not refined:
             raise ValueError("empty refined")
-        return {"refined": refined, "notes": notes}
+        return {"refined": refined, "notes": notes, "suggestions": suggestions}
     except Exception:
-        return {"refined": raw_description.strip(), "notes": ""}
+        return {"refined": raw_description.strip(), "notes": "", "suggestions": []}
 
 
 def propose_custom_block(

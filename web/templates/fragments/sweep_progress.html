@@ -66,11 +66,13 @@
               {% else %}<span style="color:rgba(255,255,255,0.3);">○</span>{% endif %}
               {{ r.label }}
             </td>
-            {# date range column #}
+            {# date range column — yıl aralığı olarak #}
             <td style="text-align:left;padding:4px 8px;font-size:10px;color:rgba(255,255,255,0.45);">
-              {% if r.date_from and r.date_to %}{{ r.date_from }} → {{ r.date_to }}
-              {% elif r.status == 'done' %}full cache
-              {% else %}—{% endif %}
+              {% if r.date_from and r.date_to %}
+                {%- set y_from = r.date_from[:4] %}{% set y_to = r.date_to[:4] %}
+                {{ y_from if y_from == y_to else y_from ~ '–' ~ y_to }}
+              {%- elif r.status == 'done' %}full cache
+              {%- else %}—{% endif %}
             </td>
             {% if r.status == 'error' %}
             <td colspan="7" style="padding:4px 8px;color:#f87171;font-size:11px;">{{ r.error }}</td>
@@ -91,13 +93,18 @@
             <td style="text-align:right;padding:4px 8px;color:{% if bh is not none and bh >= 0 %}rgba(74,222,128,0.55){% elif bh is not none %}rgba(248,113,113,0.55){% else %}rgba(255,255,255,0.3){% endif %};">
               {{ '%+.2f'|format(bh) if bh is not none else '—' }}
             </td>
-            {# Sharpe #}
-            <td style="text-align:right;padding:4px 8px;{% if best_sh is not none and m.sharpe_per_trade == best_sh %}color:#4ade80;font-weight:700;{% endif %}">
-              {% if m.sharpe_per_trade is not none %}
-                {% if m.sharpe_per_trade != m.sharpe_per_trade %}{# NaN check #}
+            {# Sharpe (per-trade) — <0 kırmızı · 0-1 sarı · ≥1 yeşil; en iyi kalın #}
+            {% set sh = m.sharpe_per_trade %}
+            <td style="text-align:right;padding:4px 8px;
+              {%- if best_sh is not none and sh == best_sh %}font-weight:700;{% endif %}
+              {%- if sh is not none and sh == sh %}
+                {%- if sh >= 1 %}color:#4ade80;{% elif sh >= 0 %}color:#fbbf24;{% else %}color:#f87171;{% endif %}
+              {%- endif %}">
+              {% if sh is not none %}
+                {% if sh != sh %}{# NaN check #}
                   <span style="color:rgba(255,255,255,0.35);" title="0 trades — no signal fired">nan</span>
                 {% else %}
-                  {{ '%.2f'|format(m.sharpe_per_trade) }}
+                  {{ '%.2f'|format(sh) }}
                 {% endif %}
               {% else %}—{% endif %}
             </td>
@@ -111,11 +118,17 @@
               {{ '%.2f'|format(dd) if dd is not none else '—' }}
             </td>
             <td style="text-align:right;padding:4px 8px;">{{ m.n_trades if m.n_trades is not none else '—' }}</td>
-            <td style="text-align:right;padding:4px 8px;">
-              {{ '%.1f'|format(m.win_rate * 100) if m.win_rate is not none else '—' }}
+            {# Win % — <40 kırmızı · 40-55 sarı · ≥55 yeşil #}
+            {% set wr = (m.win_rate * 100) if m.win_rate is not none else none %}
+            <td style="text-align:right;padding:4px 8px;
+              {%- if wr is not none %}{% if wr >= 55 %}color:#4ade80;{% elif wr >= 40 %}color:#fbbf24;{% else %}color:#f87171;{% endif %}{% endif %}">
+              {{ '%.1f'|format(wr) if wr is not none else '—' }}
             </td>
-            <td style="text-align:right;padding:4px 8px;">
-              {{ '%.2f'|format(m.profit_factor) if m.profit_factor is not none else '—' }}
+            {# PF (profit factor) — <1 kırmızı · 1-1.5 sarı · ≥1.5 yeşil #}
+            {% set pf = m.profit_factor %}
+            <td style="text-align:right;padding:4px 8px;
+              {%- if pf is not none and pf == pf %}{% if pf >= 1.5 %}color:#4ade80;{% elif pf >= 1 %}color:#fbbf24;{% else %}color:#f87171;{% endif %}{% endif %}">
+              {{ '%.2f'|format(pf) if pf is not none else '—' }}
             </td>
             {% endif %}
           </tr>
@@ -127,8 +140,12 @@
       <div class="empty-state" style="margin-top:8px;color:#f87171;">{{ state.error }}</div>
       {% endif %}
       {% if done %}
-      <div class="text-muted" style="margin-top:8px;font-size:11px;">
-        Green = best in column. B&amp;H = buy-and-hold return over same period. DD: green &lt;10% · yellow &lt;30% · red ≥30%.
+      <div class="text-muted" style="margin-top:8px;font-size:11px;line-height:1.6;">
+        Yeşil = sütundaki en iyi. B&amp;H = aynı dönemdeki al-tut getirisi.<br>
+        Renk eşikleri (genel kabul): <b>DD</b> &lt;10% yeşil · &lt;30% sarı · ≥30% kırmızı ·
+        <b>Sharpe</b> ≥1 yeşil · ≥0 sarı · &lt;0 kırmızı ·
+        <b>Win%</b> ≥55 yeşil · ≥40 sarı · &lt;40 kırmızı ·
+        <b>PF</b> ≥1.5 yeşil · ≥1 sarı · &lt;1 kırmızı.
       </div>
       {% endif %}
     </div>
