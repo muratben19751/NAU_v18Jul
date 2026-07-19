@@ -8,6 +8,11 @@
             "type": "command",
             "command": "f=$(jq -r '.tool_input.file_path // .tool_response.filePath // empty' 2>/dev/null); if echo \"$f\" | grep -qE '\\.py$' && [ -f \"$f\" ]; then python -m ruff check --fix \"$f\" 2>&1; python -m ruff format \"$f\" 2>&1; fi",
             "statusMessage": "ruff check + format…"
+          },
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/kg_sync.sh\"",
+            "statusMessage": "knowledge-graph sync…"
           }
         ]
       }

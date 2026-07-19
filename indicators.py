@@ -10,6 +10,14 @@ functions (calc_atr/calc_adx/calc_wave_trend/…) were therefore converted to th
 Both builtin blocks (composer) and LLM-generated custom blocks (codegate
 whitelist + module injection) use the ``calc_*`` functions here —
 RSI/ATR/ADX/StochRSI/WaveTrend math is not rewritten by hand.
+
+``calc_ewma_vol`` computes ``sqrt(ewma(log_return^2, span))`` — the EWMA
+daily volatility estimate used by [[vol_targeted_trend]] strategy for
+position sizing. Alpha = 2/(span+1), same as ``ema()`` in this module.
+
+Wiki References
+---------------
+See: [[webapp_module_map]], [[strategy_and_actor]]
 """
 
 from __future__ import annotations
@@ -362,6 +370,24 @@ def calc_nadaraya_watson(
         "position": pos,
         "trend": trend,
     }
+
+
+def calc_ewma_vol(closes: list[float], span: int = 10) -> float | None:
+    """sqrt(ewma(log_return^2, span)) — EWMA daily vol estimate.
+
+    Alpha = 2/(span+1), same convention as ema() in this module and
+    pandas .ewm(span=N). Returns None when fewer than span+1 bars are
+    available (warmup incomplete).
+    """
+    if len(closes) < span + 1:
+        return None
+    alpha = 2.0 / (span + 1)
+    lr0 = math.log(closes[1] / closes[0]) if closes[0] > 0 else 0.0
+    ewma = lr0 * lr0
+    for i in range(2, len(closes)):
+        lr = math.log(closes[i] / closes[i - 1]) if closes[i - 1] > 0 else 0.0
+        ewma = alpha * lr * lr + (1 - alpha) * ewma
+    return math.sqrt(ewma) if ewma > 0 else None
 
 
 def calc_wave_trend(

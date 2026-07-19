@@ -57,9 +57,17 @@
   {# Generation finished → trigger the backtest (it prints its own panel into #result).
      2+ TF → /backtest/sweep (comparison table); 1 TF → /backtest/run
      (full results + equity). Both paths take chain_vals — extra keys are
-     ignored (interval for /run, intervals_csv for /sweep). #}
-  {% set ivs = state.chain_vals.get('intervals') or [] %}
-  {% set multi = (ivs | length) > 1 %}
+     ignored (interval for /run, intervals_csv for /sweep). For Index the
+     multi-TF list is granularity_csv; Bybit uses intervals. #}
+  {% set is_index = state.chain_vals.get('instrument_kind') == 'Index' %}
+  {% if is_index %}
+    {% set tf_csv = state.chain_vals.get('granularity_csv') or '' %}
+    {% set tf_count = (tf_csv.split(',') | select | list | length) if tf_csv else 0 %}
+  {% else %}
+    {% set ivs = state.chain_vals.get('intervals') or [] %}
+    {% set tf_count = ivs | length %}
+  {% endif %}
+  {% set multi = tf_count > 1 %}
   <div hx-post="{{ '/backtest/sweep' if multi else '/backtest/run' }}"
        hx-trigger="load"
        hx-target="#result"
@@ -67,7 +75,7 @@
        hx-vals='{{ state.chain_vals | tojson }}'>
     <div class="text-muted mono" style="font-size:11px;padding:6px 0;">
       {% if multi %}
-      ⏳ {{ state.spec_name }} · scanning {{ ivs | length }} timeframes…
+      ⏳ {{ state.spec_name }} · scanning {{ tf_count }} timeframes…
       {% else %}
       ⏳ {{ state.spec_name }} · backtest queued…
       {% endif %}

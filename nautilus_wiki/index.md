@@ -54,6 +54,7 @@ Bu sayfa `tools/wiki_tools.py index` tarafından her sayfanın frontmatter'ında
 - [[value_types|Value Types]] — Price/Quantity/Money fixed-point değer tipleri — precision kuralları, aritmetik kısıtlar ve deterministik platformlar-arası hesap.  (`wiki/concepts/value_types.md`)
 - [[venue_reconciliation|Venue Reconciliation]] — Canlı başlatma/restart'ta venue state ile iç Cache'i hizalama akışı; sadece LiveExecutionEngine uygular çünkü backtest her iki tarafı da kontrol eder.  (`wiki/concepts/venue_reconciliation.md`)
 - [[visualization|Visualization]] — Plotly tabanlı genişletilebilir backtest görselleştirmesi — grafikleri ve istatistikleri tek etkileşimli HTML tearsheet'inde birleştirir (v1.230).  (`wiki/concepts/visualization.md`)
+- [[vol_targeted_trend|Vol-Targeted Trend Strategy]] — MA crossover yönü + EWMA volatilite hedefli pozisyon boyutlandırma; allow_short=True iken MARGIN hesapla long+short açan nautilus_web_app stratejisi.  (`wiki/concepts/vol_targeted_trend.md`)
 
 ## Synthesis (karşılaştırmalar & rehberler)
 - [[backtesting_guide|Backtesting Guide — Hangi API'yi Seçmeli?]] — BacktestEngine ve BacktestNode arasında seçim rehberi; ts_init look-ahead bias kuralı; ParquetDataCatalog dual-backend; book_type-veri granülarite eşleşmesi.  (`wiki/synthesis/backtesting_guide.md`)

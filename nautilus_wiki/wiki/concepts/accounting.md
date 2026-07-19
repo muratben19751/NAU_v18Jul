@@ -75,4 +75,5 @@ account.set_margin_model(StandardMarginModel())  # varsayılan: LeveragedMarginM
 - [[events]]
 - [[portfolio]]
 - [[positions]]
+- [[vol_targeted_trend]]
 <!-- BACKLINKS:END -->

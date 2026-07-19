@@ -1093,10 +1093,13 @@ def run_backtest(
             logging=LoggingConfig(bypass_logging=_BYPASS_LOGGING),
         )
         engine = BacktestEngine(config=config)
+        # allow_short=True (VolTargetedTrendStrategy) requires MARGIN account
+        # so the engine accepts SELL orders that open short positions.
+        _allow_short = bool(params.get("allow_short", False))
         engine.add_venue(
             venue=active_venue,
             oms_type=OmsType.NETTING,
-            account_type=AccountType.CASH,
+            account_type=AccountType.MARGIN if _allow_short else AccountType.CASH,
             starting_balances=[Money(STARTING_CASH, USDT)],
             base_currency=None,
             fee_model=_fee_model_for(instrument),  # crypto→Bybit maker/taker

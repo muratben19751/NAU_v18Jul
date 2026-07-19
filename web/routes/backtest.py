@@ -458,14 +458,6 @@ async def run(
                         "Fetch them first from the Data catalog."
                     )
                     return
-                # Perf: cap the DEFAULT (blank-range) run to recent bars so it
-                # completes; explicit dates are honored in full (see L88).
-                if not bybit_start and not bybit_end and len(bars) > _DEFAULT_MAX_BARS:
-                    _progress(
-                        f"Default range limited to the last {_DEFAULT_MAX_BARS:,} "
-                        "bars (enter a date range for full history)"
-                    )
-                    bars = bars.iloc[-_DEFAULT_MAX_BARS:]
                 # Infer base currency from symbol (ETHUSDT → ETH, SOLUSDT → SOL).
                 base_guess = "BTC"
                 for suffix in ("USDT", "USDC", "USD"):
@@ -707,6 +699,148 @@ async def run(
     )
 
 
+
+
+# ── Vol-Targeted Trend (registry strategy) direct run ────────────────────────
+
+
+@router.post("/run_vtt", response_class=HTMLResponse)
+async def run_vtt(
+    request: Request,
+    instrument_kind: str = Form("Bybit"),
+    symbol: str = Form("BTCUSDT"),
+    category: str = Form("linear"),
+    interval: str = Form("1"),
+    bybit_start: str = Form(""),
+    bybit_end: str = Form(""),
+    ticker: str = Form("QQQ"),
+    granularity: str = Form("1d"),
+    start_date: str = Form(""),
+    end_date: str = Form(""),
+    fast: int = Form(50),
+    slow: int = Form(200),
+    vol_span: int = Form(10),
+    vol_target: float = Form(0.02),
+    capital: float = Form(10000.0),
+    allow_short: bool = Form(False),
+):
+    """Run vol_targeted_trend registry strategy; reuses the same progress/result flow."""
+    import time as _time
+
+    from server import templates
+
+    run_id = uuid.uuid4().hex[:8]
+    _RUN_STORE.create_evicting(
+        run_id,
+        {
+            "steps": [],
+            "done": False,
+            "result": None,
+            "error": None,
+            "spec_name": "vol_targeted_trend",
+            "bars_info": {},
+            "narrative": "",
+        },
+    )
+
+    def _progress(msg: str) -> None:
+        ts = datetime.now(UTC).strftime("%H:%M:%S")
+        with _RUN_PROGRESS_LOCK:
+            state = _RUN_PROGRESS.get(run_id)
+            if state is not None:
+                state["steps"].append({"ts": ts, "msg": msg})
+
+    def _worker() -> None:
+        _t_start = _time.perf_counter()
+        try:
+            params = {
+                "fast": fast,
+                "slow": slow,
+                "vol_span": vol_span,
+                "vol_target": vol_target,
+                "capital": capital,
+                "allow_short": allow_short,
+            }
+
+            if instrument_kind == "Bybit":
+                from data import load_bybit_bars
+                _progress(f"Veri yükleniyor · {symbol}/{category}/{interval}…")
+                bars_df = load_bybit_bars(
+                    symbol=symbol,
+                    category=category,
+                    interval=interval,
+                    start=bybit_start or None,
+                    end=bybit_end or None,
+                )
+                bars_info = {"symbol": symbol, "category": category, "interval": interval}
+            else:
+                _progress(f"Veri yükleniyor · {ticker}/{granularity}…")
+                try:
+                    from data import INDEX_CACHE_DIR, _ticker_to_filename
+                    import pandas as _pd
+                    cache_path = INDEX_CACHE_DIR / _ticker_to_filename(ticker, granularity)
+                    if cache_path.exists():
+                        _full = _pd.read_parquet(cache_path)
+                        _s = date.fromisoformat(start_date) if start_date else _full.index.min().date()
+                        _e = date.fromisoformat(end_date)   if end_date   else _full.index.max().date()
+                    else:
+                        _s = date.fromisoformat(start_date) if start_date else date(2000, 1, 1)
+                        _e = date.fromisoformat(end_date)   if end_date   else date.today()
+                except Exception:
+                    _s = date.fromisoformat(start_date) if start_date else date(2000, 1, 1)
+                    _e = date.fromisoformat(end_date)   if end_date   else date.today()
+                bars_df = load_index_bars(ticker, _s, _e, granularity)
+                bars_info = {"ticker": ticker, "granularity": granularity}
+
+            if bars_df is None or bars_df.empty:
+                raise RuntimeError("Veri bulunamadı — önce /data sayfasından indirin.")
+
+            _progress(f"{len(bars_df)} bar yüklendi · çalıştırılıyor…")
+
+            from backtest import run_backtest
+            result = run_backtest(
+                "vol_targeted_trend",
+                params,
+                bars_df,
+                iteration_id=0,
+                rationale=f"web vtt fast={fast} slow={slow} vt={vol_target} short={allow_short}",
+            )
+
+            with _RUN_PROGRESS_LOCK:
+                if run_id in _RUN_PROGRESS:
+                    _RUN_PROGRESS[run_id]["result"] = result
+                    _RUN_PROGRESS[run_id]["bars_info"] = bars_info
+                    _RUN_PROGRESS[run_id]["narrative"] = (
+                        f"EWMA vol-targeted trend · fast={fast} slow={slow} "
+                        f"vol_span={vol_span} vol_target={vol_target:.3f} "
+                        f"capital={capital:,.0f} allow_short={allow_short}"
+                    )
+            elapsed = _time.perf_counter() - _t_start
+            _progress(f"Tamamlandı ({elapsed:.1f}s)")
+        except Exception as e:
+            with _RUN_PROGRESS_LOCK:
+                if run_id in _RUN_PROGRESS:
+                    _RUN_PROGRESS[run_id]["error"] = f"{type(e).__name__}: {e}"
+        finally:
+            with _RUN_PROGRESS_LOCK:
+                if run_id in _RUN_PROGRESS:
+                    _RUN_PROGRESS[run_id]["done"] = True
+
+    threading.Thread(target=_worker, daemon=True).start()
+
+    return templates.TemplateResponse(
+        request,
+        "fragments/backtest_progress.html",
+        {
+            "run_id": run_id,
+            "steps": [],
+            "phases": _derive_bt_phases([], False, None),
+            "done": False,
+            "error": None,
+        },
+    )
+
+
 # ── Generate strategy from description → chain into /backtest/run ────────────
 # The user describes a strategy in natural language; Claude writes NEW Python
 # blocks for entry+exit (codegate validation + smoke), the spec is written to the
@@ -811,9 +945,11 @@ async def describe(
     # Backtest parameters to be chained — spec_id is added at the end of generation.
     # ``intervals``/``intervals_csv``: the multi-TF list for the sweep chain (csv,
     # a robust path that doesn't rely on hx-vals array encoding). ``interval``: single-TF /run.
-    # For Index: granularity is a list of checkboxes; use first for /run chain.
+    # For Index: granularity is a list of checkboxes; ``granularity_csv`` carries the
+    # multi-TF list for the Index sweep chain, ``granularity`` (first) is the single-TF /run.
     gran_list = granularity if isinstance(granularity, list) else [granularity]
-    gran_first = gran_list[0] if gran_list else "1d"
+    gran_list = [g for g in gran_list if g] or ["1d"]
+    gran_first = gran_list[0]
     run_params = {
         "instrument_kind": instrument_kind,
         "symbol": symbol,
@@ -825,6 +961,7 @@ async def describe(
         "bybit_end": bybit_end,
         "ticker": ticker,
         "granularity": gran_first,
+        "granularity_csv": ",".join(gran_list),
         "start_date": start_date,
         "end_date": end_date,
         "ext_instrument": ext_instrument,
@@ -1449,14 +1586,23 @@ def _sweep_state_view(sweep_id: str) -> dict | None:
 async def sweep(
     request: Request,
     spec_id: str = Form(...),
+    instrument_kind: str = Form("Bybit"),
     symbol: str = Form("BTCUSDT"),
     category: str = Form("linear"),
     intervals: list[str] = Form(default=[]),
     intervals_csv: str = Form(""),
     bybit_start: str = Form(""),
     bybit_end: str = Form(""),
+    ticker: str = Form(""),
+    granularity_csv: str = Form(""),
+    start_date: str = Form(""),
+    end_date: str = Form(""),
 ):
-    """Run the same strategy on each of the selected TFs → comparison table."""
+    """Run the same strategy on each of the selected TFs → comparison table.
+
+    Bybit: intervals (1/5/15/60/240/D). Index/Equity: granularity_csv
+    (1m/5m/15m/60m/1d) loaded via load_index_bars over the full cache range
+    (or explicit start/end dates)."""
     from server import templates
 
     catalog = load_catalog()
@@ -1465,28 +1611,50 @@ async def sweep(
         return HTMLResponse(
             "<div class='empty-state'>Strategy not found.</div>", status_code=404
         )
-    # The describe→sweep chain carries intervals as csv (without relying on hx-vals
-    # array encoding). A direct form POST (standalone/tests) provides the ``intervals``
-    # list; if present, it takes priority.
-    raw = list(intervals)
-    if not raw and intervals_csv:
-        raw = [x.strip() for x in intervals_csv.split(",") if x.strip()]
-    picked = _normalize_intervals(raw)
-    if len(picked) < 2:
-        return HTMLResponse(
-            "<div class='empty-state'>Select at least 2 timeframes "
-            "(for comparison).</div>",
-            status_code=400,
-        )
 
-    label_of = dict(BYBIT_ALL_INTERVALS)
+    is_index = instrument_kind == "Index"
+
+    if is_index:
+        # Index: granularity list (csv from the describe→sweep chain).
+        picked = [g.strip() for g in granularity_csv.split(",") if g.strip()]
+        if not ticker:
+            return HTMLResponse(
+                "<div class='empty-state'>Ticker required for Index sweep.</div>",
+                status_code=400,
+            )
+        if len(picked) < 2:
+            return HTMLResponse(
+                "<div class='empty-state'>Select at least 2 timeframes "
+                "(for comparison).</div>",
+                status_code=400,
+            )
+        _idx_labels = {"1m": "1m", "5m": "5m", "15m": "15m", "60m": "1h", "1d": "1d"}
+        label_of = _idx_labels
+        display_symbol, display_category = ticker, "index"
+    else:
+        # The describe→sweep chain carries intervals as csv (without relying on hx-vals
+        # array encoding). A direct form POST (standalone/tests) provides the ``intervals``
+        # list; if present, it takes priority.
+        raw = list(intervals)
+        if not raw and intervals_csv:
+            raw = [x.strip() for x in intervals_csv.split(",") if x.strip()]
+        picked = _normalize_intervals(raw)
+        if len(picked) < 2:
+            return HTMLResponse(
+                "<div class='empty-state'>Select at least 2 timeframes "
+                "(for comparison).</div>",
+                status_code=400,
+            )
+        label_of = dict(BYBIT_ALL_INTERVALS)
+        display_symbol, display_category = symbol, category
+
     sweep_id = uuid.uuid4().hex[:8]
     _SWEEP_STORE.create_evicting(
         sweep_id,
         {
             "spec_name": spec.name,
-            "symbol": symbol,
-            "category": category,
+            "symbol": display_symbol,
+            "category": display_category,
             "done": False,
             "error": None,
             "rows": [
@@ -1524,6 +1692,59 @@ async def sweep(
         from data import _base_ccy, _bybit_cache_path, load_bybit_bars
         from parallel_exec import get_worker_count, parallel_enabled
         from sandbox import run_backtest_guarded
+
+        def _run_one_index(code: str) -> None:
+            _row(code, status="running")
+            try:
+                from data import INDEX_CACHE_DIR, _ticker_to_filename, load_index_bars
+
+                # Full cache range unless explicit dates given.
+                if start_date and end_date:
+                    s_d, e_d = date.fromisoformat(start_date), date.fromisoformat(end_date)
+                else:
+                    cp = INDEX_CACHE_DIR / f"{_ticker_to_filename(ticker)}_{code}.parquet"
+                    if not cp.exists():
+                        _row(code, status="error", error="no cache — fetch from the Data screen")
+                        return
+                    _df = _pd.read_parquet(cp)
+                    if _df.empty:
+                        _row(code, status="error", error="no bars")
+                        return
+                    s_d = _df.index[0].date()
+                    e_d = _df.index[-1].date()
+                bars = load_index_bars(ticker, s_d, e_d, code)
+                if bars.empty:
+                    _row(code, status="error", error="no bars")
+                    return
+                actual_from = bars.index[0].strftime("%Y-%m-%d")
+                actual_to = bars.index[-1].strftime("%Y-%m-%d")
+                run_spec = spec
+                if float(spec.trade_size) < 1:
+                    import copy as _copy
+
+                    run_spec = _copy.copy(spec)
+                    run_spec.trade_size = 1.0
+                result = run_backtest_guarded(
+                    run_spec,
+                    bars,
+                    recipe={"source": "index", "ticker": ticker, "granularity": code},
+                    iteration_id=0,
+                    rationale=f"tf-sweep · Index {ticker} {code}",
+                    force_subprocess=True,
+                )
+                if result.error:
+                    _row(code, status="error", error=result.error[:120])
+                else:
+                    _row(
+                        code,
+                        status="done",
+                        metrics=_sweep_row_metrics(result.metrics),
+                        n_bars=len(bars),
+                        date_from=actual_from,
+                        date_to=actual_to,
+                    )
+            except Exception as e:
+                _row(code, status="error", error=f"{type(e).__name__}: {e}"[:120])
 
         base = _base_ccy(symbol)
 
@@ -1563,11 +1784,7 @@ async def sweep(
                 if bars.empty:
                     _row(code, status="error", error="no bars")
                     return
-                # Perf: bound the DEFAULT (blank-range) sweep run to recent bars;
-                # explicit dates honored in full (see L88).
-                if not bybit_start and not bybit_end and len(bars) > _DEFAULT_MAX_BARS:
-                    bars = bars.iloc[-_DEFAULT_MAX_BARS:]
-                # Use actual bar range (after trimming) for display.
+                # Use actual bar range for display.
                 actual_from = bars.index[0].strftime("%Y-%m-%d") if not bars.empty else ""
                 actual_to = bars.index[-1].strftime("%Y-%m-%d") if not bars.empty else ""
                 result = run_backtest_guarded(
@@ -1597,6 +1814,7 @@ async def sweep(
             except Exception as e:
                 _row(code, status="error", error=f"{type(e).__name__}: {e}"[:120])
 
+        runner = _run_one_index if is_index else _run_one
         try:
             # Intervals are INDEPENDENT full backtests on different bars, so run
             # them concurrently — each force_subprocess child runs in parallel
@@ -1604,7 +1822,7 @@ async def sweep(
             # (NAUTILUS_PARALLEL=0 → sequential). Per-row errors handled inside.
             workers = min(len(picked), get_worker_count()) if parallel_enabled() else 1
             with ThreadPoolExecutor(max_workers=max(1, workers)) as ex:
-                list(ex.map(_run_one, picked))
+                list(ex.map(runner, picked))
         except Exception as e:
             with _SWEEP_LOCK:
                 if sweep_id in _SWEEP_PROGRESS:

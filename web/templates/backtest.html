@@ -24,36 +24,34 @@
         </div>
       </div>
       <div class="panel-body">
-        {# Single path: describe the strategy in natural language → Claude writes
-           NEW Python block(s) (codegate validation + smoke), the spec is saved to
-           the catalog and backtested on ALL SELECTED timeframes. type="button" +
-           hx-post → no native submit; hx-include carries all form fields
-           (description, symbol, category, checkbox intervals, dates). To set up a
-           saved strategy → Composer. #}
-        <form id="gen-form" onsubmit="return false;">
-          <label class="field">
-            Describe the strategy — Claude writes new Python block(s)
-            <input type="text" name="description"
-                   hx-post="/backtest/plan"
-                   hx-include="closest form"
-                   hx-target="#plan-preview"
-                   hx-swap="innerHTML"
-                   hx-trigger="keyup changed delay:800ms"
-                   hx-indicator="#plan-spinner"
-                   placeholder="E.g.: buy when RSI drops below 30 and turns up while volume is 2x the 20-bar average; exit if it falls by 3x ATR">
+        {# Strategy mode selector — Describe (Claude) | Vol-Targeted Trend #}
+        <div class="row" style="align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:14px;padding-bottom:12px;border-bottom:1px solid var(--border-soft);">
+          <span class="text-muted mono" style="font-size:11px;">Strateji:</span>
+          <label style="display:inline-flex;align-items:center;gap:4px;font-size:12px;cursor:pointer;">
+            <input type="radio" name="strategy_mode" value="describe" checked
+                   onchange="btToggleStrategyMode('describe');">
+            ✨ Describe (Claude)
           </label>
+          <label style="display:inline-flex;align-items:center;gap:4px;font-size:12px;cursor:pointer;">
+            <input type="radio" name="strategy_mode" value="vtt"
+                   onchange="btToggleStrategyMode('vtt');">
+            Vol-Targeted Trend
+          </label>
+        </div>
 
-          {# Asset type toggle — Bybit / Index #}
-          <div class="row" style="align-items:center;gap:8px;flex-wrap:wrap;margin-top:12px;">
+        <form id="gen-form" onsubmit="return false;">
+
+          {# Asset type toggle — shared by both modes #}
+          <div class="row" style="align-items:center;gap:8px;flex-wrap:wrap;margin-top:4px;">
             <span class="text-muted mono" style="font-size:11px;">Asset type:</span>
             <label style="display:inline-flex;align-items:center;gap:4px;font-size:12px;cursor:pointer;">
               <input type="radio" name="instrument_kind" value="Bybit" checked
-                     onchange="document.getElementById('bybit-fields').style.display='';document.getElementById('index-fields').style.display='none';document.getElementById('tf-row').style.display='';">
+                     onchange="btToggleAsset('Bybit');">
               Bybit
             </label>
             <label style="display:inline-flex;align-items:center;gap:4px;font-size:12px;cursor:pointer;">
               <input type="radio" name="instrument_kind" value="Index"
-                     onchange="document.getElementById('bybit-fields').style.display='none';document.getElementById('index-fields').style.display='';document.getElementById('tf-row').style.display='none';">
+                     onchange="btToggleAsset('Index');">
               Index / Equity (QQQ, SPY…)
             </label>
           </div>
@@ -70,6 +68,13 @@
                 <select name="category">
                   {% for cat in bybit_categories %}
                   <option value="{{ cat }}" {% if cat == 'linear' %}selected{% endif %}>{{ cat }}</option>
+                  {% endfor %}
+                </select>
+              </label>
+              <label class="field" id="bybit-interval-field">Interval
+                <select name="interval">
+                  {% for code, lbl in bybit_intervals %}
+                  <option value="{{ code }}" {% if code == '1' %}selected{% endif %}>{{ lbl }}</option>
                   {% endfor %}
                 </select>
               </label>
@@ -94,6 +99,13 @@
                        value="" autocomplete="off" placeholder="QQQ"
                        hx-get="/backtest/tickers" hx-trigger="focus once" hx-target="#index-tickers-list" hx-swap="innerHTML">
               </label>
+              <label class="field" id="index-granularity-field">Granularity
+                <select name="granularity">
+                  {% for code, lbl in [('1m','1m'),('5m','5m'),('15m','15m'),('60m','1h'),('1d','1d')] %}
+                  <option value="{{ code }}" {% if code == '1d' %}selected{% endif %}>{{ lbl }}</option>
+                  {% endfor %}
+                </select>
+              </label>
               <label class="field">Start <span class="text-muted" style="font-size:10px;">(empty=full cache)</span>
                 <input type="date" name="start_date">
               </label>
@@ -104,9 +116,9 @@
             <datalist id="index-tickers-list">
               {% for s in index_symbols %}<option value="{{ s }}">{% endfor %}
             </datalist>
-            <div class="row" style="align-items:center;gap:12px;flex-wrap:wrap;margin-top:10px;">
+            <div id="index-tf-row" class="row" style="align-items:center;gap:12px;flex-wrap:wrap;margin-top:10px;">
               <span class="text-muted mono" style="font-size:11px;">Timeframes:</span>
-              {% for code, tflabel in [('1m','1m'),('5m','5m'),('15m','15m'),('1h','1h'),('1d','1d')] %}
+              {% for code, tflabel in [('1m','1m'),('5m','5m'),('15m','15m'),('60m','1h'),('1d','1d')] %}
               <label style="display:inline-flex;align-items:center;gap:4px;font-size:12px;cursor:pointer;">
                 <input type="checkbox" name="granularity" value="{{ code }}"
                        {% if code == '15m' %}checked{% endif %}>
@@ -116,60 +128,118 @@
             </div>
           </div>
 
-          <div id="tf-row" class="row" style="align-items:center;gap:12px;flex-wrap:wrap;margin-top:14px;">
-            <span class="text-muted mono" style="font-size:11px;">Timeframes (to be backtested):</span>
-            {% for code, tflabel in bybit_intervals %}
-            <label style="display:inline-flex;align-items:center;gap:4px;font-size:12px;cursor:pointer;">
-              <input type="checkbox" name="intervals" value="{{ code }}"
-                     {% if code in ('15','60','240','D') %}checked{% endif %}>
-              {{ tflabel }}
-            </label>
-            {% endfor %}
-          </div>
-
-          <div class="row" style="align-items:center;gap:12px;flex-wrap:wrap;margin-top:14px;">
-            <label style="display:inline-flex;align-items:center;gap:6px;font-size:12px;cursor:pointer;">
-              <input type="checkbox" name="allow_short" value="on" checked
+          {# ── DESCRIBE section ── #}
+          <div id="describe-section">
+            <label class="field" style="margin-top:12px;">
+              Describe the strategy — Claude writes new Python block(s)
+              <textarea name="description" rows="6"
                      hx-post="/backtest/plan"
                      hx-include="closest form"
                      hx-target="#plan-preview"
-                     hx-swap="innerHTML">
-              <span>Short işlemlere izin ver <span class="text-muted" style="font-size:10px;">(MARGIN hesap · iki yönlü)</span></span>
+                     hx-swap="innerHTML"
+                     hx-trigger="keyup changed delay:800ms"
+                     hx-indicator="#plan-spinner"
+                     placeholder="E.g.: buy when RSI drops below 30 and turns up while volume is 2x the 20-bar average; exit if it falls by 3x ATR"></textarea>
             </label>
+
+            <div id="tf-row" class="row" style="align-items:center;gap:12px;flex-wrap:wrap;margin-top:14px;">
+              <span class="text-muted mono" style="font-size:11px;">Timeframes (to be backtested):</span>
+              {% for code, tflabel in bybit_intervals %}
+              <label style="display:inline-flex;align-items:center;gap:4px;font-size:12px;cursor:pointer;">
+                <input type="checkbox" name="intervals" value="{{ code }}"
+                       {% if code in ('15','60','240','D') %}checked{% endif %}>
+                {{ tflabel }}
+              </label>
+              {% endfor %}
+            </div>
+
+            <div class="row" style="align-items:center;gap:12px;flex-wrap:wrap;margin-top:14px;">
+              <label style="display:inline-flex;align-items:center;gap:6px;font-size:12px;cursor:pointer;">
+                <input type="checkbox" name="allow_short" value="on" checked
+                       hx-post="/backtest/plan"
+                       hx-include="closest form"
+                       hx-target="#plan-preview"
+                       hx-swap="innerHTML">
+                <span>Short işlemlere izin ver <span class="text-muted" style="font-size:10px;">(MARGIN hesap · iki yönlü)</span></span>
+              </label>
+            </div>
+
+            <div class="row" style="align-items:center;gap:10px;flex-wrap:wrap;margin-top:14px;">
+              <button class="btn btn-primary" type="button"
+                      hx-post="/backtest/describe"
+                      hx-include="closest form"
+                      hx-target="#result"
+                      hx-swap="innerHTML"
+                      hx-indicator="#gen-spinner"
+                      style="border-color:rgba(129,140,248,0.5);">
+                <span class="btn-spin spin">⟳</span>
+                ✨ Generate &amp; Backtest
+              </button>
+              <span class="htmx-indicator text-muted mono" id="gen-spinner" style="font-size:11px;">
+                <span class="spin">⟳</span> Claude is writing the block · preparing backtest…
+              </span>
+              <div class="spacer"></div>
+              <span class="text-muted" style="font-size:11px;">2+ TF → comparison table · 1 TF → full result (equity)</span>
+            </div>
+
+            <div class="text-muted" style="margin-top:10px;font-size:11px;">
+              For each selected TF the bars at that resolution must have been fetched
+              from the <a href="/data" class="link">Data</a> screen; a TF row with no data shows "no cache".
+              If the date is empty, the full range of the cache is used.
+            </div>
           </div>
 
-          <div class="row" style="align-items:center;gap:10px;flex-wrap:wrap;margin-top:14px;">
-            <button class="btn btn-primary" type="button"
-                    hx-post="/backtest/describe"
-                    hx-include="closest form"
-                    hx-target="#result"
-                    hx-swap="innerHTML"
-                    hx-indicator="#gen-spinner"
-                    style="border-color:rgba(129,140,248,0.5);">
-              <span class="btn-spin spin">⟳</span>
-              ✨ Generate &amp; Backtest
-            </button>
-            <span class="htmx-indicator text-muted mono" id="gen-spinner" style="font-size:11px;">
-              <span class="spin">⟳</span> Claude is writing the block · preparing backtest…
-            </span>
-            <div class="spacer"></div>
-            <span class="text-muted" style="font-size:11px;">2+ TF → comparison table · 1 TF → full result (equity)</span>
+          {# ── VOL-TARGETED TREND section ── #}
+          <div id="vtt-section" style="display:none;">
+            <div class="row" style="align-items:flex-end;gap:10px;flex-wrap:wrap;margin-top:14px;">
+              <label class="field" style="min-width:80px;">
+                Fast MA
+                <input type="number" name="fast" value="50" min="2" max="100">
+              </label>
+              <label class="field" style="min-width:80px;">
+                Slow MA
+                <input type="number" name="slow" value="200" min="10" max="500">
+              </label>
+              <label class="field" style="min-width:80px;">
+                Vol Span
+                <input type="number" name="vol_span" value="10" min="3" max="60">
+              </label>
+              <label class="field" style="min-width:110px;">
+                Vol Target <span class="text-muted" style="font-size:10px;">(0.02=2%)</span>
+                <input type="number" name="vol_target" value="0.02" min="0.001" max="0.1" step="0.001">
+              </label>
+              <label class="field" style="min-width:100px;">
+                Capital ($)
+                <input type="number" name="capital" value="10000" min="100" step="100">
+              </label>
+            </div>
+
+            <div class="row" style="align-items:center;gap:12px;flex-wrap:wrap;margin-top:12px;">
+              <label style="display:inline-flex;align-items:center;gap:6px;font-size:12px;cursor:pointer;">
+                <input type="checkbox" name="allow_short" value="on">
+                <span>Short pozisyon <span class="text-muted" style="font-size:10px;">(MARGIN · iki yönlü)</span></span>
+              </label>
+            </div>
+
+            <div class="row" style="align-items:center;gap:10px;flex-wrap:wrap;margin-top:14px;">
+              <button class="btn btn-primary" type="button"
+                      hx-post="/backtest/run_vtt"
+                      hx-include="closest form"
+                      hx-target="#result"
+                      hx-swap="innerHTML"
+                      hx-indicator="#vtt-spinner"
+                      style="border-color:rgba(129,140,248,0.5);">
+                ▶ Çalıştır
+              </button>
+              <span class="htmx-indicator text-muted mono" id="vtt-spinner" style="font-size:11px;">
+                <span class="spin">⟳</span> Hesaplanıyor…
+              </span>
+            </div>
           </div>
 
-          <div class="text-muted" style="margin-top:10px;font-size:11px;">
-            For each selected TF the bars at that resolution must have been fetched
-            from the <a href="/data" class="link">Data</a> screen; a TF row with no data shows "no cache".
-            If the date is empty, the full range of the cache is used.
-          </div>
         </form>
       </div>
     </div>
-
-    {# Live plan preview — filled as the description is typed (debounce), read-only #}
-    <span class="htmx-indicator text-muted mono small" id="plan-spinner">Claude is interpreting the description…</span>
-    <div id="plan-preview"></div>
-
-  </div>
 
   {# ── RIGHT: results + robustness + run history ── #}
   <div class="stack">
@@ -265,6 +335,47 @@
     if (evt.detail.target && evt.detail.target.id === "result") {
       if (typeof buildEquityChart === "function") buildEquityChart();
     }
+  });
+
+  // Toggle strategy mode: describe (Claude) ↔ vol-targeted-trend
+  function btToggleStrategyMode(mode) {
+    const isVtt = mode === 'vtt';
+    document.getElementById('describe-section').style.display = isVtt ? 'none' : '';
+    document.getElementById('vtt-section').style.display = isVtt ? '' : 'none';
+    // Disable ALL inputs in the hidden section so they don't leak into the POST
+    document.querySelectorAll('#describe-section input, #describe-section select, #describe-section textarea')
+      .forEach(el => { el.disabled = isVtt; });
+    document.querySelectorAll('#vtt-section input, #vtt-section select')
+      .forEach(el => { el.disabled = !isVtt; });
+    // TF checkboxes (Bybit intervals) and interval-field: describe-only
+    const tfRow = document.getElementById('tf-row');
+    const bybitInterval = document.getElementById('bybit-interval-field');
+    const indexGran = document.getElementById('index-granularity-field');
+    const indexTfRow = document.getElementById('index-tf-row');
+    if (tfRow) { tfRow.style.display = isVtt ? 'none' : ''; tfRow.querySelectorAll('input').forEach(el => el.disabled = isVtt); }
+    if (bybitInterval) { bybitInterval.style.display = isVtt ? 'none' : ''; bybitInterval.querySelector('select').disabled = isVtt; }
+    if (indexGran) { indexGran.style.display = isVtt ? '' : 'none'; indexGran.querySelector('select').disabled = !isVtt; }
+    if (indexTfRow) { indexTfRow.style.display = isVtt ? 'none' : ''; indexTfRow.querySelectorAll('input').forEach(el => el.disabled = isVtt); }
+  }
+
+  // Toggle Bybit / Index field groups
+  function btToggleAsset(kind) {
+    const isBybit = kind === 'Bybit';
+    document.getElementById('bybit-fields').style.display = isBybit ? '' : 'none';
+    document.getElementById('index-fields').style.display = isBybit ? 'none' : '';
+    document.getElementById('tf-row').style.display = isBybit ? '' : 'none';
+    document.querySelectorAll('#bybit-fields input, #bybit-fields select, #tf-row input')
+      .forEach(el => el.disabled = !isBybit);
+    document.querySelectorAll('#index-fields input, #index-fields select')
+      .forEach(el => el.disabled = isBybit);
+    // Re-apply strategy mode so VTT mode's disable logic wins after asset toggle
+    const currentMode = document.querySelector('input[name="strategy_mode"]:checked');
+    if (currentMode) btToggleStrategyMode(currentMode.value);
+  }
+
+  document.addEventListener('DOMContentLoaded', () => {
+    btToggleAsset('Bybit');
+    btToggleStrategyMode('describe');
   });
 </script>
 {% endblock %}
