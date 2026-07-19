@@ -32,6 +32,17 @@ from app_constants import NO_WINDOW_FLAGS
 
 log = logging.getLogger(__name__)
 
+# Thread-local HTTP session: reuses TCP+TLS connections within each thread
+# (fetch workers, daemon threads). Created on first use per thread.
+_bybit_session = threading.local()
+
+
+def _get_bybit_session() -> requests.Session:
+    if not hasattr(_bybit_session, "s"):
+        _bybit_session.s = requests.Session()
+    return _bybit_session.s
+
+
 CACHE_DIR = Path.home() / ".cache" / "nautilus_web_app"
 BYBIT_CACHE_DIR = CACHE_DIR / "bybit"
 # Pandas cache for bars decoded from read-only EXTERNAL catalogs — lives here,
@@ -360,9 +371,7 @@ def load_index_bars(
             existing = pd.read_parquet(cache_path)
         except Exception as read_err:
             # M3c: corrupt parquet — ignore the cache, days will be re-scanned.
-            log.warning(
-                "ignoring corrupt index cache (%s): %s", cache_path, read_err
-            )
+            log.warning("ignoring corrupt index cache (%s): %s", cache_path, read_err)
             existing = pd.DataFrame(columns=empty_cols)
         if not existing.empty and not force:
             cached_days = set(existing.index.normalize().date.tolist())
@@ -497,7 +506,7 @@ def _fetch_bybit_page(
     }
     for attempt in range(5):
         try:
-            r = requests.get(_BYBIT_URL, params=params, timeout=30)
+            r = _get_bybit_session().get(_BYBIT_URL, params=params, timeout=30)
             r.raise_for_status()
         except requests.exceptions.ReadTimeout:
             wait = 10 * (attempt + 1)
@@ -683,7 +692,6 @@ def load_bybit_bars(
             if next_cur <= cur:
                 break
             cur = next_cur
-            time.sleep(0.15)  # conservative pacing for large parallel fetches
         return frames
 
     # M3b: the read-modify-write block is under a per-key lock — concurrent
@@ -794,9 +802,44 @@ BYBIT_ALL_INTERVALS: tuple[tuple[str, str], ...] = (
 
 
 def _read_parquet_stats(path: Path) -> dict | None:
-    """Return {rows, first, last} for an existing OHLCV parquet, or None."""
+    """Return {rows, first, last} for an existing OHLCV parquet, or None.
+
+    Uses pyarrow footer metadata (pq.read_metadata) instead of a full
+    pd.read_parquet decode — reads ~4 KB of footer, not the entire file.
+    The pandas DatetimeIndex is stored as '__index_level_0__' (always the
+    last column in our OHLCV files) with INT64 min/max statistics.
+    Falls back to a full read only when statistics are absent.
+    """
     if not path.exists():
         return None
+    try:
+        import pyarrow.parquet as pq
+
+        md = pq.read_metadata(str(path))
+        size_bytes = path.stat().st_size
+        if md.num_rows == 0:
+            return {"rows": 0, "first": None, "last": None, "size_bytes": size_bytes}
+
+        # __index_level_0__ is always the last column in our OHLCV parquet files.
+        rg0 = md.row_group(0)
+        ts_col_idx = rg0.num_columns - 1
+        # Verify it really is the timestamp index (guard against schema drift).
+        if rg0.column(ts_col_idx).path_in_schema == "__index_level_0__":
+            stats0 = rg0.column(ts_col_idx).statistics
+            stats_last = (
+                md.row_group(md.num_row_groups - 1).column(ts_col_idx).statistics
+            )
+            if stats0 and stats0.has_min_max and stats_last and stats_last.has_min_max:
+                return {
+                    "rows": md.num_rows,
+                    "first": pd.Timestamp(stats0.min).isoformat(),
+                    "last": pd.Timestamp(stats_last.max).isoformat(),
+                    "size_bytes": size_bytes,
+                }
+    except Exception:
+        pass
+
+    # Fallback: full decode (missing statistics or unexpected schema)
     try:
         df = pd.read_parquet(path)
     except Exception:  # pragma: no cover
@@ -1181,7 +1224,9 @@ def list_catalog_bybit_symbols() -> list[dict]:
         if venue not in _cat_map:
             continue
         seen.add((symbol, _cat_map[venue]))
-    return sorted([{"symbol": s, "category": c} for s, c in seen], key=lambda x: x["symbol"])
+    return sorted(
+        [{"symbol": s, "category": c} for s, c in seen], key=lambda x: x["symbol"]
+    )
 
 
 def _catalog_fname_ns(stamp: str) -> int | None:

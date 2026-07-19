@@ -44,7 +44,7 @@ def parallel_enabled() -> bool:
 
 
 def get_worker_count() -> int:
-    """Pool size: env override, else cpu//2 - 2 (headroom for server/OS)."""
+    """Pool size: env override, else cpu - 2 (headroom for server/OS)."""
     lo, hi = DEFAULT_WORKER_CLAMP
     raw = os.environ.get("NAUTILUS_PARALLEL_WORKERS")
     if raw:
@@ -53,7 +53,7 @@ def get_worker_count() -> int:
         except ValueError:
             pass
     cpu = os.cpu_count() or 4
-    return max(lo, min(hi, cpu // 2 - 2))
+    return max(lo, min(hi, cpu - 2))
 
 
 def make_snapshot(bars_df) -> str:

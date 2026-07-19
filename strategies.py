@@ -5,7 +5,8 @@ market orders. The LLM agent proposes numeric parameters only.
 
 ``VolTargetedTrendStrategy`` extends the pattern with dynamic position
 sizing: ``size = (vol_target / ewma_vol) * capital / price``, where
-``ewma_vol = calc_ewma_vol(closes, span)`` from [[indicators.py]].
+ewma_vol is maintained incrementally (O(1) per bar) without calling
+``calc_ewma_vol`` on every bar.
 
 Wiki References
 ---------------
@@ -25,8 +26,6 @@ from nautilus_trader.model import Bar, BarType, InstrumentId
 from nautilus_trader.model.enums import OrderSide
 from nautilus_trader.trading.strategy import Strategy, StrategyConfig
 
-from indicators import calc_ewma_vol
-
 
 class MACrossoverConfig(StrategyConfig, frozen=True):
     instrument_id: InstrumentId
@@ -42,16 +41,27 @@ class MACrossoverStrategy(Strategy):
         self.instrument = None
         self._closes: deque[float] = deque(maxlen=max(config.fast, config.slow) + 5)
         self._prev_diff: float | None = None
+        # Cached on on_start — avoids per-bar isinstance check
+        self._iid_cache: InstrumentId | None = None
+        self._bt_cache: BarType | None = None
+        self._fixed_qty = None
+        # Incremental running sums for O(1) MA per bar
+        self._fast_sum: float = 0.0
+        self._slow_sum: float = 0.0
 
     def _iid(self):
-        """Return InstrumentId — resolves str if config was loaded via ImportableStrategyConfig."""
-        iid = self.config.instrument_id
-        return InstrumentId.from_str(iid) if isinstance(iid, str) else iid
+        if self._iid_cache is None:
+            iid = self.config.instrument_id
+            self._iid_cache = (
+                InstrumentId.from_str(iid) if isinstance(iid, str) else iid
+            )
+        return self._iid_cache
 
     def _bt(self):
-        """Return BarType — resolves str if config was loaded via ImportableStrategyConfig."""
-        bt = self.config.bar_type
-        return BarType.from_str(bt) if isinstance(bt, str) else bt
+        if self._bt_cache is None:
+            bt = self.config.bar_type
+            self._bt_cache = BarType.from_str(bt) if isinstance(bt, str) else bt
+        return self._bt_cache
 
     def on_start(self) -> None:
         self.instrument = self.cache.instrument(self._iid())
@@ -59,17 +69,27 @@ class MACrossoverStrategy(Strategy):
             self.log.error(f"Instrument not found: {self._iid()}")
             self.stop()
             return
+        self._fixed_qty = self.instrument.make_qty(float(self.config.trade_size))
         self.subscribe_bars(self._bt())
 
     def on_bar(self, bar: Bar) -> None:
-        self._closes.append(float(bar.close))
-        if len(self._closes) < self.config.slow:
+        price = float(bar.close)
+        buf = self._closes
+
+        # Maintain incremental running sums: subtract evicted value, add new
+        if len(buf) >= self.config.fast:
+            self._fast_sum -= buf[-self.config.fast]
+        if len(buf) >= self.config.slow:
+            self._slow_sum -= buf[-self.config.slow]
+
+        buf.append(price)
+        self._fast_sum += price
+        self._slow_sum += price
+
+        if len(buf) < self.config.slow:
             return
 
-        closes = list(self._closes)
-        fast_ma = sum(closes[-self.config.fast :]) / self.config.fast
-        slow_ma = sum(closes[-self.config.slow :]) / self.config.slow
-        diff = fast_ma - slow_ma
+        diff = self._fast_sum / self.config.fast - self._slow_sum / self.config.slow
 
         if self._prev_diff is None:
             self._prev_diff = diff
@@ -79,22 +99,24 @@ class MACrossoverStrategy(Strategy):
         crossed_down = self._prev_diff >= 0 > diff
         self._prev_diff = diff
 
+        if not crossed_up and not crossed_down:
+            return
+
         pos = self.cache.positions_open(instrument_id=self._iid())
         has_long = any(p.side.name == "LONG" for p in pos)
         has_short = any(p.side.name == "SHORT" for p in pos)
-
-        qty = self.instrument.make_qty(float(self.config.trade_size))
 
         if crossed_up:
             if has_short:
                 self.close_all_positions(self._iid())
             if not has_long:
-                order = self.order_factory.market(
-                    instrument_id=self._iid(),
-                    order_side=OrderSide.BUY,
-                    quantity=qty,
+                self.submit_order(
+                    self.order_factory.market(
+                        instrument_id=self._iid(),
+                        order_side=OrderSide.BUY,
+                        quantity=self._fixed_qty,
+                    )
                 )
-                self.submit_order(order)
         elif crossed_down:
             if has_long:
                 self.close_all_positions(self._iid())
@@ -118,14 +140,23 @@ class RSIMeanReversionStrategy(Strategy):
         super().__init__(config)
         self.instrument = None
         self._rsi = RelativeStrengthIndex(config.rsi_period)
+        self._iid_cache: InstrumentId | None = None
+        self._bt_cache: BarType | None = None
+        self._fixed_qty = None
 
     def _iid(self):
-        iid = self.config.instrument_id
-        return InstrumentId.from_str(iid) if isinstance(iid, str) else iid
+        if self._iid_cache is None:
+            iid = self.config.instrument_id
+            self._iid_cache = (
+                InstrumentId.from_str(iid) if isinstance(iid, str) else iid
+            )
+        return self._iid_cache
 
     def _bt(self):
-        bt = self.config.bar_type
-        return BarType.from_str(bt) if isinstance(bt, str) else bt
+        if self._bt_cache is None:
+            bt = self.config.bar_type
+            self._bt_cache = BarType.from_str(bt) if isinstance(bt, str) else bt
+        return self._bt_cache
 
     def on_start(self) -> None:
         self.instrument = self.cache.instrument(self._iid())
@@ -133,6 +164,7 @@ class RSIMeanReversionStrategy(Strategy):
             self.log.error(f"Instrument not found: {self._iid()}")
             self.stop()
             return
+        self._fixed_qty = self.instrument.make_qty(float(self.config.trade_size))
         self.subscribe_bars(self._bt())
         self.register_indicator_for_bars(self._bt(), self._rsi)
 
@@ -140,24 +172,25 @@ class RSIMeanReversionStrategy(Strategy):
         if not self._rsi.initialized:
             return
 
-        pos = self.cache.positions_open(instrument_id=self._iid())
-        has_long = any(p.side.name == "LONG" for p in pos)
-
-        qty = self.instrument.make_qty(float(self.config.trade_size))
-
         # H7: Nautilus RSI.value ∈ [0,1); oversold/overbought on 0-100 scale
         # (30/70). The scale mismatch turned the strategy into a degenerate buy-hold
         # (value<30 always true, value>70 never). Scale to 0-100.
         rsi_100 = self._rsi.value * 100.0
-        if rsi_100 < self.config.oversold and not has_long:
-            order = self.order_factory.market(
-                instrument_id=self._iid(),
-                order_side=OrderSide.BUY,
-                quantity=qty,
-            )
-            self.submit_order(order)
-        elif rsi_100 > self.config.overbought and has_long:
-            self.close_all_positions(self._iid())
+
+        if rsi_100 < self.config.oversold:
+            pos = self.cache.positions_open(instrument_id=self._iid())
+            if not any(p.side.name == "LONG" for p in pos):
+                self.submit_order(
+                    self.order_factory.market(
+                        instrument_id=self._iid(),
+                        order_side=OrderSide.BUY,
+                        quantity=self._fixed_qty,
+                    )
+                )
+        elif rsi_100 > self.config.overbought:
+            pos = self.cache.positions_open(instrument_id=self._iid())
+            if any(p.side.name == "LONG" for p in pos):
+                self.close_all_positions(self._iid())
 
     def on_stop(self) -> None:
         self.cancel_all_orders(self._iid())
@@ -180,6 +213,7 @@ class VolTargetedTrendStrategy(Strategy):
     """MA crossover direction + EWMA vol-targeted position sizing.
 
     Position size = (vol_target / ewma_vol) * capital / price.
+    ewma_vol is maintained incrementally (O(1)/bar) via self._ewma_var.
     When allow_short=True (requires MARGIN account in run_backtest),
     a down-cross opens a SHORT instead of just closing the long.
     """
@@ -187,19 +221,33 @@ class VolTargetedTrendStrategy(Strategy):
     def __init__(self, config: VolTargetedTrendConfig) -> None:
         super().__init__(config)
         self.instrument = None
-        _buf = max(config.fast, config.slow, config.vol_span) + 5
-        self._closes: deque[float] = deque(maxlen=_buf)
+        self._iid_cache: InstrumentId | None = None
+        self._bt_cache: BarType | None = None
         self._prev_diff: float | None = None
-        self._mtm_equity: list[float] = []
-        self._mtm_ts: list[int] = []
+        self._prev_close: float | None = None
+        # Incremental EWMA variance state — O(1) per bar
+        self._ewma_var: float = 0.0
+        self._ewma_alpha: float = 2.0 / (config.vol_span + 1)
+        self._vol_warmup: int = 0  # bars seen so far for warmup counter
+        # Incremental running sums for MA
+        _buf = max(config.fast, config.slow) + 5
+        self._closes: deque[float] = deque(maxlen=_buf)
+        self._fast_sum: float = 0.0
+        self._slow_sum: float = 0.0
 
     def _iid(self) -> InstrumentId:
-        iid = self.config.instrument_id
-        return InstrumentId.from_str(iid) if isinstance(iid, str) else iid
+        if self._iid_cache is None:
+            iid = self.config.instrument_id
+            self._iid_cache = (
+                InstrumentId.from_str(iid) if isinstance(iid, str) else iid
+            )
+        return self._iid_cache
 
     def _bt(self) -> BarType:
-        bt = self.config.bar_type
-        return BarType.from_str(bt) if isinstance(bt, str) else bt
+        if self._bt_cache is None:
+            bt = self.config.bar_type
+            self._bt_cache = BarType.from_str(bt) if isinstance(bt, str) else bt
+        return self._bt_cache
 
     def on_start(self) -> None:
         self.instrument = self.cache.instrument(self._iid())
@@ -210,36 +258,51 @@ class VolTargetedTrendStrategy(Strategy):
         self.subscribe_bars(self._bt())
 
     def _vol_sized_qty(self, price: float) -> object:
-        closes = list(self._closes)
-        vol_est = calc_ewma_vol(closes, span=self.config.vol_span)
-        if vol_est is not None and vol_est > 0 and price > 0:
+        vol_est = math.sqrt(self._ewma_var) if self._ewma_var > 0 else None
+        if (
+            vol_est is not None
+            and vol_est > 0
+            and price > 0
+            and self._vol_warmup >= self.config.vol_span + 1
+        ):
             size = (self.config.vol_target / vol_est) * self.config.capital / price
         else:
             size = float(self.config.trade_size)
-        # Cap at 95% of capital to prevent AccountBalanceNegative
-        max_size = 0.95 * self.config.capital / price if price > 0 else float(self.config.trade_size)
+        max_size = (
+            0.95 * self.config.capital / price
+            if price > 0
+            else float(self.config.trade_size)
+        )
         size = min(size, max_size)
         size = max(size, float(self.instrument.size_increment))
         return self.instrument.make_qty(size)
 
-    def _snapshot_mtm(self, ts_ns: int) -> None:
-        try:
-            eq = self.portfolio.equity(self._iid().venue)
-            if eq is not None:
-                self._mtm_equity.append(float(eq.as_double() if hasattr(eq, "as_double") else eq))
-                self._mtm_ts.append(ts_ns)
-        except Exception:
-            pass
-
     def on_bar(self, bar: Bar) -> None:
-        self._closes.append(float(bar.close))
-        closes = list(self._closes)
-        if len(closes) < self.config.slow:
+        price = float(bar.close)
+        buf = self._closes
+
+        # Update incremental EWMA variance (O(1))
+        if self._prev_close is not None and self._prev_close > 0 and price > 0:
+            lr = math.log(price / self._prev_close)
+            self._ewma_var = (
+                self._ewma_alpha * lr * lr + (1 - self._ewma_alpha) * self._ewma_var
+            )
+            self._vol_warmup += 1
+        self._prev_close = price
+
+        # Update incremental MA running sums
+        if len(buf) >= self.config.fast:
+            self._fast_sum -= buf[-self.config.fast]
+        if len(buf) >= self.config.slow:
+            self._slow_sum -= buf[-self.config.slow]
+        buf.append(price)
+        self._fast_sum += price
+        self._slow_sum += price
+
+        if len(buf) < self.config.slow:
             return
 
-        fast_ma = sum(closes[-self.config.fast :]) / self.config.fast
-        slow_ma = sum(closes[-self.config.slow :]) / self.config.slow
-        diff = fast_ma - slow_ma
+        diff = self._fast_sum / self.config.fast - self._slow_sum / self.config.slow
 
         if self._prev_diff is None:
             self._prev_diff = diff
@@ -249,11 +312,14 @@ class VolTargetedTrendStrategy(Strategy):
         crossed_down = self._prev_diff >= 0 > diff
         self._prev_diff = diff
 
+        if not crossed_up and not crossed_down:
+            return
+
+        # positions_open only called when a signal fires
         pos = self.cache.positions_open(instrument_id=self._iid())
         has_long = any(p.side.name == "LONG" for p in pos)
         has_short = any(p.side.name == "SHORT" for p in pos)
 
-        price = float(bar.close)
         qty = self._vol_sized_qty(price)
 
         if crossed_up:
@@ -278,8 +344,6 @@ class VolTargetedTrendStrategy(Strategy):
                         quantity=qty,
                     )
                 )
-
-        self._snapshot_mtm(bar.ts_event)
 
     def on_stop(self) -> None:
         self.cancel_all_orders(self._iid())
@@ -311,7 +375,11 @@ STRATEGY_PARAM_SPEC = {
     "vol_targeted_trend": {
         "fast": {"type": "int", "range": [2, 50], "desc": "Fast MA period"},
         "slow": {"type": "int", "range": [10, 200], "desc": "Slow MA period (> fast)"},
-        "vol_span": {"type": "int", "range": [5, 30], "desc": "EWMA span for vol estimate"},
+        "vol_span": {
+            "type": "int",
+            "range": [5, 30],
+            "desc": "EWMA span for vol estimate",
+        },
         "vol_target": {
             "type": "float",
             "range": [0.001, 0.05],

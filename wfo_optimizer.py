@@ -66,8 +66,8 @@ def _env_float(name: str, default: float) -> float:
 # Cost per window = WFO_POP_SIZE × GEN × WF_FOLDS backtests (see module
 # docstring). Tests may monkeypatch these constants; functions read the
 # values from the module global at call time.
-WFO_POP_SIZE = max(1, _env_int("NAUTILUS_WFO_POP_SIZE", 8))
-WF_FOLDS = max(1, _env_int("NAUTILUS_WF_FOLDS", 3))
+WFO_POP_SIZE = max(1, _env_int("NAUTILUS_WFO_POP_SIZE", 4))
+WF_FOLDS = max(1, _env_int("NAUTILUS_WF_FOLDS", 2))
 # NAU confidence-damping constant: score *= n / (n + K). K=20 → ×0.2 at 5 trades,
 # ×0.5 at 20 trades, ×0.83 at 100 trades — scores inflated by few trades are suppressed.
 WFO_TRADE_CONF_K = max(0, _env_int("NAUTILUS_WFO_TRADE_CONF_K", 20))

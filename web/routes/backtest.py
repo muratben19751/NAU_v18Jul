@@ -72,6 +72,7 @@ def _catalog_index_symbols() -> list[str]:
             seen.add(symbol)
     return sorted(seen)
 
+
 _LAST_RESULT: dict[str, Optional] = {
     "r": None,
     "spec_name": None,
@@ -111,6 +112,12 @@ _SWEEP_STORE = ProgressStore(20)
 _SWEEP_PROGRESS = _SWEEP_STORE.raw()
 _SWEEP_LOCK = _SWEEP_STORE.lock
 
+# Plan-preview LRU-style cache: keyed on (desc_lower, allow_short_bool).
+# Avoids repeated propose_condition_breakdown LLM calls during iterative editing.
+_PLAN_CACHE: dict = {}
+_PLAN_CACHE_TTL = 300  # seconds
+_PLAN_CACHE_MAX = 32  # max entries before evicting oldest
+
 # Perf: a blank date range used to default to the ENTIRE cache (1M+ 1m bars →
 # the backtest blows past the sandbox wall). When the user gives NO explicit
 # start/end, bound the run to the most recent N bars so the default completes;
@@ -135,10 +142,26 @@ _BT_PHASES: list[tuple[str, str, tuple[str, ...]]] = [
     ("range", "Determining date range", ("range", "date range", "window")),
     ("prepare", "Preparing bar objects", ("preparing data", "bar")),
     ("trend", "Loading trend filter data", ("trend filter",)),
-    ("engine", "Setting up BacktestEngine · venue + commissions", ("backtestnode", "engine", "venue")),
-    ("simulate", "Simulation running · processing orders", ("simulation running", "simulation", "running")),
-    ("collect", "Collecting results", ("collecting", "completed · collecting", "simulation completed")),
-    ("metrics", "Calculating metrics · PnL/Sharpe/DD", ("calculating metrics", "metrics", "positions found")),
+    (
+        "engine",
+        "Setting up BacktestEngine · venue + commissions",
+        ("backtestnode", "engine", "venue"),
+    ),
+    (
+        "simulate",
+        "Simulation running · processing orders",
+        ("simulation running", "simulation", "running"),
+    ),
+    (
+        "collect",
+        "Collecting results",
+        ("collecting", "completed · collecting", "simulation completed"),
+    ),
+    (
+        "metrics",
+        "Calculating metrics · PnL/Sharpe/DD",
+        ("calculating metrics", "metrics", "positions found"),
+    ),
     ("done", "Completed", ("completed · pnl", "completed ·")),
 ]
 
@@ -177,7 +200,6 @@ def _derive_bt_phases(steps: list[dict], done: bool, error: str | None) -> list[
             status = "pending"
         out.append({"label": label, "status": status, "ts": phase_ts[i]})
     return out
-
 
 
 def _recent_runs(limit: int = 6) -> list[dict]:
@@ -300,7 +322,8 @@ def page(request: Request):
             "preferred_spec_id": preferred_spec_id,
             "recent_runs": _recent_runs(6),
             # Main panel: symbol datalist (type-to-find), category selection, multi-TF checkboxes.
-            "bybit_symbols": list_catalog_bybit_symbols() or [{"symbol": s, "category": "linear"} for s in BYBIT_SYMBOLS],
+            "bybit_symbols": list_catalog_bybit_symbols()
+            or [{"symbol": s, "category": "linear"} for s in BYBIT_SYMBOLS],
             "bybit_categories": BYBIT_CATEGORIES,
             "bybit_intervals": BYBIT_ALL_INTERVALS,
             "index_symbols": _catalog_index_symbols(),
@@ -310,8 +333,10 @@ def page(request: Request):
 
 @router.get("/tickers", response_class=HTMLResponse)
 async def tickers(request: Request):
+    import asyncio
+
     try:
-        ts = discover_index_tickers()
+        ts = await asyncio.to_thread(discover_index_tickers)
     except Exception as e:
         return HTMLResponse(
             f"<option value=''>ticker discovery failed: {type(e).__name__}: {e}</option>"
@@ -325,8 +350,10 @@ async def tickers(request: Request):
 async def external_instruments(request: Request):
     """<option> list for the External data-source picker. Each option carries
     its available timeframes in data-grans so the UI can narrow the select."""
+    import asyncio
+
     try:
-        rows = list_external_instruments()
+        rows = await asyncio.to_thread(list_external_instruments)
     except Exception as e:
         return HTMLResponse(
             f"<option value=''>external catalog scan failed: {type(e).__name__}: {e}</option>"
@@ -699,8 +726,6 @@ async def run(
     )
 
 
-
-
 # ── Vol-Targeted Trend (registry strategy) direct run ────────────────────────
 
 
@@ -722,12 +747,16 @@ async def run_vtt(
     vol_span: int = Form(10),
     vol_target: float = Form(0.02),
     capital: float = Form(10000.0),
-    allow_short: bool = Form(False),
+    allow_short: str = Form(
+        ""
+    ),  # checkbox sends "on" / absent; bool coercion is unreliable
 ):
     """Run vol_targeted_trend registry strategy; reuses the same progress/result flow."""
     import time as _time
 
     from server import templates
+
+    _allow_short = bool(allow_short)  # checkbox sends "on" / absent → bool
 
     run_id = uuid.uuid4().hex[:8]
     _RUN_STORE.create_evicting(
@@ -751,6 +780,8 @@ async def run_vtt(
                 state["steps"].append({"ts": ts, "msg": msg})
 
     def _worker() -> None:
+        from datetime import timedelta
+
         _t_start = _time.perf_counter()
         try:
             params = {
@@ -759,36 +790,91 @@ async def run_vtt(
                 "vol_span": vol_span,
                 "vol_target": vol_target,
                 "capital": capital,
-                "allow_short": allow_short,
+                "allow_short": _allow_short,
             }
 
             if instrument_kind == "Bybit":
-                from data import load_bybit_bars
+                import pandas as _pd
+
+                from data import _bybit_cache_path, load_bybit_bars
+
                 _progress(f"Veri yükleniyor · {symbol}/{category}/{interval}…")
+                # Resolve date range from cache when user leaves dates blank
+                cp = _bybit_cache_path(category, symbol, interval)
+                if cp.exists():
+                    _df = _pd.read_parquet(cp)
+                    _cache_start = (
+                        _df.index[0].to_pydatetime().replace(tzinfo=UTC)
+                        if not _df.empty
+                        else None
+                    )
+                    _cache_end = (
+                        _df.index[-1].to_pydatetime().replace(tzinfo=UTC)
+                        if not _df.empty
+                        else None
+                    )
+                else:
+                    _cache_start = _cache_end = None
+                start_dt = (
+                    datetime.fromisoformat(bybit_start).replace(tzinfo=UTC)
+                    if bybit_start
+                    else (_cache_start or datetime.now(UTC) - timedelta(days=7))
+                )
+                end_dt = (
+                    datetime.fromisoformat(bybit_end).replace(
+                        hour=23, minute=59, second=59, tzinfo=UTC
+                    )
+                    if bybit_end
+                    else (_cache_end or datetime.now(UTC))
+                )
                 bars_df = load_bybit_bars(
                     symbol=symbol,
                     category=category,
                     interval=interval,
-                    start=bybit_start or None,
-                    end=bybit_end or None,
+                    start=start_dt,
+                    end=end_dt,
                 )
-                bars_info = {"symbol": symbol, "category": category, "interval": interval}
+                bars_info = {
+                    "symbol": symbol,
+                    "category": category,
+                    "interval": interval,
+                }
             else:
+                import pandas as _pd
+
                 _progress(f"Veri yükleniyor · {ticker}/{granularity}…")
                 try:
                     from data import INDEX_CACHE_DIR, _ticker_to_filename
-                    import pandas as _pd
-                    cache_path = INDEX_CACHE_DIR / _ticker_to_filename(ticker, granularity)
+
+                    cache_path = INDEX_CACHE_DIR / _ticker_to_filename(
+                        ticker, granularity
+                    )
                     if cache_path.exists():
                         _full = _pd.read_parquet(cache_path)
-                        _s = date.fromisoformat(start_date) if start_date else _full.index.min().date()
-                        _e = date.fromisoformat(end_date)   if end_date   else _full.index.max().date()
+                        _s = (
+                            date.fromisoformat(start_date)
+                            if start_date
+                            else _full.index.min().date()
+                        )
+                        _e = (
+                            date.fromisoformat(end_date)
+                            if end_date
+                            else _full.index.max().date()
+                        )
                     else:
-                        _s = date.fromisoformat(start_date) if start_date else date(2000, 1, 1)
-                        _e = date.fromisoformat(end_date)   if end_date   else date.today()
+                        _s = (
+                            date.fromisoformat(start_date)
+                            if start_date
+                            else date(2000, 1, 1)
+                        )
+                        _e = date.fromisoformat(end_date) if end_date else date.today()
                 except Exception:
-                    _s = date.fromisoformat(start_date) if start_date else date(2000, 1, 1)
-                    _e = date.fromisoformat(end_date)   if end_date   else date.today()
+                    _s = (
+                        date.fromisoformat(start_date)
+                        if start_date
+                        else date(2000, 1, 1)
+                    )
+                    _e = date.fromisoformat(end_date) if end_date else date.today()
                 bars_df = load_index_bars(ticker, _s, _e, granularity)
                 bars_info = {"ticker": ticker, "granularity": granularity}
 
@@ -798,25 +884,71 @@ async def run_vtt(
             _progress(f"{len(bars_df)} bar yüklendi · çalıştırılıyor…")
 
             from backtest import run_backtest
+
             result = run_backtest(
                 "vol_targeted_trend",
                 params,
                 bars_df,
                 iteration_id=0,
-                rationale=f"web vtt fast={fast} slow={slow} vt={vol_target} short={allow_short}",
+                rationale=f"web vtt fast={fast} slow={slow} vt={vol_target} short={_allow_short}",
+            )
+
+            # Propagate engine-level errors to the progress store
+            if result.error:
+                with _RUN_PROGRESS_LOCK:
+                    if run_id in _RUN_PROGRESS:
+                        _RUN_PROGRESS[run_id]["error"] = result.error
+                return
+
+            narrative = (
+                f"EWMA vol-targeted trend · fast={fast} slow={slow} "
+                f"vol_span={vol_span} vol_target={vol_target:.3f} "
+                f"capital={capital:,.0f} allow_short={_allow_short}"
             )
 
             with _RUN_PROGRESS_LOCK:
                 if run_id in _RUN_PROGRESS:
                     _RUN_PROGRESS[run_id]["result"] = result
                     _RUN_PROGRESS[run_id]["bars_info"] = bars_info
-                    _RUN_PROGRESS[run_id]["narrative"] = (
-                        f"EWMA vol-targeted trend · fast={fast} slow={slow} "
-                        f"vol_span={vol_span} vol_target={vol_target:.3f} "
-                        f"capital={capital:,.0f} allow_short={allow_short}"
-                    )
+                    _RUN_PROGRESS[run_id]["narrative"] = narrative
+
+            # Keep _LAST_RESULT in sync so a page refresh shows the VTT result
+            with _LAST_RESULT_LOCK:
+                _LAST_RESULT["r"] = result
+                _LAST_RESULT["spec_name"] = "vol_targeted_trend"
+                _LAST_RESULT["bars_info"] = bars_info
+                _LAST_RESULT["narrative"] = narrative
+
             elapsed = _time.perf_counter() - _t_start
             _progress(f"Tamamlandı ({elapsed:.1f}s)")
+
+            try:
+                import json as _json
+
+                from web.shared import BACKTEST_LOG, rotate_if_large, sanitize_floats
+
+                _rec = {
+                    "ts": datetime.now(UTC).isoformat(),
+                    "elapsed_sec": round(elapsed, 3),
+                    "spec": {
+                        "id": "vol_targeted_trend",
+                        "name": f"VTT fast={fast} slow={slow}",
+                        "params": params,
+                    },
+                    "instrument": instrument_kind,
+                    "bars": bars_info,
+                    "rationale": result.rationale,
+                    "error": result.error,
+                    "metrics": sanitize_floats(result.metrics),
+                }
+                from web.shared import _BACKTEST_LOG_LOCK
+
+                with _BACKTEST_LOG_LOCK:
+                    rotate_if_large(BACKTEST_LOG)
+                    with open(BACKTEST_LOG, "a") as _f:
+                        _f.write(_json.dumps(_rec, default=str) + "\n")
+            except Exception:
+                pass
         except Exception as e:
             with _RUN_PROGRESS_LOCK:
                 if run_id in _RUN_PROGRESS:
@@ -1004,7 +1136,11 @@ async def describe(
             # ── Phase 0: split the description into SEPARATE conditions (each
             # becomes a separate, editable block). On failure, fall back to a
             # single entry + single exit (old behavior). ──
-            _gen_phase(gen_id, 0, "Claude is splitting the description into separate conditions…")
+            _gen_phase(
+                gen_id,
+                0,
+                "Claude is splitting the description into separate conditions…",
+            )
             entry_logic, exit_logic = "OR", "OR"
             try:
                 bd = propose_condition_breakdown(desc)
@@ -1024,7 +1160,10 @@ async def describe(
                     {"role": "exit", "label": label, "desc": desc},
                 ]
                 _gen_phase(
-                    gen_id, 0, f"fell back to single condition ({type(e).__name__})", done=True
+                    gen_id,
+                    0,
+                    f"fell back to single condition ({type(e).__name__})",
+                    done=True,
                 )
 
             # ── Phase 1: write a SEPARATE custom Python block for each condition ──
@@ -1033,18 +1172,47 @@ async def describe(
             counters = {"entry": 0, "exit": 0}
             # CAUTION: "entry"[0]=="exit"[0]=="e" → DON'T USE role[0] (name would collide).
             _role_tag = {"entry": "e", "exit": "x"}
+
+            # Assign stable names before dispatch so order is deterministic.
+            named_conds: list[tuple[str, dict]] = []
             for cond in conditions:
                 role = cond["role"]
                 counters[role] += 1
-                name = f"desc_{_role_tag[role]}{counters[role]}_{gen_id}"  # desc_e1_.., desc_x1_..
-                _gen_phase(gen_id, 1, f"{cond['label']} ({role})…")
+                name = f"desc_{_role_tag[role]}{counters[role]}_{gen_id}"
+                named_conds.append((name, cond))
+
+            # Generate all blocks in parallel — each LLM call is independent.
+            from concurrent.futures import ThreadPoolExecutor
+            from concurrent.futures import as_completed as _as_completed
+
+            def _gen_one(args: tuple) -> tuple:
+                _name, _cond = args
+                _gen_phase(gen_id, 1, f"{_cond['label']} ({_cond['role']})…")
                 try:
-                    blk = propose_custom_block(cond["label"], cond["desc"], role)
+                    blk = propose_custom_block(
+                        _cond["label"], _cond["desc"], _cond["role"]
+                    )
                 except GeneratedCodeError:
+                    blk = None
+                return _name, blk, _cond["role"]
+
+            with ThreadPoolExecutor(
+                max_workers=min(len(named_conds), _GEN_MAX_BLOCKS)
+            ) as _ex:
+                futures = {_ex.submit(_gen_one, nc): nc[0] for nc in named_conds}
+                results_map: dict[str, tuple] = {}
+                for fut in _as_completed(futures):
+                    _name, blk, role = fut.result()
+                    results_map[_name] = (blk, role)
+
+            # Reconstruct in original order so entry/exit ordering is stable.
+            for name, cond in named_conds:
+                blk, role = results_map[name]
+                if blk is None:
                     if role == "exit":
-                        blk = _atr_stop_fallback()  # exit couldn't be generated → ATR stop
+                        blk = _atr_stop_fallback()
                     else:
-                        continue  # entry couldn't be generated → skip that condition
+                        continue
                 made.append((name, blk, role))
 
             if not any(r == "entry" for _, _, r in made):
@@ -1191,7 +1359,9 @@ def _is_equity_target(
     equity path.
     """
     k = (instrument_kind or "").lower()
-    return bool(ticker) or bool(ext_instrument) or k in ("index", "external", "us-index")
+    return (
+        bool(ticker) or bool(ext_instrument) or k in ("index", "external", "us-index")
+    )
 
 
 def _local_fallback_breakdown(desc: str, inds: list[str]) -> dict:
@@ -1293,7 +1463,9 @@ def _predict_plan_warnings(
     return w
 
 
-def _preview_signals(rows: list[dict], allow_short: bool, n_bars: int = 400) -> dict | None:
+def _preview_signals(
+    rows: list[dict], allow_short: bool, n_bars: int = 400
+) -> dict | None:
     """Estimate entry/exit signals for the matched built-in blocks over the last
     N bars of BTC 1m data — a LOCAL, LLM-free approximation for the plan preview.
 
@@ -1328,8 +1500,12 @@ def _preview_signals(rows: list[dict], allow_short: bool, n_bars: int = 400) -> 
         return None
 
     # Which built-in blocks were matched, split by role.
-    entry_types = {r["reuse"]["type"] for r in rows if r.get("reuse") and r["role"] == "entry"}
-    exit_types = {r["reuse"]["type"] for r in rows if r.get("reuse") and r["role"] == "exit"}
+    entry_types = {
+        r["reuse"]["type"] for r in rows if r.get("reuse") and r["role"] == "entry"
+    }
+    exit_types = {
+        r["reuse"]["type"] for r in rows if r.get("reuse") and r["role"] == "exit"
+    }
     if not entry_types and not exit_types:
         return None
 
@@ -1337,7 +1513,11 @@ def _preview_signals(rows: list[dict], allow_short: bool, n_bars: int = 400) -> 
     # LEFT-TRUNCATED series (shorter than closes), so left-pad with None to align
     # index i → bar i.
     def _pad(series: list) -> list:
-        return [None] * (n - len(series)) + list(series) if len(series) < n else list(series)
+        return (
+            [None] * (n - len(series)) + list(series)
+            if len(series) < n
+            else list(series)
+        )
 
     rsi = _pad(calc_rsi_series(closes, 14))
     ema_fast, ema_slow = _pad(ema(closes, 10)), _pad(ema(closes, 30))
@@ -1348,13 +1528,25 @@ def _preview_signals(rows: list[dict], allow_short: bool, n_bars: int = 400) -> 
     def _entry_fires(i: int):
         """Return (signal, reason) if any matched entry built-in fires at bar i, else (None, "")."""
         for t in entry_types:
-            if t == "rsi_threshold" and i > 0 and rsi[i] is not None and rsi[i - 1] is not None:
+            if (
+                t == "rsi_threshold"
+                and i > 0
+                and rsi[i] is not None
+                and rsi[i - 1] is not None
+            ):
                 if rsi[i - 1] >= 30 > rsi[i]:
                     return "long", "RSI<30 (aşırı satım)"
             elif t in ("ma_cross", "ema_cross") and i > 0:
-                f, s = (ema_fast, ema_slow) if t == "ema_cross" else (sma_fast, sma_slow)
+                f, s = (
+                    (ema_fast, ema_slow) if t == "ema_cross" else (sma_fast, sma_slow)
+                )
                 nm = "EMA" if t == "ema_cross" else "MA"
-                if f[i] is not None and s[i] is not None and f[i - 1] is not None and s[i - 1] is not None:
+                if (
+                    f[i] is not None
+                    and s[i] is not None
+                    and f[i - 1] is not None
+                    and s[i - 1] is not None
+                ):
                     if f[i - 1] <= s[i - 1] and f[i] > s[i]:
                         return "long", f"{nm} yukarı kesişim (10>30)"
                     if allow_short and f[i - 1] >= s[i - 1] and f[i] < s[i]:
@@ -1401,7 +1593,13 @@ def _preview_signals(rows: list[dict], allow_short: bool, n_bars: int = 400) -> 
             if "atr_stop" in exit_types and atr:
                 if closes[i] <= entry_px - 3.0 * atr:
                     sig, in_pos, reason = "exit", False, "3x ATR stop"
-            if sig is None and "rsi_threshold" in exit_types and i > 0 and rsi[i] is not None and rsi[i - 1] is not None:
+            if (
+                sig is None
+                and "rsi_threshold" in exit_types
+                and i > 0
+                and rsi[i] is not None
+                and rsi[i - 1] is not None
+            ):
                 if rsi[i - 1] <= 70 < rsi[i]:
                     sig, in_pos, reason = "exit", False, "RSI>70 (aşırı alım)"
         signals.append({"i": i - start, "sig": sig, "reason": reason})
@@ -1414,11 +1612,19 @@ def _preview_signals(rows: list[dict], allow_short: bool, n_bars: int = 400) -> 
     overlays: list[dict] = []
     all_types = entry_types | exit_types
     if "ma_cross" in all_types:
-        overlays.append({"label": "MA 10", "color": "#5EA0F6", "data": _slice(sma_fast)})
-        overlays.append({"label": "MA 30", "color": "#E8B44C", "data": _slice(sma_slow)})
+        overlays.append(
+            {"label": "MA 10", "color": "#5EA0F6", "data": _slice(sma_fast)}
+        )
+        overlays.append(
+            {"label": "MA 30", "color": "#E8B44C", "data": _slice(sma_slow)}
+        )
     if "ema_cross" in all_types:
-        overlays.append({"label": "EMA 10", "color": "#5EA0F6", "data": _slice(ema_fast)})
-        overlays.append({"label": "EMA 30", "color": "#E8B44C", "data": _slice(ema_slow)})
+        overlays.append(
+            {"label": "EMA 10", "color": "#5EA0F6", "data": _slice(ema_fast)}
+        )
+        overlays.append(
+            {"label": "EMA 30", "color": "#E8B44C", "data": _slice(ema_slow)}
+        )
     if "bollinger_break" in all_types:
         # Recompute upper/lower bands (mean ± 2σ over 20) across the window.
         up, lo, mid = [], [], []
@@ -1434,9 +1640,13 @@ def _preview_signals(rows: list[dict], allow_short: bool, n_bars: int = 400) -> 
             up.append(round(mean + 2 * sd, 2))
             lo.append(round(mean - 2 * sd, 2))
             mid.append(round(mean, 2))
-        overlays.append({"label": "Bollinger üst", "color": "#8a8a8a", "data": up, "dashed": True})
+        overlays.append(
+            {"label": "Bollinger üst", "color": "#8a8a8a", "data": up, "dashed": True}
+        )
         overlays.append({"label": "Bollinger orta", "color": "#5EA0F6", "data": mid})
-        overlays.append({"label": "Bollinger alt", "color": "#8a8a8a", "data": lo, "dashed": True})
+        overlays.append(
+            {"label": "Bollinger alt", "color": "#8a8a8a", "data": lo, "dashed": True}
+        )
 
     # RSI is a 0-100 oscillator → separate pane (not price-scaled).
     panes: list[dict] = []
@@ -1474,6 +1684,8 @@ async def plan_preview(
 
     A single propose_condition_breakdown LLM call; mapping and warnings are local.
     Generates/saves/backtests nothing. Triggered with a debounce while typing.
+    Results are cached by (desc, allow_short) for 5 minutes to avoid redundant
+    LLM calls during iterative editing sessions.
     """
     import asyncio
 
@@ -1485,18 +1697,33 @@ async def plan_preview(
             request, "fragments/plan_preview.html", {"stage": "prompt"}
         )
 
-    from agent import _hint_indicators
+    _allow_short_bool = bool(allow_short)
 
-    local_inds = _hint_indicators(desc)
+    # Simple TTL cache keyed on (desc, allow_short) — avoids repeated LLM calls
+    # while the user edits the same description.
+    import time as _time
 
-    llm_ok = True
-    try:
-        from agent import propose_condition_breakdown
+    _cache_key = (desc.lower(), _allow_short_bool)
+    _cached = _PLAN_CACHE.get(_cache_key)
+    if _cached and (_time.monotonic() - _cached["ts"]) < _PLAN_CACHE_TTL:
+        bd, llm_ok = _cached["bd"], _cached["llm_ok"]
+    else:
+        from agent import _hint_indicators
 
-        bd = await asyncio.to_thread(propose_condition_breakdown, desc)
-    except Exception:
-        llm_ok = False
-        bd = _local_fallback_breakdown(desc, local_inds)
+        local_inds = _hint_indicators(desc)
+        llm_ok = True
+        try:
+            from agent import propose_condition_breakdown
+
+            bd = await asyncio.to_thread(propose_condition_breakdown, desc)
+        except Exception:
+            llm_ok = False
+            bd = _local_fallback_breakdown(desc, local_inds)
+        _PLAN_CACHE[_cache_key] = {"bd": bd, "llm_ok": llm_ok, "ts": _time.monotonic()}
+        # Evict oldest entries beyond capacity
+        if len(_PLAN_CACHE) > _PLAN_CACHE_MAX:
+            oldest = min(_PLAN_CACHE, key=lambda k: _PLAN_CACHE[k]["ts"])
+            _PLAN_CACHE.pop(oldest, None)
 
     rows: list[dict] = []
     for cond in bd["conditions"]:
@@ -1518,12 +1745,15 @@ async def plan_preview(
         category,
         ticker,
         ext_instrument,
-        allow_short=bool(allow_short),
+        allow_short=_allow_short_bool,
     )
 
     # Local, LLM-free signal estimate for the matched built-ins (best effort).
+    # Offloaded to thread — _preview_signals does a blocking pd.read_parquet.
     try:
-        chart_data = _preview_signals(rows, bool(allow_short))
+        import asyncio as _asyncio
+
+        chart_data = await _asyncio.to_thread(_preview_signals, rows, _allow_short_bool)
     except Exception:
         chart_data = None
 
@@ -1700,11 +1930,21 @@ async def sweep(
 
                 # Full cache range unless explicit dates given.
                 if start_date and end_date:
-                    s_d, e_d = date.fromisoformat(start_date), date.fromisoformat(end_date)
+                    s_d, e_d = (
+                        date.fromisoformat(start_date),
+                        date.fromisoformat(end_date),
+                    )
                 else:
-                    cp = INDEX_CACHE_DIR / f"{_ticker_to_filename(ticker)}_{code}.parquet"
+                    cp = (
+                        INDEX_CACHE_DIR
+                        / f"{_ticker_to_filename(ticker)}_{code}.parquet"
+                    )
                     if not cp.exists():
-                        _row(code, status="error", error="no cache — fetch from the Data screen")
+                        _row(
+                            code,
+                            status="error",
+                            error="no cache — fetch from the Data screen",
+                        )
                         return
                     _df = _pd.read_parquet(cp)
                     if _df.empty:
@@ -1753,7 +1993,11 @@ async def sweep(
             try:
                 cp = _bybit_cache_path(category, symbol, code)
                 if not cp.exists():
-                    _row(code, status="error", error="no cache — fetch from the Data screen")
+                    _row(
+                        code,
+                        status="error",
+                        error="no cache — fetch from the Data screen",
+                    )
                     return
                 # If dates are blank, the full range of the cache (deterministic).
                 if bybit_start:
@@ -1785,8 +2029,12 @@ async def sweep(
                     _row(code, status="error", error="no bars")
                     return
                 # Use actual bar range for display.
-                actual_from = bars.index[0].strftime("%Y-%m-%d") if not bars.empty else ""
-                actual_to = bars.index[-1].strftime("%Y-%m-%d") if not bars.empty else ""
+                actual_from = (
+                    bars.index[0].strftime("%Y-%m-%d") if not bars.empty else ""
+                )
+                actual_to = (
+                    bars.index[-1].strftime("%Y-%m-%d") if not bars.empty else ""
+                )
                 result = run_backtest_guarded(
                     spec,
                     bars,
