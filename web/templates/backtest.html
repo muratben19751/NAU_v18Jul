@@ -160,14 +160,24 @@
             <label class="field" style="margin-top:12px;">
               Describe the strategy — Claude writes new Python block(s)
               <textarea name="description" rows="6"
-                     hx-post="/backtest/plan"
-                     hx-include="closest form"
-                     hx-target="#plan-preview"
-                     hx-swap="innerHTML"
-                     hx-trigger="keyup changed delay:800ms"
-                     hx-indicator="#plan-spinner"
                      placeholder="E.g.: buy when RSI drops below 30 and turns up while volume is 2x the 20-bar average; exit if it falls by 3x ATR"></textarea>
             </label>
+
+            <div class="row" style="align-items:center;gap:10px;flex-wrap:wrap;margin-top:10px;">
+              <button class="btn btn-primary" type="button"
+                      hx-post="/backtest/plan"
+                      hx-include="closest form"
+                      hx-target="#plan-preview"
+                      hx-swap="innerHTML"
+                      hx-indicator="#plan-spinner">
+                <span class="btn-spin spin">⟳</span>
+                ✨ AI önerisi al
+              </button>
+              <span class="htmx-indicator text-muted mono" id="plan-spinner" style="font-size:11px;">
+                <span class="spin">⟳</span> Claude planı hazırlıyor…
+              </span>
+              <span class="text-muted" style="font-size:11px;">Metni yazın → bu düğmeye basın → öneri sağda çıkar</span>
+            </div>
 
             <div id="tf-row" class="row" style="align-items:center;gap:12px;flex-wrap:wrap;margin-top:14px;">
               <span class="text-muted mono" style="font-size:11px;">Timeframes (to be backtested):</span>
@@ -182,11 +192,7 @@
 
             <div class="row" style="align-items:center;gap:12px;flex-wrap:wrap;margin-top:14px;">
               <label style="display:inline-flex;align-items:center;gap:6px;font-size:12px;cursor:pointer;">
-                <input type="checkbox" name="allow_short" value="on" checked
-                       hx-post="/backtest/plan"
-                       hx-include="closest form"
-                       hx-target="#plan-preview"
-                       hx-swap="innerHTML">
+                <input type="checkbox" name="allow_short" value="on" checked>
                 <span>Short işlemlere izin ver <span class="text-muted" style="font-size:10px;">(MARGIN hesap · iki yönlü)</span></span>
               </label>
             </div>
@@ -214,7 +220,6 @@
               If the date is empty, the full range of the cache is used.
             </div>
 
-            <div id="plan-preview" style="margin-top:10px;"></div>
           </div>
 
           {# ── VOL-TARGETED TREND section ── #}
@@ -271,6 +276,8 @@
 
   {# ── RIGHT: results + robustness + run history ── #}
   <div class="stack">
+
+    <div id="plan-preview"></div>
 
     <div id="result">
       {% if last %}

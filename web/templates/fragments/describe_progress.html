@@ -4,12 +4,13 @@
    div (the 280-line run worker did not change at all in this flow). #}
 {% if not done %}
 <div id="describe-progress"
+     class="bt-gen-float"
      hx-get="/backtest/describe/progress/{{ gen_id }}"
      hx-trigger="every 1s"
      hx-target="#result"
      hx-swap="innerHTML">
 {% else %}
-<div id="describe-progress">
+<div id="describe-progress" class="bt-gen-float">
 {% endif %}
 
   <div class="panel" style="border-color:rgba(129,140,248,0.35);">

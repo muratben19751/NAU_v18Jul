@@ -299,11 +299,14 @@ def _stream_ticker_rows(ticker: str, day: date) -> pd.DataFrame:
     ) as proc:
         try:
             df = pd.read_csv(proc.stdout)
+        except pd.errors.EmptyDataError:
+            # awk produced no output at all (missing/corrupt/empty gzip, or the
+            # header row itself was absent) — pandas can't infer columns. Match
+            # the missing-day contract and return an empty typed frame.
+            return pd.DataFrame(columns=["ticker", "value", "timestamp"])
         finally:
             proc.stdout.close()
             proc.wait()
-    if df.empty:
-        return df
     return df
 
 
