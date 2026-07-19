@@ -794,27 +794,29 @@ async def run_vtt(
             }
 
             if instrument_kind == "Bybit":
-                import pandas as _pd
-
-                from data import _bybit_cache_path, load_bybit_bars
+                from data import (
+                    _bybit_cache_path,
+                    _read_parquet_stats,
+                    load_bybit_bars,
+                )
 
                 _progress(f"Veri yükleniyor · {symbol}/{category}/{interval}…")
-                # Resolve date range from cache when user leaves dates blank
+                # Resolve date range from cache ONLY when a date is blank.
+                # Footer-only stats (~4 KB) instead of a full parquet decode;
+                # load_bybit_bars re-reads the file itself, so a full read here
+                # would decode a 1M+-row parquet twice.
+                _cache_start = _cache_end = None
                 cp = _bybit_cache_path(category, symbol, interval)
-                if cp.exists():
-                    _df = _pd.read_parquet(cp)
-                    _cache_start = (
-                        _df.index[0].to_pydatetime().replace(tzinfo=UTC)
-                        if not _df.empty
-                        else None
-                    )
-                    _cache_end = (
-                        _df.index[-1].to_pydatetime().replace(tzinfo=UTC)
-                        if not _df.empty
-                        else None
-                    )
-                else:
-                    _cache_start = _cache_end = None
+                if (not bybit_start or not bybit_end) and cp.exists():
+                    _stats = _read_parquet_stats(cp)
+                    if _stats and _stats.get("first"):
+                        # ISO strings are naive → re-apply UTC.
+                        _cache_start = datetime.fromisoformat(_stats["first"]).replace(
+                            tzinfo=UTC
+                        )
+                        _cache_end = datetime.fromisoformat(_stats["last"]).replace(
+                            tzinfo=UTC
+                        )
                 start_dt = (
                     datetime.fromisoformat(bybit_start).replace(tzinfo=UTC)
                     if bybit_start

@@ -20,8 +20,9 @@ Design contract (mirrors sandbox.py):
     strictly-greater rule as the sequential path — identical winners.
 
 Kill switch: ``NAUTILUS_PARALLEL=0`` → callers take their untouched sequential
-branch. Worker count: ``NAUTILUS_PARALLEL_WORKERS`` (default ``cpu//2 - 2``,
-clamped to [1, 28]).
+branch. Worker count: ``NAUTILUS_PARALLEL_WORKERS`` (default ``min(cpu - 2,
+available_RAM / 1.5 GB)``, clamped to [1, 28]); ``NAUTILUS_WORKER_MEM_GB``
+tunes the per-worker RAM budget.
 
 This module keeps its top level import-light: spawn re-imports it in every
 worker, so pandas/nautilus/composer are imported lazily inside functions.
@@ -44,7 +45,14 @@ def parallel_enabled() -> bool:
 
 
 def get_worker_count() -> int:
-    """Pool size: env override, else cpu - 2 (headroom for server/OS)."""
+    """Pool size: env override, else min(cpu - 2, RAM-based cap).
+
+    Each worker loads a full bar snapshot + a live Nautilus engine, so peak
+    RAM scales ~linearly with worker count. On memory-constrained hosts the
+    CPU-based count (cpu - 2) can OOM, so we also cap by available RAM,
+    budgeting ~1.5 GB/worker. NAUTILUS_PARALLEL_WORKERS overrides both;
+    NAUTILUS_WORKER_MEM_GB tunes the per-worker budget.
+    """
     lo, hi = DEFAULT_WORKER_CLAMP
     raw = os.environ.get("NAUTILUS_PARALLEL_WORKERS")
     if raw:
@@ -53,7 +61,40 @@ def get_worker_count() -> int:
         except ValueError:
             pass
     cpu = os.cpu_count() or 4
-    return max(lo, min(hi, cpu - 2))
+    count = cpu - 2
+
+    # RAM-aware cap (best effort). Prefer psutil's available memory; fall back
+    # to total physical RAM via sysconf (POSIX) so the guard still applies
+    # without the psutil dependency.
+    try:
+        avail_gb = None
+        try:
+            import psutil
+
+            avail_gb = psutil.virtual_memory().available / (1024**3)
+        except Exception:
+            if hasattr(os, "sysconf"):
+                try:
+                    total = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
+                    # Assume ~70% is usable headroom for workers.
+                    avail_gb = 0.7 * total / (1024**3)
+                except (ValueError, OSError):
+                    avail_gb = None
+        if avail_gb is not None:
+            per_worker_gb = _env_float("NAUTILUS_WORKER_MEM_GB", 1.5)
+            ram_cap = max(1, int(avail_gb / per_worker_gb))
+            count = min(count, ram_cap)
+    except Exception:
+        pass
+
+    return max(lo, min(hi, count))
+
+
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(os.environ.get(name, "") or default)
+    except ValueError:
+        return default
 
 
 def make_snapshot(bars_df) -> str:

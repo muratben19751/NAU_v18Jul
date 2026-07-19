@@ -4,9 +4,10 @@ Kept minimal on purpose: fixed trade size, one position at a time,
 market orders. The LLM agent proposes numeric parameters only.
 
 ``VolTargetedTrendStrategy`` extends the pattern with dynamic position
-sizing: ``size = (vol_target / ewma_vol) * capital / price``, where
-ewma_vol is maintained incrementally (O(1) per bar) without calling
-``calc_ewma_vol`` on every bar.
+sizing: ``size = (vol_target / ewma_vol) * capital / price``. ewma_vol is
+maintained incrementally (O(1) per bar) but seeded to match
+``calc_ewma_vol`` from [[indicators.py]] (first return at full weight),
+so it agrees with the reference estimator after warmup.
 
 Wiki References
 ---------------
@@ -48,6 +49,7 @@ class MACrossoverStrategy(Strategy):
         # Incremental running sums for O(1) MA per bar
         self._fast_sum: float = 0.0
         self._slow_sum: float = 0.0
+        self._bar_count: int = 0
 
     def _iid(self):
         if self._iid_cache is None:
@@ -85,6 +87,14 @@ class MACrossoverStrategy(Strategy):
         buf.append(price)
         self._fast_sum += price
         self._slow_sum += price
+
+        # Bound float rounding drift: periodically recompute sums from the
+        # deque (subtract-then-add never fully cancels over long runs).
+        self._bar_count += 1
+        if self._bar_count % 4096 == 0:
+            snap = list(buf)
+            self._fast_sum = math.fsum(snap[-self.config.fast :])
+            self._slow_sum = math.fsum(snap[-self.config.slow :])
 
         if len(buf) < self.config.slow:
             return
@@ -216,7 +226,15 @@ class VolTargetedTrendStrategy(Strategy):
     ewma_vol is maintained incrementally (O(1)/bar) via self._ewma_var.
     When allow_short=True (requires MARGIN account in run_backtest),
     a down-cross opens a SHORT instead of just closing the long.
+
+    MTM (mark-to-market) equity is snapshotted every ``_MTM_SAMPLE`` bars
+    post-warmup — bar-resolution enough for backtest.py's max_dd / Sharpe /
+    equity-curve, while cutting the per-bar ``portfolio.equity()`` cost.
     """
+
+    # Snapshot MTM equity every N bars (post-warmup). N=1 → every bar (old
+    # behavior); larger N trades intra-position drawdown resolution for speed.
+    _MTM_SAMPLE: int = 5
 
     def __init__(self, config: VolTargetedTrendConfig) -> None:
         super().__init__(config)
@@ -228,12 +246,16 @@ class VolTargetedTrendStrategy(Strategy):
         # Incremental EWMA variance state — O(1) per bar
         self._ewma_var: float = 0.0
         self._ewma_alpha: float = 2.0 / (config.vol_span + 1)
-        self._vol_warmup: int = 0  # bars seen so far for warmup counter
+        self._vol_warmup: int = 0  # returns seen so far for warmup counter
         # Incremental running sums for MA
         _buf = max(config.fast, config.slow) + 5
         self._closes: deque[float] = deque(maxlen=_buf)
         self._fast_sum: float = 0.0
         self._slow_sum: float = 0.0
+        # Throttled MTM equity snapshots (read by backtest.py via getattr)
+        self._mtm_equity: list[float] = []
+        self._mtm_ts: list[int] = []
+        self._bar_count: int = 0
 
     def _iid(self) -> InstrumentId:
         if self._iid_cache is None:
@@ -263,7 +285,7 @@ class VolTargetedTrendStrategy(Strategy):
             vol_est is not None
             and vol_est > 0
             and price > 0
-            and self._vol_warmup >= self.config.vol_span + 1
+            and self._vol_warmup >= self.config.vol_span
         ):
             size = (self.config.vol_target / vol_est) * self.config.capital / price
         else:
@@ -277,16 +299,34 @@ class VolTargetedTrendStrategy(Strategy):
         size = max(size, float(self.instrument.size_increment))
         return self.instrument.make_qty(size)
 
+    def _snapshot_mtm(self, ts_ns: int) -> None:
+        """Append a mark-to-market equity sample (throttled by _MTM_SAMPLE)."""
+        try:
+            eq = self.portfolio.equity(self._iid().venue)
+            if eq is not None:
+                self._mtm_equity.append(
+                    float(eq.as_double() if hasattr(eq, "as_double") else eq)
+                )
+                self._mtm_ts.append(ts_ns)
+        except Exception:
+            pass
+
     def on_bar(self, bar: Bar) -> None:
         price = float(bar.close)
         buf = self._closes
 
-        # Update incremental EWMA variance (O(1))
+        # Update incremental EWMA variance (O(1)). Seed the first observed
+        # return at full weight (ewma = lr²) to match calc_ewma_vol; apply
+        # alpha only from the second return onward.
         if self._prev_close is not None and self._prev_close > 0 and price > 0:
             lr = math.log(price / self._prev_close)
-            self._ewma_var = (
-                self._ewma_alpha * lr * lr + (1 - self._ewma_alpha) * self._ewma_var
-            )
+            if self._vol_warmup == 0:
+                self._ewma_var = lr * lr
+            else:
+                self._ewma_var = (
+                    self._ewma_alpha * lr * lr
+                    + (1 - self._ewma_alpha) * self._ewma_var
+                )
             self._vol_warmup += 1
         self._prev_close = price
 
@@ -299,8 +339,22 @@ class VolTargetedTrendStrategy(Strategy):
         self._fast_sum += price
         self._slow_sum += price
 
+        # Periodically recompute sums from the deque to bound float rounding
+        # drift (subtract-then-add never fully cancels; over millions of bars a
+        # near-zero crossover could otherwise flip sign).
+        self._bar_count += 1
+        if self._bar_count % 4096 == 0:
+            snap = list(buf)
+            self._fast_sum = math.fsum(snap[-self.config.fast :])
+            self._slow_sum = math.fsum(snap[-self.config.slow :])
+
         if len(buf) < self.config.slow:
             return
+
+        # Bar-resolution MTM snapshot (throttled) — post-warmup, before the
+        # signal-only early return so the equity curve covers every sampled bar.
+        if self._bar_count % self._MTM_SAMPLE == 0:
+            self._snapshot_mtm(bar.ts_event)
 
         diff = self._fast_sum / self.config.fast - self._slow_sum / self.config.slow
 

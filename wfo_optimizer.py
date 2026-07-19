@@ -66,8 +66,13 @@ def _env_float(name: str, default: float) -> float:
 # Cost per window = WFO_POP_SIZE × GEN × WF_FOLDS backtests (see module
 # docstring). Tests may monkeypatch these constants; functions read the
 # values from the module global at call time.
+# POP=4 (was 8) roughly halves population but GEN≈round(n_samples/POP) nearly
+# doubles to compensate, so candidate exploration is largely preserved. FOLDS
+# stays at 3: it is the load-bearing walk-forward robustness lever and also
+# feeds the M462 valid-fold threshold below — dropping it to 2 would silently
+# require BOTH folds valid (see WF_MIN_VALID_FOLDS_FRAC note).
 WFO_POP_SIZE = max(1, _env_int("NAUTILUS_WFO_POP_SIZE", 4))
-WF_FOLDS = max(1, _env_int("NAUTILUS_WF_FOLDS", 2))
+WF_FOLDS = max(1, _env_int("NAUTILUS_WF_FOLDS", 3))
 # NAU confidence-damping constant: score *= n / (n + K). K=20 → ×0.2 at 5 trades,
 # ×0.5 at 20 trades, ×0.83 at 100 trades — scores inflated by few trades are suppressed.
 WFO_TRADE_CONF_K = max(0, _env_int("NAUTILUS_WFO_TRADE_CONF_K", 20))
@@ -82,9 +87,11 @@ try:
 except Exception:  # pragma: no cover
     _STARTING_CASH = 10_000.0
 
-# M462: NAU valid-fold fraction — if 2 of 3 folds are valid (>=0.6) the candidate
-# survives; a SINGLE -inf fold should not reject the candidate outright (preserves
-# robust sparse-trade candidates).
+# M462: NAU valid-fold fraction — threshold = ceil-ish of FRAC × WF_FOLDS. At
+# the default WF_FOLDS=3 this is 1.8, so 2 of 3 valid folds survive and a SINGLE
+# -inf fold does not reject the candidate (preserves robust sparse-trade
+# candidates). NOTE: this interacts with WF_FOLDS — at FOLDS=2 the threshold is
+# 1.2, which forces BOTH folds valid, silently disabling this tolerance.
 WF_MIN_VALID_FOLDS_FRAC = _env_float("NAUTILUS_WF_MIN_VALID_FOLDS_FRAC", 0.6)
 
 # GA internal settings (behavior constants; determinism comes from rng).
