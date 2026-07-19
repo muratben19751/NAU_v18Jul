@@ -112,11 +112,22 @@ _SWEEP_STORE = ProgressStore(20)
 _SWEEP_PROGRESS = _SWEEP_STORE.raw()
 _SWEEP_LOCK = _SWEEP_STORE.lock
 
-# Plan-preview LRU-style cache: keyed on (desc_lower, allow_short_bool).
-# Avoids repeated propose_condition_breakdown LLM calls during iterative editing.
+# Plan-preview FIFO/TTL cache keyed on (desc_lower, allow_short_bool). Avoids
+# repeated propose_condition_breakdown LLM calls during iterative editing.
+# Eviction is FIFO by insertion ts (not LRU — hits do not refresh ts).
 _PLAN_CACHE: dict = {}
 _PLAN_CACHE_TTL = 300  # seconds
 _PLAN_CACHE_MAX = 32  # max entries before evicting oldest
+# In-flight dedup: (desc_lower, allow_short) → asyncio.Future. Concurrent
+# same-key requests await the first request's LLM call instead of firing N.
+_PLAN_INFLIGHT: dict = {}
+
+
+def _parse_bool_form(v: str) -> bool:
+    """Parse an HTML form bool. Checkboxes send 'on'/absent, but explicit
+    falsey strings ('0','false','off','no') must map to False — plain
+    bool('0') would be True."""
+    return str(v).strip().lower() in {"1", "true", "on", "yes"}
 
 # Perf: a blank date range used to default to the ENTIRE cache (1M+ 1m bars →
 # the backtest blows past the sandbox wall). When the user gives NO explicit
@@ -756,7 +767,7 @@ async def run_vtt(
 
     from server import templates
 
-    _allow_short = bool(allow_short)  # checkbox sends "on" / absent → bool
+    _allow_short = _parse_bool_form(allow_short)  # checkbox 'on'/absent → bool
 
     run_id = uuid.uuid4().hex[:8]
     _RUN_STORE.create_evicting(
@@ -1068,7 +1079,7 @@ async def describe(
 
     # Short/sell direction: the Backtest form carries an allow_short checkbox
     # (defaults ON). An unchecked HTML checkbox sends nothing → "" → False.
-    _allow_short = bool(allow_short)
+    _allow_short = _parse_bool_form(allow_short)
 
     # Multi-TF: checkboxes → normalize; if empty, fall back to single interval; if that's missing too, 1h.
     norm_intervals = (
@@ -1699,10 +1710,11 @@ async def plan_preview(
             request, "fragments/plan_preview.html", {"stage": "prompt"}
         )
 
-    _allow_short_bool = bool(allow_short)
+    _allow_short_bool = _parse_bool_form(allow_short)
 
-    # Simple TTL cache keyed on (desc, allow_short) — avoids repeated LLM calls
-    # while the user edits the same description.
+    # TTL cache keyed on (desc, allow_short) with in-flight dedup, so concurrent
+    # identical requests (multi-tab, un-debounced allow_short toggle) share one
+    # LLM call instead of stampeding it.
     import time as _time
 
     _cache_key = (desc.lower(), _allow_short_bool)
@@ -1710,22 +1722,43 @@ async def plan_preview(
     if _cached and (_time.monotonic() - _cached["ts"]) < _PLAN_CACHE_TTL:
         bd, llm_ok = _cached["bd"], _cached["llm_ok"]
     else:
-        from agent import _hint_indicators
+        # If another request for this key is already computing, await it.
+        _inflight = _PLAN_INFLIGHT.get(_cache_key)
+        if _inflight is not None:
+            bd, llm_ok = await _inflight
+        else:
+            loop = asyncio.get_running_loop()
+            fut: asyncio.Future = loop.create_future()
+            _PLAN_INFLIGHT[_cache_key] = fut
+            try:
+                from agent import _hint_indicators
 
-        local_inds = _hint_indicators(desc)
-        llm_ok = True
-        try:
-            from agent import propose_condition_breakdown
+                local_inds = _hint_indicators(desc)
+                llm_ok = True
+                try:
+                    from agent import propose_condition_breakdown
 
-            bd = await asyncio.to_thread(propose_condition_breakdown, desc)
-        except Exception:
-            llm_ok = False
-            bd = _local_fallback_breakdown(desc, local_inds)
-        _PLAN_CACHE[_cache_key] = {"bd": bd, "llm_ok": llm_ok, "ts": _time.monotonic()}
-        # Evict oldest entries beyond capacity
-        if len(_PLAN_CACHE) > _PLAN_CACHE_MAX:
-            oldest = min(_PLAN_CACHE, key=lambda k: _PLAN_CACHE[k]["ts"])
-            _PLAN_CACHE.pop(oldest, None)
+                    bd = await asyncio.to_thread(propose_condition_breakdown, desc)
+                except Exception:
+                    llm_ok = False
+                    bd = _local_fallback_breakdown(desc, local_inds)
+                # Only cache successful LLM results — a transient failure should
+                # not pin the degraded local fallback for the full TTL.
+                if llm_ok:
+                    _PLAN_CACHE[_cache_key] = {
+                        "bd": bd,
+                        "llm_ok": llm_ok,
+                        "ts": _time.monotonic(),
+                    }
+                    if len(_PLAN_CACHE) > _PLAN_CACHE_MAX:
+                        oldest = min(_PLAN_CACHE, key=lambda k: _PLAN_CACHE[k]["ts"])
+                        _PLAN_CACHE.pop(oldest, None)
+                fut.set_result((bd, llm_ok))
+            except BaseException as _e:
+                fut.set_exception(_e)
+                raise
+            finally:
+                _PLAN_INFLIGHT.pop(_cache_key, None)
 
     rows: list[dict] = []
     for cond in bd["conditions"]:

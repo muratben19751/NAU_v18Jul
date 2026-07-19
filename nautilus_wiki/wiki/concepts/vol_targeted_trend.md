@@ -36,15 +36,25 @@ başlatılmaz — `_prev_diff` None iken bir bar beklenir (sahte kesişim önlen
 
 ```
 size = (vol_target / ewma_vol) * capital / price
-ewma_vol = calc_ewma_vol(closes, span=vol_span)   # sqrt(ewma(log_return², span))
 ```
 
-`calc_ewma_vol` `indicators.py` içindedir; alpha = 2/(span+1) (pandas
-`.ewm(span=N)` ve modüldeki `ema()` ile aynı konvansiyon). `span+1` bardan az
-veri varken `None` döner (warmup) — bu durumda `trade_size`'a düşülür.
+`ewma_vol`, `on_bar` içinde **artımsal (O(1)/bar)** tutulan bir EWMA varyansının
+kareköküdür (`self._ewma_var`), her barda `calc_ewma_vol(closes)`'i baştan
+hesaplamaz. Seed davranışı `indicators.py`'deki `calc_ewma_vol` ile **birebir
+eşleşecek** biçimde ayarlanır: ilk gözlemlenen log-getiri tam ağırlıkla girer
+(`ewma_var = lr²`), alpha = 2/(span+1) yalnızca ikinci getiriden itibaren
+uygulanır. Böylece warmup sonrası tahmin referans hesaplayıcıyla aynıdır (aksi
+halde warmup civarında ~%13 sapma oluşuyordu).
 
-İki güvenlik sınırı: boyut sermayenin **%95**'iyle kaplanır (`AccountBalanceNegative`
-önlemi) ve `instrument.size_increment` tabanına yuvarlanır.
+Warmup kapısı: `_vol_warmup` (gözlemlenen getiri sayısı) `vol_span`'a ulaşana
+dek — yani ilk `vol_span+1` bara dek — vol-boyutlandırma devre dışıdır ve
+`trade_size`'a düşülür. İki güvenlik sınırı: boyut sermayenin **%95**'iyle
+kaplanır (`AccountBalanceNegative` önlemi) ve `instrument.size_increment`
+tabanına yuvarlanır.
+
+MA yönü de artımsal koşan toplamlarla (`_fast_sum`/`_slow_sum`) O(1)'de
+hesaplanır; float yuvarlama kaymasını sınırlamak için her 4096 barda toplamlar
+deque'ten `math.fsum` ile yeniden hesaplanır.
 
 ## allow_short → MARGIN hesap
 
@@ -67,11 +77,15 @@ Bkz. [[accounting]] ve [[webapp_module_map]] `backtest.py` satırı. Emirler
 `agent.py` `_fallback_proposal` ajan yokken bu parametreler için rastgele bir
 öneri üretir (`vol_targeted_trend` dalı).
 
-## Bilinen boşluklar
+## MTM equity snapshot (risk metrikleri)
 
-- MTM equity snapshot'ı (`_snapshot_mtm`) `portfolio.equity(venue)` üzerinden
-  toplanıyor; equity eğrisinin backtest raporuna nasıl bağlandığı ([[reports]])
-  ayrıca doğrulanmalı.
+Strateji, warmup sonrası **her `_MTM_SAMPLE` barda bir** (`_snapshot_mtm`)
+`portfolio.equity(venue)` üzerinden bar-çözünürlüklü mark-to-market equity
+biriktirir (`_mtm_equity`/`_mtm_ts`). `backtest.py` bunu `getattr` ile okur ve
+`max_dd`, bar-frekanslı Sharpe ve MTM equity eğrisini bundan türetir ([[reports]]).
+Örneklem seyreltmesi (varsayılan her 5 bar), per-bar `equity()` maliyetini
+düşürürken pozisyon-içi drawdown çözünürlüğünü büyük ölçüde korur — snapshot'ı
+tümüyle atmak `max_dd`/Sharpe'ı sessizce trade-çözünürlüğüne düşürürdü.
 
 <!-- BACKLINKS:BEGIN -->
 ## Referenced by

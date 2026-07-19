@@ -802,17 +802,20 @@ BYBIT_ALL_INTERVALS: tuple[tuple[str, str], ...] = (
 
 
 def _read_parquet_stats(path: Path) -> dict | None:
-    """Return {rows, first, last} for an existing OHLCV parquet, or None.
+    """Return {rows, first, last, size_bytes} for an existing OHLCV parquet.
 
     Uses pyarrow footer metadata (pq.read_metadata) instead of a full
     pd.read_parquet decode — reads ~4 KB of footer, not the entire file.
-    The pandas DatetimeIndex is stored as '__index_level_0__' (always the
-    last column in our OHLCV files) with INT64 min/max statistics.
-    Falls back to a full read only when statistics are absent.
+    The pandas DatetimeIndex serializes as a trailing timestamp column
+    (usually '__index_level_0__'); we locate it by its logical type rather
+    than a magic column name so a renamed index doesn't silently disable the
+    fast path. Falls back to a full read when stats are absent or the schema
+    doesn't match (a debug log makes that fallback observable).
     """
     if not path.exists():
         return None
     try:
+        import pyarrow as pa
         import pyarrow.parquet as pq
 
         md = pq.read_metadata(str(path))
@@ -820,11 +823,17 @@ def _read_parquet_stats(path: Path) -> dict | None:
         if md.num_rows == 0:
             return {"rows": 0, "first": None, "last": None, "size_bytes": size_bytes}
 
-        # __index_level_0__ is always the last column in our OHLCV parquet files.
-        rg0 = md.row_group(0)
-        ts_col_idx = rg0.num_columns - 1
-        # Verify it really is the timestamp index (guard against schema drift).
-        if rg0.column(ts_col_idx).path_in_schema == "__index_level_0__":
+        # Locate the timestamp index column by logical type (timestamp[*]),
+        # scanning from the last column (where the pandas index lives).
+        schema = md.schema.to_arrow_schema()
+        ts_col_idx = None
+        for i in range(len(schema) - 1, -1, -1):
+            if pa.types.is_timestamp(schema.field(i).type):
+                ts_col_idx = i
+                break
+
+        if ts_col_idx is not None:
+            rg0 = md.row_group(0)
             stats0 = rg0.column(ts_col_idx).statistics
             stats_last = (
                 md.row_group(md.num_row_groups - 1).column(ts_col_idx).statistics
@@ -836,8 +845,12 @@ def _read_parquet_stats(path: Path) -> dict | None:
                     "last": pd.Timestamp(stats_last.max).isoformat(),
                     "size_bytes": size_bytes,
                 }
-    except Exception:
-        pass
+        log.debug(
+            "parquet footer fast-path missed (%s): no timestamp stats, full decode",
+            path,
+        )
+    except Exception as e:
+        log.debug("parquet footer read failed (%s): %s; full decode", path, e)
 
     # Fallback: full decode (missing statistics or unexpected schema)
     try:
