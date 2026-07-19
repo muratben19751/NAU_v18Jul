@@ -398,6 +398,9 @@ async def run(
     ext_granularity: str = Form("1-DAY"),
     ext_start: str = Form(""),
     ext_end: str = Form(""),
+    initial_capital: float = Form(0.0),
+    commission_pct: float = Form(-1.0),
+    trade_size: float = Form(0.0),
 ):
     """Return a progress panel immediately, run the backtest in a daemon thread."""
     from server import templates
@@ -445,6 +448,10 @@ async def run(
         import pandas as _pd
 
         from data import _bybit_cache_path, load_bybit_bars
+
+        # Broker overrides — None means "use defaults".
+        _cap = initial_capital if initial_capital > 0 else None
+        _comm_bps = (commission_pct * 100.0) if commission_pct >= 0 else None
 
         _t_start = _time.perf_counter()
         try:
@@ -524,14 +531,22 @@ async def run(
                 # child so runaway user code can't hang the server.
                 from sandbox import run_backtest_guarded
 
+                _run_spec = spec
+                if trade_size > 0:
+                    import copy as _copy
+                    _run_spec = _copy.copy(spec)
+                    _run_spec.trade_size = trade_size
+
                 result = run_backtest_guarded(
-                    spec,
+                    _run_spec,
                     bars,
                     recipe={
                         "symbol": symbol,
                         "base": base_guess,
                         "category": category,
                         "interval": interval,
+                        "initial_capital": _cap,
+                        "commission_bps_override": _comm_bps,
                     },
                     iteration_id=0,
                     progress_fn=_progress,
@@ -614,6 +629,11 @@ async def run(
                 # guarantee as the Bybit branch (child builds the instrument from recipe).
                 from sandbox import run_backtest_guarded
 
+                if trade_size > 0:
+                    import copy as _copy
+                    run_spec = _copy.copy(run_spec)
+                    run_spec.trade_size = trade_size
+
                 result = run_backtest_guarded(
                     run_spec,
                     bars,
@@ -621,6 +641,8 @@ async def run(
                         "source": "external",
                         "instrument_id": ext_instrument,
                         "granularity": ext_granularity,
+                        "initial_capital": _cap,
+                        "commission_bps_override": _comm_bps,
                     },
                     iteration_id=0,
                     progress_fn=_progress,
@@ -631,12 +653,23 @@ async def run(
                 if not ticker:
                     _set_error("Ticker required for Index instruments.")
                     return
+                # Resolve dates — if blank, use the full cache range.
                 try:
-                    start_d, end_d = (
-                        date.fromisoformat(start_date),
-                        date.fromisoformat(end_date),
-                    )
-                except ValueError:
+                    from data import INDEX_CACHE_DIR, _ticker_to_filename
+                    import pandas as _pd2
+                    if start_date and end_date:
+                        start_d = date.fromisoformat(start_date)
+                        end_d = date.fromisoformat(end_date)
+                    else:
+                        cp = INDEX_CACHE_DIR / f"{_ticker_to_filename(ticker)}_{granularity}.parquet"
+                        if cp.exists():
+                            _df2 = _pd2.read_parquet(cp)
+                            start_d = _df2.index[0].date() if not _df2.empty else date(2000, 1, 1)
+                            end_d = _df2.index[-1].date() if not _df2.empty else date.today()
+                        else:
+                            start_d = date(2000, 1, 1)
+                            end_d = date.today()
+                except (ValueError, Exception):
                     _set_error("start_date and end_date must be YYYY-MM-DD.")
                     return
                 _progress(f"Reading data · {ticker}/{granularity}…")
@@ -668,6 +701,11 @@ async def run(
                 # the index recipe.
                 from sandbox import run_backtest_guarded
 
+                if trade_size > 0:
+                    import copy as _copy
+                    run_spec = _copy.copy(run_spec)
+                    run_spec.trade_size = trade_size
+
                 result = run_backtest_guarded(
                     run_spec,
                     bars,
@@ -675,6 +713,8 @@ async def run(
                         "source": "index",
                         "ticker": ticker,
                         "granularity": granularity,
+                        "initial_capital": _cap,
+                        "commission_bps_override": _comm_bps,
                     },
                     iteration_id=0,
                     progress_fn=_progress,
@@ -1059,6 +1099,9 @@ async def describe(
     ext_start: str = Form(""),
     ext_end: str = Form(""),
     allow_short: str = Form(""),
+    initial_capital: float = Form(0.0),
+    commission_pct: float = Form(-1.0),
+    trade_size: float = Form(0.0),
 ):
     """Generate custom blocks from a description; when done, the fragment triggers the backtest.
 
@@ -1113,6 +1156,9 @@ async def describe(
         "ext_granularity": ext_granularity,
         "ext_start": ext_start,
         "ext_end": ext_end,
+        "initial_capital": initial_capital,
+        "commission_pct": commission_pct,
+        "trade_size": trade_size,
     }
     _GEN_STORE.create_evicting(
         gen_id,
@@ -1720,12 +1766,16 @@ async def plan_preview(
     _cache_key = (desc.lower(), _allow_short_bool)
     _cached = _PLAN_CACHE.get(_cache_key)
     if _cached and (_time.monotonic() - _cached["ts"]) < _PLAN_CACHE_TTL:
-        bd, llm_ok = _cached["bd"], _cached["llm_ok"]
+        bd, llm_ok, refined_result = (
+            _cached["bd"],
+            _cached["llm_ok"],
+            _cached.get("refined") or {"refined": desc, "notes": ""},
+        )
     else:
         # If another request for this key is already computing, await it.
         _inflight = _PLAN_INFLIGHT.get(_cache_key)
         if _inflight is not None:
-            bd, llm_ok = await _inflight
+            bd, llm_ok, refined_result = await _inflight
         else:
             loop = asyncio.get_running_loop()
             fut: asyncio.Future = loop.create_future()
@@ -1736,24 +1786,37 @@ async def plan_preview(
                 local_inds = _hint_indicators(desc)
                 llm_ok = True
                 try:
-                    from agent import propose_condition_breakdown
+                    from agent import (
+                        propose_condition_breakdown,
+                        propose_refined_description,
+                    )
 
-                    bd = await asyncio.to_thread(propose_condition_breakdown, desc)
+                    bd, refined_result = await asyncio.gather(
+                        asyncio.to_thread(propose_condition_breakdown, desc),
+                        asyncio.to_thread(propose_refined_description, desc),
+                        return_exceptions=True,
+                    )
+                    if isinstance(bd, BaseException):
+                        raise bd
+                    if isinstance(refined_result, BaseException):
+                        refined_result = {"refined": desc, "notes": ""}
                 except Exception:
                     llm_ok = False
                     bd = _local_fallback_breakdown(desc, local_inds)
+                    refined_result = {"refined": desc, "notes": ""}
                 # Only cache successful LLM results — a transient failure should
                 # not pin the degraded local fallback for the full TTL.
                 if llm_ok:
                     _PLAN_CACHE[_cache_key] = {
                         "bd": bd,
                         "llm_ok": llm_ok,
+                        "refined": refined_result,
                         "ts": _time.monotonic(),
                     }
                     if len(_PLAN_CACHE) > _PLAN_CACHE_MAX:
                         oldest = min(_PLAN_CACHE, key=lambda k: _PLAN_CACHE[k]["ts"])
                         _PLAN_CACHE.pop(oldest, None)
-                fut.set_result((bd, llm_ok))
+                fut.set_result((bd, llm_ok, refined_result))
             except BaseException as _e:
                 fut.set_exception(_e)
                 raise
@@ -1806,6 +1869,8 @@ async def plan_preview(
             "n_entry": sum(1 for r in rows if r["role"] == "entry"),
             "n_exit": sum(1 for r in rows if r["role"] == "exit"),
             "chart_data": chart_data,
+            "refined": refined_result.get("refined") or desc,
+            "refine_notes": refined_result.get("notes") or "",
         },
     )
 
@@ -1827,9 +1892,19 @@ _SWEEP_METRIC_KEYS = (
 )
 
 
-def _sweep_row_metrics(metrics: dict) -> dict:
+def _sweep_row_metrics(metrics: dict, bars=None) -> dict:
     m = metrics or {}
-    return {k: m.get(k) for k in _SWEEP_METRIC_KEYS}
+    row = {k: m.get(k) for k in _SWEEP_METRIC_KEYS}
+    if bars is not None and not bars.empty:
+        try:
+            fc = float(bars.iloc[0]["close"])
+            lc = float(bars.iloc[-1]["close"])
+            row["buy_hold_pct"] = (lc - fc) / fc * 100.0 if fc > 0 else None
+        except Exception:
+            row["buy_hold_pct"] = None
+    else:
+        row["buy_hold_pct"] = None
+    return row
 
 
 def _sweep_state_view(sweep_id: str) -> dict | None:
@@ -2013,7 +2088,7 @@ async def sweep(
                     _row(
                         code,
                         status="done",
-                        metrics=_sweep_row_metrics(result.metrics),
+                        metrics=_sweep_row_metrics(result.metrics, bars),
                         n_bars=len(bars),
                         date_from=actual_from,
                         date_to=actual_to,
@@ -2089,7 +2164,7 @@ async def sweep(
                     _row(
                         code,
                         status="done",
-                        metrics=_sweep_row_metrics(result.metrics),
+                        metrics=_sweep_row_metrics(result.metrics, bars),
                         n_bars=len(bars),
                         date_from=actual_from,
                         date_to=actual_to,

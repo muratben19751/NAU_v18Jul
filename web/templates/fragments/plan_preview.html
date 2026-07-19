@@ -18,6 +18,41 @@
     </div>
     <div class="panel-body">
 
+      {# ── AI önerisi — düzenlenebilir + "Tamam" onayı ── #}
+      {% if llm_ok and refined %}
+        <div class="panel" style="margin-bottom:12px;border-color:rgba(129,140,248,0.4);">
+          <div class="panel-header">
+            <div class="panel-title">✨ AI önerisi — düzenleyebilirsiniz</div>
+          </div>
+          <div class="panel-body">
+            <textarea id="refined-description" rows="4"
+                      class="mono"
+                      aria-label="AI tarafından iyileştirilmiş strateji açıklaması"
+                      placeholder="AI önerisi burada görünür — düzenleyebilirsiniz"
+                      style="width:100%;resize:vertical;">{{ refined }}</textarea>
+            {% if refine_notes %}
+              <div class="small text-muted plan-note" style="margin-top:6px;">
+                <span>ℹ</span> <span>{{ refine_notes }}</span>
+              </div>
+            {% endif %}
+            <div class="row" style="align-items:center;gap:10px;margin-top:10px;">
+              <button class="btn btn-primary" type="button"
+                      hx-post="/backtest/describe"
+                      hx-include="closest form"
+                      hx-vals='js:{description: document.getElementById("refined-description").value}'
+                      hx-target="#result"
+                      hx-swap="innerHTML"
+                      hx-indicator="#gen-spinner"
+                      style="border-color:rgba(129,140,248,0.5);">
+                <span class="btn-spin spin">⟳</span>
+                ✅ Tamam — Blokları Oluştur
+              </button>
+              <span class="text-muted" style="font-size:11px;">Onayladığınızda Python blokları yazılıp backtest edilir</span>
+            </div>
+          </div>
+        </div>
+      {% endif %}
+
       {# warnings — en üstte, dikkat çekici #}
       {% for wn in warnings %}
         <div class="warning-strip small plan-note">

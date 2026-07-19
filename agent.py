@@ -1305,6 +1305,41 @@ def propose_condition_breakdown(description: str) -> dict:
     }
 
 
+_REFINE_SYSTEM_PROMPT = """You are a trading strategy editor.
+The user has typed a rough natural-language description of a trading strategy.
+Rewrite it as a single clear, precise, testable rule set — correct grammar, add
+missing exit conditions if absent, remove ambiguity, keep it concise (2-4 sentences max).
+Do NOT change the core logic the user described; only clarify it.
+Return JSON only:
+{"refined": "<improved description>", "notes": "<one short sentence: what you changed>"}
+If the input is already clear, return it unchanged with notes="No changes needed."
+"""
+
+
+def propose_refined_description(raw_description: str) -> dict:
+    """Rewrite the user's raw strategy description into a cleaner, more precise version.
+
+    Returns: {refined: str, notes: str}. Falls back to original text on any error.
+    """
+    client = _get_client()
+    try:
+        resp = _create_message(
+            client,
+            max_tokens=400,
+            system=_REFINE_SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": raw_description.strip()}],
+        )
+        text = "".join(b.text for b in resp.content if getattr(b, "type", "") == "text")
+        data = json.loads(_extract_json_object(text))
+        refined = str(data.get("refined") or "").strip()
+        notes = str(data.get("notes") or "").strip()
+        if not refined:
+            raise ValueError("empty refined")
+        return {"refined": refined, "notes": notes}
+    except Exception:
+        return {"refined": raw_description.strip(), "notes": ""}
+
+
 def propose_custom_block(
     label: str, description: str, role_hint: str = "entry"
 ) -> dict:

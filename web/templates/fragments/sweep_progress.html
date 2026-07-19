@@ -17,9 +17,9 @@
   {% set shs  = done_rows | map(attribute='metrics') | map(attribute='sharpe_per_trade') | reject('none') | list %}
   {% set best_pnl = pnls | max if pnls else None %}
   {% set best_sh  = shs  | max if shs  else None %}
-  {# max_dd_pct is negative (healthy = close to 0) → highest (least negative) is best #}
+  {# max_dd_pct is positive percentage; lower is better → min is best #}
   {% set dds = done_rows | map(attribute='metrics') | map(attribute='max_dd_pct') | reject('none') | list %}
-  {% set best_dd = dds | max if dds else None %}
+  {% set best_dd = dds | min if dds else None %}
 
   {# ── Which timeframe is running right now + overall progress ── #}
   {% set running_rows = state.rows | selectattr('status', 'equalto', 'running') | list %}
@@ -47,6 +47,7 @@
             <th style="text-align:left;padding:4px 8px;">TF</th>
             <th style="text-align:left;padding:4px 8px;font-size:10px;">Date range</th>
             <th style="padding:4px 8px;">PnL %</th>
+            <th style="padding:4px 8px;color:rgba(255,255,255,0.35);">B&amp;H %</th>
             <th style="padding:4px 8px;">Sharpe (per-trade)</th>
             <th style="padding:4px 8px;">Max DD %</th>
             <th style="padding:4px 8px;">Trade</th>
@@ -72,15 +73,25 @@
               {% else %}—{% endif %}
             </td>
             {% if r.status == 'error' %}
-            <td colspan="6" style="padding:4px 8px;color:#f87171;font-size:11px;">{{ r.error }}</td>
+            <td colspan="7" style="padding:4px 8px;color:#f87171;font-size:11px;">{{ r.error }}</td>
             {% elif r.status != 'done' %}
-            <td colspan="6" style="padding:4px 8px;color:rgba(255,255,255,0.35);font-size:11px;">
+            <td colspan="7" style="padding:4px 8px;color:rgba(255,255,255,0.35);font-size:11px;">
               {{ 'running…' if r.status == 'running' else 'queued' }}
             </td>
             {% else %}
-            <td style="text-align:right;padding:4px 8px;{% if best_pnl is not none and m.pnl_pct == best_pnl %}color:#4ade80;font-weight:700;{% endif %}">
-              {{ '%+.2f'|format(m.pnl_pct * 100) if m.pnl_pct is not none else '—' }}
+            {# PnL % — green if positive, red if negative; bold if best #}
+            {% set pnl_val = m.pnl_pct * 100 if m.pnl_pct is not none else none %}
+            <td style="text-align:right;padding:4px 8px;
+              {%- if best_pnl is not none and m.pnl_pct == best_pnl %}font-weight:700;{% endif %}
+              {%- if pnl_val is not none and pnl_val >= 0 %}color:#4ade80;{% elif pnl_val is not none %}color:#f87171;{% endif %}">
+              {{ '%+.2f'|format(pnl_val) if pnl_val is not none else '—' }}
             </td>
+            {# Buy & Hold % — muted reference column #}
+            {% set bh = m.buy_hold_pct %}
+            <td style="text-align:right;padding:4px 8px;color:{% if bh is not none and bh >= 0 %}rgba(74,222,128,0.55){% elif bh is not none %}rgba(248,113,113,0.55){% else %}rgba(255,255,255,0.3){% endif %};">
+              {{ '%+.2f'|format(bh) if bh is not none else '—' }}
+            </td>
+            {# Sharpe #}
             <td style="text-align:right;padding:4px 8px;{% if best_sh is not none and m.sharpe_per_trade == best_sh %}color:#4ade80;font-weight:700;{% endif %}">
               {% if m.sharpe_per_trade is not none %}
                 {% if m.sharpe_per_trade != m.sharpe_per_trade %}{# NaN check #}
@@ -90,8 +101,14 @@
                 {% endif %}
               {% else %}—{% endif %}
             </td>
-            <td style="text-align:right;padding:4px 8px;{% if best_dd is not none and m.max_dd_pct == best_dd %}color:#4ade80;font-weight:700;{% endif %}">
-              {{ '%.2f'|format(m.max_dd_pct) if m.max_dd_pct is not none else '—' }}
+            {# Max DD % — green if low (<10%), yellow if moderate (10-30%), red if high (>30%) #}
+            {% set dd = m.max_dd_pct %}
+            <td style="text-align:right;padding:4px 8px;
+              {%- if best_dd is not none and dd == best_dd %}font-weight:700;{% endif %}
+              {%- if dd is not none and dd < 10 %}color:#4ade80;
+              {%- elif dd is not none and dd < 30 %}color:#fbbf24;
+              {%- elif dd is not none %}color:#f87171;{% endif %}">
+              {{ '%.2f'|format(dd) if dd is not none else '—' }}
             </td>
             <td style="text-align:right;padding:4px 8px;">{{ m.n_trades if m.n_trades is not none else '—' }}</td>
             <td style="text-align:right;padding:4px 8px;">
@@ -111,8 +128,7 @@
       {% endif %}
       {% if done %}
       <div class="text-muted" style="margin-top:8px;font-size:11px;">
-        Green = best in that column. Sharpe = NAU per-trade ((mean/std)×√n).
-        Same date range, same strategy — only the bar resolution changes.
+        Green = best in column. B&amp;H = buy-and-hold return over same period. DD: green &lt;10% · yellow &lt;30% · red ≥30%.
       </div>
       {% endif %}
     </div>

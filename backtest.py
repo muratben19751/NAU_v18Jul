@@ -555,6 +555,7 @@ def _metrics(
     mtm_equity: list[float] | None = None,
     annualization: int | None = None,
     mtm_ts: list[int] | None = None,
+    starting_cash: float | None = None,
 ) -> dict:
     """Compute backtest metrics.
 
@@ -571,6 +572,7 @@ def _metrics(
     """
     if annualization is None:
         annualization = 365
+    _sc = starting_cash if starting_cash is not None else STARTING_CASH
     if positions_df is None or positions_df.empty:
         return {
             "pnl": 0.0,
@@ -592,7 +594,7 @@ def _metrics(
             "volatility": float("nan"),
             "max_winner": 0.0,
             "max_loser": 0.0,
-            "starting_cash": STARTING_CASH,
+            "starting_cash": _sc,
             "long_ratio": float("nan"),
             "avg_duration_mins": float("nan"),
             "commission_total": 0.0,
@@ -603,7 +605,7 @@ def _metrics(
             "sharpe_per_trade": float("nan"),
             "annualization": annualization,
             "max_dd_mtm": 0.0,
-            "equity_curve_realized": [STARTING_CASH],
+            "equity_curve_realized": [_sc],
             "equity_curve_mtm": [],
         }
 
@@ -668,8 +670,8 @@ def _metrics(
             dd_pnls = pnls[_order]
         except Exception:
             dd_pnls = pnls
-    realized_equity = list(STARTING_CASH + np.cumsum(dd_pnls))
-    realized_equity_full = [STARTING_CASH] + realized_equity
+    realized_equity = list(_sc + np.cumsum(dd_pnls))
+    realized_equity_full = [_sc] + realized_equity
 
     # MTM max drawdown: use bar-resolution snapshots when available (Phase 1)
     if mtm_equity and len(mtm_equity) > 1:
@@ -733,7 +735,7 @@ def _metrics(
     # cross-system comparison.)
     sharpe_per_trade = 0.0
     if n_trades >= 2:
-        _tr = np.asarray(pnls, dtype=float) / STARTING_CASH
+        _tr = np.asarray(pnls, dtype=float) / _sc
         _std = float(np.std(_tr, ddof=0))  # M620: population std (NAU paritesi)
         if _std > 0:
             sharpe_per_trade = float(np.mean(_tr)) / _std * math.sqrt(n_trades)
@@ -774,14 +776,14 @@ def _metrics(
         float(pnl_stats["Avg Winner"])
         if "Avg Winner" in pnl_stats
         else (
-            avg_win_ret * STARTING_CASH if not np.isnan(avg_win_ret) else float("nan")
+            avg_win_ret * _sc if not np.isnan(avg_win_ret) else float("nan")
         )
     )
     avg_loss_usd = (
         float(pnl_stats["Avg Loser"])
         if "Avg Loser" in pnl_stats
         else (
-            avg_loss_ret * STARTING_CASH if not np.isnan(avg_loss_ret) else float("nan")
+            avg_loss_ret * _sc if not np.isnan(avg_loss_ret) else float("nan")
         )
     )
     max_winner = _stat(pnl_stats, "Max Winner")
@@ -789,9 +791,9 @@ def _metrics(
     long_ratio = _stat(gen, "Long Ratio")
 
     return {
-        "starting_cash": STARTING_CASH,
+        "starting_cash": _sc,
         "pnl": total_pnl,
-        "pnl_pct": total_pnl / STARTING_CASH,
+        "pnl_pct": total_pnl / _sc,
         "sharpe": sharpe,
         "sortino": sortino,
         "volatility": volatility,
@@ -1032,10 +1034,12 @@ def _extract_trades(
 
 def _equity_curve(
     positions_df: pd.DataFrame | None,
+    starting_cash: float | None = None,
 ) -> tuple[list[float], list[str]]:
     """Return (equity_values, iso_date_labels) aligned by trade close time."""
+    _sc = starting_cash if starting_cash is not None else STARTING_CASH
     if positions_df is None or positions_df.empty:
-        return [STARTING_CASH], [""]
+        return [_sc], [""]
     pnls = _parse_money_column(positions_df["realized_pnl"])
     dates_ns = None
     if "ts_closed" in positions_df.columns:
@@ -1050,8 +1054,8 @@ def _equity_curve(
             dates_ns = dates_ns[order]
         except (TypeError, ValueError):
             dates_ns = None  # open position / NA → curve without dates (metrics fine)
-    curve = STARTING_CASH + np.cumsum(pnls)
-    values = [STARTING_CASH] + [float(x) for x in curve]
+    curve = _sc + np.cumsum(pnls)
+    values = [_sc] + [float(x) for x in curve]
     if dates_ns is not None:
         labels = [""] + [
             pd.Timestamp(int(t), unit="ns", tz="UTC").strftime("%Y-%m-%d")
@@ -1184,6 +1188,8 @@ def run_composed_backtest(
     bar_type: BarType | None = None,
     venue: Venue | None = None,
     progress_fn=None,
+    initial_capital: float | None = None,
+    commission_bps_override: float | None = None,
 ) -> IterationResult:
     """Run a user-composed strategy (SignalBlock list) through Nautilus.
 
@@ -1274,22 +1280,32 @@ def run_composed_backtest(
         _quote_ccy = getattr(active_instrument, "quote_currency", None)
         _is_usd_quote = _quote_ccy is not None and str(_quote_ccy) == "USD"
         _crypto_ccy = USD if _is_usd_quote else USDT
+        _cap = initial_capital if initial_capital is not None else STARTING_CASH
         if is_equity:
             _account_type = AccountType.CASH
-            _balances = [Money(STARTING_CASH, USD)]
+            _balances = [Money(_cap, USD)]
             _base = USD
         elif getattr(spec, "allow_short", False):
             _account_type = AccountType.MARGIN
-            _balances = [Money(STARTING_CASH, _crypto_ccy)]
+            _balances = [Money(_cap, _crypto_ccy)]
             _base = None
         else:
             _account_type = AccountType.CASH
-            _balances = [Money(STARTING_CASH, _crypto_ccy)]
+            _balances = [Money(_cap, _crypto_ccy)]
             _base = None
 
         _p(
-            f"Setting up engine · {str(active_venue)} · {_account_type.name} · starting: ${STARTING_CASH:,.0f}"
+            f"Setting up engine · {str(active_venue)} · {_account_type.name} · starting: ${_cap:,.0f}"
         )
+
+        # Commission: use per-BPS override when provided, else instrument defaults.
+        if commission_bps_override is not None:
+            _fee = MakerTakerFeeModel(
+                maker_fee=Decimal(str(commission_bps_override / 10_000)),
+                taker_fee=Decimal(str(commission_bps_override / 10_000)),
+            )
+        else:
+            _fee = _fee_model_for(active_instrument)
 
         engine.add_venue(
             venue=active_venue,
@@ -1300,7 +1316,7 @@ def run_composed_backtest(
             bar_adaptive_high_low_ordering=getattr(spec, "use_bracket", False),
             # Commission by instrument type: crypto→Bybit maker/taker,
             # US stock/ETF (QQQ etc.)→Interactive Brokers Fixed (see _fee_model_for).
-            fee_model=_fee_model_for(active_instrument),
+            fee_model=_fee,
         )
         engine.add_instrument(active_instrument)
 
@@ -1446,8 +1462,9 @@ def run_composed_backtest(
             mtm_equity=mtm_equity,
             annualization=_periods_per_year(active_bar_type, active_instrument),
             mtm_ts=getattr(_composed_strategy, "_mtm_ts", None),
+            starting_cash=_cap,
         )
-        equity, equity_dates = _equity_curve(positions_df)
+        equity, equity_dates = _equity_curve(positions_df, starting_cash=_cap)
         # Entry/exit reasons: decision log (same lifecycle as _mtm_equity) +
         # fills report tag join
         try:

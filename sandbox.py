@@ -169,6 +169,8 @@ def _child_entry(q, payload):
             bar_type=bar_type,
             venue=instrument.id.venue,
             progress_fn=_progress,
+            initial_capital=recipe.get("initial_capital"),
+            commission_bps_override=recipe.get("commission_bps_override"),
         )
         q.put(("result", result))
     except Exception as e:  # pragma: no cover - defensive
