@@ -1315,12 +1315,17 @@ Girdi zaten netse ve metrik yoksa, tarifi aynen döndür ve notes="Değişiklik 
 
 
 def propose_refined_description(
-    raw_description: str, backtest_metrics: dict | None = None
+    raw_description: str,
+    backtest_metrics: dict | None = None,
+    robustness: dict | None = None,
 ) -> dict:
     """Rewrite the user's raw strategy description into a cleaner, more precise version.
 
     If backtest_metrics is provided (pnl_pct, sharpe, max_dd, n_trades, win_rate,
     spec_name, best_tf), the AI uses them to suggest targeted improvements.
+    If robustness is provided (overfitting_score, verdict, wfo_efficiency,
+    oos_sharpe, stability), the AI weighs overfitting risk: low score / poor OOS
+    → simplify & de-tune; robust → allowed to strengthen.
     Returns: {refined: str, notes: str, suggestions: list[{kind, text}]}.
     Falls back to original text (empty suggestions) on any error.
     """
@@ -1343,7 +1348,30 @@ def propose_refined_description(
                 val = backtest_metrics.get(key)
                 if val not in (None, ""):
                     parts.append(f"  {label}: {val}")
-            parts.append("\nBu sonuçlara göre stratejiyi iyileştir.")
+            # Robustness özeti — overfitting-farkındalıklı öneri için.
+            if robustness and any(v not in (None, "") for v in robustness.values()):
+                parts.append("\nRobustness analizi:")
+                for key, label in [
+                    (
+                        "overfitting_score",
+                        "Overfitting skoru (≥0.7 sağlam · <0.4 aşırı-uyum)",
+                    ),
+                    ("verdict", "Verdict"),
+                    ("wfo_efficiency", "WFO verimliliği (OOS/in-sample)"),
+                    ("oos_sharpe", "OOS Sharpe"),
+                    ("stability", "Parametre kararlılığı"),
+                ]:
+                    val = robustness.get(key)
+                    if val not in (None, ""):
+                        parts.append(f"  {label}: {val}")
+                parts.append(
+                    "\nBu sonuçlara göre stratejiyi iyileştir. Overfitting skoru düşük "
+                    "(<0.4) ya da OOS Sharpe zayıfsa: parametreleri sadeleştir, aşırı "
+                    "optimizasyondan kaçın, daha genel kurallar öner. Robustsa (≥0.7): "
+                    "güçlendirme/pozisyon ölçekleme önerebilirsin."
+                )
+            else:
+                parts.append("\nBu sonuçlara göre stratejiyi iyileştir.")
             user_content = "\n".join(parts)
         resp = _create_message(
             client,

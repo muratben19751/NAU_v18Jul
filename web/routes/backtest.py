@@ -1693,6 +1693,11 @@ async def plan_preview(
     bt_win_rate: str = Form(""),
     bt_spec_name: str = Form(""),
     bt_best_tf: str = Form(""),
+    rob_overfitting: str = Form(""),
+    rob_verdict: str = Form(""),
+    rob_wfo_eff: str = Form(""),
+    rob_oos_sharpe: str = Form(""),
+    rob_stability: str = Form(""),
 ):
     """Interpret the description + show the block plan + warnings (read-only preview).
 
@@ -1726,6 +1731,17 @@ async def plan_preview(
             "best_tf": bt_best_tf,
         }
 
+    # Robustness özeti (overfitting-farkındalık) — analiz yapıldıysa AI'ya beslenir.
+    _robustness: dict | None = None
+    if any([rob_overfitting, rob_verdict, rob_wfo_eff, rob_oos_sharpe]):
+        _robustness = {
+            "overfitting_score": rob_overfitting,
+            "verdict": rob_verdict,
+            "wfo_efficiency": rob_wfo_eff,
+            "oos_sharpe": rob_oos_sharpe,
+            "stability": rob_stability,
+        }
+
     # TTL cache keyed on (desc, allow_short) with in-flight dedup, so concurrent
     # identical requests (multi-tab, un-debounced allow_short toggle) share one
     # LLM call instead of stampeding it.
@@ -1744,7 +1760,7 @@ async def plan_preview(
             from agent import propose_refined_description
 
             refined_result = await asyncio.to_thread(
-                propose_refined_description, desc, _bt_metrics
+                propose_refined_description, desc, _bt_metrics, _robustness
             )
         except Exception:
             refined_result = {"refined": desc, "notes": "", "suggestions": []}
@@ -1771,7 +1787,10 @@ async def plan_preview(
                     bd, refined_result = await asyncio.gather(
                         asyncio.to_thread(propose_condition_breakdown, desc),
                         asyncio.to_thread(
-                            propose_refined_description, desc, _bt_metrics
+                            propose_refined_description,
+                            desc,
+                            _bt_metrics,
+                            _robustness,
                         ),
                         return_exceptions=True,
                     )

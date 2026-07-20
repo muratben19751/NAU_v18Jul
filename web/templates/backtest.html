@@ -300,6 +300,13 @@
           <input type="hidden" name="bt_spec_name"  id="bt-spec-name">
           <input type="hidden" name="bt_best_tf"    id="bt-best-tf">
 
+          {# Robustness özeti — analiz sonrası /backtest/plan'a gider (overfitting-farkındalık) #}
+          <input type="hidden" name="rob_overfitting" id="rob-overfitting">
+          <input type="hidden" name="rob_verdict"     id="rob-verdict">
+          <input type="hidden" name="rob_wfo_eff"     id="rob-wfo-eff">
+          <input type="hidden" name="rob_oos_sharpe"  id="rob-oos-sharpe">
+          <input type="hidden" name="rob_stability"   id="rob-stability">
+
         </form>
       </div>
     </div>
@@ -508,6 +515,11 @@
       set("bt-win-rate",  btPanel.dataset.btWinRate);
       set("bt-spec-name", btPanel.dataset.btSpecName);
       set("bt-best-tf",   btPanel.dataset.btBestTf || "");
+      // Yeni backtest sonucu → eski robustness özetini temizle. Robustness bu
+      // sonucun üstünde henüz çalıştırılmadı; eski değerlerin AI Plan'a sızmasını
+      // önle (robustness_result.html swap'i bunları yeniden dolduracak).
+      ["rob-overfitting","rob-verdict","rob-wfo-eff","rob-oos-sharpe","rob-stability"]
+        .forEach(function(id){ var el = document.getElementById(id); if (el) el.value = ""; });
       // Sonuç sekmesi rozetini trade sayısıyla güncelle (final result)
       var badge = document.getElementById("bt-tab-badge-result");
       if (badge) { badge.classList.remove("running"); badge.textContent = btPanel.dataset.btNTrades || "0"; }
