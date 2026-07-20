@@ -4,16 +4,16 @@
 {% if stage == "prompt" %}
   <div class="panel">
     <div class="panel-body empty-state small">
-      Write your strategy in a bit more detail — the interpretation and block plan will appear here.
+      Stratejini biraz daha ayrıntılı yaz — yorumlama ve blok planı burada görünecek.
     </div>
   </div>
 {% else %}
   <div class="panel">
     <div class="panel-header">
-      <div class="panel-title">🔍 Plan preview{% if not llm_ok %} · local estimate{% endif %}</div>
+      <div class="panel-title">🔍 Plan önizleme{% if not llm_ok %} · yerel tahmin{% endif %}</div>
       <div class="panel-meta">
-        <span class="chip">entry: {{ entry_logic }}</span>
-        <span class="chip">exit: {{ exit_logic }}</span>
+        <span class="chip">giriş: {{ entry_logic }}</span>
+        <span class="chip">çıkış: {{ exit_logic }}</span>
       </div>
     </div>
     <div class="panel-body">
@@ -89,21 +89,21 @@
         {# ── LEFT: interpretation + condition→block mapping ── #}
         <div class="plan-split-col">
           {# (a) interpretation #}
-          <div class="small text-muted">Interpreted strategy</div>
+          <div class="small text-muted">Yorumlanan strateji</div>
           <div class="mono plan-label">{{ label }}</div>
 
           {# (b) condition → block mapping #}
-          <div class="small text-muted">{{ n_entry }} entry · {{ n_exit }} exit conditions</div>
+          <div class="small text-muted">{{ n_entry }} giriş · {{ n_exit }} çıkış koşulu</div>
           {% for r in rows %}
             <div class="plan-row">
               <span class="badge {{ 'entry' if r.role == 'entry' else 'exit' }}">
-                {{ 'ENTRY' if r.role == 'entry' else 'EXIT' }}
+                {{ 'GİRİŞ' if r.role == 'entry' else 'ÇIKIŞ' }}
               </span>
               <span class="mono">{{ r.label }}</span>
               {% if r.reuse %}
-                <span class="chip chip-good">↺ resembles the {{ r.reuse.label }} block</span>
+                <span class="chip chip-good">↺ {{ r.reuse.label }} bloğuna benziyor</span>
               {% else %}
-                <span class="chip">✎ a new custom block will be written</span>
+                <span class="chip">✎ yeni özel blok yazılacak</span>
               {% endif %}
               <div class="small text-muted plan-desc">{{ r.desc }}</div>
             </div>
@@ -112,12 +112,12 @@
 
       </div>
 
-      {# what will happen on Generate & Backtest #}
+      {# ne olacak — onay butonuyla #}
       <div class="small text-muted plan-note">
-        With <b>Generate &amp; Backtest</b>: a separate Python block is written for each condition,
-        saved to disk, the strategy is compiled with {{ entry_logic }}/{{ exit_logic }} logic
-        and backtested on the selected timeframes. (This preview is read-only — nothing has
-        been generated/saved yet.)
+        <b>✅ Tamam</b>'a bastığınızda her koşul için ayrı bir Python bloğu yazılır,
+        diske kaydedilir, strateji {{ entry_logic }}/{{ exit_logic }} mantığıyla derlenip
+        seçili zaman dilimlerinde backtest edilir. (Bu önizleme salt-okunur — henüz hiçbir
+        şey üretilmedi/kaydedilmedi.)
       </div>
 
     </div>

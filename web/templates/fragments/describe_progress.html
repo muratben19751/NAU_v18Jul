@@ -2,16 +2,42 @@
    When finished and the spec is ready (chain_vals) it is chained to the existing /backtest/run
    with the SAME instrument parameters; the run prints its own progress panel in place of this
    div (the 280-line run worker did not change at all in this flow). #}
-{% if not done %}
+{% if state is none %}
+{# In-memory kayıt yok → üretim sırasında server yeniden başladı (dev'de
+   `uvicorn --reload` izlenen bir .py değişince). Sessizce kaybolmak yerine
+   AYNI panelde net mesaj bırak; polling YOK (hx-trigger üretmiyoruz). #}
+<div id="describe-progress">
+  <div class="panel" style="border-color:rgba(251,191,36,0.45);">
+    <div class="panel-header">
+      <div class="panel-title">✨ Generating strategy from description</div>
+      <div class="spacer"></div>
+      <span class="badge" style="background:rgba(251,191,36,0.18);color:#fbbf24;">⚠ Kesildi</span>
+    </div>
+    <div class="panel-body">
+      <div class="empty-state" style="color:#fbbf24;">
+        Üretim yarıda kesildi — sunucu yeniden başlamış görünüyor.
+        <div class="text-muted" style="margin-top:6px;font-size:11px;">
+          Geliştirme modunda <span class="mono">uvicorn --reload</span> açıkken, izlenen bir
+          <span class="mono">.py</span> dosyası (kod düzenlemesi / otomatik biçimlendirme)
+          değişince sunucu yeniden başlar ve devam eden üretimin bellek durumu silinir.
+          Lütfen tekrar deneyin; kalıcıysa sunucuyu <span class="mono">--reload</span> olmadan
+          çalıştırın.
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+{% elif not done %}
 <div id="describe-progress"
-     class="bt-gen-float"
      hx-get="/backtest/describe/progress/{{ gen_id }}"
      hx-trigger="every 1s"
      hx-target="#result"
      hx-swap="innerHTML">
 {% else %}
-<div id="describe-progress" class="bt-gen-float">
+<div id="describe-progress">
 {% endif %}
+
+{% if state is not none %}
 
   <div class="panel" style="border-color:rgba(129,140,248,0.35);">
     <div class="panel-header">
@@ -84,3 +110,4 @@
   </div>
   {% endif %}
 </div>
+{% endif %}

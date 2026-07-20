@@ -106,7 +106,7 @@ def _client():
 def _poll(c, sid, tries=80):
     for _ in range(tries):
         p = c.get(f"/backtest/sweep/progress/{sid}")
-        if "✓ done" in p.text or "empty-state" in p.text:
+        if "✓ bitti" in p.text or "empty-state" in p.text:
             return p
         time.sleep(0.1)
     raise AssertionError("scan did not finish")

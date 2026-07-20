@@ -178,6 +178,10 @@ def _qty_self(
     atr_risk=1.0,
     equity=10_000.0,
     atr=None,
+    vol_target=0.02,
+    vol_span=10,
+    capital=10_000.0,
+    closes=None,
 ):
     spec = SimpleNamespace(
         trade_size_mode=mode,
@@ -185,8 +189,16 @@ def _qty_self(
         trade_size_usdt=usdt,
         trade_size_percent=pct,
         trade_size_atr_risk=atr_risk,
+        trade_size_vol_target=vol_target,
+        trade_size_vol_span=vol_span,
+        trade_size_capital=capital,
     )
-    return SimpleNamespace(spec=spec, _atr=atr, _current_equity=lambda: equity)
+    return SimpleNamespace(
+        spec=spec,
+        _atr=atr,
+        _current_equity=lambda: equity,
+        _closes=closes if closes is not None else [],
+    )
 
 
 class TestComputeQty:
@@ -225,6 +237,49 @@ class TestComputeQty:
 
     def test_nonpositive_price_falls_back_to_trade_size(self):
         assert self._qty(_qty_self("fixed_usdt", trade_size=0.1), 0.0) == 0.1
+
+    def test_vol_target_warmup_falls_back_to_trade_size(self):
+        # Fewer than span+1 closes → calc_ewma_vol None → fixed trade_size.
+        assert (
+            self._qty(
+                _qty_self("vol_target", trade_size=0.1, vol_span=10, closes=[100.0] * 3),
+                50_000.0,
+            )
+            == 0.1
+        )
+
+    def test_vol_target_matches_formula(self):
+        # size = (vol_target / ewma_vol) * capital / price, using the real
+        # calc_ewma_vol as the reference estimator.
+        from indicators import calc_ewma_vol
+
+        closes = [100.0 * (1.0 + 0.001 * i) for i in range(40)]
+        vol = calc_ewma_vol(closes, 10)
+        assert vol is not None and vol > 0
+        price = closes[-1]
+        cap, vt = 10_000.0, 0.02
+        expected = min((vt / vol) * cap / price, 0.95 * cap / price)
+        got = self._qty(
+            _qty_self(
+                "vol_target", vol_target=vt, vol_span=10, capital=cap, closes=closes
+            ),
+            price,
+        )
+        assert got == pytest.approx(expected)
+
+    def test_vol_target_upper_clamp(self):
+        # Tiny volatility → huge raw size → clamped to 0.95 * capital / price.
+        # A nearly-flat series gives a very small ewma_vol.
+        closes = [100.0 + 1e-6 * i for i in range(40)]
+        price = closes[-1]
+        cap = 10_000.0
+        got = self._qty(
+            _qty_self(
+                "vol_target", vol_target=0.02, vol_span=10, capital=cap, closes=closes
+            ),
+            price,
+        )
+        assert got == pytest.approx(0.95 * cap / price)
 
 
 # ---------------------------------------------------------------------------
@@ -491,6 +546,54 @@ class TestLoopDoubleStart:
             with st.lock:
                 st.stop_requested = True
                 st.running = False
+
+
+# ---------------------------------------------------------------------------
+# #9b (high) — ComposedStrategySpec vol_target sizing round-trip: to_dict/
+# from_dict must preserve trade_size_{mode,vol_target,vol_span,capital}. The
+# spec crosses a JSON boundary (catalog + subprocess spec_json); a missing
+# from_dict read silently reverts sizing to defaults in the child process.
+# ---------------------------------------------------------------------------
+class TestVolTargetSpecRoundTrip:
+    def test_vol_target_fields_survive_round_trip(self):
+        from composer import ComposedStrategySpec, SignalBlock
+
+        spec = ComposedStrategySpec(
+            id="vt1",
+            name="VT",
+            description="",
+            blocks=[
+                SignalBlock(
+                    type="ma_cross", role="entry", params={"fast": 10, "slow": 30}
+                )
+            ],
+            trade_size_mode="vol_target",
+            trade_size_vol_target=0.035,
+            trade_size_vol_span=15,
+            trade_size_capital=25_000.0,
+        )
+        rt = ComposedStrategySpec.from_dict(spec.to_dict())
+        assert rt.trade_size_mode == "vol_target"
+        assert rt.trade_size_vol_target == pytest.approx(0.035)
+        assert rt.trade_size_vol_span == 15
+        assert rt.trade_size_capital == pytest.approx(25_000.0)
+        assert spec.validate() is None
+
+    def test_missing_keys_default_to_fixed(self):
+        # Old catalog entries without the new keys load cleanly as defaults.
+        from composer import ComposedStrategySpec
+
+        rt = ComposedStrategySpec.from_dict(
+            {
+                "id": "old",
+                "name": "Old",
+                "blocks": [{"type": "ma_cross", "role": "entry", "params": {}}],
+            }
+        )
+        assert rt.trade_size_mode == "fixed"
+        assert rt.trade_size_vol_target == pytest.approx(0.02)
+        assert rt.trade_size_vol_span == 10
+        assert rt.trade_size_capital == pytest.approx(10_000.0)
 
 
 # ---------------------------------------------------------------------------

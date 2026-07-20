@@ -1,7 +1,24 @@
 """FastAPI entrypoint for Nautilus Lab web UI.
 
-Run:
-    uvicorn server:app --host 127.0.0.1 --port 8000 --reload
+Run (dev — auto-reload):
+    uvicorn server:app --host 127.0.0.1 --port 8000 --reload \
+        --reload-exclude "$PWD/nautilus_wiki" --reload-exclude "$PWD/.claude" \
+        --reload-exclude "$PWD/tests"
+
+    `--reload` izlenen ağaçtaki her `*.py` değişiminde sunucuyu yeniden başlatır.
+    Strateji ÜRETİMİ (`POST /backtest/describe`) ~15-20 sn süren bir worker
+    thread'de çalışır ve ilerleme durumu BELLEKTE tutulur (`_GEN_PROGRESS`);
+    bu sırada izlenen bir `.py` değişirse sunucu yeniden başlar, worker + durum
+    uçar ve sağ-üstteki üretim paneli aniden kaybolur. `--reload-exclude`'a
+    MUTLAK (absolute) DİZİN YOLU verilmeli: uvicorn dışlamayı yalnızca yol
+    var olan bir dizinse `path.parents` ile recursive uygular ve watchfiles
+    filtreye MUTLAK yol geçirir — göreli `nautilus_wiki` ya da `nautilus_wiki/*`
+    glob'u eşleşmez (deneysel olarak doğrulandı). Bu sayede üretimle alakasız
+    ağaçlar (wiki, skill'ler, testler) watch dışına alınır ve kesintiler azalır.
+    Kesinti yine olursa panel artık sessizce kaybolmaz — "üretim yarıda kesildi,
+    sunucu yeniden başladı" mesajı gösterir ([[webapp_module_map]]).
+
+    Prod / kesintisiz üretim için `--reload` OLMADAN çalıştırın.
 
 Wiki References
 ---------------

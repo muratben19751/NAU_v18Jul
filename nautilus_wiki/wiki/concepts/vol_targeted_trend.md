@@ -1,11 +1,11 @@
 ---
-title: Vol-Targeted Trend Strategy
+title: Vol-Targeted Sizing (composer vol_target mode)
 type: concept
 sources:
   - sources/03_strategies_docs.md
   - https://nautilustrader.io/docs/latest/concepts/strategies
 last_updated: 2026-07-19
-summary: MA crossover yönü + EWMA volatilite hedefli pozisyon boyutlandırma; allow_short=True iken MARGIN hesapla long+short açan nautilus_web_app stratejisi.
+summary: EWMA volatilite hedefli pozisyon boyutlandırma; artık bağımsız strateji değil, composer motorunun trade_size_mode="vol_target" sizing modu. Describe/Composer akışında herhangi bir sinyal setiyle birlikte seçilir.
 key_concepts:
   - strategy_and_actor
   - order_flow_pipeline
@@ -13,24 +13,24 @@ key_concepts:
   - accounting
 ---
 
-# Vol-Targeted Trend Strategy
+# Vol-Targeted Sizing (composer `vol_target` mode)
 
-`nautilus_web_app`'e özgü bir [[strategy_and_actor|Strategy]] (`strategies.py`
-içindeki `VolTargetedTrendStrategy`). Yön kararını bir MA crossover'dan alır,
-pozisyon **boyutunu** ise EWMA volatilite tahminini bir hedef vole eşitleyerek
-belirler. `STRATEGY_REGISTRY`/`STRATEGY_PARAM_SPEC`'e `vol_targeted_trend`
-anahtarıyla kayıtlıdır.
+> **Değişiklik (2026-07-19):** Vol-targeted trend eskiden `strategies.py`
+> içindeki bağımsız bir `VolTargetedTrendStrategy` + `STRATEGY_REGISTRY`
+> kaydı + ayrı `/backtest/run_vtt` route'u + `backtest.html`'de ayrı radio idi.
+> Kullanıcı "her şeye ayrı ekran istemiyorum" gerekçesiyle bu, **composer
+> motorunun bir pozisyon-boyutlandırma moduna** taşındı. Artık yön sinyalini
+> Describe/Composer akışının ürettiği bloklar verir; volatilite hedefli boyut
+> ise `ComposedStrategy._compute_qty`'deki `vol_target` dalıdır. Ayrı strateji
+> sınıfı, registry kaydı ve route kaldırıldı.
 
-## Sinyal (yön)
+## Ne oldu, ne kaldı
 
-Hızlı/yavaş SMA farkının işaret değiştirmesi (crossover):
-
-- **Yukarı kesişim** (`prev_diff ≤ 0 < diff`): açık short varsa kapat, long yoksa BUY.
-- **Aşağı kesişim** (`prev_diff ≥ 0 > diff`): açık long varsa kapat; `allow_short`
-  açıksa ve short yoksa SELL (short aç).
-
-`fast`/`slow` periyotları config'ten gelir (`slow > fast`). Kesişim ilk barda
-başlatılmaz — `_prev_diff` None iken bir bar beklenir (sahte kesişim önlenir).
+- **Yön (sinyal):** artık composer bloklarından gelir (ör. `ma_cross` entry/exit).
+  Herhangi bir strateji tarifiyle birlikte kullanılabilir — MA crossover'a bağlı değil.
+- **Boyut (sizing):** `composer.py` `TradeSizeMode` literaline eklenen
+  `"vol_target"` modu. Diğer modlarla (`fixed`, `fixed_usdt`, `percent_equity`,
+  `atr_target`) aynı yerde, `_compute_qty(price)` içinde yaşar.
 
 ## Boyutlandırma (EWMA vol targeting)
 
@@ -38,54 +38,47 @@ başlatılmaz — `_prev_diff` None iken bir bar beklenir (sahte kesişim önlen
 size = (vol_target / ewma_vol) * capital / price
 ```
 
-`ewma_vol`, `on_bar` içinde **artımsal (O(1)/bar)** tutulan bir EWMA varyansının
-kareköküdür (`self._ewma_var`), her barda `calc_ewma_vol(closes)`'i baştan
-hesaplamaz. Seed davranışı `indicators.py`'deki `calc_ewma_vol` ile **birebir
-eşleşecek** biçimde ayarlanır: ilk gözlemlenen log-getiri tam ağırlıkla girer
-(`ewma_var = lr²`), alpha = 2/(span+1) yalnızca ikinci getiriden itibaren
-uygulanır. Böylece warmup sonrası tahmin referans hesaplayıcıyla aynıdır (aksi
-halde warmup civarında ~%13 sapma oluşuyordu).
+- `ewma_vol`, `indicators.py`'deki `calc_ewma_vol(self._closes, span)` ile
+  hesaplanır. Eski bağımsız strateji artımsal `_ewma_var` state tutuyordu; yeni
+  modda `_compute_qty` **yalnızca giriş sinyalinde** çağrıldığı için (her barda
+  değil) O(1) state'in getirisi yoktu — hazır, test edilmiş `calc_ewma_vol`
+  yeniden kullanıldı. (Artımsal yol ayrıca warmup civarında ~%13 sapma bug'ı
+  çıkarmıştı.)
+- **`capital` sabittir** (canlı equity değil): `spec.trade_size_capital`,
+  Describe formundaki *Initial Capital* değerinden beslenir (boşsa 10.000).
+  Bu, `atr_target`/`percent_equity` modlarının canlı equity davranışından
+  bilinçli olarak farklıdır — eski VTT davranışıyla birebir uyum için.
+- **Warmup:** `< vol_span+1` close varken `calc_ewma_vol` `None` döner ve
+  boyut `spec.trade_size`'a düşer. `_buf_cap`, `vol_span+5` tabanına yükseltilir
+  ki EWMA penceresi blok lookback'lerinden bağımsız tutarlı olsun.
+- **Üst sınır:** boyut `0.95 * capital / price` ile kaplanır (aşırı kaldıraç /
+  negatif bakiye önlemi). `make_qty` `size_increment`'e yuvarlar; sıfıra
+  yuvarlanan boyut, `_submit_entry`'deki `qty<=0 → skip` guard'ıyla atlanır.
 
-Warmup kapısı: `_vol_warmup` (gözlemlenen getiri sayısı) `vol_span`'a ulaşana
-dek — yani ilk `vol_span+1` bara dek — vol-boyutlandırma devre dışıdır ve
-`trade_size`'a düşülür. İki güvenlik sınırı: boyut sermayenin **%95**'iyle
-kaplanır (`AccountBalanceNegative` önlemi) ve `instrument.size_increment`
-tabanına yuvarlanır.
+## UI
 
-MA yönü de artımsal koşan toplamlarla (`_fast_sum`/`_slow_sum`) O(1)'de
-hesaplanır; float yuvarlama kaymasını sınırlamak için her 4096 barda toplamlar
-deque'ten `math.fsum` ile yeniden hesaplanır.
+Backtest sayfasında (`backtest.html`) **Broker Settings** altına eklenen
+"Pozisyon boyutu" dropdown'ı: Sabit / % Equity / ATR hedefli / Vol hedefli.
+Vol-hedef seçilince `trade_size_vol_target` + `trade_size_vol_span` inputları
+görünür; capital olarak yukarıdaki Initial Capital alanı kullanılır. `/backtest/describe`
+bu alanları `ComposedStrategySpec`'e yazar; spec katalog + subprocess JSON turunda
+(`to_dict`/`from_dict`) korunur.
 
 ## allow_short → MARGIN hesap
 
-`allow_short=True` short pozisyon açmayı gerektirir; bunun için `backtest.py`
-`run_backtest` venue'yü `AccountType.MARGIN` ile açar (aksi halde `AccountType.CASH`).
-Bkz. [[accounting]] ve [[webapp_module_map]] `backtest.py` satırı. Emirler
+`allow_short` composer'da zaten `spec.allow_short` ile mevcut ve Describe
+formundan besleniyor; vol_target modu için ek bir tesisat gerekmez. Short açan
+SELL emirleri MARGIN hesap gerektirir (bkz. [[accounting]]). Emirler
 [[order_flow_pipeline]]'a girer; sonuçlar [[backtesting_guide]] yolunda değerlendirilir.
 
-## Parametreler
+## Parametreler (spec alanları)
 
-| Param | Aralık | Anlamı |
+| Alan | Varsayılan | Anlamı |
 |---|---|---|
-| `fast` | 2–50 | Hızlı MA periyodu |
-| `slow` | 10–200 | Yavaş MA periyodu (> fast) |
-| `vol_span` | 5–30 | EWMA vol tahmini span'i |
-| `vol_target` | 0.001–0.05 | Hedef günlük vol fraksiyonu (0.01 = %1) |
-| `capital` | 1e3–1e5 | Boyutlandırma için nominal sermaye |
-| `allow_short` | bool | Trend aşağıyken short aç (MARGIN gerekir) |
-
-`agent.py` `_fallback_proposal` ajan yokken bu parametreler için rastgele bir
-öneri üretir (`vol_targeted_trend` dalı).
-
-## MTM equity snapshot (risk metrikleri)
-
-Strateji, warmup sonrası **her `_MTM_SAMPLE` barda bir** (`_snapshot_mtm`)
-`portfolio.equity(venue)` üzerinden bar-çözünürlüklü mark-to-market equity
-biriktirir (`_mtm_equity`/`_mtm_ts`). `backtest.py` bunu `getattr` ile okur ve
-`max_dd`, bar-frekanslı Sharpe ve MTM equity eğrisini bundan türetir ([[reports]]).
-Örneklem seyreltmesi (varsayılan her 5 bar), per-bar `equity()` maliyetini
-düşürürken pozisyon-içi drawdown çözünürlüğünü büyük ölçüde korur — snapshot'ı
-tümüyle atmak `max_dd`/Sharpe'ı sessizce trade-çözünürlüğüne düşürürdü.
+| `trade_size_mode` | `"fixed"` | `"vol_target"` seçilince aşağıdakiler devreye girer |
+| `trade_size_vol_target` | 0.02 | Hedef günlük vol fraksiyonu (0.02 = %2) |
+| `trade_size_vol_span` | 10 | EWMA vol tahmini span'i (≥2) |
+| `trade_size_capital` | 10000.0 | Boyutlandırma için sabit nominal sermaye (Initial Capital) |
 
 <!-- BACKLINKS:BEGIN -->
 ## Referenced by

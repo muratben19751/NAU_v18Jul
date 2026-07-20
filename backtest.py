@@ -1097,8 +1097,8 @@ def run_backtest(
             logging=LoggingConfig(bypass_logging=_BYPASS_LOGGING),
         )
         engine = BacktestEngine(config=config)
-        # allow_short=True (VolTargetedTrendStrategy) requires MARGIN account
-        # so the engine accepts SELL orders that open short positions.
+        # allow_short=True requires a MARGIN account so the engine accepts
+        # SELL orders that open short positions (CASH otherwise).
         _allow_short = bool(params.get("allow_short", False))
         engine.add_venue(
             venue=active_venue,

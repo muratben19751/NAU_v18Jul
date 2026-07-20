@@ -186,19 +186,6 @@ html, body {
 
 .content { padding: 24px; flex: 1; }
 
-/* Strateji üretim ilerlemesi — ekranın sağ-üstünde yüzen overlay */
-.bt-gen-float {
-  position: fixed;
-  top: 74px;                              /* 58px topbar'ın altında */
-  right: 24px;                            /* .content padding'i ile hizalı */
-  width: min(460px, calc(100vw - 48px));
-  max-height: calc(100vh - 98px);
-  overflow: auto;
-  z-index: 40;                            /* topbar(10) üstü, toast altı */
-  box-shadow: 0 10px 34px rgba(0,0,0,0.55);
-}
-.bt-gen-float .panel { box-shadow: none; }
-
 
 /* ------- Panels ------- */
 .panel {
@@ -1059,4 +1046,158 @@ details > summary:hover { background: #171717; }
   color: var(--amber);
   border-color: rgba(232,180,76,0.35);
   background: rgba(232,180,76,0.07);
+}
+
+/* ==========================================================================
+   Backtest — "airy" redesign (ferah). Opposite of .bt-compact: more breathing
+   room, softer cards, one obvious primary action. Scoped under .bt-airy so it
+   never leaks into other pages. Form field NAMES / element IDs are unchanged —
+   this is a presentation layer only (see synthetic-wondering-otter plan).
+   ========================================================================== */
+.bt-airy label.field { font-size: 10px; gap: 6px; }
+.bt-airy input[type="text"],
+.bt-airy input[type="number"],
+.bt-airy input[type="date"],
+.bt-airy select,
+.bt-airy textarea { font-size: 13px; padding: 10px 12px; border-radius: 8px; }
+.bt-airy .panel { border-radius: 14px; }
+.bt-airy .panel-body { padding: 20px 22px; }
+.bt-airy .stack { gap: 18px; }
+.bt-airy .row { gap: 12px; }
+
+/* Numbered step header inside the left form — a light, roomy section divider. */
+.bt-step {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  margin: 0 0 14px;
+}
+.bt-step + .bt-step { margin-top: 26px; }
+.bt-step-no {
+  flex: 0 0 auto;
+  width: 26px; height: 26px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 50%;
+  border: 1px solid var(--border-btn2);
+  background: var(--panel-2);
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+.bt-step-text { display: flex; flex-direction: column; gap: 1px; }
+.bt-step-title {
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--text-primary);
+}
+.bt-step-sub { font-size: 11px; color: var(--text-muted); }
+
+/* Segmented toggle — pill switch backed by hidden radios (asset type, etc.).
+   The <input> stays in the DOM (name/value preserved for the POST); only the
+   <label> chrome is styled. */
+.seg-toggle {
+  display: inline-flex;
+  padding: 3px;
+  gap: 3px;
+  background: var(--inset);
+  border: 1px solid var(--border-input);
+  border-radius: 10px;
+}
+.seg-opt {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 14px;
+  border-radius: 8px;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+  white-space: nowrap;
+}
+.seg-opt input { position: absolute; opacity: 0; pointer-events: none; }
+.seg-opt:hover { color: var(--text-primary); }
+.seg-opt:has(input:checked) {
+  background: var(--panel-2);
+  color: var(--text-primary);
+  box-shadow: inset 0 0 0 1px var(--border-btn2);
+}
+
+/* Chip-choice — clickable pill backed by a hidden checkbox (timeframes).
+   Checked = filled/outlined; name (intervals / granularity) is preserved. */
+.chip-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.chip-choice {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  padding: 6px 13px;
+  border-radius: 999px;
+  border: 1px solid var(--border-input);
+  background: var(--inset);
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  -webkit-user-select: none;
+  user-select: none;
+  transition: all 0.13s;
+}
+.chip-choice input { position: absolute; opacity: 0; pointer-events: none; }
+.chip-choice:hover { border-color: var(--border-btn2); color: var(--text-primary); }
+.chip-choice:has(input:checked) {
+  background: rgba(255,255,255,0.10);
+  border-color: var(--accent);
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+/* Switch — visual on/off backed by a hidden checkbox (allow_short). */
+.switch { display: inline-flex; align-items: center; gap: 10px; cursor: pointer; }
+.switch input { position: absolute; opacity: 0; pointer-events: none; }
+.switch-track {
+  position: relative;
+  width: 38px; height: 21px;
+  border-radius: 999px;
+  background: var(--panel-2);
+  border: 1px solid var(--border-btn2);
+  transition: background 0.15s, border-color 0.15s;
+  flex: 0 0 auto;
+}
+.switch-track::after {
+  content: "";
+  position: absolute;
+  top: 2px; left: 2px;
+  width: 15px; height: 15px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  transition: transform 0.16s, background 0.16s;
+}
+.switch input:checked + .switch-track {
+  background: rgba(74,222,128,0.22);
+  border-color: rgba(74,222,128,0.5);
+}
+.switch input:checked + .switch-track::after {
+  transform: translateX(17px);
+  background: var(--pnl-up);
+}
+.switch-label { font-size: 12.5px; color: var(--text-primary); }
+
+/* Ghost button — the secondary "improve with AI" action. Previously undefined
+   (fell back to bare .btn); give it an explicit low-emphasis outline. */
+.btn-ghost {
+  background: transparent;
+  color: var(--text-secondary);
+  border-color: var(--border-btn2);
+}
+.btn-ghost:hover { background: var(--panel-2); color: var(--text-primary); }
+
+/* Hero primary action — the one obvious "run" button. */
+.btn-hero {
+  padding: 12px 26px;
+  font-size: 14px;
+  border-radius: 10px;
 }

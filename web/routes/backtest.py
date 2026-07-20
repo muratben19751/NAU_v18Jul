@@ -5,6 +5,12 @@ Wiki References
 See: [[backtesting_guide]], [[environment_contexts]]
 
 The Backtest leg of [[environment_contexts]].
+
+Not: ``describe`` üretimi bitince chain-tetiği (``hx-trigger="load"`` →
+``/backtest/run|/sweep``) SADECE BİR kez ``#result``'a servis edilmeli —
+``_mark_gen_chained`` atomik test-and-set + ``describe_progress`` 204 fallback,
+gecikmeli/örtüşen bir poll'ün backtest'i yeniden tetikleyip sonucu silmesini
+önler (bkz. [[webapp_module_map]], 2026-07-20 sonuç-kaybolma yarışı).
 """
 
 from __future__ import annotations
@@ -778,254 +784,6 @@ async def run(
     )
 
 
-# ── Vol-Targeted Trend (registry strategy) direct run ────────────────────────
-
-
-@router.post("/run_vtt", response_class=HTMLResponse)
-async def run_vtt(
-    request: Request,
-    instrument_kind: str = Form("Bybit"),
-    symbol: str = Form("BTCUSDT"),
-    category: str = Form("linear"),
-    interval: str = Form("1"),
-    bybit_start: str = Form(""),
-    bybit_end: str = Form(""),
-    ticker: str = Form("QQQ"),
-    granularity: str = Form("1d"),
-    start_date: str = Form(""),
-    end_date: str = Form(""),
-    fast: int = Form(50),
-    slow: int = Form(200),
-    vol_span: int = Form(10),
-    vol_target: float = Form(0.02),
-    capital: float = Form(10000.0),
-    allow_short: str = Form(
-        ""
-    ),  # checkbox sends "on" / absent; bool coercion is unreliable
-):
-    """Run vol_targeted_trend registry strategy; reuses the same progress/result flow."""
-    import time as _time
-
-    from server import templates
-
-    _allow_short = _parse_bool_form(allow_short)  # checkbox 'on'/absent → bool
-
-    run_id = uuid.uuid4().hex[:8]
-    _RUN_STORE.create_evicting(
-        run_id,
-        {
-            "steps": [],
-            "done": False,
-            "result": None,
-            "error": None,
-            "spec_name": "vol_targeted_trend",
-            "bars_info": {},
-            "narrative": "",
-        },
-    )
-
-    def _progress(msg: str) -> None:
-        ts = datetime.now(UTC).strftime("%H:%M:%S")
-        with _RUN_PROGRESS_LOCK:
-            state = _RUN_PROGRESS.get(run_id)
-            if state is not None:
-                state["steps"].append({"ts": ts, "msg": msg})
-
-    def _worker() -> None:
-        from datetime import timedelta
-
-        _t_start = _time.perf_counter()
-        try:
-            params = {
-                "fast": fast,
-                "slow": slow,
-                "vol_span": vol_span,
-                "vol_target": vol_target,
-                "capital": capital,
-                "allow_short": _allow_short,
-            }
-
-            if instrument_kind == "Bybit":
-                from data import (
-                    _bybit_cache_path,
-                    _read_parquet_stats,
-                    load_bybit_bars,
-                )
-
-                _progress(f"Veri yükleniyor · {symbol}/{category}/{interval}…")
-                # Resolve date range from cache ONLY when a date is blank.
-                # Footer-only stats (~4 KB) instead of a full parquet decode;
-                # load_bybit_bars re-reads the file itself, so a full read here
-                # would decode a 1M+-row parquet twice.
-                _cache_start = _cache_end = None
-                cp = _bybit_cache_path(category, symbol, interval)
-                if (not bybit_start or not bybit_end) and cp.exists():
-                    _stats = _read_parquet_stats(cp)
-                    if _stats and _stats.get("first"):
-                        # ISO strings are naive → re-apply UTC.
-                        _cache_start = datetime.fromisoformat(_stats["first"]).replace(
-                            tzinfo=UTC
-                        )
-                        _cache_end = datetime.fromisoformat(_stats["last"]).replace(
-                            tzinfo=UTC
-                        )
-                start_dt = (
-                    datetime.fromisoformat(bybit_start).replace(tzinfo=UTC)
-                    if bybit_start
-                    else (_cache_start or datetime.now(UTC) - timedelta(days=7))
-                )
-                end_dt = (
-                    datetime.fromisoformat(bybit_end).replace(
-                        hour=23, minute=59, second=59, tzinfo=UTC
-                    )
-                    if bybit_end
-                    else (_cache_end or datetime.now(UTC))
-                )
-                bars_df = load_bybit_bars(
-                    symbol=symbol,
-                    category=category,
-                    interval=interval,
-                    start=start_dt,
-                    end=end_dt,
-                )
-                bars_info = {
-                    "symbol": symbol,
-                    "category": category,
-                    "interval": interval,
-                }
-            else:
-                import pandas as _pd
-
-                _progress(f"Veri yükleniyor · {ticker}/{granularity}…")
-                try:
-                    from data import INDEX_CACHE_DIR, _ticker_to_filename
-
-                    cache_path = INDEX_CACHE_DIR / _ticker_to_filename(
-                        ticker, granularity
-                    )
-                    if cache_path.exists():
-                        _full = _pd.read_parquet(cache_path)
-                        _s = (
-                            date.fromisoformat(start_date)
-                            if start_date
-                            else _full.index.min().date()
-                        )
-                        _e = (
-                            date.fromisoformat(end_date)
-                            if end_date
-                            else _full.index.max().date()
-                        )
-                    else:
-                        _s = (
-                            date.fromisoformat(start_date)
-                            if start_date
-                            else date(2000, 1, 1)
-                        )
-                        _e = date.fromisoformat(end_date) if end_date else date.today()
-                except Exception:
-                    _s = (
-                        date.fromisoformat(start_date)
-                        if start_date
-                        else date(2000, 1, 1)
-                    )
-                    _e = date.fromisoformat(end_date) if end_date else date.today()
-                bars_df = load_index_bars(ticker, _s, _e, granularity)
-                bars_info = {"ticker": ticker, "granularity": granularity}
-
-            if bars_df is None or bars_df.empty:
-                raise RuntimeError("Veri bulunamadı — önce /data sayfasından indirin.")
-
-            _progress(f"{len(bars_df)} bar yüklendi · çalıştırılıyor…")
-
-            from backtest import run_backtest
-
-            result = run_backtest(
-                "vol_targeted_trend",
-                params,
-                bars_df,
-                iteration_id=0,
-                rationale=f"web vtt fast={fast} slow={slow} vt={vol_target} short={_allow_short}",
-            )
-
-            # Propagate engine-level errors to the progress store
-            if result.error:
-                with _RUN_PROGRESS_LOCK:
-                    if run_id in _RUN_PROGRESS:
-                        _RUN_PROGRESS[run_id]["error"] = result.error
-                return
-
-            narrative = (
-                f"EWMA vol-targeted trend · fast={fast} slow={slow} "
-                f"vol_span={vol_span} vol_target={vol_target:.3f} "
-                f"capital={capital:,.0f} allow_short={_allow_short}"
-            )
-
-            with _RUN_PROGRESS_LOCK:
-                if run_id in _RUN_PROGRESS:
-                    _RUN_PROGRESS[run_id]["result"] = result
-                    _RUN_PROGRESS[run_id]["bars_info"] = bars_info
-                    _RUN_PROGRESS[run_id]["narrative"] = narrative
-
-            # Keep _LAST_RESULT in sync so a page refresh shows the VTT result
-            with _LAST_RESULT_LOCK:
-                _LAST_RESULT["r"] = result
-                _LAST_RESULT["spec_name"] = "vol_targeted_trend"
-                _LAST_RESULT["bars_info"] = bars_info
-                _LAST_RESULT["narrative"] = narrative
-
-            elapsed = _time.perf_counter() - _t_start
-            _progress(f"Tamamlandı ({elapsed:.1f}s)")
-
-            try:
-                import json as _json
-
-                from web.shared import BACKTEST_LOG, rotate_if_large, sanitize_floats
-
-                _rec = {
-                    "ts": datetime.now(UTC).isoformat(),
-                    "elapsed_sec": round(elapsed, 3),
-                    "spec": {
-                        "id": "vol_targeted_trend",
-                        "name": f"VTT fast={fast} slow={slow}",
-                        "params": params,
-                    },
-                    "instrument": instrument_kind,
-                    "bars": bars_info,
-                    "rationale": result.rationale,
-                    "error": result.error,
-                    "metrics": sanitize_floats(result.metrics),
-                }
-                from web.shared import _BACKTEST_LOG_LOCK
-
-                with _BACKTEST_LOG_LOCK:
-                    rotate_if_large(BACKTEST_LOG)
-                    with open(BACKTEST_LOG, "a") as _f:
-                        _f.write(_json.dumps(_rec, default=str) + "\n")
-            except Exception:
-                pass
-        except Exception as e:
-            with _RUN_PROGRESS_LOCK:
-                if run_id in _RUN_PROGRESS:
-                    _RUN_PROGRESS[run_id]["error"] = f"{type(e).__name__}: {e}"
-        finally:
-            with _RUN_PROGRESS_LOCK:
-                if run_id in _RUN_PROGRESS:
-                    _RUN_PROGRESS[run_id]["done"] = True
-
-    threading.Thread(target=_worker, daemon=True).start()
-
-    return templates.TemplateResponse(
-        request,
-        "fragments/backtest_progress.html",
-        {
-            "run_id": run_id,
-            "steps": [],
-            "phases": _derive_bt_phases([], False, None),
-            "done": False,
-            "error": None,
-        },
-    )
-
 
 # ── Generate strategy from description → chain into /backtest/run ────────────
 # The user describes a strategy in natural language; Claude writes NEW Python
@@ -1056,6 +814,24 @@ def _gen_state_view(gen_id: str) -> dict | None:
             "spec_name": raw["spec_name"],
             "chain_vals": chain,
         }
+
+
+def _mark_gen_chained(gen_id: str) -> bool:
+    """Atomic test-and-set: chain'in #result'a servis edildiğini işaretle.
+
+    İlk çağrıda False döner (chain servis EDİLEBİLİR); sonraki çağrılarda True
+    döner (zaten servis edildi → describe_progress 204 basıp #result'ı korur).
+    done sonrası gelen gecikmeli/örtüşen poll'lerin backtest'i yeniden
+    tetiklemesini önler. Kayıt yoksa True döner (yeni chain başlatma).
+    """
+    with _GEN_LOCK:
+        raw = _GEN_PROGRESS.get(gen_id)
+        if raw is None:
+            return True
+        if raw.get("chained"):
+            return True
+        raw["chained"] = True
+        return False
 
 
 def _normalize_intervals(codes: list[str]) -> list[str]:
@@ -1103,6 +879,12 @@ async def describe(
     initial_capital: float = Form(0.0),
     commission_pct: float = Form(-1.0),
     trade_size: float = Form(0.0),
+    trade_size_mode: str = Form("fixed"),
+    trade_size_percent: float = Form(5.0),
+    trade_size_atr_risk: float = Form(1.0),
+    atr_period: int = Form(14),
+    trade_size_vol_target: float = Form(0.02),
+    trade_size_vol_span: int = Form(10),
 ):
     """Generate custom blocks from a description; when done, the fragment triggers the backtest.
 
@@ -1173,6 +955,11 @@ async def describe(
             "spec_id": "",
             "spec_name": "",
             "run_params": run_params,
+            # Chain (done → /run|/sweep) yalnızca BİR kez #result'a servis edilmeli.
+            # done sonrası gelen gecikmeli/örtüşen bir poll chain div'ini tekrar
+            # yayınlarsa backtest yeniden tetiklenip mevcut sonucu siler. İlk servis
+            # bunu True yapar; sonraki poll'ler 204 döner (bkz. describe_progress).
+            "chained": False,
         },
     )
 
@@ -1317,6 +1104,17 @@ async def describe(
                 allow_short=_allow_short,
                 entry_logic=entry_logic,
                 exit_logic=exit_logic,
+                trade_size_mode=trade_size_mode,
+                trade_size_percent=trade_size_percent,
+                trade_size_atr_risk=trade_size_atr_risk,
+                atr_period=atr_period,
+                trade_size_vol_target=trade_size_vol_target,
+                trade_size_vol_span=trade_size_vol_span,
+                # vol_target uses a FIXED capital notional from the form's
+                # Initial Capital (falls back to 10k when blank/0).
+                trade_size_capital=(
+                    initial_capital if initial_capital > 0 else 10000.0
+                ),
             )
             err = spec.validate()
             if err:
@@ -1354,10 +1152,29 @@ async def describe_progress(request: Request, gen_id: str):
 
     state = _gen_state_view(gen_id)
     if state is None:
-        return HTMLResponse(
-            "<div class='empty-state'>Generation record not found (the server may "
-            "have been restarted).</div>"
+        # In-memory kayıt yok → neredeyse her zaman server üretim sırasında
+        # yeniden başladı (dev'de `uvicorn --reload`, izlenen bir .py değişince
+        # worker thread + _GEN_PROGRESS uçar). Sessizce boş div basıp float
+        # paneli yok etmek yerine, AYNI float panelde net bir mesaj bırak ve
+        # polling'i durdur (fragment bu durumda hx-trigger üretmez).
+        return templates.TemplateResponse(
+            request,
+            "fragments/describe_progress.html",
+            {"gen_id": gen_id, "state": None, "done": True},
         )
+
+    # Chain'i (done → /run|/sweep) SADECE BİR KEZ servis et. done olduktan sonra
+    # HTMX normalde poll'ü durdurur, ama gecikmeli/örtüşen bir in-flight poll
+    # (yavaş yanıt, geçmiş geri-yükleme, çift tetik) done fragmanını #result'a
+    # tekrar yazarsa chain div `hx-trigger="load"` ile backtest'i İKİNCİ kez
+    # tetikler ve o an #result'ta duran sonucu/ilerlemeyi siler ("sonuç gelip
+    # kayboluyor"). İlk servis chained'i işaretler; sonraki poll'ler 204 döner —
+    # HTMX 204'te innerHTML swap yapmaz, yani #result olduğu gibi korunur.
+    if state["chain_vals"] is not None:
+        already = _mark_gen_chained(gen_id)
+        if already:
+            return HTMLResponse(status_code=204)
+
     return templates.TemplateResponse(
         request,
         "fragments/describe_progress.html",

@@ -60,7 +60,9 @@ EntryExitLogic = Literal["OR", "AND"]
 OrderTypeOpt = Literal["market", "limit"]
 SLType = Literal["percent", "atr"]
 TPType = Literal["percent", "atr", "off"]
-TradeSizeMode = Literal["fixed", "fixed_usdt", "percent_equity", "atr_target"]
+TradeSizeMode = Literal[
+    "fixed", "fixed_usdt", "percent_equity", "atr_target", "vol_target"
+]
 
 
 # --------------------------------------------------------------------------
@@ -1276,6 +1278,12 @@ class ComposedStrategySpec:
     trade_size_percent: float = 5.0
     trade_size_atr_risk: float = 1.0
     trade_size_usdt: float = 1000.0
+    # vol_target sizing: size = (vol_target / ewma_vol) * capital / price.
+    # capital is a FIXED notional (not live equity), fed from the form's
+    # Initial Capital. See _compute_qty and [[vol_targeted_trend]].
+    trade_size_vol_target: float = 0.02
+    trade_size_vol_span: int = 10
+    trade_size_capital: float = 10000.0
     emulate: bool = False
     # Multi-timeframe trend filter (optional)
     trend_filter: bool = False
@@ -1315,6 +1323,9 @@ class ComposedStrategySpec:
             trade_size_percent=float(d.get("trade_size_percent", 5.0)),
             trade_size_atr_risk=float(d.get("trade_size_atr_risk", 1.0)),
             trade_size_usdt=float(d.get("trade_size_usdt", 1000.0)),
+            trade_size_vol_target=float(d.get("trade_size_vol_target", 0.02)),
+            trade_size_vol_span=int(d.get("trade_size_vol_span", 10)),
+            trade_size_capital=float(d.get("trade_size_capital", 10000.0)),
             emulate=bool(d.get("emulate", False)),
             trend_filter=bool(d.get("trend_filter", False)),
             trend_interval=str(d.get("trend_interval", "60")),
@@ -1358,6 +1369,13 @@ class ComposedStrategySpec:
             return "trade_size_atr_risk must be > 0."
         if self.trade_size_mode == "fixed_usdt" and self.trade_size_usdt <= 0:
             return "trade_size_usdt must be > 0."
+        if self.trade_size_mode == "vol_target":
+            if self.trade_size_vol_target <= 0:
+                return "trade_size_vol_target must be > 0."
+            if self.trade_size_vol_span < 2:
+                return "trade_size_vol_span must be >= 2."
+            if self.trade_size_capital <= 0:
+                return "trade_size_capital must be > 0."
         return None
 
 
@@ -1538,6 +1556,11 @@ class ComposedStrategy(Strategy):
         # (same as NAU deque(maxlen=260)).
         if any(b.type in _NAU_RECURSIVE_BLOCKS for b in self.spec.blocks):
             self._buf_cap = max(self._buf_cap, NAU_WINDOW)
+        # vol_target sizing reads calc_ewma_vol(self._closes, span); keep the
+        # close buffer at least span+5 so the EWMA window is consistent
+        # regardless of block lookbacks (buffer is periodically trimmed).
+        if self.spec.trade_size_mode == "vol_target":
+            self._buf_cap = max(self._buf_cap, int(self.spec.trade_size_vol_span) + 5)
         self._closes: list[float] = []
         # Volume series — for the volume_spike block + custom blocks'
         # indicators["volumes"] access (aligned with closes).
@@ -1758,6 +1781,22 @@ class ComposedStrategy(Strategy):
             equity = self._current_equity()
             risk_usd = equity * (self.spec.trade_size_atr_risk / 100.0)
             return max(0.0, risk_usd / self._atr.value)
+        if mode == "vol_target":
+            # size = (vol_target / ewma_vol) * capital / price — the vol-targeted
+            # trend sizing (formerly a standalone strategy). capital is FIXED
+            # (spec.trade_size_capital), not live equity. Warmup (<span+1 closes)
+            # → fixed trade_size fallback.
+            from indicators import calc_ewma_vol
+
+            vol = calc_ewma_vol(self._closes, int(self.spec.trade_size_vol_span))
+            if vol is None or vol <= 0:
+                return float(self.spec.trade_size)
+            cap = float(self.spec.trade_size_capital)
+            size = (float(self.spec.trade_size_vol_target) / vol) * cap / price
+            # Upper clamp: never risk more than 95% of capital notional (no leverage
+            # blowup). make_qty rounds to size_increment; a rounded-to-zero size is
+            # skipped by the qty<=0 guard in _submit_entry.
+            return max(0.0, min(size, 0.95 * cap / price))
         return float(self.spec.trade_size)
 
     def _compute_bracket_prices(

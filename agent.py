@@ -422,21 +422,6 @@ def _fallback_proposal() -> dict:
             "params": {"fast": fast, "slow": slow},
             "rationale": "fallback random (agent unavailable)",
         }
-    elif strat == "vol_targeted_trend":
-        fast = random.randint(5, 20)
-        slow = random.randint(fast + 10, min(200, fast + 60))
-        return {
-            "strategy": strat,
-            "params": {
-                "fast": fast,
-                "slow": slow,
-                "vol_span": random.randint(5, 20),
-                "vol_target": round(random.uniform(0.005, 0.02), 3),
-                "capital": 10_000.0,
-                "allow_short": random.choice([True, False]),
-            },
-            "rationale": "fallback random (agent unavailable)",
-        }
     else:
         return {
             "strategy": "rsi_mean_reversion",

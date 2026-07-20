@@ -12,8 +12,9 @@ whitelist + module injection) use the ``calc_*`` functions here —
 RSI/ATR/ADX/StochRSI/WaveTrend math is not rewritten by hand.
 
 ``calc_ewma_vol`` computes ``sqrt(ewma(log_return^2, span))`` — the EWMA
-daily volatility estimate used by [[vol_targeted_trend]] strategy for
-position sizing. Alpha = 2/(span+1), same as ``ema()`` in this module.
+daily volatility estimate used by the composer's ``vol_target`` trade-size
+mode (``ComposedStrategy._compute_qty``) for position sizing. Alpha =
+2/(span+1), same as ``ema()`` in this module.
 
 Wiki References
 ---------------

@@ -54,7 +54,7 @@ class TestPlanPreview:
         r = _client().post("/backtest/plan", data={"description": "kısa"})
         assert r.status_code == 200
         assert not called  # no LLM call on short input
-        assert "a bit more detail" in r.text
+        assert "biraz daha ayrıntılı" in r.text
 
     def test_plan_renders_turkish_fragment(self, monkeypatch):
         import agent
@@ -65,8 +65,8 @@ class TestPlanPreview:
             data={"description": "RSI 30 altında ve hacim 2x iken al, ATR stop ile çık"},
         )
         assert r.status_code == 200
-        assert "Plan preview" in r.text
-        assert "ENTRY" in r.text and "EXIT" in r.text
+        assert "Plan önizleme" in r.text
+        assert "GİRİŞ" in r.text and "ÇIKIŞ" in r.text
         # RSI condition should resemble built-in rsi_threshold
         assert "RSI Threshold" in r.text
 
@@ -112,8 +112,8 @@ class TestPlanPreview:
             data={"description": "RSI tabanlı bir strateji ama yeterince uzun"},
         )
         assert r.status_code == 200
-        assert "local estimate" in r.text  # fallback heading
-        assert "ENTRY" in r.text  # entry/exit rows still render
+        assert "yerel tahmin" in r.text  # fallback heading
+        assert "GİRİŞ" in r.text  # entry/exit rows still render
 
     def test_plan_persists_nothing(self, monkeypatch):
         import agent

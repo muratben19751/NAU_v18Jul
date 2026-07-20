@@ -61,5 +61,4 @@ Bu sayfadaki raporlar **analitik çıktılardır**: [[cache]]'ten okunur, DataFr
 - [[execution_engine]]
 - [[positions]]
 - [[visualization]]
-- [[vol_targeted_trend]]
 <!-- BACKLINKS:END -->

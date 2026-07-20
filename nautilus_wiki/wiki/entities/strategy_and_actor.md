@@ -81,6 +81,5 @@ Bu pattern sayesinde Config hem doğrudan Python kodu içinde (`BarType` objesiy
 - [[tutorial_hurst_vpin_kraken]]
 - [[tutorial_quickstart]]
 - [[v1_to_v2_migration_lessons]]
-- [[vol_targeted_trend]]
 - [[webapp_module_map]]
 <!-- BACKLINKS:END -->
