@@ -133,7 +133,7 @@
           <div id="describe-section">
             <textarea name="description" rows="5"
                    placeholder="Örn.: RSI 30'un altına düşüp yukarı dönerken hacim 20-bar ortalamasının 2 katıysa AL; 3x ATR kadar düşerse ÇIK"
-                   style="width:100%;resize:vertical;"></textarea>
+                   style="width:100%;resize:vertical;">RSI(14) 30'un altına düşüp tekrar 30'u yukarı kestiğinde AL; RSI 70'in üzerine çıkıp tekrar 70'i aşağı kestiğinde SAT (pozisyonu kapat). Ayrıca fiyat 200 periyotluk hareketli ortalamanın (SMA200) üzerindeyken yalnızca AL, altındayken yalnızca SAT sinyallerini uygula.</textarea>
 
             <label class="field" style="margin-top:16px;">Zaman dilimleri
               <span class="text-muted" style="font-size:10px;text-transform:none;letter-spacing:0;">(2+ seçersen karşılaştırma taraması yapılır)</span>
@@ -386,7 +386,19 @@
 
 {% block scripts %}
 <script>
-  // Re-init equity chart after every HTMX swap into #result
+  // Re-init equity chart after every HTMX swap into #result.
+  // Also fires the backtest chain when describe_progress injects a
+  // data-bt-chain-url element (hx-trigger="load" doesn't fire on innerHTML swap).
+  document.addEventListener("htmx:afterSwap", function(evt) {
+    if (!evt.detail.target || evt.detail.target.id !== "result") return;
+    evt.detail.target.style.display = "";
+    var trigger = evt.detail.target.querySelector("[data-bt-chain-url]");
+    if (trigger) {
+      var url  = trigger.getAttribute("data-bt-chain-url");
+      var vals = JSON.parse(trigger.getAttribute("data-bt-chain-vals") || "{}");
+      htmx.ajax("POST", url, { target: "#result", swap: "innerHTML", values: vals });
+    }
+  });
   document.addEventListener("htmx:afterSettle", function(evt) {
     if (evt.detail.target && evt.detail.target.id === "result") {
       if (typeof buildEquityChart === "function") buildEquityChart();
