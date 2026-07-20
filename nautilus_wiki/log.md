@@ -2,6 +2,19 @@
 
 Append-only. Her ingest, query veya lint operasyonu bir satır bırakır.
 
+## 2026-07-20 (8) — Robustness polling fix + AI Plan sekme sırası + plan cache refactor (kod → wiki)
+
+- **fix** — `robustness_progress.html`: `hx-swap="outerHTML"` → `hx-target="#robustness-result" hx-swap="innerHTML"`. `#robustness-result` DOM'dan kalkınca polling duruyordu.
+- **ux** — `✨ AI Plan` sekmesi `Sonuç`'un önüne alındı (sıra: AI Plan · Sonuç · Robustness · Geçmiş). Sayfa ilk açılışında aktif sekme AI Plan; backtest tamamlanınca `btTab('result')` otomatik Sonuç'a geçer.
+- **fix** — `web/routes/backtest.py` plan cache refactor: `propose_refined_description` artık hiç cache'lenmez — her "✨ Önce AI ile iyileştir" basışında taze AI çağrısı. `bd` (blok planı) `(desc, allow_short)` key ile cache'de kalır. İkinci kez basınca öneri gelmeme sorunu çözüldü.
+- **fix** — `agent.py`: `propose_refined_description` exception'ları `agent.refine` logger'a yazılır.
+- **wiki** — `synthesis/webapp_module_map.md` değişiklik günlüğüne yeni madde eklendi. Backlinks + index yenilendi.
+
+## 2026-07-20 (7) — Robustness "Analizi Çalıştır" polling duruyordu (kod → wiki)
+
+- **bug/fix** — `POST /robustness/run` progress fragment'ı (`robustness_progress.html`) `#robustness-result` div'inin **içine** (`innerHTML`) yazılıyordu. Fragment kendi kendini `hx-target="this" hx-swap="outerHTML"` ile replace edince `#robustness-result` elementi DOM'dan kalkıyor, sonraki polling isteği hedefi bulamıyor, analiz görünmez şekilde duruyordu. **Düzeltme**: `hx-target="this" hx-swap="outerHTML"` → `hx-target="#robustness-result" hx-swap="innerHTML"`. `web/templates/fragments/robustness_progress.html`.
+- **wiki** — `log.md` güncellendi. Mekanik sync (backlinks+index) çalıştırılacak.
+
 ## 2026-07-19 — Fix: strateji üretim paneli --reload kesintisi + zarif düşüş (kod → wiki)
 
 - **root-cause (deneysel)** — Kullanıcı raporu: `/backtest` doğal-dil üretiminde sağ-üstteki "✨ Generating strategy from description" paneli üretim ORTASINDA ("Writing blocks" fazında) aniden kayboluyor. İki kontrollü koşumla kanıtlandı: **`--reload` AÇIK** → 8. sn'de poll "Generation record not found" (panel silindi), log'da `WatchFiles detected changes in 'composer.py'. Reloading... → Shutting down → Started server process`; **`--reload` KAPALI** → 20. sn'de üretim tamamlandı, panel sağ kaldı → backtest'e zincirlendi. Kök neden: `uvicorn --reload` proje kökündeki HER `*.py` değişiminde sunucuyu yeniden başlatır; üretim ~15-20 sn süren worker thread'de çalışıp durumu BELLEKTE tutar (`_GEN_PROGRESS`), o sırada izlenen bir `.py` değişince (eşzamanlı editör kaydı / ruff format) worker + durum uçar, poll `state=None` alır, panel eskiden sessizce kaybolurdu. Üretimin kendi disk yazımları (`save_custom`/`append_to_catalog`) `~/.cache/`'e (proje dışı) gider — reload'ı tetiklemez (in-process probe ile doğrulandı).

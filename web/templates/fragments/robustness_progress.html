@@ -8,8 +8,8 @@
   {% if not done %}
     hx-get="/robustness/progress/{{ run_id }}"
     hx-trigger="every 1s"
-    hx-target="this"
-    hx-swap="outerHTML"
+    hx-target="#robustness-result"
+    hx-swap="innerHTML"
   {% endif %}>
   <div class="panel-header">
     <div class="panel-title">

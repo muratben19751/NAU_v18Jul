@@ -1370,7 +1370,12 @@ def propose_refined_description(
         if not refined:
             raise ValueError("empty refined")
         return {"refined": refined, "notes": notes, "suggestions": suggestions}
-    except Exception:
+    except Exception as _e:
+        import logging as _logging
+
+        _logging.getLogger("agent.refine").warning(
+            "propose_refined_description failed: %r", _e
+        )
         return {"refined": raw_description.strip(), "notes": "", "suggestions": []}
 
 

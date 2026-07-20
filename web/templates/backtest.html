@@ -308,12 +308,12 @@
   {# ── RIGHT: tabbed shell — Sonuç / Robustness / Geçmiş ── #}
   <div class="panel" style="overflow:visible;">
     <div class="bt-tabs" role="tablist">
-      <button type="button" class="bt-tab active" role="tab" data-bt-tab="result" onclick="btTab('result')">
+      <button type="button" class="bt-tab active" role="tab" data-bt-tab="plan" onclick="btTab('plan')">
+        ✨ AI Plan
+      </button>
+      <button type="button" class="bt-tab" role="tab" data-bt-tab="result" onclick="btTab('result')">
         Sonuç
         <span class="bt-tab-badge" id="bt-tab-badge-result">{{ last.n_trades if last else '–' }}</span>
-      </button>
-      <button type="button" class="bt-tab" role="tab" data-bt-tab="plan" onclick="btTab('plan')">
-        ✨ AI Plan
       </button>
       <button type="button" class="bt-tab" role="tab" data-bt-tab="robustness" onclick="btTab('robustness')">
         Robustness
@@ -327,7 +327,7 @@
     <div class="panel-body" style="padding-top:0;">
 
       {# ── TAB: Sonuç ── #}
-      <div class="bt-tabpanel active" id="bt-tabpanel-result" role="tabpanel">
+      <div class="bt-tabpanel" id="bt-tabpanel-result" role="tabpanel">
         <div id="result">
           {% if last %}
             {% include "fragments/backtest_result.html" %}
@@ -340,7 +340,7 @@
       </div>
 
       {# ── TAB: AI Plan (önce AI ile iyileştir) ── #}
-      <div class="bt-tabpanel" id="bt-tabpanel-plan" role="tabpanel">
+      <div class="bt-tabpanel active" id="bt-tabpanel-plan" role="tabpanel">
         <div id="plan-preview"></div>
         <div id="plan-empty" class="panel">
           <div class="panel-body empty-state">

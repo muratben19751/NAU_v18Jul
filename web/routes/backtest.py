@@ -1732,14 +1732,22 @@ async def plan_preview(
     # Metrikler varsa cache key'e dahil et — farklı sonuçlar için ayrı cache.
     import time as _time
 
-    _cache_key = (desc.lower(), _allow_short_bool, bt_pnl_pct, bt_n_trades)
+    # bd (block plan) is cached by (desc, allow_short) — independent of metrics.
+    # refined_result is NEVER cached: user pressing the button again always wants
+    # a fresh AI suggestion (especially after a new backtest with new metrics).
+    _cache_key = (desc.lower(), _allow_short_bool)
     _cached = _PLAN_CACHE.get(_cache_key)
     if _cached and (_time.monotonic() - _cached["ts"]) < _PLAN_CACHE_TTL:
-        bd, llm_ok, refined_result = (
-            _cached["bd"],
-            _cached["llm_ok"],
-            _cached.get("refined") or {"refined": desc, "notes": ""},
-        )
+        bd, llm_ok = _cached["bd"], _cached["llm_ok"]
+        # Always re-run refined even on bd cache hit — fresh metrics, fresh suggestion.
+        try:
+            from agent import propose_refined_description
+
+            refined_result = await asyncio.to_thread(
+                propose_refined_description, desc, _bt_metrics
+            )
+        except Exception:
+            refined_result = {"refined": desc, "notes": "", "suggestions": []}
     else:
         # If another request for this key is already computing, await it.
         _inflight = _PLAN_INFLIGHT.get(_cache_key)
@@ -1770,18 +1778,20 @@ async def plan_preview(
                     if isinstance(bd, BaseException):
                         raise bd
                     if isinstance(refined_result, BaseException):
-                        refined_result = {"refined": desc, "notes": ""}
+                        refined_result = {
+                            "refined": desc,
+                            "notes": "",
+                            "suggestions": [],
+                        }
                 except Exception:
                     llm_ok = False
                     bd = _local_fallback_breakdown(desc, local_inds)
-                    refined_result = {"refined": desc, "notes": ""}
-                # Only cache successful LLM results — a transient failure should
-                # not pin the degraded local fallback for the full TTL.
+                    refined_result = {"refined": desc, "notes": "", "suggestions": []}
+                # Only cache bd on successful LLM call.
                 if llm_ok:
                     _PLAN_CACHE[_cache_key] = {
                         "bd": bd,
                         "llm_ok": llm_ok,
-                        "refined": refined_result,
                         "ts": _time.monotonic(),
                     }
                     if len(_PLAN_CACHE) > _PLAN_CACHE_MAX:
