@@ -16,6 +16,28 @@
           }
         ]
       }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/second_brain_stop.sh\"",
+            "statusMessage": "ikinci beyin kontrolü…"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/second_brain_trigger.sh\"",
+            "statusMessage": "beyne-yaz tetiği…"
+          }
+        ]
+      }
     ]
   }
 }
