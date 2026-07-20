@@ -267,7 +267,8 @@
                       hx-target="#plan-preview"
                       hx-swap="innerHTML"
                       hx-indicator="#plan-spinner"
-                      title="Backtest'ten önce AI planı sağda gösterir — istersen düzenleyip onaylarsın">
+                      onclick="if(window.btTab)btTab('plan');"
+                      title="Backtest'ten önce AI planı ✨ AI Plan sekmesinde gösterir — istersen düzenleyip onaylarsın">
                 <span class="btn-spin spin">⟳</span>
                 ✨ Önce AI ile iyileştir
               </button>
@@ -311,6 +312,9 @@
         Sonuç
         <span class="bt-tab-badge" id="bt-tab-badge-result">{{ last.n_trades if last else '–' }}</span>
       </button>
+      <button type="button" class="bt-tab" role="tab" data-bt-tab="plan" onclick="btTab('plan')">
+        ✨ AI Plan
+      </button>
       <button type="button" class="bt-tab" role="tab" data-bt-tab="robustness" onclick="btTab('robustness')">
         Robustness
       </button>
@@ -324,7 +328,6 @@
 
       {# ── TAB: Sonuç ── #}
       <div class="bt-tabpanel active" id="bt-tabpanel-result" role="tabpanel">
-        <div id="plan-preview"></div>
         <div id="result">
           {% if last %}
             {% include "fragments/backtest_result.html" %}
@@ -333,6 +336,17 @@
               <div class="panel-body empty-state">Stratejini anlat ve <b>▶ Backtest Çalıştır</b>'a bas.</div>
             </div>
           {% endif %}
+        </div>
+      </div>
+
+      {# ── TAB: AI Plan (önce AI ile iyileştir) ── #}
+      <div class="bt-tabpanel" id="bt-tabpanel-plan" role="tabpanel">
+        <div id="plan-preview"></div>
+        <div id="plan-empty" class="panel">
+          <div class="panel-body empty-state">
+            <b>✨ Önce AI ile iyileştir</b>'e bas — Claude tarifini netleştirir,
+            güçlendirme önerir; onayınca backtest başlar.
+          </div>
         </div>
       </div>
 
@@ -428,6 +442,12 @@
   // Also fires the backtest chain when describe_progress injects a
   // data-bt-chain-url element (hx-trigger="load" doesn't fire on innerHTML swap).
   document.addEventListener("htmx:afterSwap", function(evt) {
+    // AI Plan sekmesi: plan-preview dolunca boş-durum kartını gizle.
+    if (evt.detail.target && evt.detail.target.id === "plan-preview") {
+      var pe = document.getElementById("plan-empty");
+      if (pe) pe.style.display = evt.detail.target.innerHTML.trim() ? "none" : "";
+      return;
+    }
     if (!evt.detail.target || evt.detail.target.id !== "result") return;
     evt.detail.target.style.display = "";
     // Sonuç #result'a herhangi bir şey (progress ya da sonuç) düştüğünde Sonuç
@@ -447,42 +467,52 @@
   document.addEventListener("htmx:afterSettle", function(evt) {
     if (evt.detail.target && evt.detail.target.id === "result") {
       if (typeof buildEquityChart === "function") buildEquityChart();
-      // Populate robustness panel from data-rob-* attributes on the result panel.
-      var panel = evt.detail.target.querySelector("[data-rob-spec-id]");
-      var sec = document.getElementById("robustness-section");
-      if (panel && sec) {
-        var form = sec.querySelector("form");
-        if (form) {
-          form.querySelector("[name=spec_id]").value    = panel.dataset.robSpecId    || "";
-          form.querySelector("[name=bybit_start]").value = panel.dataset.robStart    || "";
-          form.querySelector("[name=bybit_end]").value   = panel.dataset.robEnd      || "";
-          var sym = form.querySelector("[name=symbol]");
-          var cat = form.querySelector("[name=category]");
-          var ivl = form.querySelector("[name=interval]");
-          if (sym) sym.value = panel.dataset.robSymbol   || "BTCUSDT";
-          if (cat) cat.value = panel.dataset.robCategory || "linear";
-          if (ivl) ivl.value = panel.dataset.robInterval || "1";
-        }
-        sec.style.display = "";
-        htmx.process(sec);
-      }
-      // Backtest metriklerini hidden input'lara aktar → /backtest/plan'a gider
-      var btPanel = evt.detail.target.querySelector("[data-bt-pnl-pct]");
-      if (btPanel) {
-        var set = function(id, val) { var el = document.getElementById(id); if (el) el.value = val || ""; };
-        set("bt-pnl-pct",   btPanel.dataset.btPnlPct);
-        set("bt-sharpe",    btPanel.dataset.btSharpe);
-        set("bt-max-dd",    btPanel.dataset.btMaxDd);
-        set("bt-n-trades",  btPanel.dataset.btNTrades);
-        set("bt-win-rate",  btPanel.dataset.btWinRate);
-        set("bt-spec-name", btPanel.dataset.btSpecName);
-        set("bt-best-tf",   btPanel.dataset.btBestTf || "");
-        // Sonuç sekmesi rozetini trade sayısıyla güncelle (final result)
-        var badge = document.getElementById("bt-tab-badge-result");
-        if (badge) { badge.classList.remove("running"); badge.textContent = btPanel.dataset.btNTrades || "0"; }
-      }
+      btFillPanels(evt.detail.target);
     }
   });
+
+  // Populate the robustness form + plan hidden-inputs from data-* attributes on
+  // the result panel. Runs on every #result swap AND once on initial page load
+  // (server-rendered `last` result does NOT fire htmx:afterSettle, so without
+  // the DOMContentLoaded call the robustness form's spec_id stayed empty and
+  // "Analizi Çalıştır" silently 404'd).
+  function btFillPanels(root) {
+    root = root || document;
+    // Robustness panel from data-rob-* on the result panel.
+    var panel = root.querySelector("[data-rob-spec-id]");
+    var sec = document.getElementById("robustness-section");
+    if (panel && sec) {
+      var form = sec.querySelector("form");
+      if (form) {
+        form.querySelector("[name=spec_id]").value    = panel.dataset.robSpecId || "";
+        form.querySelector("[name=bybit_start]").value = panel.dataset.robStart  || "";
+        form.querySelector("[name=bybit_end]").value   = panel.dataset.robEnd    || "";
+        var sym = form.querySelector("[name=symbol]");
+        var cat = form.querySelector("[name=category]");
+        var ivl = form.querySelector("[name=interval]");
+        if (sym) sym.value = panel.dataset.robSymbol   || "BTCUSDT";
+        if (cat) cat.value = panel.dataset.robCategory || "linear";
+        if (ivl) ivl.value = panel.dataset.robInterval || "1";
+      }
+      sec.style.display = "";
+      htmx.process(sec);
+    }
+    // Backtest metriklerini hidden input'lara aktar → /backtest/plan'a gider
+    var btPanel = root.querySelector("[data-bt-pnl-pct]");
+    if (btPanel) {
+      var set = function(id, val) { var el = document.getElementById(id); if (el) el.value = val || ""; };
+      set("bt-pnl-pct",   btPanel.dataset.btPnlPct);
+      set("bt-sharpe",    btPanel.dataset.btSharpe);
+      set("bt-max-dd",    btPanel.dataset.btMaxDd);
+      set("bt-n-trades",  btPanel.dataset.btNTrades);
+      set("bt-win-rate",  btPanel.dataset.btWinRate);
+      set("bt-spec-name", btPanel.dataset.btSpecName);
+      set("bt-best-tf",   btPanel.dataset.btBestTf || "");
+      // Sonuç sekmesi rozetini trade sayısıyla güncelle (final result)
+      var badge = document.getElementById("bt-tab-badge-result");
+      if (badge) { badge.classList.remove("running"); badge.textContent = btPanel.dataset.btNTrades || "0"; }
+    }
+  }
 
   // Copy the AI-refined description to the clipboard (COPY button in plan preview).
   window.btCopyRefined = function(btn) {
@@ -538,6 +568,9 @@
     btToggleAsset('Bybit');
     const sm = document.querySelector('select[name="trade_size_mode"]');
     btToggleSizeMode(sm ? sm.value : 'fixed');
+    // Server-rendered `last` result: fill robustness form + plan hidden-inputs
+    // once (no htmx swap fires on initial load).
+    btFillPanels(document);
   });
 
   // ── Right-column tab switcher (Sonuç / Robustness / Geçmiş). Presentation
