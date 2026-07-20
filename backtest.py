@@ -182,6 +182,7 @@ def _fee_model_for(instrument) -> FeeModel | None:
         return IBFixedFeeModel()
     return None
 
+
 # Set NAUTILUS_DEBUG_LOG=1 to enable NautilusTrader's internal logging.
 # Reveals order rejections, strategy on_bar() exceptions, and account state errors
 # that are otherwise swallowed silently.
@@ -207,6 +208,7 @@ def _make_bybit_instrument(
     base: str = "BTC",
     quote: str | None = None,
     category: str = "linear",
+    fee_bps_override: float | None = None,
 ) -> CurrencyPair:
     """Bybit crypto pair for a product category (spot/linear/inverse).
 
@@ -231,6 +233,8 @@ def _make_bybit_instrument(
     )
     size_step = "1" if size_prec == 0 else "0." + "0" * (size_prec - 1) + "1"
     maker_bps, taker_bps = _bybit_fees_bps(symbol, market_symbol)
+    if fee_bps_override is not None:
+        maker_bps = taker_bps = fee_bps_override
     return CurrencyPair(
         instrument_id=iid,
         raw_symbol=sym,
@@ -401,23 +405,20 @@ def _bars_from_df(bar_type: BarType, instrument, df: pd.DataFrame) -> list[Bar]:
     lo = df["low"].to_numpy()
     c = df["close"].to_numpy()
     v = df["volume"].to_numpy()
-    bars: list[Bar] = []
-    for i in range(len(df)):
-        # Shift open-time index → bar close (Nautilus ts_event convention).
-        ts = int(ts_ns[i]) + interval_ns
-        bars.append(
-            Bar(
-                bar_type,
-                Price(float(o[i]), pp),
-                Price(float(h[i]), pp),
-                Price(float(lo[i]), pp),
-                Price(float(c[i]), pp),
-                Quantity(float(v[i]), sp),
-                ts,
-                ts,
-            )
+    ts_close = ts_ns + interval_ns
+    return [
+        Bar(
+            bar_type,
+            Price(float(o[i]), pp),
+            Price(float(h[i]), pp),
+            Price(float(lo[i]), pp),
+            Price(float(c[i]), pp),
+            Quantity(float(v[i]), sp),
+            int(ts_close[i]),
+            int(ts_close[i]),
         )
-    return bars
+        for i in range(len(df))
+    ]
 
 
 def _parse_money_column(series: pd.Series) -> np.ndarray:
@@ -775,16 +776,12 @@ def _metrics(
     avg_win_usd = (
         float(pnl_stats["Avg Winner"])
         if "Avg Winner" in pnl_stats
-        else (
-            avg_win_ret * _sc if not np.isnan(avg_win_ret) else float("nan")
-        )
+        else (avg_win_ret * _sc if not np.isnan(avg_win_ret) else float("nan"))
     )
     avg_loss_usd = (
         float(pnl_stats["Avg Loser"])
         if "Avg Loser" in pnl_stats
-        else (
-            avg_loss_ret * _sc if not np.isnan(avg_loss_ret) else float("nan")
-        )
+        else (avg_loss_ret * _sc if not np.isnan(avg_loss_ret) else float("nan"))
     )
     max_winner = _stat(pnl_stats, "Max Winner")
     max_loser = _stat(pnl_stats, "Max Loser")
@@ -1252,7 +1249,9 @@ def run_composed_backtest(
             active_venue = venue
             active_instrument_id = instrument.id
         else:
-            active_instrument = _make_bybit_instrument()
+            active_instrument = _make_bybit_instrument(
+                fee_bps_override=commission_bps_override,
+            )
             active_bar_type = _make_bybit_bar_type(active_instrument.id, "1")
             active_venue = active_instrument.id.venue
             active_instrument_id = active_instrument.id
@@ -1298,14 +1297,9 @@ def run_composed_backtest(
             f"Setting up engine · {str(active_venue)} · {_account_type.name} · starting: ${_cap:,.0f}"
         )
 
-        # Commission: use per-BPS override when provided, else instrument defaults.
-        if commission_bps_override is not None:
-            _fee = MakerTakerFeeModel(
-                maker_fee=Decimal(str(commission_bps_override / 10_000)),
-                taker_fee=Decimal(str(commission_bps_override / 10_000)),
-            )
-        else:
-            _fee = _fee_model_for(active_instrument)
+        # Commission: override fee already baked into active_instrument via fee_bps_override;
+        # MakerTakerFeeModel reads maker_fee/taker_fee from the instrument at fill time.
+        _fee = _fee_model_for(active_instrument)
 
         engine.add_venue(
             venue=active_venue,

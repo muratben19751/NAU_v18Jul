@@ -2,15 +2,19 @@
 
 Wiki References
 ---------------
-See: [[backtesting_guide]], [[environment_contexts]]
+See: [[backtesting_guide]], [[environment_contexts]], [[parquet_data_catalog]]
 
 The Backtest leg of [[environment_contexts]].
 
-Not: ``describe`` üretimi bitince chain-tetiği (``hx-trigger="load"`` →
-``/backtest/run|/sweep``) SADECE BİR kez ``#result``'a servis edilmeli —
-``_mark_gen_chained`` atomik test-and-set + ``describe_progress`` 204 fallback,
-gecikmeli/örtüşen bir poll'ün backtest'i yeniden tetikleyip sonucu silmesini
-önler (bkz. [[webapp_module_map]], 2026-07-20 sonuç-kaybolma yarışı).
+Not: ``describe`` üretimi bitince chain-tetiği (``#bt-chain-trigger``
+data-attr'ları → JS ile ``/backtest/run|/sweep``) SADECE BİR kez ``#result``'a
+servis edilmeli — ``_mark_gen_chained`` atomik test-and-set + ``describe_progress``
+204 fallback, gecikmeli/örtüşen bir poll'ün backtest'i yeniden tetikleyip sonucu
+silmesini önler (bkz. [[webapp_module_map]], 2026-07-20 sonuç-kaybolma yarışı).
+
+Bybit cache bounds keşfi FULL parquet read yerine pyarrow row-group metadata
+istatistikleriyle yapılır (min/max timestamp; 3M+ satır taranmaz) — bkz.
+[[parquet_data_catalog]] "Parquet Cache Bounds Keşfi: Row-Group Metadata".
 """
 
 from __future__ import annotations
@@ -134,6 +138,7 @@ def _parse_bool_form(v: str) -> bool:
     falsey strings ('0','false','off','no') must map to False — plain
     bool('0') would be True."""
     return str(v).strip().lower() in {"1", "true", "on", "yes"}
+
 
 # Perf: a blank date range used to default to the ENTIRE cache (1M+ 1m bars →
 # the backtest blows past the sandbox wall). When the user gives NO explicit
@@ -465,28 +470,87 @@ async def run(
 
             if instrument_kind == "Bybit":
                 cache_path = _bybit_cache_path(category, symbol, interval)
-                # Always use the actual range in the cache — if no date is
-                # entered, the cache start/end stay fixed, so every run gives
-                # the same result.
+                _progress(
+                    f"Reading data · parquet cache · {symbol}/{category}/{interval}"
+                )
+                # Read only row-group metadata to discover cache bounds — avoids
+                # loading 3M+ rows just to find start/end timestamps.
                 if cache_path.exists():
-                    df_check = _pd.read_parquet(cache_path)
-                    cache_start = (
-                        df_check.index[0].to_pydatetime().replace(tzinfo=UTC)
-                        if not df_check.empty
-                        else None
-                    )
-                    cache_end = (
-                        df_check.index[-1].to_pydatetime().replace(tzinfo=UTC)
-                        if not df_check.empty
-                        else None
-                    )
+                    import pyarrow.parquet as _pq
+
+                    _pf = _pq.ParquetFile(cache_path)
+                    _meta = _pf.metadata
+                    if _meta.num_rows > 0:
+                        # Row-group stats give min/max timestamps without full scan.
+                        # col[0] is "open" (price); the index is "__index_level_0__".
+                        _rg0 = _meta.row_group(0)
+                        _rgN = _meta.row_group(_meta.num_row_groups - 1)
+                        _idx_col = next(
+                            (
+                                i
+                                for i in range(_rg0.num_columns)
+                                if "index" in _rg0.column(i).path_in_schema.lower()
+                            ),
+                            None,
+                        )
+                        _col0 = _rg0.column(_idx_col) if _idx_col is not None else None
+                        _colN = _rgN.column(_idx_col) if _idx_col is not None else None
+                        _ts0 = (
+                            _col0.statistics.min
+                            if (
+                                _col0
+                                and _col0.statistics
+                                and _col0.statistics.has_min_max
+                            )
+                            else None
+                        )
+                        _tsN = (
+                            _colN.statistics.max
+                            if (
+                                _colN
+                                and _colN.statistics
+                                and _colN.statistics.has_min_max
+                            )
+                            else None
+                        )
+                        # Fall back to full read if stats unavailable.
+                        if _ts0 is None or _tsN is None:
+                            _df_idx = _pd.read_parquet(cache_path, columns=[])
+                            cache_start = (
+                                _df_idx.index[0].to_pydatetime().replace(tzinfo=UTC)
+                                if not _df_idx.empty
+                                else None
+                            )
+                            cache_end = (
+                                _df_idx.index[-1].to_pydatetime().replace(tzinfo=UTC)
+                                if not _df_idx.empty
+                                else None
+                            )
+                        else:
+                            cache_start = (
+                                _pd.Timestamp(_ts0).to_pydatetime().replace(tzinfo=UTC)
+                            )
+                            cache_end = (
+                                _pd.Timestamp(_tsN).to_pydatetime().replace(tzinfo=UTC)
+                            )
+                    else:
+                        cache_start = cache_end = None
                 else:
                     cache_start = cache_end = None
 
                 if bybit_start:
                     start_dt = datetime.fromisoformat(bybit_start).replace(tzinfo=UTC)
                 else:
-                    start_dt = cache_start or datetime.now(UTC) - timedelta(days=7)
+                    # Cap the default window to 365 days so the Bar construction
+                    # loop doesn't churn through 3M+ rows when no date is entered.
+                    default_start = (cache_end or datetime.now(UTC)) - timedelta(
+                        days=365
+                    )
+                    start_dt = (
+                        max(cache_start, default_start)
+                        if cache_start
+                        else default_start
+                    )
 
                 if bybit_end:
                     end_dt = datetime.fromisoformat(bybit_end).replace(
@@ -540,6 +604,7 @@ async def run(
                 _run_spec = spec
                 if trade_size > 0:
                     import copy as _copy
+
                     _run_spec = _copy.copy(spec)
                     _run_spec.trade_size = trade_size
 
@@ -637,6 +702,7 @@ async def run(
 
                 if trade_size > 0:
                     import copy as _copy
+
                     run_spec = _copy.copy(run_spec)
                     run_spec.trade_size = trade_size
 
@@ -664,22 +730,34 @@ async def run(
                     import pandas as _pd2
 
                     from data import INDEX_CACHE_DIR, _ticker_to_filename
+
+                    _progress(f"Reading data · {ticker}/{granularity}…")
                     if start_date and end_date:
                         start_d = date.fromisoformat(start_date)
                         end_d = date.fromisoformat(end_date)
                     else:
-                        cp = INDEX_CACHE_DIR / f"{_ticker_to_filename(ticker)}_{granularity}.parquet"
+                        cp = (
+                            INDEX_CACHE_DIR
+                            / f"{_ticker_to_filename(ticker)}_{granularity}.parquet"
+                        )
                         if cp.exists():
                             _df2 = _pd2.read_parquet(cp)
-                            start_d = _df2.index[0].date() if not _df2.empty else date(2000, 1, 1)
-                            end_d = _df2.index[-1].date() if not _df2.empty else date.today()
+                            start_d = (
+                                _df2.index[0].date()
+                                if not _df2.empty
+                                else date(2000, 1, 1)
+                            )
+                            end_d = (
+                                _df2.index[-1].date()
+                                if not _df2.empty
+                                else date.today()
+                            )
                         else:
                             start_d = date(2000, 1, 1)
                             end_d = date.today()
                 except (ValueError, Exception):
                     _set_error("start_date and end_date must be YYYY-MM-DD.")
                     return
-                _progress(f"Reading data · {ticker}/{granularity}…")
                 bars = load_index_bars(ticker, start_d, end_d, granularity)
                 if bars.empty:
                     _set_error(f"No bars for {ticker}.")
@@ -710,6 +788,7 @@ async def run(
 
                 if trade_size > 0:
                     import copy as _copy
+
                     run_spec = _copy.copy(run_spec)
                     run_spec.trade_size = trade_size
 
@@ -782,7 +861,6 @@ async def run(
             "error": None,
         },
     )
-
 
 
 # ── Generate strategy from description → chain into /backtest/run ────────────

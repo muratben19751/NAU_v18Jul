@@ -95,18 +95,15 @@
     {% set tf_count = ivs | length %}
   {% endif %}
   {% set multi = tf_count > 1 %}
-  <div hx-post="{{ '/backtest/sweep' if multi else '/backtest/run' }}"
-       hx-trigger="load"
-       hx-target="#result"
-       hx-swap="innerHTML"
-       hx-vals='{{ state.chain_vals | tojson }}'>
-    <div class="text-muted mono" style="font-size:11px;padding:6px 0;">
-      {% if multi %}
-      ⏳ {{ state.spec_name }} · scanning {{ tf_count }} timeframes…
-      {% else %}
-      ⏳ {{ state.spec_name }} · backtest queued…
-      {% endif %}
-    </div>
+  <div id="bt-chain-trigger"
+       data-bt-chain-url="{{ '/backtest/sweep' if multi else '/backtest/run' }}"
+       data-bt-chain-vals='{{ state.chain_vals | tojson }}'
+       class="text-muted mono" style="font-size:11px;padding:6px 0;">
+    {% if multi %}
+    ⏳ {{ state.spec_name }} · scanning {{ tf_count }} timeframes…
+    {% else %}
+    ⏳ {{ state.spec_name }} · backtest queued…
+    {% endif %}
   </div>
   {% endif %}
 </div>
