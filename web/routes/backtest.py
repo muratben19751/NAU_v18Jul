@@ -59,7 +59,9 @@ router = APIRouter(prefix="/backtest")
 # Leaf shared module — keeps the route→shared dependency arrow one-directional.
 from web.shared import BACKTEST_LOG, ProgressStore  # noqa: E402
 from web.shared import chart_url as _chart_url  # noqa: E402
+from web.shared import load_result_snapshot as _load_result_snapshot  # noqa: E402
 from web.shared import log_backtest as _log_backtest  # noqa: E402
+from web.shared import save_result_snapshot as _save_result_snapshot  # noqa: E402
 
 
 def _catalog_index_symbols() -> list[str]:
@@ -224,18 +226,43 @@ def _derive_bt_phases(steps: list[dict], done: bool, error: str | None) -> list[
     return out
 
 
+def _result_viewmodel(r, spec_name: str, narrative: str, bars_info: dict) -> dict:
+    """Build the full backtest result view-model consumed by
+    ``fragments/backtest_result.html``. Shared by page(), the run worker
+    (snapshot write), and the history reload route so all three render the
+    identical result screen. Returns a JSON-serializable dict."""
+    row = iteration_row(r)
+    row["rationale"] = r.rationale
+    row["equity_curve"] = r.equity_curve
+    row["equity_dates"] = r.equity_dates
+    row["spec_name"] = spec_name
+    row["narrative"] = narrative
+    row["bars_info"] = dict(bars_info or {})  # required for the robustness panel (#1)
+    if row["bars_info"].get("symbol"):
+        _sid = (row.get("params") or {}).get("spec_id", "")
+        row["chart_url"] = _chart_url(row["bars_info"], _sid)
+        row["chart_symbol"] = row["bars_info"]["symbol"]
+        row["chart_category"] = row["bars_info"].get("category", "linear")
+        row["chart_interval"] = row["bars_info"].get("interval", "60")
+    return row
+
+
 def _recent_runs(limit: int = 6) -> list[dict]:
     """Read the last N backtest runs from the log (for the Run History panel)."""
     if not BACKTEST_LOG.exists():
         return []
     out: list[dict] = []
     try:
-        # Read only the last 32 KB to avoid loading the full file into memory
-        # as the log grows over thousands of runs.
+        # Read a bounded tail to avoid loading the full multi-MB log. A single
+        # record can be large (equity/MTM arrays embedded in metrics ~280 KB),
+        # so the window must comfortably cover `limit` records. If the first
+        # line came out partial (window cut mid-record) it fails json.loads and
+        # is skipped below — harmless.
+        window = max(2_000_000, limit * 400_000)
         with open(BACKTEST_LOG, "rb") as fb:
             fb.seek(0, 2)
             size = fb.tell()
-            fb.seek(max(0, size - 32768))
+            fb.seek(max(0, size - window))
             tail = fb.read().decode("utf-8", errors="replace")
         lines = tail.splitlines()
         for ln in reversed(lines):
@@ -255,6 +282,7 @@ def _recent_runs(limit: int = 6) -> list[dict]:
                     "time": hhmm,
                     "name": spec.get("name", "?"),
                     "pnl": m.get("pnl"),
+                    "run_id": rec.get("run_id") or "",
                 }
             )
             if len(out) >= limit:
@@ -314,19 +342,7 @@ def page(request: Request):
         narrative = _LAST_RESULT.get("narrative", "")
         bi = dict(_LAST_RESULT.get("bars_info", {}))
     if r is not None:
-        last_row = iteration_row(r)
-        last_row["rationale"] = r.rationale
-        last_row["equity_curve"] = r.equity_curve
-        last_row["equity_dates"] = r.equity_dates
-        last_row["spec_name"] = spec_name
-        last_row["narrative"] = narrative
-        last_row["bars_info"] = bi  # required for the robustness panel (#1)
-        if bi.get("symbol"):
-            _sid = (last_row.get("params") or {}).get("spec_id", "")
-            last_row["chart_url"] = _chart_url(bi, _sid)
-            last_row["chart_symbol"] = bi["symbol"]
-            last_row["chart_category"] = bi.get("category", "linear")
-            last_row["chart_interval"] = bi.get("interval", "60")
+        last_row = _result_viewmodel(r, spec_name, narrative, bi)
 
     wiki_html = render_md(read_wiki_page("wiki/concepts/order_flow_pipeline.md"))
     preferred_spec_id = request.query_params.get("spec_id", "")
@@ -350,6 +366,30 @@ def page(request: Request):
             "bybit_intervals": BYBIT_ALL_INTERVALS,
             "index_symbols": _catalog_index_symbols(),
         },
+    )
+
+
+@router.get("/result/{run_id}", response_class=HTMLResponse)
+def result_snapshot(request: Request, run_id: str):
+    """Reload a previously stored backtest result screen (history tab click).
+
+    Renders the identical ``fragments/backtest_result.html`` from the snapshot
+    persisted at run time, so equity/drawdown/heatmap/price-chart/trades all
+    rebuild exactly as they were. Swapped into #result, so the page's existing
+    htmx:afterSettle hooks re-init the charts + robustness panel."""
+    from server import templates
+
+    last = _load_result_snapshot(run_id)
+    if not last:
+        resp = HTMLResponse(
+            "<div class='panel'><div class='panel-body empty-state'>"
+            "Bu çalışmanın kayıtlı sonucu bulunamadı (yalnızca son çalışmalar saklanır)."
+            "</div></div>"
+        )
+        resp.headers["HX-Toast"] = "err|Kayitli sonuc bulunamadi"
+        return resp
+    return templates.TemplateResponse(
+        request, "fragments/backtest_result.html", {"last": last}
     )
 
 
@@ -829,6 +869,17 @@ async def run(
                 _LAST_RESULT["bars_info"] = bars_info
                 _LAST_RESULT["narrative"] = narrative  # match with the new result (#23)
 
+            # Persist the FULL result view-model so the history tab can reload
+            # this exact screen later (the jsonl log keeps only scalar metrics).
+            if result.error is None:
+                try:
+                    _save_result_snapshot(
+                        run_id,
+                        _result_viewmodel(result, spec.name, narrative, bars_info),
+                    )
+                except Exception:
+                    pass  # snapshot failure must not hide the result
+
             try:
                 _log_backtest(
                     run_spec if "run_spec" in locals() else spec,
@@ -836,6 +887,7 @@ async def run(
                     instrument_kind,
                     bars_info,
                     elapsed_sec=_time.perf_counter() - _t_start,
+                    run_id=run_id,
                 )
             except Exception:
                 pass  # log I/O failure must not hide the result already stored above

@@ -187,10 +187,12 @@ def log_backtest(
     instrument_kind: str,
     bars_info: dict,
     elapsed_sec: float | None = None,
+    run_id: str | None = None,
 ) -> None:
     BACKTEST_LOG.parent.mkdir(parents=True, exist_ok=True)
     record = {
         "ts": datetime.now(UTC).isoformat(),
+        "run_id": run_id,
         "elapsed_sec": round(elapsed_sec, 3) if elapsed_sec is not None else None,
         "spec": {
             "id": spec.id,
@@ -234,6 +236,49 @@ def log_backtest(
         rotate_if_large(BACKTEST_LOG)
         with open(BACKTEST_LOG, "a") as f:
             f.write(json.dumps(record, default=str) + "\n")
+
+
+# ── Full-result snapshot store ────────────────────────────────────────────
+# The jsonl log keeps only scalar metrics (no equity curve / trade list), so a
+# history row can't rebuild the full result screen from it. We additionally
+# persist the complete result view-model per run to bt_results/<run_id>.json and
+# reload it verbatim from GET /backtest/result/<run_id>.
+_RESULTS_DIR = _CACHE_DIR / "bt_results"
+_RESULTS_KEEP = 20  # cap: newest N snapshots kept, older ones pruned
+
+
+def save_result_snapshot(run_id: str, viewmodel: dict) -> None:
+    """Persist a full backtest result view-model; prune to the newest N."""
+    if not run_id:
+        return
+    try:
+        _RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+        path = _RESULTS_DIR / f"{run_id}.json"
+        with open(path, "w") as f:
+            f.write(json.dumps(sanitize_floats(viewmodel), default=str))
+        # Prune oldest beyond the cap (by mtime).
+        snaps = sorted(
+            _RESULTS_DIR.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True
+        )
+        for stale in snaps[_RESULTS_KEEP:]:
+            try:
+                stale.unlink()
+            except OSError:
+                pass
+    except OSError:
+        pass  # a snapshot failure must never break the backtest
+
+
+def load_result_snapshot(run_id: str) -> dict | None:
+    """Read back a stored result view-model; None if missing/unreadable."""
+    try:
+        path = _RESULTS_DIR / f"{run_id}.json"
+        if not path.exists():
+            return None
+        with open(path) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return None
 
 
 def log_robustness(

@@ -51,6 +51,42 @@
     </details>
     {% endif %}
 
+    {# ─── Verdict / summary card — at-a-glance "iyi mi kötü mü" ─── #}
+    {% if not last.error and last.n_trades and last.n_trades > 0 %}
+    {%- set _shp = last.sharpe if last.sharpe is not none else 0 -%}
+    {%- set _up = (last.pnl_dir == 'up') -%}
+    {%- if _up and _shp >= 1.0 %}{% set _verdict = 'Güçlü' %}{% set _vcls = 'up' %}
+    {%- elif _up and _shp >= 0 %}{% set _verdict = 'Umut verici' %}{% set _vcls = 'up' %}
+    {%- elif _up %}{% set _verdict = 'Kârlı ama oynak' %}{% set _vcls = 'up' %}
+    {%- elif _shp > -0.5 %}{% set _verdict = 'Zayıf' %}{% set _vcls = 'down' %}
+    {%- else %}{% set _verdict = 'Elenmeli' %}{% set _vcls = 'down' %}{% endif -%}
+    <div class="verdict-card {{ _vcls }}">
+      <span class="verdict-badge">{{ _verdict }}</span>
+      <div class="verdict-metrics">
+        <div class="verdict-metric">
+          <span class="vm-label">PnL</span>
+          <span class="vm-value {{ last.pnl_dir }}">{{ last.pnl_fmt }}</span>
+        </div>
+        <div class="verdict-metric">
+          <span class="vm-label">Sharpe</span>
+          <span class="vm-value">{{ last.sharpe_fmt }}</span>
+        </div>
+        <div class="verdict-metric">
+          <span class="vm-label">Win Rate</span>
+          <span class="vm-value">{{ last.win_rate_fmt }}</span>
+        </div>
+        <div class="verdict-metric">
+          <span class="vm-label">Max DD</span>
+          <span class="vm-value down">{{ last.max_dd_fmt }}</span>
+        </div>
+        <div class="verdict-metric">
+          <span class="vm-label">Trades</span>
+          <span class="vm-value">{{ last.n_trades }}</span>
+        </div>
+      </div>
+    </div>
+    {% endif %}
+
     {# ─── Hero: Realized PnL + supporting metrics ─── #}
     <div class="result-hero">
       <div class="hero-main {{ last.pnl_dir }}">
@@ -153,7 +189,7 @@
 
     {# ─── Backtest Summary (TradingView-style) ─── #}
     {% if last.equity_curve and last.equity_curve|length > 1 %}
-    <div style="margin-top:16px;border-top:1px solid #242424;padding-top:14px;">
+    <div style="margin-top:16px;border-top:1px solid var(--border);padding-top:14px;">
       <div style="display:flex;align-items:baseline;gap:10px;margin-bottom:12px;">
         <span class="section-title" style="margin:0;font-size:15px;font-weight:600;">Backtest Summary</span>
         {% if last.bars_info and last.bars_info.get('start') %}
@@ -258,7 +294,7 @@
                   label: (c) => "$" + c.parsed.y.toLocaleString(undefined,
                     {minimumFractionDigits:2, maximumFractionDigits:2}),
                 },
-                backgroundColor: "#0c0c0c", borderColor: "#242424", borderWidth: 1,
+                backgroundColor: "#0a0b0d", borderColor: "#23262c", borderWidth: 1,
                 titleFont: { family: "JetBrains Mono", size: 11 },
                 bodyFont:  { family: "JetBrains Mono", size: 12 },
               },
@@ -266,9 +302,9 @@
             scales: {
               x: {
                 display: true,
-                grid: { color: "#242424", drawTicks: false },
+                grid: { color: "#1a1d21", drawTicks: false },
                 ticks: {
-                  color: "#8a8a8a", font: { family: "JetBrains Mono", size: 10 },
+                  color: "#7d848f", font: { family: "JetBrains Mono", size: 10 },
                   maxRotation: 0, minRotation: 0,
                   autoSkip: true, maxTicksLimit: 10, padding: 8,
                   callback: function(val) { return this.getLabelForValue(val) || null; },
@@ -276,9 +312,9 @@
               },
               y: {
                 position: "right",
-                grid: { color: "#242424" },
+                grid: { color: "#1a1d21" },
                 ticks: {
-                  color: "#8a8a8a", font: { family: "JetBrains Mono", size: 10 },
+                  color: "#7d848f", font: { family: "JetBrains Mono", size: 10 },
                   padding: 6, callback: v => "$" + (v/1000).toFixed(1) + "k",
                 },
               },
@@ -313,13 +349,13 @@
             responsive: true, maintainAspectRatio: false,
             plugins: { legend: { display: false }, tooltip: {
               callbacks: { title: () => "", label: c => c.parsed.y.toFixed(2) + "%" },
-              backgroundColor: "#0c0c0c", borderColor: "#242424", borderWidth: 1,
+              backgroundColor: "#0a0b0d", borderColor: "#23262c", borderWidth: 1,
               bodyFont: { family: "JetBrains Mono", size: 11 },
             }},
             scales: {
               x: { display: false },
-              y: { position: "right", max: 0, grid: { color: "#242424" },
-                   ticks: { color: "#8a8a8a", font: { family: "JetBrains Mono", size: 9 },
+              y: { position: "right", max: 0, grid: { color: "#1a1d21" },
+                   ticks: { color: "#7d848f", font: { family: "JetBrains Mono", size: 9 },
                             callback: v => v.toFixed(0) + "%", maxTicksLimit: 3 } },
             },
           },
@@ -354,16 +390,16 @@
         const MON = ["J","F","M","A","M","J","J","A","S","O","N","D"];
         const MONF = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
         const cell = v => {
-          if (v === undefined) return `<div style="width:22px;height:22px;border-radius:3px;background:#0D1119;"></div>`;
+          if (v === undefined) return `<div style="width:22px;height:22px;border-radius:3px;background:#0f1216;"></div>`;
           const a = Math.min(Math.abs(v) / 7, 1) * 0.5 + 0.08;
-          const bg = v >= 0 ? `rgba(46,212,126,${a})` : `rgba(242,92,92,${a})`;
-          const txt = Math.abs(v) > 2.2 ? `<span style="font-family:'JetBrains Mono';font-size:8.5px;color:#E9EDF4;">${v>=0?"+":""}${v.toFixed(0)}</span>` : "";
+          const bg = v >= 0 ? `rgba(61,220,151,${a})` : `rgba(255,93,108,${a})`;
+          const txt = Math.abs(v) > 2.2 ? `<span style="font-family:'JetBrains Mono';font-size:8.5px;color:#eef1f5;">${v>=0?"+":""}${v.toFixed(0)}</span>` : "";
           return `<div title="${v>=0?"+":""}${v.toFixed(2)}%" style="width:22px;height:22px;border-radius:3px;background:${bg};display:flex;align-items:center;justify-content:center;">${txt}</div>`;
         };
         let html = `<div style="display:grid;grid-template-columns:44px repeat(12,1fr);gap:3px;">`;
-        html += `<div></div>` + MON.map(m => `<div style="text-align:center;font-family:'JetBrains Mono';font-size:9px;color:#5C6778;">${m}</div>`).join("");
+        html += `<div></div>` + MON.map(m => `<div style="text-align:center;font-family:'JetBrains Mono';font-size:9px;color:#7d848f;">${m}</div>`).join("");
         for (const y of years) {
-          html += `<div style="font-family:'JetBrains Mono';font-size:9px;color:#5C6778;display:flex;align-items:center;">${y}</div>`;
+          html += `<div style="font-family:'JetBrains Mono';font-size:9px;color:#7d848f;display:flex;align-items:center;">${y}</div>`;
           for (let mo = 0; mo < 12; mo++) {
             const v = ret[y + "-" + mo];
             html += cell(v !== undefined ? Number(v) : undefined).replace(`title="`, `title="${MONF[mo]} ${y} · `);
@@ -411,22 +447,22 @@
         </div>
         {# Filters #}
         <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;padding:8px 16px 0;">
-          <select id="trade-filter-result" onchange="filterTrades()" style="font-size:10px;padding:2px 6px;background:var(--inset);border:1px solid #242424;color:var(--text-primary);border-radius:4px;">
+          <select id="trade-filter-result" onchange="filterTrades()" style="font-size:10px;padding:2px 6px;background:var(--inset);border:1px solid var(--border-input);color:var(--text-primary);border-radius:4px;">
             <option value="all">All</option>
             <option value="win">Winner</option>
             <option value="loss">Losing</option>
           </select>
-          <select id="trade-filter-side" onchange="filterTrades()" style="font-size:10px;padding:2px 6px;background:var(--inset);border:1px solid #242424;color:var(--text-primary);border-radius:4px;">
+          <select id="trade-filter-side" onchange="filterTrades()" style="font-size:10px;padding:2px 6px;background:var(--inset);border:1px solid var(--border-input);color:var(--text-primary);border-radius:4px;">
             <option value="all">Long+Short</option>
             <option value="BUY">Long</option>
             <option value="SELL">Short</option>
           </select>
           <input id="trade-filter-min" type="number" placeholder="Min PnL" onchange="filterTrades()"
-            style="width:68px;font-size:10px;padding:2px 6px;background:var(--inset);border:1px solid #242424;color:var(--text-primary);border-radius:4px;">
+            style="width:68px;font-size:10px;padding:2px 6px;background:var(--inset);border:1px solid var(--border-input);color:var(--text-primary);border-radius:4px;">
           <input id="trade-filter-max" type="number" placeholder="Max PnL" onchange="filterTrades()"
-            style="width:68px;font-size:10px;padding:2px 6px;background:var(--inset);border:1px solid #242424;color:var(--text-primary);border-radius:4px;">
+            style="width:68px;font-size:10px;padding:2px 6px;background:var(--inset);border:1px solid var(--border-input);color:var(--text-primary);border-radius:4px;">
           <span style="font-size:10px;color:var(--text-muted);">TF:</span>
-          <select id="trade-hover-tf" style="font-size:10px;padding:2px 6px;background:var(--inset);border:1px solid #242424;color:var(--text-primary);border-radius:4px;">
+          <select id="trade-hover-tf" style="font-size:10px;padding:2px 6px;background:var(--inset);border:1px solid var(--border-input);color:var(--text-primary);border-radius:4px;">
             <option value="auto">Automatic</option>
             <option value="1">1m</option>
             <option value="5">5m</option>
@@ -525,7 +561,7 @@
           }
           if (_activeRow) _activeRow.style.outline = "";
           _activeRow = row;
-          row.style.outline = "1px solid rgba(255,255,255,0.5)";
+          row.style.outline = "1px solid var(--accent)";
 
           const entryTime  = parseInt(row.dataset.entryTime);
           const exitTime   = parseInt(row.dataset.exitTime);
@@ -546,3 +582,15 @@
   </div>
 </div>
 {% endif %}
+
+{# ─── Auto-focus: bu fragment YALNIZCA final sonuç için render edilir (progress
+   değil). Sonuç yerleşince Sonuç sekmesine geç ve görünüme kaydır. ─── #}
+<script>
+(function() {
+  if (window.btTab) window.btTab("result");
+  var el = document.getElementById("result");
+  if (el && el.scrollIntoView) {
+    try { el.scrollIntoView({ behavior: "smooth", block: "start" }); } catch (e) { el.scrollIntoView(); }
+  }
+})();
+</script>

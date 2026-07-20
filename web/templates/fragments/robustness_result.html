@@ -7,7 +7,7 @@
   <div class="panel-body">
 
     {# ── Tab navigation ── #}
-    <div style="display:flex;gap:8px;margin-bottom:14px;border-bottom:1px solid #1a2332;padding-bottom:8px;">
+    <div style="display:flex;gap:8px;margin-bottom:14px;border-bottom:1px solid var(--border);padding-bottom:8px;">
       <button class="btn btn-secondary rob-tab active" data-tab="wfo" onclick="robTab(this,'wfo')">Walk-Forward</button>
       <button class="btn btn-secondary rob-tab" data-tab="split" onclick="robTab(this,'split')">In/Out-of-Sample</button>
       <button class="btn btn-secondary rob-tab" data-tab="mc" onclick="robTab(this,'mc')">Monte Carlo</button>
@@ -108,7 +108,7 @@
         <div class="empty-state">{{ sp.error }}</div>
       {% else %}
       {# Overfitting score #}
-      <div style="display:flex;align-items:center;gap:16px;margin-bottom:14px;padding:10px 14px;background:rgba(26,35,50,0.5);border-radius:6px;">
+      <div style="display:flex;align-items:center;gap:16px;margin-bottom:14px;padding:10px 14px;background:var(--accent-soft);border:1px solid rgba(74,158,255,0.18);border-radius:6px;">
         <div>
           <div class="label" style="font-size:10px;">Overfitting Score</div>
           <div class="value" style="font-size:22px;font-weight:700;
@@ -198,10 +198,10 @@ function robTab(btn, tab) {
 // ── Chart.js shared config ───────────────────────────────────────────────────
 const _chartDefaults = {
   responsive: true, maintainAspectRatio: false,
-  plugins: { legend: { labels: { color: "#6b7280", font: { family: "JetBrains Mono", size: 10 } } } },
+  plugins: { legend: { labels: { color: "#7d848f", font: { family: "JetBrains Mono", size: 10 } } } },
   scales: {
-    x: { grid: { color: "#1a2332" }, ticks: { color: "#6b7280", font: { family: "JetBrains Mono", size: 9 }, maxTicksLimit: 8 } },
-    y: { grid: { color: "#1a2332" }, ticks: { color: "#6b7280", font: { family: "JetBrains Mono", size: 9 }, callback: v => "$" + (v/1000).toFixed(0) + "k" } },
+    x: { grid: { color: "#1a1d21" }, ticks: { color: "#7d848f", font: { family: "JetBrains Mono", size: 9 }, maxTicksLimit: 8 } },
+    y: { grid: { color: "#1a1d21" }, ticks: { color: "#7d848f", font: { family: "JetBrains Mono", size: 9 }, callback: v => "$" + (v/1000).toFixed(0) + "k" } },
   },
 };
 let _charts = {};

@@ -304,92 +304,118 @@
     </div>
   </div>
 
-  {# ── RIGHT: results + robustness + run history ── #}
-  <div class="stack">
-
-    <div id="plan-preview"></div>
-
-    <div id="result">
-      {% if last %}
-        {% include "fragments/backtest_result.html" %}
-      {% else %}
-        <div class="panel">
-          <div class="panel-body empty-state">Stratejini anlat ve <b>▶ Backtest Çalıştır</b>'a bas.</div>
-        </div>
-      {% endif %}
+  {# ── RIGHT: tabbed shell — Sonuç / Robustness / Geçmiş ── #}
+  <div class="panel" style="overflow:visible;">
+    <div class="bt-tabs" role="tablist">
+      <button type="button" class="bt-tab active" role="tab" data-bt-tab="result" onclick="btTab('result')">
+        Sonuç
+        <span class="bt-tab-badge" id="bt-tab-badge-result">{{ last.n_trades if last else '–' }}</span>
+      </button>
+      <button type="button" class="bt-tab" role="tab" data-bt-tab="robustness" onclick="btTab('robustness')">
+        Robustness
+      </button>
+      <button type="button" class="bt-tab" role="tab" data-bt-tab="history" onclick="btTab('history')">
+        Geçmiş
+        {% if recent_runs %}<span class="bt-tab-badge">{{ recent_runs|length }}</span>{% endif %}
+      </button>
     </div>
 
-    {# ── ④ Robustness Analysis Panel ── #}
-    <div class="panel" id="robustness-section" {% if not last %}style="display:none"{% endif %}>
-      <div class="panel-header">
-        <div class="panel-title">
-          <span class="bt-step-no" style="display:inline-flex;margin-right:8px;">4</span>
-          Robustness Testi
+    <div class="panel-body" style="padding-top:0;">
+
+      {# ── TAB: Sonuç ── #}
+      <div class="bt-tabpanel active" id="bt-tabpanel-result" role="tabpanel">
+        <div id="plan-preview"></div>
+        <div id="result">
+          {% if last %}
+            {% include "fragments/backtest_result.html" %}
+          {% else %}
+            <div class="panel">
+              <div class="panel-body empty-state">Stratejini anlat ve <b>▶ Backtest Çalıştır</b>'a bas.</div>
+            </div>
+          {% endif %}
         </div>
-        <div class="panel-meta text-muted mono small">WFO · Monte Carlo · In/Out-of-Sample</div>
       </div>
-      <div class="panel-body">
-        <form hx-post="/robustness/run"
-              hx-target="#robustness-result"
-              hx-swap="innerHTML"
-              style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;align-items:end;">
-          <input type="hidden" name="spec_id"   id="rob-spec-id">
-          <input type="hidden" name="symbol"    id="rob-symbol">
-          <input type="hidden" name="category"  id="rob-category">
-          <input type="hidden" name="interval"  id="rob-interval">
-          <input type="hidden" name="bybit_start" id="rob-start">
-          <input type="hidden" name="bybit_end"   id="rob-end">
-          <label class="field">Train (ay)
-            <input type="number" name="train_months" value="3" min="1" max="24">
-          </label>
-          <label class="field">Test (ay)
-            <input type="number" name="test_months" value="1" min="1" max="12">
-          </label>
-          <label class="field">Monte Carlo N
-            <input type="number" name="n_sims" value="300" min="50" max="1000" step="50">
-          </label>
-          <label class="field">In-sample %
-            <input type="number" name="split_pct" value="0.7" min="0.5" max="0.9" step="0.05">
-          </label>
-          <label class="field">WFO deneme/pencere
-            <input type="number" name="n_optimize" value="20" min="1" max="200" step="1">
-          </label>
-          <label class="field">WFO hedefi
-            <select name="objective">
-              <option value="sharpe">Sharpe</option>
-              <option value="sortino">Sortino</option>
-              <option value="calmar">Calmar (PnL/DD)</option>
-            </select>
-          </label>
-          <div>
-            <button class="btn btn-primary" type="submit" style="width:100%;">▶ Analizi Çalıştır</button>
+
+      {# ── TAB: Robustness ── #}
+      <div class="bt-tabpanel" id="bt-tabpanel-robustness" role="tabpanel">
+        {# ④ Robustness Analysis Panel #}
+        <div id="robustness-section" {% if not last %}style="display:none"{% endif %}>
+          <div class="panel-header" style="padding-left:0;padding-right:0;">
+            <div class="panel-title">Robustness Testi</div>
+            <div class="spacer"></div>
+            <div class="panel-meta text-muted mono small">WFO · Monte Carlo · In/Out-of-Sample</div>
           </div>
-        </form>
-        <div id="robustness-result" style="margin-top:12px;"></div>
-      </div>
-    </div>
-
-    {% if recent_runs %}
-    <div class="panel">
-      <div class="panel-header">
-        <div class="panel-title">Geçmiş Çalışmalar</div>
-        <div class="spacer"></div>
-        <span class="text-muted mono" style="font-size:10px;">son {{ recent_runs|length }}</span>
-      </div>
-      <div class="panel-body tight">
-        {% for r in recent_runs %}
-        <div style="display:flex;align-items:center;gap:10px;padding:9px 16px;border-bottom:1px solid var(--border-soft);">
-          <span class="mono" style="font-size:10.5px;color:var(--text-muted);">{{ r.time }}</span>
-          <span class="mono" style="font-size:11.5px;color:var(--accent);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{{ r.name }}</span>
-          <span class="mono" style="font-size:11.5px;font-weight:600;color:{% if r.pnl is not none and r.pnl >= 0 %}var(--pnl-up){% elif r.pnl is not none %}var(--pnl-down){% else %}var(--text-muted){% endif %};">
-            {% if r.pnl is not none %}{{ "%+.2f"|format(r.pnl) }}{% else %}—{% endif %}
-          </span>
+          <div style="padding-top:12px;">
+            <form hx-post="/robustness/run"
+                  hx-target="#robustness-result"
+                  hx-swap="innerHTML"
+                  style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;align-items:end;">
+              <input type="hidden" name="spec_id"   id="rob-spec-id">
+              <input type="hidden" name="symbol"    id="rob-symbol">
+              <input type="hidden" name="category"  id="rob-category">
+              <input type="hidden" name="interval"  id="rob-interval">
+              <input type="hidden" name="bybit_start" id="rob-start">
+              <input type="hidden" name="bybit_end"   id="rob-end">
+              <label class="field">Train (ay)
+                <input type="number" name="train_months" value="3" min="1" max="24">
+              </label>
+              <label class="field">Test (ay)
+                <input type="number" name="test_months" value="1" min="1" max="12">
+              </label>
+              <label class="field">Monte Carlo N
+                <input type="number" name="n_sims" value="300" min="50" max="1000" step="50">
+              </label>
+              <label class="field">In-sample %
+                <input type="number" name="split_pct" value="0.7" min="0.5" max="0.9" step="0.05">
+              </label>
+              <label class="field">WFO deneme/pencere
+                <input type="number" name="n_optimize" value="20" min="1" max="200" step="1">
+              </label>
+              <label class="field">WFO hedefi
+                <select name="objective">
+                  <option value="sharpe">Sharpe</option>
+                  <option value="sortino">Sortino</option>
+                  <option value="calmar">Calmar (PnL/DD)</option>
+                </select>
+              </label>
+              <div>
+                <button class="btn btn-primary" type="submit" style="width:100%;">▶ Analizi Çalıştır</button>
+              </div>
+            </form>
+            <div id="robustness-result" style="margin-top:12px;"></div>
+          </div>
         </div>
-        {% endfor %}
+        {% if not last %}
+        <div class="empty-state">Önce bir backtest çalıştır — robustness testi sonucun üstünde kurulur.</div>
+        {% endif %}
       </div>
-    </div>
-    {% endif %}
 
+      {# ── TAB: Geçmiş ── #}
+      <div class="bt-tabpanel" id="bt-tabpanel-history" role="tabpanel">
+        {% if recent_runs %}
+          <div class="text-muted" style="font-size:11px;margin-bottom:10px;">
+            Bir çalışmaya tıkla → sonuç ekranı birebir geri yüklenir.
+          </div>
+          {% for r in recent_runs %}
+          <div class="bt-hist-row"
+               {% if r.run_id %}hx-get="/backtest/result/{{ r.run_id }}"
+               hx-target="#result" hx-swap="innerHTML"
+               onclick="btTab('result')"{% endif %}
+               title="{{ r.name }}">
+            <span class="bt-hist-time">{{ r.time }}</span>
+            <span class="bt-hist-name">{{ r.name }}</span>
+            <span class="bt-hist-pnl {% if r.pnl is not none and r.pnl >= 0 %}up{% elif r.pnl is not none %}down{% endif %}">
+              {% if r.pnl is not none %}{{ "%+.2f"|format(r.pnl) }}{% else %}—{% endif %}
+            </span>
+            <span class="bt-hist-arrow">→</span>
+          </div>
+          {% endfor %}
+        {% else %}
+          <div class="empty-state">Henüz çalışma yok.</div>
+        {% endif %}
+      </div>
+
+    </div>
   </div>
 
 </div>
@@ -404,6 +430,13 @@
   document.addEventListener("htmx:afterSwap", function(evt) {
     if (!evt.detail.target || evt.detail.target.id !== "result") return;
     evt.detail.target.style.display = "";
+    // Sonuç #result'a herhangi bir şey (progress ya da sonuç) düştüğünde Sonuç
+    // sekmesine odaklan; progress ise rozeti "running" yap.
+    if (window.btTab) btTab("result");
+    var badge = document.getElementById("bt-tab-badge-result");
+    if (badge && evt.detail.target.querySelector("#describe-progress, #progress-panel, #sweep-progress")) {
+      badge.classList.add("running"); badge.textContent = "";
+    }
     var trigger = evt.detail.target.querySelector("[data-bt-chain-url]");
     if (trigger) {
       var url  = trigger.getAttribute("data-bt-chain-url");
@@ -444,6 +477,9 @@
         set("bt-win-rate",  btPanel.dataset.btWinRate);
         set("bt-spec-name", btPanel.dataset.btSpecName);
         set("bt-best-tf",   btPanel.dataset.btBestTf || "");
+        // Sonuç sekmesi rozetini trade sayısıyla güncelle (final result)
+        var badge = document.getElementById("bt-tab-badge-result");
+        if (badge) { badge.classList.remove("running"); badge.textContent = btPanel.dataset.btNTrades || "0"; }
       }
     }
   });
@@ -503,5 +539,15 @@
     const sm = document.querySelector('select[name="trade_size_mode"]');
     btToggleSizeMode(sm ? sm.value : 'fixed');
   });
+
+  // ── Right-column tab switcher (Sonuç / Robustness / Geçmiş). Presentation
+  // only — the panels inside keep their ids (#result, #robustness-section, …). ──
+  window.btTab = function(name) {
+    document.querySelectorAll('.bt-tab').forEach(t =>
+      t.classList.toggle('active', t.dataset.btTab === name));
+    document.querySelectorAll('.bt-tabpanel').forEach(p =>
+      p.classList.toggle('active', p.id === 'bt-tabpanel-' + name));
+  };
+
 </script>
 {% endblock %}
