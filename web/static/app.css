@@ -1398,3 +1398,86 @@ details > summary:hover { background: #171717; }
 .bt-hist-pnl.down { color: var(--pnl-down); }
 .bt-hist-arrow { color: var(--text-muted); flex: 0 0 auto; opacity: 0; transition: opacity 0.13s; }
 .bt-hist-row:hover .bt-hist-arrow { opacity: 1; color: var(--accent-strong); }
+
+/* ── Robustness form: gruplu + inline açıklama + presetler ─────────────────── */
+.rob-form-intro {
+  font-size: 11px;
+  line-height: 1.7;
+  color: var(--text-muted);
+  background: var(--panel-2);
+  border: 1px solid var(--border-soft);
+  border-radius: 6px;
+  padding: 10px 13px;
+  margin-bottom: 12px;
+}
+.rob-form-intro b { color: #c3cad3; font-weight: 600; }
+
+.rob-presets {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+}
+.rob-presets-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-muted);
+  font-weight: 600;
+}
+.btn-sm {
+  padding: 4px 11px;
+  font-size: 11px;
+  line-height: 1.4;
+}
+.rob-presets .btn.active {
+  background: linear-gradient(90deg, var(--accent-soft), transparent 90%);
+  border-color: var(--accent);
+  color: var(--accent-strong);
+}
+
+.rob-form { display: flex; flex-direction: column; gap: 14px; }
+
+.rob-group {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px 14px 14px;
+  margin: 0;
+  min-width: 0;
+}
+.rob-group > legend {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.09em;
+  color: var(--accent-strong);
+  font-weight: 700;
+  padding: 0 7px;
+}
+.rob-group-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 14px 16px;
+  align-items: start;
+}
+
+/* Alan altı yardım metni — .field uppercase label'ının aksine normal-case */
+.field-hint {
+  font-size: 10px;
+  line-height: 1.55;
+  letter-spacing: 0;
+  text-transform: none;
+  font-weight: 400;
+  color: var(--text-muted);
+  margin-top: 1px;
+}
+.field-hint b { color: #aeb6c0; font-weight: 600; }
+
+.rob-form-actions {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+  margin-top: 2px;
+}
+.rob-form-note { font-size: 10px; }

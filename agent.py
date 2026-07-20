@@ -1310,7 +1310,7 @@ Yalnızca JSON döndür:
 {"refined": "<iyileştirilmiş tarif>",
  "notes": "<tek kısa cümle: neyi değiştirdin>",
  "suggestions": [{"kind": "oneri|uyari", "text": "<kısa madde>"}]}
-Girdi zaten netse ve metrik yoksa, tarifi aynen döndür ve notes="Değişiklik gerekmedi." yaz.
+Girdi zaten net görünse bile her zaman en az 2 somut öneri ver; notes alanına kısa bir iyileştirme gerekçesi yaz.
 """
 
 

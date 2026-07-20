@@ -260,26 +260,11 @@
                 <span class="btn-spin spin">⟳</span>
                 ▶ Backtest Çalıştır
               </button>
-
-              <button class="btn btn-ghost" type="button"
-                      hx-post="/backtest/plan"
-                      hx-include="closest form"
-                      hx-target="#plan-preview"
-                      hx-swap="innerHTML"
-                      hx-indicator="#plan-spinner"
-                      onclick="if(window.btTab)btTab('plan');"
-                      title="Backtest'ten önce AI planı ✨ AI Plan sekmesinde gösterir — istersen düzenleyip onaylarsın">
-                <span class="btn-spin spin">⟳</span>
-                ✨ Önce AI ile iyileştir
-              </button>
             </div>
 
             <div class="row" style="gap:16px;flex-wrap:wrap;margin-top:10px;">
               <span class="htmx-indicator text-muted mono" id="gen-spinner" style="font-size:11px;">
                 <span class="spin">⟳</span> Claude blokları yazıyor · backtest hazırlanıyor…
-              </span>
-              <span class="htmx-indicator text-muted mono" id="plan-spinner" style="font-size:11px;">
-                <span class="spin">⟳</span> Claude planı hazırlıyor…
               </span>
             </div>
 
@@ -346,13 +331,29 @@
         </div>
       </div>
 
-      {# ── TAB: AI Plan (önce AI ile iyileştir) ── #}
+      {# ── TAB: AI Plan (AI ile iyileştir) ── #}
       <div class="bt-tabpanel active" id="bt-tabpanel-plan" role="tabpanel">
         <div id="plan-preview"></div>
         <div id="plan-empty" class="panel">
-          <div class="panel-body empty-state">
-            <b>✨ Önce AI ile iyileştir</b>'e bas — Claude tarifini netleştirir,
-            güçlendirme önerir; onayınca backtest başlar.
+          <div class="panel-body empty-state" style="text-align:center;">
+            <div style="margin-bottom:14px;">
+              Claude tarifini netleştirir, güçlendirme önerir; onayınca backtest başlar.
+            </div>
+            <button class="btn btn-primary" type="button"
+                    hx-post="/backtest/plan"
+                    hx-include="#gen-form"
+                    hx-target="#plan-preview"
+                    hx-swap="innerHTML"
+                    hx-indicator="#plan-spinner"
+                    title="Claude tarifini netleştirir + güçlendirme önerir">
+              <span class="btn-spin spin">⟳</span>
+              ✨ AI ile iyileştir
+            </button>
+            <div class="row" style="justify-content:center;margin-top:10px;">
+              <span class="htmx-indicator text-muted mono" id="plan-spinner" style="font-size:11px;">
+                <span class="spin">⟳</span> Claude planı hazırlıyor…
+              </span>
+            </div>
           </div>
         </div>
       </div>
@@ -367,40 +368,107 @@
             <div class="panel-meta text-muted mono small">WFO · Monte Carlo · In/Out-of-Sample</div>
           </div>
           <div style="padding-top:12px;">
+            {# Genel açıklama — robustness üç bağımsız testi tek çalıştırmada koşar #}
+            <div class="rob-form-intro">
+              Bu analiz stratejini <b>üç bağımsız testten</b> geçirir:
+              <b>Walk-Forward</b> (parametreler bir dönemde optimize edilip sonraki
+              görülmemiş dönemde sınanır), <b>In/Out-of-Sample</b> (veri ikiye bölünür;
+              ikinci yarı hiç dokunulmamış "gelecek" gibi ölçülür) ve
+              <b>Monte Carlo</b> (işlem sırası binlerce kez karıştırılıp olası sonuç
+              dağılımı çıkarılır). Bir preset seç ya da alanları elle ayarla.
+            </div>
+
+            {# Hazır presetler — tek tıkla tüm alanları makul değerlerle doldurur #}
+            <div class="rob-presets">
+              <span class="rob-presets-label">Hazır ayar:</span>
+              <button type="button" class="btn btn-secondary btn-sm"
+                      onclick="robPreset('fast')"
+                      title="Kabaca bakış · en hızlı (düşük deneme/simülasyon)">⚡ Hızlı</button>
+              <button type="button" class="btn btn-secondary btn-sm"
+                      onclick="robPreset('balanced')"
+                      title="Günlük kullanım için dengeli ayar (önerilen)">⚖ Dengeli</button>
+              <button type="button" class="btn btn-secondary btn-sm"
+                      onclick="robPreset('thorough')"
+                      title="En güvenilir · en yavaş (yüksek deneme/simülasyon)">🔬 Titiz</button>
+            </div>
+
             <form hx-post="/robustness/run"
                   hx-target="#robustness-result"
                   hx-swap="innerHTML"
-                  style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;align-items:end;">
+                  class="rob-form">
               <input type="hidden" name="spec_id"   id="rob-spec-id">
               <input type="hidden" name="symbol"    id="rob-symbol">
               <input type="hidden" name="category"  id="rob-category">
               <input type="hidden" name="interval"  id="rob-interval">
               <input type="hidden" name="bybit_start" id="rob-start">
               <input type="hidden" name="bybit_end"   id="rob-end">
-              <label class="field">Train (ay)
-                <input type="number" name="train_months" value="3" min="1" max="24">
-              </label>
-              <label class="field">Test (ay)
-                <input type="number" name="test_months" value="1" min="1" max="12">
-              </label>
-              <label class="field">Monte Carlo N
-                <input type="number" name="n_sims" value="300" min="50" max="1000" step="50">
-              </label>
-              <label class="field">In-sample %
-                <input type="number" name="split_pct" value="0.7" min="0.5" max="0.9" step="0.05">
-              </label>
-              <label class="field">WFO deneme/pencere
-                <input type="number" name="n_optimize" value="20" min="1" max="200" step="1">
-              </label>
-              <label class="field">WFO hedefi
-                <select name="objective">
-                  <option value="sharpe">Sharpe</option>
-                  <option value="sortino">Sortino</option>
-                  <option value="calmar">Calmar (PnL/DD)</option>
-                </select>
-              </label>
-              <div>
-                <button class="btn btn-primary" type="submit" style="width:100%;">▶ Analizi Çalıştır</button>
+
+              {# ── Grup 1: Walk-Forward ── #}
+              <fieldset class="rob-group">
+                <legend>Walk-Forward Optimizasyon</legend>
+                <div class="rob-group-grid">
+                  <label class="field">Train penceresi (ay)
+                    <input type="number" name="train_months" value="3" min="1" max="24">
+                    <span class="field-hint">Parametrelerin optimize edildiği geçmiş
+                      dönem. <b>Öneri: 3–6</b> · aralık 1–24. Uzun train = daha stabil
+                      parametre, ama daha az test penceresi.</span>
+                  </label>
+                  <label class="field">Test penceresi (ay)
+                    <input type="number" name="test_months" value="1" min="1" max="12">
+                    <span class="field-hint">Optimize edilen parametrelerin görülmemiş
+                      veride sınandığı dönem. <b>Öneri: 1</b> · aralık 1–12. Train'in
+                      ~1/3'ü tipiktir.</span>
+                  </label>
+                  <label class="field">Deneme / pencere
+                    <input type="number" name="n_optimize" value="20" min="1" max="200" step="1">
+                    <span class="field-hint">Her train penceresinde denenen parametre
+                      kombinasyonu sayısı. <b>Öneri: 20–50</b> · aralık 1–200. Yüksek =
+                      daha iyi optimize ama daha yavaş.</span>
+                  </label>
+                  <label class="field">Optimizasyon hedefi
+                    <select name="objective">
+                      <option value="sharpe">Sharpe (risk-ayarlı getiri)</option>
+                      <option value="sortino">Sortino (yalnız düşüş riski)</option>
+                      <option value="calmar">Calmar (getiri / max düşüş)</option>
+                    </select>
+                    <span class="field-hint">Train'de neyin maksimize edileceği.
+                      <b>Sharpe</b> genel amaçlı; <b>Sortino</b> düşüşe duyarlı;
+                      <b>Calmar</b> düşük drawdown önceliğinde.</span>
+                  </label>
+                </div>
+              </fieldset>
+
+              {# ── Grup 2: In/Out-of-Sample ── #}
+              <fieldset class="rob-group">
+                <legend>In / Out-of-Sample Bölme</legend>
+                <div class="rob-group-grid">
+                  <label class="field">In-sample oranı
+                    <input type="number" name="split_pct" value="0.7" min="0.5" max="0.9" step="0.05">
+                    <span class="field-hint">Verinin ne kadarı "eğitim" (in-sample)
+                      olarak kullanılır; kalanı hiç dokunulmamış "gelecek" (OOS) gibi
+                      ölçülür. <b>Öneri: 0.70</b> · aralık 0.50–0.90. 0.70 → %70 eğitim,
+                      %30 test.</span>
+                  </label>
+                </div>
+              </fieldset>
+
+              {# ── Grup 3: Monte Carlo ── #}
+              <fieldset class="rob-group">
+                <legend>Monte Carlo Simülasyonu</legend>
+                <div class="rob-group-grid">
+                  <label class="field">Simülasyon sayısı
+                    <input type="number" name="n_sims" value="300" min="50" max="1000" step="50">
+                    <span class="field-hint">İşlem sırasının kaç kez rastgele
+                      karıştırılacağı; olası eşitlik-eğrisi dağılımını (P5–P95) üretir.
+                      <b>Öneri: 300–500</b> · aralık 50–1000. Yüksek = daha pürüzsüz
+                      dağılım, daha yavaş.</span>
+                  </label>
+                </div>
+              </fieldset>
+
+              <div class="rob-form-actions">
+                <button class="btn btn-primary" type="submit">▶ Analizi Çalıştır</button>
+                <span class="rob-form-note text-muted">Üç test de tek çalıştırmada koşar · yeterli veri yoksa ilgili test atlanır.</span>
               </div>
             </form>
             <div id="robustness-result" style="margin-top:12px;"></div>
@@ -557,6 +625,29 @@
   }
 
   // Toggle Bybit / Index field groups
+  // Robustness form presetleri — tek tıkla tüm alanları makul değerlerle doldurur.
+  // Değerler backend clamp aralıklarına uygun (robustness.py run()).
+  window.robPreset = function(kind) {
+    var presets = {
+      fast:     { train_months: 2, test_months: 1, n_optimize: 10, n_sims: 100, split_pct: 0.7,  objective: "sharpe" },
+      balanced: { train_months: 3, test_months: 1, n_optimize: 20, n_sims: 300, split_pct: 0.7,  objective: "sharpe" },
+      thorough: { train_months: 4, test_months: 1, n_optimize: 50, n_sims: 800, split_pct: 0.75, objective: "sharpe" },
+    };
+    var p = presets[kind];
+    if (!p) return;
+    var form = document.querySelector(".rob-form");
+    if (!form) return;
+    Object.keys(p).forEach(function(name) {
+      var el = form.querySelector("[name=" + name + "]");
+      if (el) el.value = p[name];
+    });
+    // Aktif preset butonunu vurgula
+    document.querySelectorAll(".rob-presets .btn").forEach(function(b) { b.classList.remove("active"); });
+    var idx = { fast: 0, balanced: 1, thorough: 2 }[kind];
+    var btns = document.querySelectorAll(".rob-presets .btn");
+    if (btns[idx]) btns[idx].classList.add("active");
+  };
+
   function btToggleAsset(kind) {
     const isBybit = kind === 'Bybit';
     document.getElementById('bybit-fields').style.display = isBybit ? '' : 'none';
