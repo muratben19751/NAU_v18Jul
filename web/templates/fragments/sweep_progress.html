@@ -26,7 +26,26 @@
   {% set n_done = done_rows | length %}
   {% set n_total = state.rows | length %}
 
-  <div class="panel" style="border-color:rgba(96,165,250,0.35);">
+  <div class="panel" style="border-color:rgba(96,165,250,0.35);"
+    {% if done %}
+    data-rob-spec-id="{{ state.spec_id }}"
+    data-rob-symbol="{{ state.symbol }}"
+    data-rob-category="{{ state.category }}"
+    data-rob-interval="{{ state.rows[0].interval if state.rows else '' }}"
+    data-rob-start=""
+    data-rob-end=""
+    {% set best_rows = state.rows | selectattr('status', 'equalto', 'done') | list %}
+    {% set best_row = best_rows | sort(attribute='metrics.pnl_pct', reverse=true) | first if best_rows else none %}
+    {% if best_row %}
+    data-bt-pnl-pct="{{ '%+.2f'|format(best_row.metrics.pnl_pct * 100) if best_row.metrics.pnl_pct is not none else '' }}"
+    data-bt-sharpe="{{ '%.2f'|format(best_row.metrics.sharpe_per_trade) if best_row.metrics.sharpe_per_trade is not none else '' }}"
+    data-bt-max-dd="{{ '%.2f'|format(best_row.metrics.max_dd_pct) if best_row.metrics.max_dd_pct is not none else '' }}"
+    data-bt-n-trades="{{ best_row.metrics.n_trades if best_row.metrics.n_trades is not none else '' }}"
+    data-bt-win-rate="{{ '%.1f'|format(best_row.metrics.win_rate * 100) if best_row.metrics.win_rate is not none else '' }}"
+    data-bt-spec-name="{{ state.spec_name }}"
+    data-bt-best-tf="{{ best_row.label }}"
+    {% endif %}
+    {% endif %}>
     <div class="panel-header">
       <div class="panel-title">⏱ Zaman Dilimi Taraması · {{ state.spec_name }}</div>
       <div class="spacer"></div>

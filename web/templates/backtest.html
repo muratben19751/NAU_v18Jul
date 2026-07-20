@@ -290,6 +290,15 @@
 
           </div>
 
+          {# Hidden inputs — backtest sonuçları /backtest/plan'a gönderilir #}
+          <input type="hidden" name="bt_pnl_pct"   id="bt-pnl-pct">
+          <input type="hidden" name="bt_sharpe"     id="bt-sharpe">
+          <input type="hidden" name="bt_max_dd"     id="bt-max-dd">
+          <input type="hidden" name="bt_n_trades"   id="bt-n-trades">
+          <input type="hidden" name="bt_win_rate"   id="bt-win-rate">
+          <input type="hidden" name="bt_spec_name"  id="bt-spec-name">
+          <input type="hidden" name="bt_best_tf"    id="bt-best-tf">
+
         </form>
       </div>
     </div>
@@ -310,10 +319,13 @@
       {% endif %}
     </div>
 
-    {# ── Robustness Analysis Panel ── #}
+    {# ── ④ Robustness Analysis Panel ── #}
     <div class="panel" id="robustness-section" {% if not last %}style="display:none"{% endif %}>
       <div class="panel-header">
-        <div class="panel-title">Robustness Analysis</div>
+        <div class="panel-title">
+          <span class="bt-step-no" style="display:inline-flex;margin-right:8px;">4</span>
+          Robustness Testi
+        </div>
         <div class="panel-meta text-muted mono small">WFO · Monte Carlo · In/Out-of-Sample</div>
       </div>
       <div class="panel-body">
@@ -419,6 +431,19 @@
           if (ivl) ivl.value = panel.dataset.robInterval || "1";
         }
         sec.style.display = "";
+        htmx.process(sec);
+      }
+      // Backtest metriklerini hidden input'lara aktar → /backtest/plan'a gider
+      var btPanel = evt.detail.target.querySelector("[data-bt-pnl-pct]");
+      if (btPanel) {
+        var set = function(id, val) { var el = document.getElementById(id); if (el) el.value = val || ""; };
+        set("bt-pnl-pct",   btPanel.dataset.btPnlPct);
+        set("bt-sharpe",    btPanel.dataset.btSharpe);
+        set("bt-max-dd",    btPanel.dataset.btMaxDd);
+        set("bt-n-trades",  btPanel.dataset.btNTrades);
+        set("bt-win-rate",  btPanel.dataset.btWinRate);
+        set("bt-spec-name", btPanel.dataset.btSpecName);
+        set("bt-best-tf",   btPanel.dataset.btBestTf || "");
       }
     }
   });

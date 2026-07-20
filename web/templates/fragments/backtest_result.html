@@ -15,7 +15,14 @@
   data-rob-interval="{{ last.bars_info.get('interval','1') }}"
   data-rob-start="{{ last.bars_info.get('start','')[:10] if last.bars_info.get('start') else '' }}"
   data-rob-end="{{ last.bars_info.get('end','')[:10] if last.bars_info.get('end') else '' }}"
-  {% endif %}>
+  {% endif %}
+  data-bt-pnl-pct="{{ last.pnl_pct_fmt }}"
+  data-bt-sharpe="{{ last.sharpe_fmt }}"
+  data-bt-max-dd="{{ last.max_dd_fmt }}"
+  data-bt-n-trades="{{ last.n_trades }}"
+  data-bt-win-rate="{{ last.win_rate_fmt }}"
+  data-bt-spec-name="{{ last.spec_name }}"
+>
   <div class="panel-header">
     <div class="panel-title">Result · {{ last.spec_name }}</div>
     <div class="spacer"></div>

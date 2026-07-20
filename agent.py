@@ -1297,10 +1297,12 @@ Görevlerin:
 1. Tarifi tek, net, kesin ve test edilebilir bir kural setine dönüştür — dilbilgisini
    düzelt, eksik çıkış (exit) koşulu varsa ekle, belirsizliği gider, kısa tut (en fazla
    2-4 cümle). Kullanıcının anlattığı çekirdek mantığı DEĞİŞTİRME; yalnızca netleştir.
-2. Stratejiyi güçlendirebilecek 2-4 SOMUT ilave ÖNERİ ver (ör. bir trend filtresi,
+2. Eğer backtest metrikleri verilmişse, zayıf noktalara (düşük Sharpe, yüksek DD,
+   az işlem, düşük win rate) odaklan ve tarifi bu sorunları giderecek şekilde güçlendir.
+3. Stratejiyi güçlendirebilecek 2-4 SOMUT ilave ÖNERİ ver (ör. bir trend filtresi,
    hacim teyidi, uygun stop/take-profit, parametre aralığı). Her öneri kısa ve
    uygulanabilir olsun.
-3. Olası TUZAKLARA/RİSKLERE dair uyarılar ver (ör. çok sıkı AND koşulu → az işlem,
+4. Olası TUZAKLARA/RİSKLERE dair uyarılar ver (ör. çok sıkı AND koşulu → az işlem,
    Bollinger tam kesişimi → 0 işlem, aşırı optimizasyon riski, düşük likidite).
    Uyarı yoksa boş liste döndür.
 
@@ -1308,23 +1310,46 @@ Yalnızca JSON döndür:
 {"refined": "<iyileştirilmiş tarif>",
  "notes": "<tek kısa cümle: neyi değiştirdin>",
  "suggestions": [{"kind": "oneri|uyari", "text": "<kısa madde>"}]}
-Girdi zaten netse, tarifi aynen döndür ve notes="Değişiklik gerekmedi." yaz.
+Girdi zaten netse ve metrik yoksa, tarifi aynen döndür ve notes="Değişiklik gerekmedi." yaz.
 """
 
 
-def propose_refined_description(raw_description: str) -> dict:
+def propose_refined_description(
+    raw_description: str, backtest_metrics: dict | None = None
+) -> dict:
     """Rewrite the user's raw strategy description into a cleaner, more precise version.
 
+    If backtest_metrics is provided (pnl_pct, sharpe, max_dd, n_trades, win_rate,
+    spec_name, best_tf), the AI uses them to suggest targeted improvements.
     Returns: {refined: str, notes: str, suggestions: list[{kind, text}]}.
     Falls back to original text (empty suggestions) on any error.
     """
     client = _get_client()
     try:
+        user_content = raw_description.strip()
+        if backtest_metrics:
+            parts = ["Strateji tarifi:\n" + user_content, "\nSon backtest sonuçları:"]
+            if backtest_metrics.get("spec_name"):
+                parts.append(f"  Strateji: {backtest_metrics['spec_name']}")
+            if backtest_metrics.get("best_tf"):
+                parts.append(f"  En iyi TF: {backtest_metrics['best_tf']}")
+            for key, label in [
+                ("pnl_pct", "PnL %"),
+                ("sharpe", "Sharpe"),
+                ("max_dd", "Max DD %"),
+                ("n_trades", "İşlem sayısı"),
+                ("win_rate", "Kazanç %"),
+            ]:
+                val = backtest_metrics.get(key)
+                if val not in (None, ""):
+                    parts.append(f"  {label}: {val}")
+            parts.append("\nBu sonuçlara göre stratejiyi iyileştir.")
+            user_content = "\n".join(parts)
         resp = _create_message(
             client,
             max_tokens=700,
             system=_REFINE_SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": raw_description.strip()}],
+            messages=[{"role": "user", "content": user_content}],
         )
         text = "".join(b.text for b in resp.content if getattr(b, "type", "") == "text")
         data = json.loads(_extract_json_object(text))

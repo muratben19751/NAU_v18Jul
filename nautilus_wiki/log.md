@@ -232,6 +232,26 @@ Append-only. Her ingest, query veya lint operasyonu bir satır bırakır.
 - **frontend** — `base.html` `htmx.config.allowScriptTags=true`; `describe_progress.html` chain-tetiği `hx-trigger="load"`+hx-post yerine data-attr'lı `#bt-chain-trigger` (`data-bt-chain-url`/`data-bt-chain-vals`, JS ile tetiklenir); `plan_preview.html`'e `✕ Kapat` butonu (`#plan-preview` boşaltıp `#result`'ı `display=''` geri gösterir).
 - **wiki** — `synthesis/webapp_module_map.md` (backtest.py fee-baking satırı + web/routes/backtest.py Bybit metadata/365g/progress-sıralaması + Sağlamlaştırma maddesi) ve `entities/parquet_data_catalog.md` (yeni "Parquet Cache Bounds Keşfi: Row-Group Metadata" bölümü + frontmatter tazeleme) güncellendi. `web/routes/backtest.py` docstring'ine `[[parquet_data_catalog]]` referansı + güncel chain-tetiği (data-attr) notu eklendi. Lint temiz (0 broken/orphan/stub). **NautilusTrader kütüphanesine dokunulmadı.**
 
+## 2026-07-20 (6) — "Önce AI ile iyileştir" backtest sonuçlarını kullanıyor
+
+- **feature** — `propose_refined_description` artık `backtest_metrics` alıyor; backtest PnL/Sharpe/DD/işlem/win-rate değerlerine bakarak stratejiyi hedefli iyileştiriyor. `agent.py`.
+- **feature** — `backtest_result.html` + `sweep_progress.html`'e `data-bt-pnl-pct/sharpe/max-dd/n-trades/win-rate/spec-name/best-tf` attribute'ları eklendi. `backtest.html` `htmx:afterSettle`'da bunları okuyup `#bt-*` hidden input'lara yazıyor. `POST /backtest/plan` bu değerleri `bt_pnl_pct/bt_sharpe/...` form alanları olarak alıp `propose_refined_description`'a geçiriyor. `web/routes/backtest.py` + `web/templates/backtest.html`.
+- **fix** — Plan cache key'e `bt_pnl_pct + bt_n_trades` eklendi — aynı tarif farklı backtest sonuçlarıyla farklı öneri üretir.
+
+## 2026-07-20 (5) — Robustness "Analizi Çalıştır" HTMX process fix
+
+- **bug/fix** — `#robustness-section` başta `display:none` render edilip JS ile `display:""` yapılıyordu. HTMX, DOM yüklenirken gizli olan elementlerin `hx-*` attribute'larını process etmez. `htmx.process(sec)` çağrısı eklendi — panel görünür hale gelince HTMX bindings aktif olur, "▶ Analizi Çalıştır" butonu artık `POST /robustness/run` tetikler. `web/templates/backtest.html`.
+
+## 2026-07-20 (4) — Sweep sonrası robustness paneli açılmıyor bug fix
+
+- **bug/fix** — 4 TF sweep tamamlanınca `#robustness-section` görünmüyordu. Kök neden: `htmx:afterSettle` listener'ı `#result` içinde `[data-rob-spec-id]` arar; `backtest_result.html`'de bu attribute vardı ama `sweep_progress.html`'de yoktu. Ayrıca `_sweep_state_view` / sweep store'da `spec_id` alanı hiç tutulmuyordu. **Düzeltme**: (1) sweep store create'e `spec_id` eklendi, (2) `_sweep_state_view` return dict'e `spec_id` eklendi, (3) `sweep_progress.html` `done` olunca `data-rob-spec-id/symbol/category/interval/start/end` attribute'larını panel div'ine yazar → mevcut `htmx:afterSettle` listener otomatik tetiklenir. `web/routes/backtest.py` + `web/templates/fragments/sweep_progress.html`.
+- **wiki** — `synthesis/webapp_module_map.md` sweep state satırına `spec_id` notu eklendi.
+
+## 2026-07-20 (3) — Backtest ④ Robustness Testi adımı
+
+- **ui/feature** — `backtest.html` sağ sütunundaki Robustness paneli başlığına `.bt-step-no` badge'i (daire içinde "4") eklendi; panel adı "Robustness Analysis" → "Robustness Testi" olarak güncellendi. Backtest tamamlanınca `htmx:afterSettle` ile panel `display:""` yapılır — görsel akış artık ① Enstrüman · ② Strateji · ③ Çalıştır · **④ Robustness Testi**. `web/templates/backtest.html`.
+- **wiki** — `synthesis/webapp_module_map.md` Layout satırı 4 adımlı akışı yansıtacak şekilde güncellendi.
+
 ## 2026-07-20 (2) — Bybit row-group index-kolonu bug + Index NFS-mount takılması senkronu
 
 - **bug/fix** — Bybit cache bounds metadata-only optimizasyonu YANLIŞ kolonu okuyordu: `_rg0.column(0)` = `open` (fiyat), timestamp değil. `_ts0 = 5850.0` → `pd.Timestamp(5850.0)` = **1970-01-01** olarak yorumlanıyor, `cache_start` hatalı hesaplanıyordu (verify oturumunda Playwright + doğrudan pyarrow ile kanıtlandı). Fix: kolon `path_in_schema`'da `"index"` geçen kolonu (`__index_level_0__`, col[5]) ara → doğru aralık `2020-03-25 → 2026-07-20`. `web/routes/backtest.py`.

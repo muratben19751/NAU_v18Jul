@@ -1634,6 +1634,13 @@ async def plan_preview(
     ticker: str = Form(""),
     ext_instrument: str = Form(""),
     allow_short: str = Form(""),
+    bt_pnl_pct: str = Form(""),
+    bt_sharpe: str = Form(""),
+    bt_max_dd: str = Form(""),
+    bt_n_trades: str = Form(""),
+    bt_win_rate: str = Form(""),
+    bt_spec_name: str = Form(""),
+    bt_best_tf: str = Form(""),
 ):
     """Interpret the description + show the block plan + warnings (read-only preview).
 
@@ -1654,12 +1661,26 @@ async def plan_preview(
 
     _allow_short_bool = _parse_bool_form(allow_short)
 
+    # Backtest metriklerini topla — mevcutsa AI'ya beslenir
+    _bt_metrics: dict | None = None
+    if any([bt_pnl_pct, bt_sharpe, bt_n_trades]):
+        _bt_metrics = {
+            "pnl_pct": bt_pnl_pct,
+            "sharpe": bt_sharpe,
+            "max_dd": bt_max_dd,
+            "n_trades": bt_n_trades,
+            "win_rate": bt_win_rate,
+            "spec_name": bt_spec_name,
+            "best_tf": bt_best_tf,
+        }
+
     # TTL cache keyed on (desc, allow_short) with in-flight dedup, so concurrent
     # identical requests (multi-tab, un-debounced allow_short toggle) share one
     # LLM call instead of stampeding it.
+    # Metrikler varsa cache key'e dahil et — farklı sonuçlar için ayrı cache.
     import time as _time
 
-    _cache_key = (desc.lower(), _allow_short_bool)
+    _cache_key = (desc.lower(), _allow_short_bool, bt_pnl_pct, bt_n_trades)
     _cached = _PLAN_CACHE.get(_cache_key)
     if _cached and (_time.monotonic() - _cached["ts"]) < _PLAN_CACHE_TTL:
         bd, llm_ok, refined_result = (
@@ -1689,7 +1710,9 @@ async def plan_preview(
 
                     bd, refined_result = await asyncio.gather(
                         asyncio.to_thread(propose_condition_breakdown, desc),
-                        asyncio.to_thread(propose_refined_description, desc),
+                        asyncio.to_thread(
+                            propose_refined_description, desc, _bt_metrics
+                        ),
                         return_exceptions=True,
                     )
                     if isinstance(bd, BaseException):
@@ -1810,6 +1833,7 @@ def _sweep_state_view(sweep_id: str) -> dict | None:
         if raw is None:
             return None
         return {
+            "spec_id": raw["spec_id"],
             "spec_name": raw["spec_name"],
             "symbol": raw["symbol"],
             "category": raw["category"],
@@ -1889,6 +1913,7 @@ async def sweep(
     _SWEEP_STORE.create_evicting(
         sweep_id,
         {
+            "spec_id": spec.id,
             "spec_name": spec.name,
             "symbol": display_symbol,
             "category": display_category,
