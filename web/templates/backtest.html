@@ -402,6 +402,24 @@
   document.addEventListener("htmx:afterSettle", function(evt) {
     if (evt.detail.target && evt.detail.target.id === "result") {
       if (typeof buildEquityChart === "function") buildEquityChart();
+      // Populate robustness panel from data-rob-* attributes on the result panel.
+      var panel = evt.detail.target.querySelector("[data-rob-spec-id]");
+      var sec = document.getElementById("robustness-section");
+      if (panel && sec) {
+        var form = sec.querySelector("form");
+        if (form) {
+          form.querySelector("[name=spec_id]").value    = panel.dataset.robSpecId    || "";
+          form.querySelector("[name=bybit_start]").value = panel.dataset.robStart    || "";
+          form.querySelector("[name=bybit_end]").value   = panel.dataset.robEnd      || "";
+          var sym = form.querySelector("[name=symbol]");
+          var cat = form.querySelector("[name=category]");
+          var ivl = form.querySelector("[name=interval]");
+          if (sym) sym.value = panel.dataset.robSymbol   || "BTCUSDT";
+          if (cat) cat.value = panel.dataset.robCategory || "linear";
+          if (ivl) ivl.value = panel.dataset.robInterval || "1";
+        }
+        sec.style.display = "";
+      }
     }
   });
 

@@ -7,7 +7,15 @@
   </div>
 </div>
 {% else %}
-<div class="panel">
+<div class="panel"
+  {% if last.bars_info and last.bars_info.get('symbol') %}
+  data-rob-spec-id="{{ last.params.get('spec_id','') if last.params else '' }}"
+  data-rob-symbol="{{ last.bars_info.get('symbol','BTCUSDT') }}"
+  data-rob-category="{{ last.bars_info.get('category','linear') }}"
+  data-rob-interval="{{ last.bars_info.get('interval','1') }}"
+  data-rob-start="{{ last.bars_info.get('start','')[:10] if last.bars_info.get('start') else '' }}"
+  data-rob-end="{{ last.bars_info.get('end','')[:10] if last.bars_info.get('end') else '' }}"
+  {% endif %}>
   <div class="panel-header">
     <div class="panel-title">Result · {{ last.spec_name }}</div>
     <div class="spacer"></div>
@@ -530,67 +538,4 @@
 
   </div>
 </div>
-
-{# Show robustness panel and update form fields (OOB) #}
-{% if last.bars_info and last.bars_info.get('symbol') %}
-<div id="robustness-section" hx-swap-oob="outerHTML" class="panel">
-  <div class="panel-header">
-    <div class="panel-title">Robustness Analysis</div>
-    <div class="panel-meta text-muted mono small">WFO · Monte Carlo · In/Out-of-Sample</div>
-  </div>
-  <div class="panel-body">
-    <form hx-post="/robustness/run"
-          hx-target="#robustness-result"
-          hx-swap="innerHTML"
-          style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;align-items:end;">
-      <input type="hidden" name="spec_id"     value="{{ last.params.get('spec_id','') if last.params else '' }}">
-      <input type="hidden" name="bybit_start" value="{{ last.bars_info.get('start','')[:10] if last.bars_info.get('start') else '' }}">
-      <input type="hidden" name="bybit_end"   value="{{ last.bars_info.get('end','')[:10] if last.bars_info.get('end') else '' }}">
-      {% set cur_sym = last.bars_info.get('symbol','BTCUSDT') %}
-      {% set cur_cat = last.bars_info.get('category','linear') %}
-      {% set cur_iv  = last.bars_info.get('interval','1') %}
-      <label class="field">Symbol
-        <select name="symbol">
-          {% for s in ['BTCUSDT','ETHUSDT','SOLUSDT'] %}
-          <option value="{{ s }}" {% if s == cur_sym %}selected{% endif %}>{{ s }}</option>
-          {% endfor %}
-        </select>
-      </label>
-      <label class="field">Category
-        <select name="category">
-          {% for c in ['linear','spot','inverse'] %}
-          <option value="{{ c }}" {% if c == cur_cat %}selected{% endif %}>{{ c }}</option>
-          {% endfor %}
-        </select>
-      </label>
-      <label class="field">Interval
-        <select name="interval">
-          {% for iv, lbl in [('1','1m'),('5','5m'),('15','15m'),('60','1h'),('240','4h'),('D','1d')] %}
-          <option value="{{ iv }}" {% if iv == cur_iv %}selected{% endif %}>{{ lbl }}</option>
-          {% endfor %}
-        </select>
-      </label>
-      <label class="field">Train (month)
-        <input type="number" name="train_months" value="3" min="1" max="24">
-      </label>
-      <label class="field">Test (month)
-        <input type="number" name="test_months" value="1" min="1" max="12">
-      </label>
-      <label class="field">Monte Carlo N
-        <input type="number" name="n_sims" value="300" min="50" max="1000" step="50">
-      </label>
-      <label class="field">In-sample %
-        <input type="number" name="split_pct" value="0.7" min="0.5" max="0.9" step="0.05">
-      </label>
-      <div>
-        <button class="btn btn-primary" type="submit" style="width:100%;">▶ Run Analysis</button>
-      </div>
-    </form>
-    <div class="text-muted mono" style="font-size:10px;margin-top:6px;">
-      Test whether the strategy is also robust on other instruments by selecting a different symbol/category/interval.
-    </div>
-    <div id="robustness-result" style="margin-top:12px;"></div>
-  </div>
-</div>
-{% endif %}
 {% endif %}
