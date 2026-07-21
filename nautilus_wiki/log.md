@@ -305,3 +305,7 @@ yok (dispatch 5+ yerde sapmış), H8 sıralı/paralel WFO GA sadece parity-yorum
 block 4-site shotgun. Doğrulama data.py load_index_bars hacim-sıfırlamayı KASITLI olarak REFUTED etti.
 [[webapp_module_map]] "Sağlamlaştırma" bölümüne özet + karşılıklı köprü eklendi. Bu tur kod DEĞİŞTİRMEDİ
 — denetim anlık görüntüsü. NautilusTrader kütüphanesine dokunulmadı.
+
+## 2026-07-21 — "AI ile iyileştir" → çok-turlu sohbet senkronu
+
+Backtest ✨ AI Plan sekmesindeki tek-atışlık "AI ile iyileştir" çok-turlu sohbete dönüştürüldü (single-shot korundu, sohbet yanına eklendi). `webapp_module_map` güncellendi: `agent.py` satırına `chat_refine`/`_CHAT_SYSTEM_PROMPT`/`_format_metrics_block`/claude-cli multi-turn join (len==1 guard), `web/routes/backtest.py` satırına `_CHAT_STORE`+`/backtest/chat*` endpoint, ve değişiklik günlüğüne 2026-07-21 girdisi. Lint: 1 broken_link (cross-vault `single_shot_to_chat_donusum` → düz metne çevrildi) → 0. Canlı LLM doğrulaması + 315 test yeşil (12 baseline-kırık golden-parity/describe git stash ile izole edildi).

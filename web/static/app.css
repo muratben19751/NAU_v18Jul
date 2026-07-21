@@ -789,6 +789,35 @@ pre.diagram {
 .plan-cond .pc-short { color: var(--pnl-down); }
 .plan-cond .pc-exit { color: var(--amber); }
 
+/* Multi-turn "AI ile iyileştir" sohbet balonları (chat_thread.html) */
+.chat-thread-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 340px;
+  overflow-y: auto;
+  padding: 4px 2px;
+}
+.chat-bubble {
+  padding: 10px 12px;
+  border-radius: 12px;
+  max-width: 85%;
+  line-height: 1.5;
+  font-size: 13px;
+  white-space: normal;
+  word-break: break-word;
+}
+.chat-user {
+  align-self: flex-end;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+}
+.chat-assistant {
+  align-self: flex-start;
+  background: rgba(129, 140, 248, 0.08);
+  border: 1px solid rgba(129, 140, 248, 0.3);
+}
+
 .link { color: var(--accent); text-decoration: none; }
 .link:hover { text-decoration: underline; }
 

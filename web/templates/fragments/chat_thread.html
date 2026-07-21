@@ -1,0 +1,106 @@
+{# Multi-turn "AI ile iyileştir" sohbeti — #chat-thread'e swap edilir.
+   POST /backtest/chat/new (başlat) + POST /backtest/chat (turn). İki mod bir
+   sekmede: bu sohbet + tek-atışlık /backtest/plan; ikisi de #refined-description
+   textarea'sını ve "Blokları Oluştur" (/backtest/describe) akışını besler. #}
+{% if stage == "prompt" %}
+  <div class="panel">
+    <div class="panel-body empty-state small">
+      Stratejini biraz daha ayrıntılı yaz — sohbet buradan başlayacak.
+    </div>
+  </div>
+{% elif stage == "expired" %}
+  <div class="panel">
+    <div class="panel-body empty-state small">
+      ⌛ Sohbet süresi doldu. Yukarıdan <b>💬 Sohbet ederek iyileştir</b>'e basıp yeniden başlat.
+    </div>
+  </div>
+{% else %}
+  <div class="panel" style="border-color:rgba(129,140,248,0.4);">
+    <div class="panel-header">
+      <div class="panel-title">💬 AI ile sohbet — stratejini birlikte netleştir</div>
+      <div class="spacer"></div>
+      <button class="btn btn-ghost" type="button"
+              style="font-size:11px;padding:3px 10px;"
+              onclick="document.getElementById('chat-thread').innerHTML='';var pe=document.getElementById('plan-empty');if(pe)pe.style.display='';"
+              title="Sohbeti kapat">✕ Kapat</button>
+    </div>
+    <div class="panel-body">
+
+      {# ── Mesaj balonları ── #}
+      <div class="chat-thread-list" id="chat-bubbles">
+        {% for b in bubbles %}
+          <div class="chat-bubble {{ 'chat-user' if b.role == 'user' else 'chat-assistant' }}">
+            {{ b.content | replace('\n', '<br>') | safe }}
+          </div>
+        {% endfor %}
+      </div>
+
+      {# ── Mesaj gönderme formu ── #}
+      <form class="row" style="align-items:flex-end;gap:8px;margin-top:12px;"
+            hx-post="/backtest/chat"
+            hx-target="#chat-thread"
+            hx-swap="innerHTML"
+            hx-indicator="#chat-spinner"
+            hx-on::after-request="this.reset()">
+        <input type="hidden" name="conv_id" value="{{ conv_id }}">
+        <textarea name="message" rows="2"
+                  style="flex:1;resize:vertical;"
+                  placeholder="Netleştir, soru sor… (ör. 'stop'u %2 yap', 'neden bu filtreyi önerdin?')"
+                  aria-label="Sohbet mesajı"></textarea>
+        <button class="btn btn-primary" type="submit">
+          <span class="btn-spin spin">⟳</span>
+          Gönder
+        </button>
+      </form>
+      <div class="row" style="margin-top:6px;">
+        <span class="htmx-indicator text-muted mono" id="chat-spinner" style="font-size:11px;">
+          <span class="spin">⟳</span> Claude yazıyor…
+        </span>
+      </div>
+
+      {# ── Güncel net tarif — düzenlenebilir + "Blokları Oluştur" onayı ── #}
+      <div class="panel" style="margin-top:14px;border-color:rgba(129,140,248,0.4);">
+        <div class="panel-header">
+          <div class="panel-title">✨ Güncel net tarif — düzenleyebilirsiniz</div>
+          <div class="spacer"></div>
+          <button class="btn btn-ghost" type="button"
+                  style="font-size:11px;padding:3px 10px;"
+                  onclick="btCopyRefined(this);"
+                  title="Önerilen metni panoya kopyala">
+            ⧉ COPY
+          </button>
+        </div>
+        <div class="panel-body">
+          <textarea id="refined-description" rows="4"
+                    class="mono"
+                    aria-label="AI ile netleştirilmiş strateji açıklaması"
+                    placeholder="Sohbet ilerledikçe güncel net tarif burada belirir — düzenleyebilirsiniz"
+                    style="width:100%;resize:vertical;">{{ refined }}</textarea>
+          <div class="row" style="align-items:center;gap:10px;margin-top:10px;">
+            <button class="btn btn-primary" type="button"
+                    hx-post="/backtest/describe"
+                    hx-include="closest form"
+                    hx-vals='js:{description: document.getElementById("refined-description").value}'
+                    hx-target="#result"
+                    hx-swap="innerHTML"
+                    hx-indicator="#gen-spinner"
+                    style="border-color:rgba(129,140,248,0.5);">
+              <span class="btn-spin spin">⟳</span>
+              ✅ Tamam — Blokları Oluştur
+            </button>
+            <span class="text-muted" style="font-size:11px;">Onayladığınızda Python blokları yazılıp backtest edilir</span>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  {# Auto-scroll: yeni turn geldikçe balon listesini en alta kaydır (agent_progress deseni). #}
+  <script>
+    (function () {
+      var el = document.getElementById('chat-bubbles');
+      if (el) el.scrollTop = el.scrollHeight;
+    })();
+  </script>
+{% endif %}

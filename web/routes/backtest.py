@@ -134,6 +134,28 @@ _PLAN_CACHE_MAX = 32  # max entries before evicting oldest
 # same-key requests await the first request's LLM call instead of firing N.
 _PLAN_INFLIGHT: dict = {}
 
+# ── Multi-turn "AI ile iyileştir" sohbeti — sunucu tarafı konuşma store'u ──
+# conv_id → {"messages": [...], "context": {...}, "last_refined": str, "ts": monotonic}.
+# ProgressStore'un done-first eviction semantiği chat'e uymaz (sohbetin "done"u
+# yok), o yüzden basit dict+lock + TTL/kapasite eviction. LLM çağrısı ASLA lock
+# altında yapılmaz: oku-kopyala → chat_refine (lock'suz) → tekrar-al-ve-yaz.
+_CHAT_STORE: dict[str, dict] = {}
+_CHAT_LOCK = threading.Lock()
+_CHAT_TTL = 30 * 60  # 30 dk — aktif oturum
+_CHAT_MAX = 100  # eşzamanlı konuşma tavanı
+
+
+def _chat_evict_locked() -> None:
+    """TTL'i geçen konuşmaları sil, kapasite aşımında en eskiyi at. _CHAT_LOCK altında çağrılır."""
+    import time as _time
+
+    now = _time.monotonic()
+    for cid in [c for c, v in _CHAT_STORE.items() if now - v["ts"] > _CHAT_TTL]:
+        _CHAT_STORE.pop(cid, None)
+    while len(_CHAT_STORE) > _CHAT_MAX:
+        oldest = min(_CHAT_STORE, key=lambda k: _CHAT_STORE[k]["ts"])
+        _CHAT_STORE.pop(oldest, None)
+
 
 def _parse_bool_form(v: str) -> bool:
     """Parse an HTML form bool. Checkboxes send 'on'/absent, but explicit
@@ -1874,6 +1896,206 @@ async def plan_preview(
             "suggestions": refined_result.get("suggestions") or [],
         },
     )
+
+
+# ── Multi-turn "AI ile iyileştir" sohbeti ───────────────────────────────────
+# İki mod bir sekmede: /backtest/plan (tek-atışlık, korunur) + /backtest/chat*
+# (çok turlu). İkisi de aynı #refined-description textarea'sını ve "Blokları
+# Oluştur" (/backtest/describe) akışını besler.
+
+
+def _collect_chat_context(
+    bt_pnl_pct: str,
+    bt_sharpe: str,
+    bt_max_dd: str,
+    bt_n_trades: str,
+    bt_win_rate: str,
+    bt_spec_name: str,
+    bt_best_tf: str,
+    rob_overfitting: str,
+    rob_verdict: str,
+    rob_wfo_eff: str,
+    rob_oos_sharpe: str,
+    rob_stability: str,
+) -> dict:
+    """Backtest + robustness metriklerini chat_context sözlüğüne topla (plan_preview ile aynı mantık)."""
+    bt_metrics: dict | None = None
+    if any([bt_pnl_pct, bt_sharpe, bt_n_trades]):
+        bt_metrics = {
+            "pnl_pct": bt_pnl_pct,
+            "sharpe": bt_sharpe,
+            "max_dd": bt_max_dd,
+            "n_trades": bt_n_trades,
+            "win_rate": bt_win_rate,
+            "spec_name": bt_spec_name,
+            "best_tf": bt_best_tf,
+        }
+    robustness: dict | None = None
+    if any([rob_overfitting, rob_verdict, rob_wfo_eff, rob_oos_sharpe]):
+        robustness = {
+            "overfitting_score": rob_overfitting,
+            "verdict": rob_verdict,
+            "wfo_efficiency": rob_wfo_eff,
+            "oos_sharpe": rob_oos_sharpe,
+            "stability": rob_stability,
+        }
+    return {"bt_metrics": bt_metrics, "robustness": robustness}
+
+
+def _render_chat_thread(request: Request, conv: dict, conv_id: str):
+    """chat_thread.html fragment'ini konuşma state'inden render et. Sadece user/assistant
+    turn'leri gösterilir (context metrikleri ilk user mesajına gömülü, gizli tutulur)."""
+    from server import templates
+
+    bubbles = [
+        {"role": m["role"], "content": m.get("display", m["content"])}
+        for m in conv["messages"]
+        if m.get("role") in ("user", "assistant")
+    ]
+    return templates.TemplateResponse(
+        request,
+        "fragments/chat_thread.html",
+        {
+            "conv_id": conv_id,
+            "bubbles": bubbles,
+            "refined": conv.get("last_refined") or "",
+        },
+    )
+
+
+@router.post("/chat/new", response_class=HTMLResponse)
+async def chat_new(
+    request: Request,
+    description: str = Form(""),
+    instrument_kind: str = Form("Bybit"),
+    symbol: str = Form("BTCUSDT"),
+    category: str = Form("linear"),
+    ticker: str = Form(""),
+    ext_instrument: str = Form(""),
+    allow_short: str = Form(""),
+    bt_pnl_pct: str = Form(""),
+    bt_sharpe: str = Form(""),
+    bt_max_dd: str = Form(""),
+    bt_n_trades: str = Form(""),
+    bt_win_rate: str = Form(""),
+    bt_spec_name: str = Form(""),
+    bt_best_tf: str = Form(""),
+    rob_overfitting: str = Form(""),
+    rob_verdict: str = Form(""),
+    rob_wfo_eff: str = Form(""),
+    rob_oos_sharpe: str = Form(""),
+    rob_stability: str = Form(""),
+):
+    """Yeni bir sohbet başlat: conv_id üret, ilk user mesajını (metrikler gömülü) gönder,
+    ilk asistan turn'ünü store'a yaz, chat_thread fragment'ini döndür."""
+    import asyncio
+    import time as _time
+
+    from server import templates
+
+    desc = (description or "").strip()
+    if len(desc) < 12:
+        return templates.TemplateResponse(
+            request, "fragments/chat_thread.html", {"stage": "prompt"}
+        )
+
+    context = _collect_chat_context(
+        bt_pnl_pct,
+        bt_sharpe,
+        bt_max_dd,
+        bt_n_trades,
+        bt_win_rate,
+        bt_spec_name,
+        bt_best_tf,
+        rob_overfitting,
+        rob_verdict,
+        rob_wfo_eff,
+        rob_oos_sharpe,
+        rob_stability,
+    )
+
+    from agent import _format_metrics_block, chat_refine
+
+    # İlk user mesajı: modele metrik-gömülü, ekranda ham tarif (display).
+    embedded = _format_metrics_block(desc, context["bt_metrics"], context["robustness"])
+    first_user = {"role": "user", "content": embedded, "display": desc}
+
+    reply = await asyncio.to_thread(chat_refine, [first_user], context)
+
+    conv_id = uuid.uuid4().hex[:8]
+    conv = {
+        "messages": [
+            first_user,
+            {"role": "assistant", "content": reply["text"]},
+        ],
+        "context": context,
+        "last_refined": reply.get("refined") or desc,
+        "ts": _time.monotonic(),
+    }
+    with _CHAT_LOCK:
+        _CHAT_STORE[conv_id] = conv
+        _chat_evict_locked()
+
+    return _render_chat_thread(request, conv, conv_id)
+
+
+@router.post("/chat", response_class=HTMLResponse)
+async def chat_turn(
+    request: Request,
+    conv_id: str = Form(""),
+    message: str = Form(""),
+):
+    """Mevcut sohbete bir kullanıcı mesajı ekle, AI yanıtını al, thread'i güncelle.
+
+    conv_id süresi dolmuş/bilinmiyorsa nazik yeniden-başlat fragment'i döner.
+    LLM çağrısı lock'suz yapılır (oku-kopyala → çağır → tekrar-al-ve-yaz).
+    """
+    import asyncio
+    import time as _time
+
+    from server import templates
+
+    msg = (message or "").strip()
+    if not msg:
+        # Boş mesaj — mevcut thread'i olduğu gibi geri ver (varsa).
+        with _CHAT_LOCK:
+            conv = _CHAT_STORE.get(conv_id)
+        if conv is None:
+            return templates.TemplateResponse(
+                request, "fragments/chat_thread.html", {"stage": "expired"}
+            )
+        return _render_chat_thread(request, conv, conv_id)
+
+    # Oku-kopyala (lock kısa süre tutulur).
+    with _CHAT_LOCK:
+        conv = _CHAT_STORE.get(conv_id)
+        if conv is None:
+            return templates.TemplateResponse(
+                request, "fragments/chat_thread.html", {"stage": "expired"}
+            )
+        history = list(conv["messages"])
+        context = dict(conv["context"])
+
+    user_turn = {"role": "user", "content": msg, "display": msg}
+    from agent import chat_refine
+
+    reply = await asyncio.to_thread(chat_refine, history + [user_turn], context)
+
+    # Tekrar-al-ve-yaz — arada evict edilmiş olabilir.
+    with _CHAT_LOCK:
+        conv = _CHAT_STORE.get(conv_id)
+        if conv is None:
+            return templates.TemplateResponse(
+                request, "fragments/chat_thread.html", {"stage": "expired"}
+            )
+        conv["messages"].append(user_turn)
+        conv["messages"].append({"role": "assistant", "content": reply["text"]})
+        if reply.get("refined"):
+            conv["last_refined"] = reply["refined"]
+        conv["ts"] = _time.monotonic()
+        _chat_evict_locked()
+
+    return _render_chat_thread(request, conv, conv_id)
 
 
 # ── Multi-TF sweep: same strategy, multiple bar intervals ────────────────────

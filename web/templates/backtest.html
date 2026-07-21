@@ -333,22 +333,35 @@
 
       {# ── TAB: AI Plan (AI ile iyileştir) ── #}
       <div class="bt-tabpanel active" id="bt-tabpanel-plan" role="tabpanel">
+        <div id="chat-thread"></div>
         <div id="plan-preview"></div>
         <div id="plan-empty" class="panel">
           <div class="panel-body empty-state" style="text-align:center;">
             <div style="margin-bottom:14px;">
               Claude tarifini netleştirir, güçlendirme önerir; onayınca backtest başlar.
             </div>
-            <button class="btn btn-primary" type="button"
-                    hx-post="/backtest/plan"
-                    hx-include="#gen-form"
-                    hx-target="#plan-preview"
-                    hx-swap="innerHTML"
-                    hx-indicator="#plan-spinner"
-                    title="Claude tarifini netleştirir + güçlendirme önerir">
-              <span class="btn-spin spin">⟳</span>
-              ✨ AI ile iyileştir
-            </button>
+            <div class="row" style="justify-content:center;gap:10px;flex-wrap:wrap;">
+              <button class="btn btn-primary" type="button"
+                      hx-post="/backtest/plan"
+                      hx-include="#gen-form"
+                      hx-target="#plan-preview"
+                      hx-swap="innerHTML"
+                      hx-indicator="#plan-spinner"
+                      title="Claude tarifini netleştirir + güçlendirme önerir (tek seferlik)">
+                <span class="btn-spin spin">⟳</span>
+                ✨ AI ile iyileştir
+              </button>
+              <button class="btn btn-secondary" type="button"
+                      hx-post="/backtest/chat/new"
+                      hx-include="#gen-form"
+                      hx-target="#chat-thread"
+                      hx-swap="innerHTML"
+                      hx-indicator="#plan-spinner"
+                      title="Claude ile ileri-geri konuşarak stratejini birlikte olgunlaştır">
+                <span class="btn-spin spin">⟳</span>
+                💬 Sohbet ederek iyileştir
+              </button>
+            </div>
             <div class="row" style="justify-content:center;margin-top:10px;">
               <span class="htmx-indicator text-muted mono" id="plan-spinner" style="font-size:11px;">
                 <span class="spin">⟳</span> Claude planı hazırlıyor…
@@ -517,10 +530,14 @@
   // Also fires the backtest chain when describe_progress injects a
   // data-bt-chain-url element (hx-trigger="load" doesn't fire on innerHTML swap).
   document.addEventListener("htmx:afterSwap", function(evt) {
-    // AI Plan sekmesi: plan-preview dolunca boş-durum kartını gizle.
-    if (evt.detail.target && evt.detail.target.id === "plan-preview") {
+    // AI Plan sekmesi: plan-preview veya chat-thread dolunca boş-durum kartını gizle.
+    if (evt.detail.target && (evt.detail.target.id === "plan-preview" || evt.detail.target.id === "chat-thread")) {
       var pe = document.getElementById("plan-empty");
-      if (pe) pe.style.display = evt.detail.target.innerHTML.trim() ? "none" : "";
+      if (pe) {
+        var hasPlan = (document.getElementById("plan-preview") || {}).innerHTML || "";
+        var hasChat = (document.getElementById("chat-thread") || {}).innerHTML || "";
+        pe.style.display = (hasPlan.trim() || hasChat.trim()) ? "none" : "";
+      }
       return;
     }
     if (!evt.detail.target || evt.detail.target.id !== "result") return;

@@ -227,10 +227,20 @@ class _ClaudeCLIMessages:
         max_tokens: int = 0,  # no equivalent in the CLI; prompts already request short answers
         **_ignored: Any,
     ) -> _CLIResponse:
+        # Single-turn calls (every existing proposer) join user content verbatim
+        # — unchanged behaviour. Multi-turn chat prefixes each turn with a
+        # speaker label so the model sees its own prior replies (the CLI runs
+        # with --no-session-persistence, so conversation state lives server-side
+        # and the full history is re-sent as the prompt each call).
         prompt = "\n\n".join(
-            m["content"]
+            (
+                m["content"]
+                if len(messages) == 1
+                else f"{'Kullanıcı' if m['role'] == 'user' else 'Asistan'}: {m['content']}"
+            )
             for m in messages
-            if m.get("role") == "user" and isinstance(m.get("content"), str)
+            if isinstance(m.get("content"), str)
+            and m.get("role") in ("user", "assistant")
         )
         cmd = [
             self._cli,
@@ -1314,6 +1324,62 @@ Girdi zaten net görünse bile her zaman en az 2 somut öneri ver; notes alanın
 """
 
 
+def _format_metrics_block(
+    raw_description: str,
+    backtest_metrics: dict | None = None,
+    robustness: dict | None = None,
+) -> str:
+    """Compose the user-prompt text: strategy description + optional backtest &
+    robustness metrics. Shared by propose_refined_description (single-shot) and
+    chat_refine (multi-turn) so both feed the model the same context format.
+
+    If backtest_metrics is empty/None the raw description is returned as-is.
+    """
+    user_content = raw_description.strip()
+    if not backtest_metrics:
+        return user_content
+    parts = ["Strateji tarifi:\n" + user_content, "\nSon backtest sonuçları:"]
+    if backtest_metrics.get("spec_name"):
+        parts.append(f"  Strateji: {backtest_metrics['spec_name']}")
+    if backtest_metrics.get("best_tf"):
+        parts.append(f"  En iyi TF: {backtest_metrics['best_tf']}")
+    for key, label in [
+        ("pnl_pct", "PnL %"),
+        ("sharpe", "Sharpe"),
+        ("max_dd", "Max DD %"),
+        ("n_trades", "İşlem sayısı"),
+        ("win_rate", "Kazanç %"),
+    ]:
+        val = backtest_metrics.get(key)
+        if val not in (None, ""):
+            parts.append(f"  {label}: {val}")
+    # Robustness özeti — overfitting-farkındalıklı öneri için.
+    if robustness and any(v not in (None, "") for v in robustness.values()):
+        parts.append("\nRobustness analizi:")
+        for key, label in [
+            (
+                "overfitting_score",
+                "Overfitting skoru (≥0.7 sağlam · <0.4 aşırı-uyum)",
+            ),
+            ("verdict", "Verdict"),
+            ("wfo_efficiency", "WFO verimliliği (OOS/in-sample)"),
+            ("oos_sharpe", "OOS Sharpe"),
+            ("stability", "Parametre kararlılığı"),
+        ]:
+            val = robustness.get(key)
+            if val not in (None, ""):
+                parts.append(f"  {label}: {val}")
+        parts.append(
+            "\nBu sonuçlara göre stratejiyi iyileştir. Overfitting skoru düşük "
+            "(<0.4) ya da OOS Sharpe zayıfsa: parametreleri sadeleştir, aşırı "
+            "optimizasyondan kaçın, daha genel kurallar öner. Robustsa (≥0.7): "
+            "güçlendirme/pozisyon ölçekleme önerebilirsin."
+        )
+    else:
+        parts.append("\nBu sonuçlara göre stratejiyi iyileştir.")
+    return "\n".join(parts)
+
+
 def propose_refined_description(
     raw_description: str,
     backtest_metrics: dict | None = None,
@@ -1331,48 +1397,9 @@ def propose_refined_description(
     """
     client = _get_client()
     try:
-        user_content = raw_description.strip()
-        if backtest_metrics:
-            parts = ["Strateji tarifi:\n" + user_content, "\nSon backtest sonuçları:"]
-            if backtest_metrics.get("spec_name"):
-                parts.append(f"  Strateji: {backtest_metrics['spec_name']}")
-            if backtest_metrics.get("best_tf"):
-                parts.append(f"  En iyi TF: {backtest_metrics['best_tf']}")
-            for key, label in [
-                ("pnl_pct", "PnL %"),
-                ("sharpe", "Sharpe"),
-                ("max_dd", "Max DD %"),
-                ("n_trades", "İşlem sayısı"),
-                ("win_rate", "Kazanç %"),
-            ]:
-                val = backtest_metrics.get(key)
-                if val not in (None, ""):
-                    parts.append(f"  {label}: {val}")
-            # Robustness özeti — overfitting-farkındalıklı öneri için.
-            if robustness and any(v not in (None, "") for v in robustness.values()):
-                parts.append("\nRobustness analizi:")
-                for key, label in [
-                    (
-                        "overfitting_score",
-                        "Overfitting skoru (≥0.7 sağlam · <0.4 aşırı-uyum)",
-                    ),
-                    ("verdict", "Verdict"),
-                    ("wfo_efficiency", "WFO verimliliği (OOS/in-sample)"),
-                    ("oos_sharpe", "OOS Sharpe"),
-                    ("stability", "Parametre kararlılığı"),
-                ]:
-                    val = robustness.get(key)
-                    if val not in (None, ""):
-                        parts.append(f"  {label}: {val}")
-                parts.append(
-                    "\nBu sonuçlara göre stratejiyi iyileştir. Overfitting skoru düşük "
-                    "(<0.4) ya da OOS Sharpe zayıfsa: parametreleri sadeleştir, aşırı "
-                    "optimizasyondan kaçın, daha genel kurallar öner. Robustsa (≥0.7): "
-                    "güçlendirme/pozisyon ölçekleme önerebilirsin."
-                )
-            else:
-                parts.append("\nBu sonuçlara göre stratejiyi iyileştir.")
-            user_content = "\n".join(parts)
+        user_content = _format_metrics_block(
+            raw_description, backtest_metrics, robustness
+        )
         resp = _create_message(
             client,
             max_tokens=700,
@@ -1405,6 +1432,71 @@ def propose_refined_description(
             "propose_refined_description failed: %r", _e
         )
         return {"refined": raw_description.strip(), "notes": "", "suggestions": []}
+
+
+_CHAT_SYSTEM_PROMPT = """Sen bir alım-satım (trading) stratejisi danışmanısın.
+Kullanıcı seninle SOHBET ederek bir strateji tarifini birlikte netleştiriyor.
+TÜM yanıtların TÜRKÇE, kısa ve net olsun (gereksiz uzatma).
+
+Davranış:
+- Kullanıcının sorusuna/isteğine DOĞRUDAN cevap ver; önceki mesajlara atıfta bulunabilirsin.
+- Stratejinin çekirdek mantığını DEĞİŞTİRME; yalnızca netleştir, güçlendir, tuzakları
+  (aşırı-uyum, çok sıkı AND koşulu → az işlem, eksik çıkış koşulu, düşük likidite) uyar.
+- Backtest/robustness metrikleri verildiyse zayıf noktalara odaklan (düşük Sharpe,
+  yüksek DD, az işlem). Overfitting skoru düşükse sadeleştirmeyi öner.
+- Somut ve uygulanabilir ol; istendiğinde parametre aralığı/filtre öner.
+
+Her yanıtının EN SONUNA, o ana dek üzerinde uzlaşılan güncel ve net strateji tarifini
+TEK SATIRLIK şu işaretli biçimde ekle (2-4 cümlelik özet, test edilebilir kurallar):
+[NET_TARİF]: <buraya güncel net tarif>
+Bu satır dışındaki metin kullanıcıyla serbest sohbetindir.
+"""
+
+
+def chat_refine(conversation_messages: list[dict], context: dict | None = None) -> dict:
+    """Multi-turn strateji-iyileştirme sohbeti.
+
+    conversation_messages: Anthropic messages[] — {"role": "user"|"assistant",
+      "content": str} turn'leri. Metrik bağlamı (varsa) çağıran taraf, ilk user
+      turn'üne ``_format_metrics_block`` ile gömer; bu fonksiyon listeyi olduğu
+      gibi modele iletir. ``context`` şu an yalnızca ileriye dönük imza uyumu
+      için tutulur (gömme çağıran tarafta yapılır).
+    Döndürür: {"text": "<asistan sohbet yanıtı>", "refined": "<güncel net tarif>|''"}.
+    Herhangi bir hatada nazik Türkçe özür + boş ``refined`` döner.
+    """
+    client = _get_client()
+    try:
+        import re
+
+        resp = _create_message(
+            client,
+            max_tokens=1000,
+            system=_CHAT_SYSTEM_PROMPT,
+            messages=conversation_messages,
+        )
+        text = "".join(
+            b.text for b in resp.content if getattr(b, "type", "") == "text"
+        ).strip()
+        # Sondaki [NET_TARİF]: satırını ayıkla; kalanı sohbet metni olarak bırak.
+        refined = ""
+        m = re.search(r"\[NET_TAR[İI]F\]\s*:\s*(.+)", text)
+        if m:
+            refined = m.group(1).strip()
+            text = text[: m.start()].rstrip()
+        if not text:
+            text = "Anladım. Devam edebilmem için biraz daha detay verir misin?"
+        return {"text": text, "refined": refined}
+    except Exception as _e:
+        import logging as _logging
+
+        _logging.getLogger("agent.chat").warning("chat_refine failed: %r", _e)
+        return {
+            "text": (
+                "Şu an AI danışmana ulaşılamadı. Biraz sonra tekrar dener misin? "
+                "İstersen tarifini elle düzenleyip 'Blokları Oluştur'a devam edebilirsin."
+            ),
+            "refined": "",
+        }
 
 
 def propose_custom_block(
