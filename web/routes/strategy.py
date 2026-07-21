@@ -437,8 +437,12 @@ async def generate_custom_block(request: Request):
         import builtins as _builtins_mod
 
         import indicators as _ind_mod
-        from agent import _ALLOWED_BUILTINS, _has_builtin, _validate_generated_code
-        from codegate import compile_with_loop_budget
+        from codegate import (
+            _ALLOWED_BUILTINS,
+            compile_with_loop_budget,
+            has_builtin,
+            validate_generated_code,
+        )
 
         # H490/M527: the preview must be at PARITY with the production smoke/runtime —
         # previously it injected bare function names (sqrt, mean...), so blocks
@@ -446,12 +450,12 @@ async def generate_custom_block(request: Request):
         # plain compile could freeze the server (event loop) in a data-dependent
         # infinite loop. Now: validate with codegate → inject full math/statistics/ind
         # modules → compile with a loop budget → provide real OHLCV.
-        _validate_generated_code(proposal["code"])  # dunder/import/loop gates
+        validate_generated_code(proposal["code"])  # dunder/import/loop gates
         _ALLOWED: dict = {
             "__builtins__": {
                 k: getattr(_builtins_mod, k)
                 for k in _ALLOWED_BUILTINS
-                if _has_builtin(k)
+                if has_builtin(k)
             },
             "math": _math,
             "statistics": _stats,
@@ -539,11 +543,8 @@ async def save_custom_block(
     import json as _json
 
     import custom_block_store as cbs
-    from agent import (
-        GeneratedCodeError,
-        _test_execute_generated,
-        _validate_generated_code,
-    )
+    from agent import _test_execute_generated
+    from codegate import GeneratedCodeError, validate_generated_code
 
     if name in BLOCK_REGISTRY:
         return HTMLResponse(
@@ -568,7 +569,7 @@ async def save_custom_block(
     # must also apply at this layer precisely to catch code tampered with via the
     # form (it was being bypassed with the default False).
     try:
-        _validate_generated_code(code)
+        validate_generated_code(code)
         _test_execute_generated(code, meta=meta, require_max_lookback=True)
     except GeneratedCodeError as e:
         return HTMLResponse(
