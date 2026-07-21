@@ -1352,6 +1352,53 @@ details > summary:hover { background: #171717; }
 .bt-tabpanel { display: none; }
 .bt-tabpanel.active { display: block; }
 
+/* ── Top-level Studio tabs (Compose | Backtest | Analyze). SEPARATE namespace
+   from .bt-tab so the inner right-column tabs are never toggled by the outer
+   switcher. Larger, page-level bar that sits directly under the topbar. ── */
+.lab-tabs {
+  position: sticky;
+  top: 0;
+  z-index: 9;
+  display: flex;
+  align-items: stretch;
+  gap: 6px;
+  padding: 6px 6px 0;
+  margin: 0 0 18px;
+  background: var(--panel-glass);
+  backdrop-filter: blur(14px) saturate(140%);
+  -webkit-backdrop-filter: blur(14px) saturate(140%);
+  border-bottom: 1px solid var(--border);
+  border-radius: 12px 12px 0 0;
+}
+.lab-tab {
+  appearance: none;
+  border: 1px solid transparent;
+  border-bottom: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-family: var(--sans);
+  font-size: 13.5px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  padding: 11px 22px;
+  border-radius: 10px 10px 0 0;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  transition: color 0.15s, background 0.15s;
+}
+.lab-tab:hover { color: var(--text-primary); background: var(--accent-soft); }
+.lab-tab.active {
+  color: var(--accent-strong);
+  background: var(--panel);
+  border-color: var(--border);
+  box-shadow: inset 0 3px 0 0 var(--accent);
+}
+.lab-tabpanel { display: none; }
+.lab-tabpanel.active { display: block; }
+
+
 /* ── Verdict / summary card — the "iyi mi kötü mü" at-a-glance line that sits
    above the hero. Derived entirely from existing metric fields. ── */
 .verdict-card {
@@ -1510,3 +1557,495 @@ details > summary:hover { background: #171717; }
   margin-top: 2px;
 }
 .rob-form-note { font-size: 10px; }
+
+/* ==========================================================================
+   STUDIO — Bloomberg-terminal skin (scoped to body.page-studio only)
+   Classic amber/black: pure-black surfaces, amber primary, green/red data,
+   monospace everywhere, sharp corners, no shadows/gradients/glass/rounding.
+   Every other page keeps the cold-blue graphite look untouched. Most of the
+   transform comes free by re-mapping the CSS variables the components already
+   read; the rest is a short list of "flatten it" overrides.
+   ========================================================================== */
+body.page-studio {
+  /* Surfaces — true black, faint grey elevation steps */
+  --bg-950: #000000;
+  --bg-900: #000000;
+  --panel:  #050505;
+  --panel-2:#0d0d0d;
+  --inset:  #030303;
+  --panel-glass: rgba(0,0,0,0.92);
+  --bg-850: #0a0a0a;
+  --bg-800: #0d0d0d;
+  --bg-700: #1a1a1a;
+  /* Borders — dim grey hairlines, amber only on active */
+  --border:       #1c1c1c;
+  --border-soft:  #141414;
+  --border-input: #262626;
+  --border-btn2:  #333333;
+  /* Accent — Bloomberg amber */
+  --accent:        #ff9e18;
+  --accent-strong: #ffb84d;
+  --accent-dim:    #b36f0f;
+  --accent-deep:   #7a4b09;
+  --accent-soft:   rgba(255,158,24,0.12);
+  --accent-glow:   rgba(255,158,24,0.30);
+  --accent-grad-top:#ffb84d;
+  /* PnL / status — terminal green & red */
+  --pnl-up:        #33ff88;
+  --pnl-down:      #ff3b3b;
+  --pnl-down-soft: #ff6b6b;
+  --amber:         #ffcf40;
+  /* Text — warm grey ramp on black */
+  --text-primary:   #e8e8e8;
+  --text-secondary: #b0b0b0;
+  --text-muted:     #6b6b6b;
+  --code:           #e8e8e8;
+  --text: #e8e8e8;
+  /* Depth — kill it. Sharp, flat, dense. */
+  --shadow-sm: none;
+  --shadow-md: none;
+  --shadow-lg: none;
+  --edge-hi: none;
+  --ring: 0 0 0 1px var(--accent);
+  /* Monospace-first: a terminal reads as data, not prose */
+  font-family: var(--mono);
+}
+
+/* Monospace the whole studio surface (nav, buttons, labels included). */
+body.page-studio,
+body.page-studio .btn,
+body.page-studio label.field,
+body.page-studio input,
+body.page-studio select,
+body.page-studio textarea,
+body.page-studio .nav a {
+  font-family: var(--mono);
+}
+
+/* Sharp corners everywhere — no rounded cards on a terminal. */
+body.page-studio .panel,
+body.page-studio .kpi,
+body.page-studio .hero-main,
+body.page-studio .hero-side-cell,
+body.page-studio .metric-grid,
+body.page-studio .btn,
+body.page-studio input,
+body.page-studio select,
+body.page-studio textarea,
+body.page-studio .badge,
+body.page-studio .chip,
+body.page-studio .verdict-card,
+body.page-studio .lab-tab,
+body.page-studio .bt-tab,
+body.page-studio .lab-tabs,
+body.page-studio .bt-tabs,
+body.page-studio .brand-logo,
+body.page-studio .nav a,
+body.page-studio .narrative-box,
+body.page-studio .lab-phase,
+body.page-studio .bt-hist-row,
+body.page-studio .rob-group,
+body.page-studio .seg-toggle,
+body.page-studio .seg-opt,
+body.page-studio .chip-choice,
+body.page-studio .chat-bubble {
+  border-radius: 0 !important;
+}
+
+/* Flatten: strip gradients, glass blur and glows from panels/hero/buttons. */
+body.page-studio .panel,
+body.page-studio .hero-main,
+body.page-studio .verdict-card {
+  background: var(--panel);
+  box-shadow: none;
+}
+body.page-studio .topbar,
+body.page-studio .lab-tabs,
+body.page-studio .bt-tabs {
+  background: #000000;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  box-shadow: none;
+}
+body.page-studio .hero-main::before,
+body.page-studio .hero-main.up::before,
+body.page-studio .hero-main.down::before { width: 2px; }
+
+/* Buttons — flat amber fill, no gradient/shadow. Primary = solid amber on black. */
+body.page-studio .btn-primary {
+  background: var(--accent);
+  color: #000000;
+  border-color: var(--accent);
+  box-shadow: none;
+  font-weight: 700;
+}
+body.page-studio .btn-primary:hover {
+  background: var(--accent-strong);
+  box-shadow: none;
+}
+body.page-studio .btn-hero { box-shadow: none; }
+body.page-studio .btn-hero:hover { box-shadow: none; }
+body.page-studio .brand-logo { box-shadow: none; background: var(--accent); }
+
+/* Active nav / tabs — sharp amber left-bar, no soft gradient wash. */
+body.page-studio .nav a.active {
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  box-shadow: inset 2px 0 0 0 var(--accent);
+}
+body.page-studio .lab-tab.active { box-shadow: inset 0 2px 0 0 var(--accent); }
+body.page-studio .bt-tab.active { box-shadow: inset 0 2px 0 0 var(--accent); }
+
+/* Denser tables — the core Bloomberg feel is rows of tight monospace data. */
+body.page-studio table.data th,
+body.page-studio table.data td { padding: 6px 12px; }
+body.page-studio table.data td { font-family: var(--mono); }
+
+/* Uppercase amber section titles read as terminal field headers. */
+body.page-studio .panel-title,
+body.page-studio .section-title { color: var(--accent-strong); }
+
+/* Kill decorative animation — a terminal doesn't pulse its borders. */
+body.page-studio .pulse-border { animation: none; border-color: var(--accent-dim); }
+
+/* Chat bubbles — the base rule hard-codes indigo (rgba(129,140,248,…)) which
+   isn't a theme variable, so it leaks into the black terminal. Re-skin the
+   assistant bubble to amber; the user bubble already uses --panel-2/--border. */
+body.page-studio .chat-assistant {
+  background: var(--accent-soft);
+  border-color: var(--accent-dim);
+}
+
+/* Strategy Preview cards carry inline border-radius (7/8px) that a stylesheet
+   rule can't beat — override with !important, scoped to studio so the flow
+   diagram reads as sharp terminal cells. Standalone /strategy keeps its rounding. */
+body.page-studio #strategy-preview div,
+body.page-studio #strategy-preview svg { border-radius: 0 !important; }
+
+/* ============================================================================
+   STUDIO — compact & readable pass (scoped to body.page-studio only)
+   Goal: reclaim chrome/whitespace so more data fits per screen, while lifting
+   the tiny/low-contrast text to a legible floor. No other page is affected.
+   ========================================================================== */
+
+/* --- Density: shrink the biggest whitespace consumers ------------------- */
+
+/* Page frame: 24px on all sides is generous for a terminal. */
+body.page-studio .content { padding: 10px; }
+
+/* Every panel body — the single most repeated padding on the page. */
+body.page-studio .panel-body { padding: 8px 10px; }
+body.page-studio .panel-body.tight { padding: 6px 8px; }
+body.page-studio .panel-header { padding: 6px 10px; }
+
+/* App-wide vertical/column rhythm. */
+body.page-studio .stack { gap: 7px; }
+body.page-studio .grid-2,
+body.page-studio .grid-3 { gap: 9px; }
+body.page-studio .row { gap: 8px; }
+
+/* KPI + hero blocks. */
+body.page-studio .kpi { padding: 8px 10px; }
+body.page-studio .kpi-grid { gap: 7px; }
+body.page-studio .hero-main { padding: 11px 13px; }
+body.page-studio .result-hero { margin-bottom: 9px; }
+
+/* Empty states waste a lot of vertical space at 40px. */
+body.page-studio .empty-state { padding: 16px 14px; }
+
+/* Sidebar header. */
+body.page-studio .brand { padding: 11px 16px 9px; }
+
+/* Backtest stepper — 26px between steps is airy; the run step also has an
+   inline margin-top:26px, so use !important to win that specificity. */
+body.page-studio .bt-step + .bt-step { margin-top: 10px !important; }
+
+/* Chrome: shrink the fixed topbar and the tab bar, and keep the sticky inner
+   backtest tab-bar offset in lockstep with the new topbar height. */
+body.page-studio .topbar { height: 38px; }
+body.page-studio .bt-tabs { top: 38px; }
+body.page-studio .lab-tabs { margin-bottom: 7px; }
+body.page-studio .lab-tab { padding: 6px 14px; }
+
+/* Denser data tables — one more notch tighter than the 6px base studio rule. */
+body.page-studio table.data th,
+body.page-studio table.data td { padding: 4px 10px; }
+
+/* --- Readability: lift tiny + low-contrast text ------------------------- */
+
+/* Studio muted color failed WCAG AA (~3.9:1 on #050505). Lift toward ~5.5:1.
+   Single variable → fixes every muted label/hint/table-header at once. */
+body.page-studio { --text-muted: #909090; }
+
+/* Bump the sub-11px label tier to an 11px legible floor. These are field
+   labels, table headers, badges and stat captions read constantly. */
+body.page-studio .engine-label,
+body.page-studio .engine-sub,
+body.page-studio .topbar-stat .label,
+body.page-studio .verdict-metric .vm-label,
+body.page-studio .metric .label,
+body.page-studio .metric-section-title,
+body.page-studio .badge,
+body.page-studio .brand-sub,
+body.page-studio .tl-lane-label,
+body.page-studio table.data th,
+body.page-studio .kpi .label,
+body.page-studio .hero-label,
+body.page-studio .hero-side-cell .label,
+body.page-studio label.field,
+body.page-studio .field-hint,
+body.page-studio .rob-presets-label { font-size: 11px; }
+
+/* Denser tables get an explicit line-height so 6px-padded rows don't feel
+   cramped once the font floor is raised. */
+body.page-studio table.data { line-height: 1.45; }
+
+/* ============================================================================
+   STUDIO — Claude Code (CLI) skin (scoped to body.page-studio only)
+   The Claude Code terminal aesthetic applied to a Bloomberg-style backtest tool:
+   a deep warm-charcoal canvas (NOT pure black — Claude Code's dark surface has a
+   faint brown warmth), the Anthropic coral/clay accent, monospace-forward data,
+   and soft-but-tight rounded cards. Denser than the amber terminal, warmer than
+   pure black, unmistakably "Claude in a terminal." Appended AFTER both prior
+   studio blocks so it wins by source order; it restates the variables and undoes
+   the amber block's pure-black + border-radius:0 overrides. Density from the
+   compact pass is kept. Other pages keep the cold-blue graphite look untouched.
+   ========================================================================== */
+body.page-studio {
+  /* Surfaces — warm charcoal ramp (Claude Code dark: faint brown, never blue-black) */
+  --bg-950: #1a1815;   /* page canvas */
+  --bg-900: #211e1a;   /* sidebar / topbar */
+  --panel:  #262320;   /* panel surface */
+  --panel-2:#302c28;   /* elevated inner surface / secondary btn */
+  --inset:  #1d1a17;   /* input & inner-card ground */
+  --panel-glass: rgba(26,24,21,0.82);
+  --bg-850: #2b2723;
+  --bg-800: #302c28;
+  --bg-700: #3a352f;
+  /* Borders — warm taupe hairlines */
+  --border:       #38332d;
+  --border-soft:  #2c2823;
+  --border-input: #443e37;
+  --border-btn2:  #524b42;
+  /* Accent — Anthropic coral / clay */
+  --accent:        #d97757;
+  --accent-strong: #e8916f;   /* hover / focus brighten */
+  --accent-dim:    #a85a3f;
+  --accent-deep:   #7a3f2b;
+  --accent-soft:   rgba(217,119,87,0.14);
+  --accent-glow:   rgba(217,119,87,0.30);
+  --accent-grad-top:#e8916f;
+  /* PnL / status — legible on warm charcoal */
+  --pnl-up:        #4ec99a;
+  --pnl-down:      #f0645a;
+  --pnl-down-soft: #f5897f;
+  --amber:         #e0a72e;
+  /* Text — warm off-white ramp */
+  --text-primary:   #f2ede6;
+  --text-secondary: #c8c0b6;
+  --text-muted:     #948b7f;   /* ~5.2:1 on --panel */
+  --code:           #e6ddd2;
+  --text: #f2ede6;
+  /* Depth — subtle, warm, tight. A CLI has structure but no drama. */
+  --shadow-sm: 0 1px 2px rgba(0,0,0,0.30);
+  --shadow-md: 0 2px 10px rgba(0,0,0,0.35);
+  --shadow-lg: 0 10px 30px rgba(0,0,0,0.45);
+  --edge-hi: inset 0 1px 0 rgba(255,255,255,0.03);
+  --ring: 0 0 0 2px var(--accent-glow);
+  /* Monospace-forward — this is a terminal. Sans only for long prose. */
+  font-family: var(--mono);
+}
+
+/* Monospace the surface (nav, buttons, labels, inputs) — CLI feel. */
+body.page-studio,
+body.page-studio .btn,
+body.page-studio label.field,
+body.page-studio input,
+body.page-studio select,
+body.page-studio textarea,
+body.page-studio .nav a,
+body.page-studio .panel-title,
+body.page-studio .section-title { font-family: var(--mono); }
+
+/* Long-form reading stays humanist sans (wiki/prose) for comfort. */
+body.page-studio .prose,
+body.page-studio .narrative-box,
+body.page-studio .prose p,
+body.page-studio .prose li { font-family: var(--sans); }
+
+/* Section titles — coral, uppercase micro-tracking like a CLI prompt label. */
+body.page-studio .panel-title,
+body.page-studio .section-title {
+  color: var(--accent-strong);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+/* Soft-but-tight corners — the amber block forced 0 !important, so we need
+   !important to win at equal specificity. Claude Code = gently rounded, not sharp. */
+body.page-studio .panel,
+body.page-studio .kpi,
+body.page-studio .hero-main,
+body.page-studio .hero-side-cell,
+body.page-studio .metric-grid,
+body.page-studio .verdict-card,
+body.page-studio .narrative-box,
+body.page-studio .lab-phase,
+body.page-studio .bt-hist-row,
+body.page-studio .rob-group { border-radius: 8px !important; }
+body.page-studio .btn,
+body.page-studio input,
+body.page-studio select,
+body.page-studio textarea,
+body.page-studio .badge,
+body.page-studio .chip,
+body.page-studio .lab-tab,
+body.page-studio .bt-tab,
+body.page-studio .seg-toggle,
+body.page-studio .seg-opt,
+body.page-studio .chip-choice,
+body.page-studio .chat-bubble,
+body.page-studio .brand-logo { border-radius: 6px !important; }
+body.page-studio #strategy-preview div,
+body.page-studio #strategy-preview svg { border-radius: 6px !important; }
+
+/* Panels — warm charcoal cards with a hairline border + faint top bevel. */
+body.page-studio .panel,
+body.page-studio .hero-main,
+body.page-studio .verdict-card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-sm), var(--edge-hi);
+}
+body.page-studio .panel-header { border-bottom: 1px solid var(--border); }
+
+/* Topbar / sidebar / tab bars — one step darker than the panels. */
+body.page-studio .topbar,
+body.page-studio .lab-tabs,
+body.page-studio .bt-tabs {
+  background: var(--bg-900);
+  border-color: var(--border);
+  box-shadow: none;
+}
+body.page-studio .sidebar { background: var(--bg-900); border-color: var(--border); }
+
+/* Primary button — solid coral, dark warm text, subtle lift. */
+body.page-studio .btn-primary {
+  background: var(--accent);
+  color: #1a1815;
+  border-color: var(--accent);
+  box-shadow: var(--shadow-sm);
+  font-weight: 700;
+}
+body.page-studio .btn-primary:hover {
+  background: var(--accent-strong);
+  border-color: var(--accent-strong);
+  box-shadow: var(--shadow-md);
+}
+body.page-studio .btn {
+  background: var(--panel-2);
+  color: var(--text-primary);
+  border: 1px solid var(--border-input);
+}
+body.page-studio .btn:hover { background: var(--bg-700); }
+body.page-studio .brand-logo { background: var(--accent); color: #1a1815; box-shadow: var(--shadow-sm); }
+
+/* Active nav / tabs — coral accent, soft coral wash. */
+body.page-studio .nav a { color: var(--text-secondary); }
+body.page-studio .nav a.active {
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  box-shadow: inset 2px 0 0 0 var(--accent);
+}
+body.page-studio .lab-tab { color: var(--text-secondary); }
+body.page-studio .lab-tab.active { color: var(--accent-strong); box-shadow: inset 0 -2px 0 0 var(--accent); }
+body.page-studio .bt-tab.active { color: var(--accent-strong); box-shadow: inset 0 -2px 0 0 var(--accent); }
+
+/* Tables — tight monospace rows, warm header, coral hover. */
+body.page-studio table.data th {
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-900);
+}
+body.page-studio table.data td { border-bottom: 1px solid var(--border-soft); color: var(--text-secondary); font-family: var(--mono); }
+body.page-studio table.data tr:hover td { background: var(--accent-soft); }
+
+/* Inputs — dark inset ground, coral focus ring. */
+body.page-studio input,
+body.page-studio select,
+body.page-studio textarea {
+  background: var(--inset);
+  color: var(--text-primary);
+  border: 1px solid var(--border-input);
+}
+body.page-studio input:focus,
+body.page-studio select:focus,
+body.page-studio textarea:focus {
+  border-color: var(--accent);
+  box-shadow: var(--ring);
+  outline: none;
+}
+
+/* Badges / chips — warm neutral, coral/green/red for status. */
+body.page-studio .badge { background: var(--panel-2); color: var(--text-secondary); border: 1px solid var(--border); }
+body.page-studio .badge.running,
+body.page-studio .badge.entry { background: color-mix(in srgb, var(--pnl-up) 16%, transparent); color: var(--pnl-up); border-color: color-mix(in srgb, var(--pnl-up) 40%, transparent); }
+body.page-studio .badge.exit { background: color-mix(in srgb, var(--pnl-down) 15%, transparent); color: var(--pnl-down); border-color: color-mix(in srgb, var(--pnl-down) 38%, transparent); }
+body.page-studio .badge.beta { background: var(--accent-soft); color: var(--accent-strong); border-color: color-mix(in srgb, var(--accent) 40%, transparent); }
+
+/* Chat bubbles — assistant coral-tinted, user neutral (Claude Code convo feel). */
+body.page-studio .chat-assistant { background: var(--accent-soft); border-color: color-mix(in srgb, var(--accent) 32%, transparent); color: var(--text-primary); }
+body.page-studio .chat-user { background: var(--panel-2); border-color: var(--border); color: var(--text-primary); }
+
+/* Pulse promo — steady coral hairline, no animation. */
+body.page-studio .pulse-border { animation: none; border-color: color-mix(in srgb, var(--accent) 42%, transparent); }
+
+/* Prose / wiki — comfortable reading with coral links + warm code chips. */
+body.page-studio .prose a { color: var(--accent-strong); }
+body.page-studio .prose code,
+body.page-studio pre.diagram { background: var(--inset); color: var(--code); border-color: var(--border); }
+
+/* ============================================================================
+   STUDIO — "özet" pass: quieter, tighter, less visual noise (scoped)
+   Final tuning on top of the Claude Code skin: strip the remaining shadows/bevel
+   so panels read as flat cards separated by hairlines, drop borders down to a
+   single quiet weight, and squeeze one more notch of density. The goal is a
+   calm, summary-like surface — signal over chrome.
+   ========================================================================== */
+
+/* Flatten depth — hairline borders do the separating, not shadows. */
+body.page-studio .panel,
+body.page-studio .hero-main,
+body.page-studio .verdict-card { box-shadow: none; }
+body.page-studio .btn-primary,
+body.page-studio .btn-primary:hover,
+body.page-studio .brand-logo { box-shadow: none; }
+
+/* One quieter corner radius everywhere — softer, more uniform. */
+body.page-studio .panel,
+body.page-studio .kpi,
+body.page-studio .hero-main,
+body.page-studio .hero-side-cell,
+body.page-studio .metric-grid,
+body.page-studio .verdict-card,
+body.page-studio .narrative-box,
+body.page-studio .lab-phase,
+body.page-studio .bt-hist-row,
+body.page-studio .rob-group { border-radius: 6px !important; }
+
+/* One more density notch — summary-tight. */
+body.page-studio .content { padding: 8px; }
+body.page-studio .panel-body { padding: 7px 9px; }
+body.page-studio .panel-header { padding: 5px 9px; }
+body.page-studio .stack { gap: 6px; }
+body.page-studio .grid-2,
+body.page-studio .grid-3 { gap: 8px; }
+
+/* Section titles calmer — normal weight, muted-forward, no coral shout unless
+   it's a real heading. Keeps the surface reading as a quiet summary. */
+body.page-studio .panel-title { color: var(--text-primary); font-weight: 500; letter-spacing: 0.01em; }
+body.page-studio .section-title { color: var(--text-secondary); font-weight: 500; }
+
+/* Empty states + hero even tighter. */
+body.page-studio .empty-state { padding: 12px 12px; }
+body.page-studio .hero-main { padding: 9px 11px; }
