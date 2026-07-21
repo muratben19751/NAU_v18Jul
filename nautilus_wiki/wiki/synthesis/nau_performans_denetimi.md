@@ -99,5 +99,6 @@ PLAUSIBLE/CONFIRMED) → Synthesize. Aynı çok-ajanlı çekişmeli desen [[weba
 <!-- BACKLINKS:BEGIN -->
 ## Referenced by
 
+- [[nau_mimari_denetimi]]
 - [[webapp_module_map]]
 <!-- BACKLINKS:END -->
