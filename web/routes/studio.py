@@ -88,7 +88,7 @@ def page(request: Request):
         "drafts": _drafts(sid),
         "wiki_active": wiki_active,
         "wiki_html": wiki_html,
-        "custom_blocks": cbs.list_custom(),
+        "custom_blocks": cbs.list_custom(include_ephemeral=False),
         "options": {
             "entry_logic": "OR",
             "exit_logic": "OR",

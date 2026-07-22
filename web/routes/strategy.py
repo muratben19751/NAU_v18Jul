@@ -1094,7 +1094,7 @@ async def delete_custom_block(request: Request, name: str):
     return templates.TemplateResponse(
         request,
         "fragments/custom_blocks_list.html",
-        {"custom_blocks": cbs.list_custom()},
+        {"custom_blocks": cbs.list_custom(include_ephemeral=False)},
     )
 
 
