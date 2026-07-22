@@ -50,7 +50,8 @@
     <div class="panel">
       <div class="panel-header"><div class="panel-title">01 · Strategy Metadata</div></div>
       <div class="panel-body">
-        <form id="save-form" action="/strategy/save" method="post" class="stack">
+        <form id="save-form" hx-post="/strategy/save"
+              hx-target="#save-result" hx-swap="innerHTML" class="stack">
           {# Non-empty when editing a saved strategy → Save overwrites that record.
              Blank for a fresh strategy or "⎘ Kopyala" → Save appends a new one. #}
           <input type="hidden" id="edit-spec-id" name="edit_spec_id" value="" form="save-form">
@@ -127,7 +128,10 @@
         <span class="text-muted text-mono">draft · not yet saved</span>
       </div>
       <div id="drafts" class="panel-body tight">
-        {% include "fragments/drafts_list.html" %}
+        {# oob_preview=false: the canonical #strategy-preview lives in the side
+           column below; suppress drafts_list's trailing OOB copy here so the id
+           is not duplicated on the initial render. #}
+        {% with oob_preview = false %}{% include "fragments/drafts_list.html" %}{% endwith %}
       </div>
       <div id="drafts-edit-chat"></div>
     </div>
@@ -157,6 +161,7 @@
         <button class="btn btn-primary" type="submit" form="save-form">💾 Save Strategy</button>
       </div>
     </div>
+    <div id="save-result"></div>
 
     {# 5. Saved catalog ---- #}
     <div class="panel">

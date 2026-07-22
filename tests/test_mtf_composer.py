@@ -31,7 +31,10 @@ def _seed_and_save(monkeypatch, form: dict):
         composer.SignalBlock(type="atr_stop", role="exit", params={"period": 14}),
     ]
     r = c.post("/strategy/save", data={"name": "T", **form}, follow_redirects=False)
-    assert r.status_code == 303, r.text[:200]
+    # Save returns an in-place HTMX fragment (200), not a full-page redirect —
+    # this keeps the studio mode / open chat / backtest panel intact on save.
+    assert r.status_code == 200, r.text[:200]
+    assert "✓ SAVED" in r.text or "✓ UPDATED" in r.text, r.text[:200]
     assert appended, "spec was not written to catalog"
     return appended[0]
 

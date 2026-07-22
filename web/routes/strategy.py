@@ -54,6 +54,22 @@ def _sid(request: Request, response: Response | None = None) -> str:
     return session_id(request, response)
 
 
+def _sid_cookie(resp: Response, sid: str) -> Response:
+    """Write the session cookie onto the response we actually return.
+
+    FastAPI does NOT merge an injected ``Response`` param's cookies into a
+    Response object returned from the handler (only into non-Response returns
+    like dicts). Since every draft route returns a TemplateResponse, the cookie
+    must be set on THAT object — otherwise a cookie-less first request (curl,
+    tests, a fresh client hitting /strategy/drafts before /studio) never gets a
+    ``nautlab_sid`` and its drafts vanish on the next call.
+    """
+    resp.set_cookie(
+        SESSION_COOKIE, sid, httponly=True, samesite="lax", max_age=_COOKIE_MAX_AGE
+    )
+    return resp
+
+
 def _drafts(sid: str) -> list[SignalBlock]:
     if sid not in _DRAFTS and len(_DRAFTS) >= _MAX_DRAFT_SESSIONS:
         # Drop the oldest session (insertion-order) — no unbounded memory growth.
@@ -339,15 +355,18 @@ async def add_draft(request: Request):
     sid = _sid(request)
     _drafts(sid).append(SignalBlock(type=btype, role=role, params=params))
 
-    return templates.TemplateResponse(
-        request,
-        "fragments/drafts_list.html",
-        {
-            "drafts": _drafts(sid),
-            "block_catalog": BLOCK_CATALOG,
-            "options": _options_from_form(form),
-            "name": form.get("name") or "",
-        },
+    return _sid_cookie(
+        templates.TemplateResponse(
+            request,
+            "fragments/drafts_list.html",
+            {
+                "drafts": _drafts(sid),
+                "block_catalog": BLOCK_CATALOG,
+                "options": _options_from_form(form),
+                "name": form.get("name") or "",
+            },
+        ),
+        sid,
     )
 
 
@@ -360,15 +379,18 @@ async def delete_draft(request: Request, index: int):
     drafts = _drafts(sid)
     if 0 <= index < len(drafts):
         drafts.pop(index)
-    return templates.TemplateResponse(
-        request,
-        "fragments/drafts_list.html",
-        {
-            "drafts": drafts,
-            "block_catalog": BLOCK_CATALOG,
-            "options": _options_from_form(form),
-            "name": form.get("name") or "",
-        },
+    return _sid_cookie(
+        templates.TemplateResponse(
+            request,
+            "fragments/drafts_list.html",
+            {
+                "drafts": drafts,
+                "block_catalog": BLOCK_CATALOG,
+                "options": _options_from_form(form),
+                "name": form.get("name") or "",
+            },
+        ),
+        sid,
     )
 
 
@@ -402,16 +424,19 @@ async def suggest(request: Request):
     # field was left empty.
     description = user_desc or proposal["description"]
 
-    return templates.TemplateResponse(
-        request,
-        "fragments/suggestion_result.html",
-        {
-            "drafts": _drafts(sid),
-            "block_catalog": BLOCK_CATALOG,
-            "name": proposal["name"],
-            "description": description,
-            "options": proposal.get("strategy_options", {}),
-        },
+    return _sid_cookie(
+        templates.TemplateResponse(
+            request,
+            "fragments/suggestion_result.html",
+            {
+                "drafts": _drafts(sid),
+                "block_catalog": BLOCK_CATALOG,
+                "name": proposal["name"],
+                "description": description,
+                "options": proposal.get("strategy_options", {}),
+            },
+        ),
+        sid,
     )
 
 
@@ -552,15 +577,18 @@ async def drafts_chat_apply(request: Request, conv_id: str = Form("")):
         SignalBlock(type=b["type"], role=b["role"], params=b["params"])
         for b in conv["working_blocks"]
     ]
-    return templates.TemplateResponse(
-        request,
-        "fragments/drafts_list.html",
-        {
-            "drafts": _drafts(sid),
-            "block_catalog": BLOCK_CATALOG,
-            "options": _options_from_form(form),
-            "name": form.get("name") or "",
-        },
+    return _sid_cookie(
+        templates.TemplateResponse(
+            request,
+            "fragments/drafts_list.html",
+            {
+                "drafts": _drafts(sid),
+                "block_catalog": BLOCK_CATALOG,
+                "options": _options_from_form(form),
+                "name": form.get("name") or "",
+            },
+        ),
+        sid,
     )
 
 
@@ -591,6 +619,8 @@ async def save(
     trend_ema_period: int = Form(50),
     edit_spec_id: str = Form(""),
 ):
+    from server import templates
+
     sid = _sid(request)
     drafts = _drafts(sid)
     spec = build_spec(
@@ -624,7 +654,13 @@ async def save(
     )
     err = spec.validate()
     if err:
-        return RedirectResponse(f"/strategy?error={err}", status_code=303)
+        # HTMX in-place error banner (was a full-page redirect to /strategy?error=).
+        return templates.TemplateResponse(
+            request,
+            "fragments/save_result.html",
+            {"ok": False, "error": err},
+            status_code=400,
+        )
 
     # M14/H1(strategy): a lockless load→append→save was losing strategies under
     # concurrent runs — use the locked append_to_catalog / mutate_catalog.
@@ -637,12 +673,35 @@ async def save(
         # fresh id, so pin it back to the edited spec's id.
         spec.id = eid
         mutate_catalog(lambda cat: [spec if s.id == eid else s for s in cat])
+        overwrote = True
     else:
         # New strategy (also the "⎘ Kopyala" path — edit_spec_id is blank there,
         # or the original was deleted meanwhile → safe append).
         append_to_catalog(spec)
+        overwrote = False
     _DRAFTS[sid] = []
-    return RedirectResponse(f"/strategy?saved={spec.name}", status_code=303)
+
+    # HTMX response (was RedirectResponse to /strategy?saved=…, which forced a
+    # full-page reload that wiped the studio mode / open chat / backtest panel).
+    # Return the saved banner + OOB-refresh the catalog list and reset the
+    # composer form (drafts cleared, edit-spec-id blanked).
+    return _sid_cookie(
+        templates.TemplateResponse(
+            request,
+            "fragments/save_result.html",
+            {
+                "ok": True,
+                "spec": spec,
+                "overwrote": overwrote,
+                "catalog": list(reversed(load_catalog())),
+                "drafts": [],
+                "block_catalog": BLOCK_CATALOG,
+                "options": {},
+                "name": "My Strategy",
+            },
+        ),
+        sid,
+    )
 
 
 @router.post("/blocks/generate", response_class=HTMLResponse)
@@ -1084,15 +1143,18 @@ async def edit_spec(request: Request, spec_id: str, mode: str = "overwrite"):
     options = _options_from_spec(spec)
     edit_id = spec.id if mode != "copy" else ""
 
-    return templates.TemplateResponse(
-        request,
-        "fragments/edit_result.html",
-        {
-            "drafts": _drafts(sid),
-            "block_catalog": BLOCK_CATALOG,
-            "name": spec.name,
-            "description": spec.description,
-            "options": options,
-            "edit_spec_id": edit_id,
-        },
+    return _sid_cookie(
+        templates.TemplateResponse(
+            request,
+            "fragments/edit_result.html",
+            {
+                "drafts": _drafts(sid),
+                "block_catalog": BLOCK_CATALOG,
+                "name": spec.name,
+                "description": spec.description,
+                "options": options,
+                "edit_spec_id": edit_id,
+            },
+        ),
+        sid,
     )

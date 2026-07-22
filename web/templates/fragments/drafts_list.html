@@ -31,5 +31,10 @@
 </div>
 {% endif %}
 
-{# Live-update the Strategy Preview (OOB) #}
+{# Live-update the Strategy Preview (OOB). Emitted only in partial/OOB responses
+   (route returns drafts_list.html). Suppressed on the initial full-page render —
+   compose_body.html wraps its include with `oob_preview = false` so the canonical
+   #strategy-preview (the sidebar home copy) is not duplicated inside #drafts. #}
+{% if oob_preview is not defined or oob_preview %}
 {% include "fragments/strategy_preview.html" %}
+{% endif %}
