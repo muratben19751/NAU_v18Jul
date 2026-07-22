@@ -1,0 +1,193 @@
+{# A) Custom block KODUNU AI ile düzenleme sohbeti — #block-edit-chat'e swap edilir.
+   POST /strategy/blocks/{name}/chat/new (başlat) + POST /strategy/blocks/chat (turn)
+   + POST /strategy/blocks/chat/save (kaydet). chat_thread.html + custom_block_generated.html
+   desenlerinin birleşimi. #}
+{% if stage == "expired" %}
+  <div class="panel" style="margin-top:8px;">
+    <div class="panel-body empty-state small">
+      ⌛ Sohbet süresi doldu. Listeden <b>✏️ AI ile düzenle</b>'ye tekrar basıp yeniden başlat.
+    </div>
+  </div>
+{% else %}
+  <div class="panel" style="border-color:var(--accent);margin-top:8px;">
+    <div class="panel-header">
+      <div class="panel-title">✏️ AI ile blok düzenle — <span class="mono">{{ name }}</span></div>
+      <div class="spacer"></div>
+      <button class="btn btn-ghost" type="button"
+              style="font-size:11px;padding:3px 10px;"
+              onclick="document.getElementById('block-edit-chat').innerHTML='';"
+              title="Sohbeti kapat">✕ Kapat</button>
+    </div>
+    <div class="panel-body stack" style="gap:12px;">
+
+      {# ── Bağımlılık uyarısı ── #}
+      {% if dependents %}
+        <div class="text-muted" style="font-size:11px;border-left:2px solid rgba(245,158,11,0.6);padding-left:8px;">
+          ⚠ Bu bloğu {{ dependents|length }} strateji kullanıyor
+          ({{ dependents[:5]|join(", ") }}{% if dependents|length > 5 %}…{% endif %}).
+          Kaydettiğinde bu stratejilerin davranışı da değişir (silinmez).
+        </div>
+      {% endif %}
+
+      {# ── Mesaj balonları (display alanı varsa onu göster) ── #}
+      <div class="chat-thread-list" id="block-chat-bubbles">
+        {% for m in messages %}
+          <div class="chat-bubble {{ 'chat-user' if m.role == 'user' else 'chat-assistant' }}">
+            {{ (m.display if m.display is defined and m.display else m.content) | replace('\n', '<br>') | safe }}
+          </div>
+        {% endfor %}
+      </div>
+
+      {# ── Mesaj gönderme formu ── #}
+      <form class="row" style="align-items:flex-end;gap:8px;"
+            hx-post="/strategy/blocks/chat"
+            hx-target="#block-edit-chat"
+            hx-swap="innerHTML"
+            hx-indicator="#block-chat-spinner"
+            hx-on::after-request="this.reset()">
+        <input type="hidden" name="conv_id" value="{{ conv_id }}">
+        <textarea name="message" rows="2" style="flex:1;resize:vertical;"
+                  placeholder="Ne değiştireyim? (ör. 'RSI eşiğini 30 yap', 'çıkışa ATR trailing ekle')"
+                  aria-label="Blok düzenleme mesajı"></textarea>
+        <button class="btn btn-primary" type="submit">
+          <span class="btn-spin spin">⟳</span> Gönder
+        </button>
+      </form>
+      <div class="row">
+        <span class="htmx-indicator text-muted mono" id="block-chat-spinner" style="font-size:11px;">
+          <span class="spin">⟳</span> Claude yazıyor…
+        </span>
+      </div>
+
+      {# ── Hata (kod reddedildiyse) ── #}
+      {% if error %}
+        <div class="panel" style="border-color:rgba(239,68,68,0.5);">
+          <div class="panel-body">
+            <span class="badge exit">✗ KOD REDDEDİLDİ</span>
+            <span class="text-muted" style="margin-left:8px;">{{ error }}</span>
+          </div>
+          <div class="panel-body text-muted" style="font-size:11px;padding-top:0;">
+            Önceki geçerli kod korunuyor. Sohbette düzeltme isteyebilirsin.
+          </div>
+        </div>
+      {% endif %}
+
+      {# ── Güncel kod önizlemesi (META / PARAMS / CODE + sinyal grafiği) ── #}
+      {% if proposal %}
+        <div class="panel" style="border-color:rgba(34,197,94,0.35);">
+          <div class="panel-header">
+            <div class="panel-title">GÜNCEL · <span class="mono">{{ proposal.name }}</span></div>
+          </div>
+          <div class="panel-body stack" style="gap:12px;">
+
+            <div>
+              <div class="section-title" style="margin:0 0 4px;">META</div>
+              <div class="text-muted mono" style="font-size:11px;">label: {{ proposal.meta.label }}</div>
+              <div class="text-muted" style="font-size:12px;margin-top:4px;">{{ proposal.meta.help }}</div>
+            </div>
+
+            <div>
+              <div class="section-title" style="margin:0 0 4px;">PARAMS</div>
+              {% if proposal.meta.params %}
+                <ul class="mono" style="font-size:11px;padding-left:16px;margin:0;">
+                  {% for pname, pspec in proposal.meta.params.items() %}
+                    <li><b>{{ pname }}</b>:
+                      {% if pspec.type == "enum" %}enum {{ pspec.options }} (default {{ pspec.default }})
+                      {% else %}{{ pspec.type }} [{{ pspec.min }}..{{ pspec.max }}] (default {{ pspec.default }}){% endif %}
+                    </li>
+                  {% endfor %}
+                </ul>
+              {% else %}
+                <div class="text-muted" style="font-size:11px;">(parametre yok)</div>
+              {% endif %}
+            </div>
+
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;align-items:start;">
+              <div>
+                <div class="section-title" style="margin:0 0 4px;">CODE</div>
+                <pre class="mono" style="background:rgba(0,0,0,0.3);padding:10px 12px;border-radius:6px;
+                     overflow-x:auto;font-size:10.5px;margin:0;max-height:320px;
+                     border:1px solid var(--border);line-height:1.55;">{{ proposal.code }}</pre>
+              </div>
+              <div>
+                <div class="section-title" style="margin:0 0 4px;">SİNYAL ÖNİZLEME · BTC 1m (son 150 bar)</div>
+                {% if chart_data and chart_data.closes %}
+                  <div style="position:relative;height:280px;background:var(--bg-950);
+                              border:1px solid var(--border);border-radius:6px;padding:4px;">
+                    <canvas id="block-edit-canvas"></canvas>
+                  </div>
+                  <div style="font-size:10px;color:var(--text-muted);margin-top:5px;font-family:var(--mono);">
+                    <span style="color:#22c55e;">▲ long</span> &nbsp;
+                    <span style="color:#ef4444;">▼ short</span> &nbsp;
+                    <span style="color:#f59e0b;">● exit</span>
+                  </div>
+                  <script>
+                  (function() {
+                    const closes  = {{ chart_data.closes|tojson }};
+                    const dates   = {{ chart_data.dates|tojson }};
+                    const signals = {{ chart_data.signals|tojson }};
+                    const longPts  = closes.map((v,i) => signals[i] && signals[i].sig === 'long'  ? v : null);
+                    const shortPts = closes.map((v,i) => signals[i] && signals[i].sig === 'short' ? v : null);
+                    const exitPts  = closes.map((v,i) => signals[i] && signals[i].sig === 'exit'  ? v : null);
+                    if (window.__blkEditChart && typeof window.__blkEditChart.destroy === 'function') {
+                      window.__blkEditChart.destroy();
+                    }
+                    const ctx = document.getElementById('block-edit-canvas');
+                    window.__blkEditChart = new Chart(ctx, {
+                      type: 'line',
+                      data: { labels: dates, datasets: [
+                        { label:'Close', data:closes, borderColor:'#60a5fa', borderWidth:1.5,
+                          backgroundColor:'rgba(96,165,250,0.05)', fill:true, pointRadius:0, tension:0.1, order:3 },
+                        { label:'Long', data:longPts, type:'scatter', backgroundColor:'#22c55e',
+                          pointRadius:5, pointStyle:'triangle', rotation:0, order:1 },
+                        { label:'Short', data:shortPts, type:'scatter', backgroundColor:'#ef4444',
+                          pointRadius:5, pointStyle:'triangle', rotation:180, order:1 },
+                        { label:'Exit', data:exitPts, type:'scatter', backgroundColor:'#f59e0b',
+                          pointRadius:4, pointStyle:'circle', order:2 },
+                      ]},
+                      options: { responsive:true, maintainAspectRatio:false, animation:false,
+                        plugins:{ legend:{display:false},
+                          tooltip:{ callbacks:{ title:(it)=>it[0].label||'',
+                            label:(c)=> c.dataset.label==='Close' ? '$'+c.parsed.y.toLocaleString() : c.dataset.label+' signal' },
+                            backgroundColor:'#0a0e17', borderColor:'#1a2332', borderWidth:1,
+                            titleFont:{family:'JetBrains Mono',size:10}, bodyFont:{family:'JetBrains Mono',size:11} } },
+                        scales:{ x:{ display:true, ticks:{ color:'#6b7280', font:{family:'JetBrains Mono',size:9},
+                          maxTicksLimit:6, maxRotation:0, autoSkip:true }, grid:{color:'#1a2332'} },
+                          y:{ ticks:{ color:'#6b7280', font:{family:'JetBrains Mono',size:9},
+                            callback:v=>'$'+(v/1000).toFixed(0)+'k' }, grid:{color:'#1a2332'} } } },
+                    });
+                  })();
+                  </script>
+                {% else %}
+                  <div style="height:100px;display:flex;align-items:center;justify-content:center;
+                              color:var(--text-muted);font-size:12px;border:1px solid var(--border);
+                              border-radius:6px;background:var(--bg-950);">
+                    Grafik yok (BTC 1m verisi bulunamadı ya da kod değişmedi)
+                  </div>
+                {% endif %}
+              </div>
+            </div>
+
+            {# ── Kaydet ── #}
+            <form hx-post="/strategy/blocks/chat/save" hx-swap="none" class="row" style="gap:8px;">
+              <input type="hidden" name="conv_id" value="{{ conv_id }}">
+              <button class="btn btn-primary" type="submit">💾 Değişikliği Kaydet</button>
+              <span class="text-muted" style="font-size:11px;align-self:center;">
+                Aynı isimle üzerine yazılır; kayıt öncesi güvenlik testi tekrar çalışır.
+              </span>
+            </form>
+
+          </div>
+        </div>
+      {% endif %}
+
+    </div>
+  </div>
+
+  <script>
+    (function () {
+      var el = document.getElementById('block-chat-bubbles');
+      if (el) el.scrollTop = el.scrollHeight;
+    })();
+  </script>
+{% endif %}

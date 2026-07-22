@@ -1,0 +1,184 @@
+{# Backtest page JS — shared between the standalone /backtest page and the merged
+   /studio "Backtest"/"Analyze" tabs. All listeners key on the backtest-owned ids
+   (#result, #plan-preview, #chat-thread) and fall through harmlessly for other
+   swaps, so a single copy is safe on the merged page. btTab() drives the INNER
+   right-column tabs (.bt-tab); the top-level [Compose|Backtest|Analyze] tabs use
+   a separate labTab()/.lab-tab namespace so the two never toggle each other. #}
+<script>
+  // Re-init equity chart after every HTMX swap into #result.
+  // Also fires the backtest chain when describe_progress injects a
+  // data-bt-chain-url element (hx-trigger="load" doesn't fire on innerHTML swap).
+  document.addEventListener("htmx:afterSwap", function(evt) {
+    // AI Plan sekmesi: plan-preview veya chat-thread dolunca boş-durum kartını gizle.
+    if (evt.detail.target && (evt.detail.target.id === "plan-preview" || evt.detail.target.id === "chat-thread")) {
+      var pe = document.getElementById("plan-empty");
+      if (pe) {
+        var hasPlan = (document.getElementById("plan-preview") || {}).innerHTML || "";
+        var hasChat = (document.getElementById("chat-thread") || {}).innerHTML || "";
+        pe.style.display = (hasPlan.trim() || hasChat.trim()) ? "none" : "";
+      }
+      return;
+    }
+    if (!evt.detail.target || evt.detail.target.id !== "result") return;
+    evt.detail.target.style.display = "";
+    // Sonuç #result'a herhangi bir şey (progress ya da sonuç) düştüğünde Sonuç
+    // sekmesine odaklan; progress ise rozeti "running" yap.
+    if (window.btTab) btTab("result");
+    var badge = document.getElementById("bt-tab-badge-result");
+    if (badge && evt.detail.target.querySelector("#describe-progress, #progress-panel, #sweep-progress")) {
+      badge.classList.add("running"); badge.textContent = "";
+    }
+    var trigger = evt.detail.target.querySelector("[data-bt-chain-url]");
+    if (trigger) {
+      var url  = trigger.getAttribute("data-bt-chain-url");
+      var vals = JSON.parse(trigger.getAttribute("data-bt-chain-vals") || "{}");
+      htmx.ajax("POST", url, { target: "#result", swap: "innerHTML", values: vals });
+    }
+  });
+  document.addEventListener("htmx:afterSettle", function(evt) {
+    if (evt.detail.target && evt.detail.target.id === "result") {
+      if (typeof buildEquityChart === "function") buildEquityChart();
+      btFillPanels(evt.detail.target);
+    }
+  });
+
+  // Populate the robustness form + plan hidden-inputs from data-* attributes on
+  // the result panel. Runs on every #result swap AND once on initial page load
+  // (server-rendered `last` result does NOT fire htmx:afterSettle, so without
+  // the DOMContentLoaded call the robustness form's spec_id stayed empty and
+  // "Analizi Çalıştır" silently 404'd).
+  function btFillPanels(root) {
+    root = root || document;
+    // Robustness panel from data-rob-* on the result panel.
+    var panel = root.querySelector("[data-rob-spec-id]");
+    var sec = document.getElementById("robustness-section");
+    if (panel && sec) {
+      var form = sec.querySelector("form");
+      if (form) {
+        form.querySelector("[name=spec_id]").value    = panel.dataset.robSpecId || "";
+        form.querySelector("[name=bybit_start]").value = panel.dataset.robStart  || "";
+        form.querySelector("[name=bybit_end]").value   = panel.dataset.robEnd    || "";
+        var sym = form.querySelector("[name=symbol]");
+        var cat = form.querySelector("[name=category]");
+        var ivl = form.querySelector("[name=interval]");
+        if (sym) sym.value = panel.dataset.robSymbol   || "BTCUSDT";
+        if (cat) cat.value = panel.dataset.robCategory || "linear";
+        if (ivl) ivl.value = panel.dataset.robInterval || "1";
+      }
+      sec.style.display = "";
+      htmx.process(sec);
+    }
+    // Backtest metriklerini hidden input'lara aktar → /backtest/plan'a gider
+    var btPanel = root.querySelector("[data-bt-pnl-pct]");
+    if (btPanel) {
+      var set = function(id, val) { var el = document.getElementById(id); if (el) el.value = val || ""; };
+      set("bt-pnl-pct",   btPanel.dataset.btPnlPct);
+      set("bt-sharpe",    btPanel.dataset.btSharpe);
+      set("bt-max-dd",    btPanel.dataset.btMaxDd);
+      set("bt-n-trades",  btPanel.dataset.btNTrades);
+      set("bt-win-rate",  btPanel.dataset.btWinRate);
+      set("bt-spec-name", btPanel.dataset.btSpecName);
+      set("bt-best-tf",   btPanel.dataset.btBestTf || "");
+      // Yeni backtest sonucu → eski robustness özetini temizle. Robustness bu
+      // sonucun üstünde henüz çalıştırılmadı; eski değerlerin AI Plan'a sızmasını
+      // önle (robustness_result.html swap'i bunları yeniden dolduracak).
+      ["rob-overfitting","rob-verdict","rob-wfo-eff","rob-oos-sharpe","rob-stability"]
+        .forEach(function(id){ var el = document.getElementById(id); if (el) el.value = ""; });
+      // Sonuç sekmesi rozetini trade sayısıyla güncelle (final result)
+      var badge = document.getElementById("bt-tab-badge-result");
+      if (badge) { badge.classList.remove("running"); badge.textContent = btPanel.dataset.btNTrades || "0"; }
+    }
+  }
+
+  // Copy the AI-refined description to the clipboard (COPY button in plan preview).
+  window.btCopyRefined = function(btn) {
+    const ta = document.getElementById("refined-description");
+    if (!ta) return;
+    const text = ta.value;
+    const done = () => {
+      const orig = btn.innerHTML;
+      btn.innerHTML = "✓ Kopyalandı";
+      setTimeout(() => { btn.innerHTML = orig; }, 1500);
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(done).catch(() => { ta.select(); document.execCommand("copy"); done(); });
+    } else {
+      ta.select();
+      document.execCommand("copy");
+      done();
+    }
+  };
+
+  // Toggle position-sizing param inputs by selected mode. Hidden inputs are
+  // disabled so they don't leak stale values into the POST (same idiom as
+  // the asset toggle below).
+  function btToggleSizeMode(mode) {
+    document.querySelectorAll('.size-param').forEach(el => {
+      const show = el.classList.contains('sp-' + mode);
+      el.style.display = show ? '' : 'none';
+      el.querySelectorAll('input, select').forEach(i => { i.disabled = !show; });
+    });
+  }
+
+  // Toggle Bybit / Index field groups
+  // Robustness form presetleri — tek tıkla tüm alanları makul değerlerle doldurur.
+  // Değerler backend clamp aralıklarına uygun (robustness.py run()).
+  window.robPreset = function(kind) {
+    var presets = {
+      fast:     { train_months: 2, test_months: 1, n_optimize: 10, n_sims: 100, split_pct: 0.7,  objective: "sharpe" },
+      balanced: { train_months: 3, test_months: 1, n_optimize: 20, n_sims: 300, split_pct: 0.7,  objective: "sharpe" },
+      thorough: { train_months: 4, test_months: 1, n_optimize: 50, n_sims: 800, split_pct: 0.75, objective: "sharpe" },
+    };
+    var p = presets[kind];
+    if (!p) return;
+    var form = document.querySelector(".rob-form");
+    if (!form) return;
+    Object.keys(p).forEach(function(name) {
+      var el = form.querySelector("[name=" + name + "]");
+      if (el) el.value = p[name];
+    });
+    // Aktif preset butonunu vurgula
+    document.querySelectorAll(".rob-presets .btn").forEach(function(b) { b.classList.remove("active"); });
+    var idx = { fast: 0, balanced: 1, thorough: 2 }[kind];
+    var btns = document.querySelectorAll(".rob-presets .btn");
+    if (btns[idx]) btns[idx].classList.add("active");
+  };
+
+  function btToggleAsset(kind) {
+    const isBybit = kind === 'Bybit';
+    document.getElementById('bybit-fields').style.display = isBybit ? '' : 'none';
+    document.getElementById('index-fields').style.display = isBybit ? 'none' : '';
+    document.getElementById('tf-row').style.display = isBybit ? '' : 'none';
+    document.querySelectorAll('#bybit-fields input, #bybit-fields select, #tf-row input')
+      .forEach(el => el.disabled = !isBybit);
+    document.querySelectorAll('#index-fields input, #index-fields select')
+      .forEach(el => el.disabled = isBybit);
+    // The single-granularity <select> was VTT-only; the Describe flow uses the
+    // index-tf-row checkboxes (same name="granularity"). Keep the stale select
+    // hidden+disabled so it never double-submits granularity.
+    const indexGran = document.getElementById('index-granularity-field');
+    if (indexGran) {
+      indexGran.style.display = 'none';
+      indexGran.querySelectorAll('select').forEach(el => el.disabled = true);
+    }
+  }
+
+  document.addEventListener('DOMContentLoaded', () => {
+    if (!document.getElementById('gen-form')) return;  // backtest body absent (e.g. empty catalog)
+    btToggleAsset('Bybit');
+    const sm = document.querySelector('select[name="trade_size_mode"], input[name="trade_size_mode"]:checked');
+    btToggleSizeMode(sm ? sm.value : 'fixed');
+    // Server-rendered `last` result: fill robustness form + plan hidden-inputs
+    // once (no htmx swap fires on initial load).
+    btFillPanels(document);
+  });
+
+  // ── Right-column tab switcher (Sonuç / Robustness / Geçmiş). Presentation
+  // only — the panels inside keep their ids (#result, #robustness-section, …). ──
+  window.btTab = function(name) {
+    document.querySelectorAll('.bt-tab').forEach(t =>
+      t.classList.toggle('active', t.dataset.btTab === name));
+    document.querySelectorAll('.bt-tabpanel').forEach(p =>
+      p.classList.toggle('active', p.id === 'bt-tabpanel-' + name));
+  };
+</script>

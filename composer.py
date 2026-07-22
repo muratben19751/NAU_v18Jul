@@ -1379,9 +1379,100 @@ class ComposedStrategySpec:
         return None
 
 
+# --------------------------------------------------------------------------
+# Spec-upsert service — single home for BOTH constructor call-sites
+# (strategy.py POST /strategy/save form path + backtest.py /describe NL path).
+# Before this, each site hand-built ComposedStrategySpec with its own inline
+# clamps; the two disagreed (save() dropped vol_target; describe skipped
+# bracket/order/trend). build_spec accepts the UNION of fields and centralizes
+# every clamp/whitelist so a new spec field is added in ONE place.
+# --------------------------------------------------------------------------
+def _as_bool(v) -> bool:
+    """Coerce an HTML form value to bool. Empty string / "0" / "false" / "off"
+    → False (checkbox-style forms send "" when unchecked). Matches the intent of
+    both the old ``bool(form_str)`` and ``_parse_bool_form`` call-sites."""
+    if isinstance(v, bool):
+        return v
+    if v is None:
+        return False
+    return str(v).strip().lower() not in ("", "0", "false", "off", "no")
+
+
+def build_spec(
+    *,
+    name: str,
+    description: str,
+    blocks: list[SignalBlock],
+    trade_size: float = 0.1,
+    entry_logic: str = "OR",
+    exit_logic: str = "OR",
+    order_type: str = "market",
+    limit_offset_bps: float = 0.0,
+    use_bracket=False,
+    sl_type: str = "percent",
+    sl_value: float = 2.0,
+    tp_type: str = "off",
+    tp_value: float = 4.0,
+    atr_period: int = 14,
+    allow_short=False,
+    trade_size_mode: str = "fixed",
+    trade_size_percent: float = 5.0,
+    trade_size_atr_risk: float = 1.0,
+    trade_size_usdt: float = 1000.0,
+    trade_size_vol_target: float = 0.02,
+    trade_size_vol_span: int = 10,
+    trade_size_capital: float = 10000.0,
+    emulate=False,
+    trend_filter=False,
+    trend_interval: str = "60",
+    trend_ema_period: int = 50,
+) -> ComposedStrategySpec:
+    """Build a validated ``ComposedStrategySpec`` from the union of both call
+    sites' fields, applying every clamp/whitelist centrally. Assigns a fresh
+    ``id`` via :func:`new_spec_id`. Booleans accept HTML-form strings (see
+    :func:`_as_bool`). The caller still handles persistence + validation errors.
+
+    Note: ``trade_size_mode`` whitelist now INCLUDES ``vol_target`` — the old
+    strategy.py save() clamp excluded it and silently downgraded vol_target
+    strategies to "fixed", so a vol_target spec could not round-trip. Fixed here.
+    """
+    return ComposedStrategySpec(
+        id=new_spec_id(),
+        name=(name or "unnamed").strip(),
+        description=(description or "").strip(),
+        blocks=list(blocks),
+        trade_size=float(trade_size),
+        entry_logic=entry_logic if entry_logic in ("OR", "AND") else "OR",
+        exit_logic=exit_logic if exit_logic in ("OR", "AND") else "OR",
+        order_type=order_type if order_type in ("market", "limit") else "market",
+        limit_offset_bps=float(limit_offset_bps),
+        use_bracket=_as_bool(use_bracket),
+        sl_type=sl_type if sl_type in ("percent", "atr") else "percent",
+        sl_value=float(sl_value),
+        tp_type=tp_type if tp_type in ("percent", "atr", "off") else "off",
+        tp_value=float(tp_value),
+        atr_period=int(atr_period),
+        allow_short=_as_bool(allow_short),
+        trade_size_mode=(
+            trade_size_mode
+            if trade_size_mode
+            in ("fixed", "fixed_usdt", "percent_equity", "atr_target", "vol_target")
+            else "fixed"
+        ),
+        trade_size_percent=float(trade_size_percent),
+        trade_size_atr_risk=float(trade_size_atr_risk),
+        trade_size_usdt=float(trade_size_usdt),
+        trade_size_vol_target=float(trade_size_vol_target),
+        trade_size_vol_span=int(trade_size_vol_span),
+        trade_size_capital=float(trade_size_capital),
+        emulate=_as_bool(emulate),
+        trend_filter=_as_bool(trend_filter),
+        trend_interval=(trend_interval or "60").strip(),
+        trend_ema_period=int(trend_ema_period),
+    )
+
+
 CATALOG_FILE = Path.home() / ".cache" / "nautilus_web_app" / "strategy_catalog.json"
-
-
 def _catalog_block_names(spec: ComposedStrategySpec) -> list[str]:
     return [b.type for b in spec.blocks]
 

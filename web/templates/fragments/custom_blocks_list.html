@@ -8,6 +8,11 @@
           <div class="text-muted" style="font-size:11px;">{{ cb.meta.help }}</div>
         </div>
         <button class="btn btn-ghost"
+                hx-post="/strategy/blocks/{{ cb.name }}/chat/new"
+                hx-target="#block-edit-chat"
+                hx-swap="innerHTML"
+                style="font-size:11px;">✏️ AI ile düzenle</button>
+        <button class="btn btn-ghost"
                 hx-delete="/strategy/blocks/custom/{{ cb.name }}"
                 hx-target="#custom-blocks-list"
                 hx-swap="innerHTML"

@@ -17,8 +17,50 @@ from __future__ import annotations
 import json
 import math
 import threading
+import time
+import uuid
 from datetime import UTC, datetime
 from pathlib import Path
+
+try:
+    import markdown as _md
+
+    def render_md(txt: str, extensions: tuple[str, ...] = ("fenced_code", "tables")) -> str:
+        """Render markdown → HTML. Was hand-copied into strategy/backtest/wiki
+        routes; lives here now (leaf module). ``extensions`` lets the wiki route
+        keep its ``toc`` variant without a second copy."""
+        return _md.markdown(txt, extensions=list(extensions))
+except Exception:  # pragma: no cover
+
+    def render_md(txt: str, extensions: tuple[str, ...] = ("fenced_code", "tables")) -> str:
+        return f"<pre>{txt}</pre>"
+
+
+# ---------------------------------------------------------------------------
+# Anonymous session id — a cookie-scoped id used to partition per-user state
+# (draft blocks in the composer, last backtest result). Lived only in
+# strategy.py; moved here so backtest.py can share the SAME session dimension
+# (its _LAST_RESULT was a process-global single slot — last-writer-wins across
+# users). Leaf module: takes duck-typed request/response (``.cookies`` /
+# ``.set_cookie``) so it need not import FastAPI.
+# ---------------------------------------------------------------------------
+SESSION_COOKIE = "nautlab_sid"
+_SESSION_COOKIE_MAX_AGE = 3600
+
+
+def session_id(request, response=None) -> str:
+    """Return the caller's ``nautlab_sid`` (minting one if absent). When
+    ``response`` is given, (re)set the cookie for sliding expiry — refreshed on
+    EVERY response so a draft doesn't expire mid-composition."""
+    sid = request.cookies.get(SESSION_COOKIE)
+    if not sid:
+        sid = uuid.uuid4().hex
+    if response is not None:
+        response.set_cookie(
+            SESSION_COOKIE, sid, httponly=True, samesite="lax",
+            max_age=_SESSION_COOKIE_MAX_AGE,
+        )
+    return sid
 
 
 # ---------------------------------------------------------------------------
@@ -93,6 +135,81 @@ class ProgressStore:
                     on_evict(evict_id)
             self._d[run_id] = initial
             return True
+
+
+# ---------------------------------------------------------------------------
+# Chat store — server-side multi-turn conversation registry. Distinct from
+# ProgressStore: a chat has no "done" flag, so eviction is TTL + oldest-first
+# (not done-first). Generalizes the hand-rolled _CHAT_STORE/_CHAT_LOCK/
+# _chat_evict_locked block that "AI ile iyileştir" grew in web/routes/backtest.py
+# (:137-157); the new block-edit / draft-edit chats reuse it instead of copying.
+#
+# The LLM call MUST NOT run under the lock. Use the read-copy / commit pattern:
+#   conv = store.get(cid)                 # read a copy (short lock)
+#   reply = await asyncio.to_thread(...)  # LLM call, no lock held
+#   store.commit(cid, lambda c: ...)      # re-fetch under lock, mutate, stamp ts
+# ---------------------------------------------------------------------------
+class ChatStore:
+    """Bounded conv-id → conversation-dict registry with TTL + oldest-first eviction.
+
+    Each conversation dict is caller-defined but must carry a ``ts`` key
+    (``time.monotonic()``) which this store maintains. ``ttl_sec`` drops idle
+    conversations; ``max_entries`` caps concurrent conversations (oldest first).
+    """
+
+    def __init__(self, ttl_sec: int = 30 * 60, max_entries: int = 100) -> None:
+        self._d: dict[str, dict] = {}
+        self._lock = threading.Lock()
+        self.ttl_sec = ttl_sec
+        self.max_entries = max_entries
+
+    def _evict_locked(self) -> None:
+        """Drop TTL-expired conversations, then the oldest while over capacity.
+
+        Caller holds ``self._lock``.
+        """
+        now = time.monotonic()
+        for cid in [
+            c for c, v in self._d.items() if now - v.get("ts", now) > self.ttl_sec
+        ]:
+            self._d.pop(cid, None)
+        while len(self._d) > self.max_entries:
+            oldest = min(self._d, key=lambda k: self._d[k].get("ts", 0.0))
+            self._d.pop(oldest, None)
+
+    def new(self, conv: dict) -> str:
+        """Register ``conv`` under a fresh conv_id, stamp ts, evict, return the id."""
+        conv_id = uuid.uuid4().hex[:8]
+        conv["ts"] = time.monotonic()
+        with self._lock:
+            self._d[conv_id] = conv
+            self._evict_locked()
+        return conv_id
+
+    def get(self, conv_id: str) -> dict | None:
+        """Return a shallow copy of the conversation (or None), under the lock.
+
+        A copy so the caller can read/iterate without holding the lock while the
+        LLM call runs; writes must go through ``commit``.
+        """
+        with self._lock:
+            conv = self._d.get(conv_id)
+            return dict(conv) if conv is not None else None
+
+    def commit(self, conv_id: str, mutate):
+        """Re-fetch the live conversation under the lock, apply ``mutate(conv)``,
+        refresh its ts, and evict. Returns the mutated conv, or None if it was
+        evicted while the LLM call ran (caller renders an "expired" fragment).
+        """
+        with self._lock:
+            conv = self._d.get(conv_id)
+            if conv is None:
+                return None
+            mutate(conv)
+            conv["ts"] = time.monotonic()
+            self._evict_locked()
+            # _evict_locked may have dropped it (TTL) — return only if still live.
+            return self._d.get(conv_id)
 
 
 # ---------------------------------------------------------------------------

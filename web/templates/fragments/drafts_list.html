@@ -18,7 +18,7 @@
       <td class="mono" style="font-size:12px;">{{ b.params }}</td>
       <td>
         <button class="btn btn-icon" hx-delete="/strategy/drafts/{{ loop.index0 }}"
-                hx-target="#drafts" hx-swap="innerHTML">🗑</button>
+                hx-target="#drafts" hx-swap="innerHTML" hx-include="[form='save-form']">🗑</button>
       </td>
     </tr>
   {% endfor %}

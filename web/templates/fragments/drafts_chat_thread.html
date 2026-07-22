@@ -1,0 +1,113 @@
+{# B) Strateji taslağının BLOK LİSTESİNİ AI ile düzenleme sohbeti — #drafts-edit-chat'e swap.
+   POST /strategy/drafts/chat/new (başlat) + /strategy/drafts/chat (turn)
+   + /strategy/drafts/chat/apply (onayla → gerçek draft'a yaz). #}
+{% if stage == "expired" %}
+  <div class="panel" style="margin-top:8px;">
+    <div class="panel-body empty-state small">
+      ⌛ Sohbet süresi doldu. <b>💬 AI ile düzenle</b>'ye tekrar basıp yeniden başlat.
+    </div>
+  </div>
+{% else %}
+  <div class="panel" style="border-color:var(--accent);margin-top:8px;">
+    <div class="panel-header">
+      <div class="panel-title">💬 AI ile blok listesi düzenle</div>
+      <div class="spacer"></div>
+      <button class="btn btn-ghost" type="button"
+              style="font-size:11px;padding:3px 10px;"
+              onclick="document.getElementById('drafts-edit-chat').innerHTML='';"
+              title="Sohbeti kapat">✕ Kapat</button>
+    </div>
+    <div class="panel-body stack" style="gap:12px;">
+
+      {# ── Mesaj balonları ── #}
+      <div class="chat-thread-list" id="drafts-chat-bubbles">
+        {% for m in messages %}
+          <div class="chat-bubble {{ 'chat-user' if m.role == 'user' else 'chat-assistant' }}">
+            {{ (m.display if m.display is defined and m.display else m.content) | replace('\n', '<br>') | safe }}
+          </div>
+        {% endfor %}
+      </div>
+
+      {# ── Mesaj gönderme formu ── #}
+      <form class="row" style="align-items:flex-end;gap:8px;"
+            hx-post="/strategy/drafts/chat"
+            hx-target="#drafts-edit-chat"
+            hx-swap="innerHTML"
+            hx-indicator="#drafts-chat-spinner"
+            hx-include="[form='save-form']"
+            hx-on::after-request="this.reset()">
+        <input type="hidden" name="conv_id" value="{{ conv_id }}">
+        <textarea name="message" rows="2" style="flex:1;resize:vertical;"
+                  placeholder="Ne değiştireyim? (ör. 'RSI 70 üstünde çıkış bloğu ekle', 'EMA periyodunu 20 yap')"
+                  aria-label="Blok listesi düzenleme mesajı"></textarea>
+        <button class="btn btn-primary" type="submit">
+          <span class="btn-spin spin">⟳</span> Gönder
+        </button>
+      </form>
+      <div class="row">
+        <span class="htmx-indicator text-muted mono" id="drafts-chat-spinner" style="font-size:11px;">
+          <span class="spin">⟳</span> Claude yazıyor…
+        </span>
+      </div>
+
+      {# ── Hata (öneri geçersizse) ── #}
+      {% if error %}
+        <div class="text-muted" style="font-size:11px;border-left:2px solid rgba(239,68,68,0.6);padding-left:8px;">
+          ✗ {{ error }} · Önceki liste korunuyor.
+        </div>
+      {% endif %}
+
+      {# ── Güncel (önerilen) blok listesi önizlemesi ── #}
+      <div class="panel" style="border-color:rgba(34,197,94,0.35);">
+        <div class="panel-header">
+          <div class="panel-title">ÖNERİLEN LİSTE</div>
+        </div>
+        <div class="panel-body">
+          {% if preview_blocks %}
+            <table class="data">
+              <thead>
+                <tr><th style="width:36px;">#</th><th>Block</th><th>Role</th><th>Parameters</th></tr>
+              </thead>
+              <tbody>
+                {% for b in preview_blocks %}
+                  <tr>
+                    <td class="muted mono">{{ loop.index }}</td>
+                    <td>{{ block_catalog[b.type].label }}
+                      <span class="text-muted mono" style="font-size:11px;">· {{ b.type }}</span></td>
+                    <td><span class="badge {{ b.role }}">{{ b.role }}</span></td>
+                    <td class="mono" style="font-size:12px;">{{ b.params }}</td>
+                  </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          {% else %}
+            <div class="empty-state" style="font-size:12px;">Liste boş.</div>
+          {% endif %}
+
+          <form hx-post="/strategy/drafts/chat/apply"
+                hx-target="#drafts" hx-swap="innerHTML"
+                hx-include="[form='save-form']"
+                class="row" style="gap:8px;margin-top:10px;">
+            <input type="hidden" name="conv_id" value="{{ conv_id }}">
+            <button class="btn btn-primary" type="submit">✅ Onayla ve Uygula</button>
+            <span class="text-muted" style="font-size:11px;align-self:center;">
+              Mevcut taslağın üzerine yazılır.
+            </span>
+          </form>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <script>
+    (function () {
+      var el = document.getElementById('drafts-chat-bubbles');
+      if (el) el.scrollTop = el.scrollHeight;
+    })();
+  </script>
+
+  {# Live-update the side Strategy Preview (OOB) with the PROPOSED blocks +
+     the user's current name/options carried in via hx-include. #}
+  {% include "fragments/strategy_preview.html" %}
+{% endif %}

@@ -20,18 +20,8 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse
 
+from web.shared import render_md
 from wiki_helper import WIKI_ROOT, read_wiki_page, resolve_slug
-
-try:
-    import markdown as _md
-
-    def render_md(txt: str) -> str:
-        return _md.markdown(txt, extensions=["fenced_code", "tables", "toc"])
-except Exception:  # pragma: no cover
-
-    def render_md(txt: str) -> str:
-        return f"<pre>{txt}</pre>"
-
 
 router = APIRouter(prefix="/wiki")
 
@@ -40,7 +30,7 @@ def _render(request: Request, rel_path: str, title: str) -> HTMLResponse:
     from server import get_market_info, templates  # local import: avoid circular
 
     md = read_wiki_page(rel_path)
-    html = render_md(md)
+    html = render_md(md, extensions=("fenced_code", "tables", "toc"))
     ctx = {
         "active": "wiki",
         "page_title": title,

@@ -23,7 +23,6 @@ import json
 import threading
 import uuid
 from datetime import UTC, date, datetime
-from typing import Optional
 
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse
@@ -31,33 +30,23 @@ from fastapi.responses import HTMLResponse
 from composer import BLOCK_CATALOG, load_catalog
 from data import (
     BYBIT_ALL_INTERVALS,
-    BYBIT_CATEGORIES,
-    BYBIT_SYMBOLS,
     discover_index_tickers,
     external_instrument_object,
-    list_catalog_bybit_symbols,
     list_external_instruments,
     load_external_bars,
     load_index_bars,
 )
 from web.viewmodels import iteration_row
-from wiki_helper import read_wiki_page
-
-try:
-    import markdown as _md
-
-    def render_md(txt: str) -> str:
-        return _md.markdown(txt, extensions=["fenced_code", "tables"])
-except Exception:  # pragma: no cover
-
-    def render_md(txt: str) -> str:
-        return f"<pre>{txt}</pre>"
-
 
 router = APIRouter(prefix="/backtest")
 
 # Leaf shared module — keeps the route→shared dependency arrow one-directional.
-from web.shared import BACKTEST_LOG, ProgressStore  # noqa: E402
+from web.shared import (  # noqa: E402
+    BACKTEST_LOG,
+    ChatStore,
+    ProgressStore,
+    session_id,
+)
 from web.shared import chart_url as _chart_url  # noqa: E402
 from web.shared import load_result_snapshot as _load_result_snapshot  # noqa: E402
 from web.shared import log_backtest as _log_backtest  # noqa: E402
@@ -85,13 +74,36 @@ def _catalog_index_symbols() -> list[str]:
     return sorted(seen)
 
 
-_LAST_RESULT: dict[str, Optional] = {
-    "r": None,
-    "spec_name": None,
-    "narrative": "",
-    "bars_info": {},
-}
+# Last backtest result — now SESSION-SCOPED (sid → slot) instead of a single
+# process-global slot that was last-writer-wins across all users. Bounded like
+# _DRAFTS: drop the oldest sid when over cap. Read via _last_result_get(sid),
+# written by the run worker via _last_result_set(sid, ...).
+_LAST_RESULT: dict[str, dict] = {}
 _LAST_RESULT_LOCK = threading.Lock()
+_MAX_RESULT_SESSIONS = 500
+
+
+def _empty_result_slot() -> dict:
+    return {"r": None, "spec_name": None, "narrative": "", "bars_info": {}}
+
+
+def _last_result_get(sid: str) -> dict:
+    """Return a copy of this session's last-result slot (empty slot if none)."""
+    with _LAST_RESULT_LOCK:
+        slot = _LAST_RESULT.get(sid)
+        return dict(slot) if slot is not None else _empty_result_slot()
+
+
+def _last_result_set(sid: str, *, r, spec_name, narrative, bars_info) -> None:
+    with _LAST_RESULT_LOCK:
+        if sid not in _LAST_RESULT and len(_LAST_RESULT) >= _MAX_RESULT_SESSIONS:
+            _LAST_RESULT.pop(next(iter(_LAST_RESULT)), None)
+        _LAST_RESULT[sid] = {
+            "r": r,
+            "spec_name": spec_name,
+            "narrative": narrative,
+            "bars_info": bars_info,
+        }
 
 # Progress store: run_id → {steps, done, result, error, spec_name}
 # ProgressStore holds the dict + lock + capped done-first eviction; the
@@ -136,25 +148,10 @@ _PLAN_INFLIGHT: dict = {}
 
 # ── Multi-turn "AI ile iyileştir" sohbeti — sunucu tarafı konuşma store'u ──
 # conv_id → {"messages": [...], "context": {...}, "last_refined": str, "ts": monotonic}.
-# ProgressStore'un done-first eviction semantiği chat'e uymaz (sohbetin "done"u
-# yok), o yüzden basit dict+lock + TTL/kapasite eviction. LLM çağrısı ASLA lock
-# altında yapılmaz: oku-kopyala → chat_refine (lock'suz) → tekrar-al-ve-yaz.
-_CHAT_STORE: dict[str, dict] = {}
-_CHAT_LOCK = threading.Lock()
-_CHAT_TTL = 30 * 60  # 30 dk — aktif oturum
-_CHAT_MAX = 100  # eşzamanlı konuşma tavanı
-
-
-def _chat_evict_locked() -> None:
-    """TTL'i geçen konuşmaları sil, kapasite aşımında en eskiyi at. _CHAT_LOCK altında çağrılır."""
-    import time as _time
-
-    now = _time.monotonic()
-    for cid in [c for c, v in _CHAT_STORE.items() if now - v["ts"] > _CHAT_TTL]:
-        _CHAT_STORE.pop(cid, None)
-    while len(_CHAT_STORE) > _CHAT_MAX:
-        oldest = min(_CHAT_STORE, key=lambda k: _CHAT_STORE[k]["ts"])
-        _CHAT_STORE.pop(oldest, None)
+# web.shared.ChatStore: TTL + oldest-first eviction (chat'in "done"u yok). LLM
+# çağrısı ASLA lock altında yapılmaz: get() (kopya) → chat_refine → commit().
+# (Bu store, ChatStore'un çıkarıldığı el-yapımı orijinaldi; artık ortak sınıfı kullanır.)
+_CHAT = ChatStore()
 
 
 def _parse_bool_form(v: str) -> bool:
@@ -351,44 +348,15 @@ def _generate_narrative(last_row: dict) -> str:
 
 @router.get("", response_class=HTMLResponse)
 def page(request: Request):
-    # Sync handler → FastAPI runs it in a threadpool, so its blocking disk I/O
-    # (load_catalog + read_wiki_page + _recent_runs) doesn't stall the event
-    # loop. (reports/data pages already offload via asyncio.to_thread.)
-    from server import get_market_info, templates
+    # Merged into the unified Studio (Faz 4). The Backtest form now lives as the
+    # "Backtest" tab of /studio; this root path redirects there, preserving the
+    # ?spec_id= deep-link (the catalog picker pre-selects it). The /backtest/*
+    # HTMX endpoints (run, sweep, describe, plan, chat, result) are unchanged.
+    from fastapi.responses import RedirectResponse
 
-    catalog = load_catalog()
-    last_row = None
-    with _LAST_RESULT_LOCK:
-        r = _LAST_RESULT["r"]
-        spec_name = _LAST_RESULT["spec_name"]
-        narrative = _LAST_RESULT.get("narrative", "")
-        bi = dict(_LAST_RESULT.get("bars_info", {}))
-    if r is not None:
-        last_row = _result_viewmodel(r, spec_name, narrative, bi)
-
-    wiki_html = render_md(read_wiki_page("wiki/concepts/order_flow_pipeline.md"))
-    preferred_spec_id = request.query_params.get("spec_id", "")
-    return templates.TemplateResponse(
-        request,
-        "backtest.html",
-        {
-            "active": "backtest",
-            "page_title": "Backtest",
-            "market": get_market_info(),
-            "catalog": catalog,
-            "block_catalog": BLOCK_CATALOG,
-            "last": last_row,
-            "wiki_html": wiki_html,
-            "preferred_spec_id": preferred_spec_id,
-            "recent_runs": _recent_runs(6),
-            # Main panel: symbol datalist (type-to-find), category selection, multi-TF checkboxes.
-            "bybit_symbols": list_catalog_bybit_symbols()
-            or [{"symbol": s, "category": "linear"} for s in BYBIT_SYMBOLS],
-            "bybit_categories": BYBIT_CATEGORIES,
-            "bybit_intervals": BYBIT_ALL_INTERVALS,
-            "index_symbols": _catalog_index_symbols(),
-        },
-    )
+    spec_id = request.query_params.get("spec_id", "")
+    target = f"/studio?spec_id={spec_id}" if spec_id else "/studio"
+    return RedirectResponse(target, status_code=307)
 
 
 @router.get("/result/{run_id}", response_class=HTMLResponse)
@@ -487,6 +455,9 @@ async def run(
 
     # Capture all form params for the worker (no I/O in this handler)
     run_id = uuid.uuid4().hex[:8]
+    # Session id captured HERE (request-time) — the worker thread has no request,
+    # so it writes the result into THIS session's slot.
+    sid = session_id(request)
     # Evict to stay within cap (done-first, else oldest — see ProgressStore).
     _RUN_STORE.create_evicting(
         run_id,
@@ -885,11 +856,15 @@ async def run(
                     _RUN_PROGRESS[run_id]["result"] = result
                     _RUN_PROGRESS[run_id]["bars_info"] = bars_info
                     _RUN_PROGRESS[run_id]["narrative"] = narrative
-            with _LAST_RESULT_LOCK:  # prevent torn read (#8)
-                _LAST_RESULT["r"] = result
-                _LAST_RESULT["spec_name"] = spec.name
-                _LAST_RESULT["bars_info"] = bars_info
-                _LAST_RESULT["narrative"] = narrative  # match with the new result (#23)
+            # Session-scoped last-result (prevent torn read #8; match #23) — sid
+            # was captured at request time (worker has no request context).
+            _last_result_set(
+                sid,
+                r=result,
+                spec_name=spec.name,
+                narrative=narrative,
+                bars_info=bars_info,
+            )
 
             # Persist the FULL result view-model so the history tab can reload
             # this exact screen later (the jsonl log keeps only scalar metrics).
@@ -1122,10 +1097,9 @@ async def describe(
             propose_custom_block,
         )
         from composer import (
-            ComposedStrategySpec,
             SignalBlock,
             append_to_catalog,
-            new_spec_id,
+            build_spec,
             register_custom_from_disk,
         )
         from custom_block_store import is_valid_name, save_custom
@@ -1244,8 +1218,7 @@ async def describe(
                     for k, v in raw.items()
                 }
 
-            spec = ComposedStrategySpec(
-                id=new_spec_id(),
+            spec = build_spec(
                 name=label,
                 description=desc,
                 blocks=[
@@ -1989,7 +1962,6 @@ async def chat_new(
     """Yeni bir sohbet başlat: conv_id üret, ilk user mesajını (metrikler gömülü) gönder,
     ilk asistan turn'ünü store'a yaz, chat_thread fragment'ini döndür."""
     import asyncio
-    import time as _time
 
     from server import templates
 
@@ -2022,7 +1994,6 @@ async def chat_new(
 
     reply = await asyncio.to_thread(chat_refine, [first_user], context)
 
-    conv_id = uuid.uuid4().hex[:8]
     conv = {
         "messages": [
             first_user,
@@ -2030,11 +2001,8 @@ async def chat_new(
         ],
         "context": context,
         "last_refined": reply.get("refined") or desc,
-        "ts": _time.monotonic(),
     }
-    with _CHAT_LOCK:
-        _CHAT_STORE[conv_id] = conv
-        _chat_evict_locked()
+    conv_id = _CHAT.new(conv)
 
     return _render_chat_thread(request, conv, conv_id)
 
@@ -2051,49 +2019,45 @@ async def chat_turn(
     LLM çağrısı lock'suz yapılır (oku-kopyala → çağır → tekrar-al-ve-yaz).
     """
     import asyncio
-    import time as _time
 
     from server import templates
 
     msg = (message or "").strip()
     if not msg:
         # Boş mesaj — mevcut thread'i olduğu gibi geri ver (varsa).
-        with _CHAT_LOCK:
-            conv = _CHAT_STORE.get(conv_id)
+        conv = _CHAT.get(conv_id)
         if conv is None:
             return templates.TemplateResponse(
                 request, "fragments/chat_thread.html", {"stage": "expired"}
             )
         return _render_chat_thread(request, conv, conv_id)
 
-    # Oku-kopyala (lock kısa süre tutulur).
-    with _CHAT_LOCK:
-        conv = _CHAT_STORE.get(conv_id)
-        if conv is None:
-            return templates.TemplateResponse(
-                request, "fragments/chat_thread.html", {"stage": "expired"}
-            )
-        history = list(conv["messages"])
-        context = dict(conv["context"])
+    # Oku-kopyala (lock kısa süre tutulur) — ChatStore.get() bir kopya döndürür.
+    conv = _CHAT.get(conv_id)
+    if conv is None:
+        return templates.TemplateResponse(
+            request, "fragments/chat_thread.html", {"stage": "expired"}
+        )
+    history = list(conv["messages"])
+    context = dict(conv["context"])
 
     user_turn = {"role": "user", "content": msg, "display": msg}
     from agent import chat_refine
 
     reply = await asyncio.to_thread(chat_refine, history + [user_turn], context)
 
-    # Tekrar-al-ve-yaz — arada evict edilmiş olabilir.
-    with _CHAT_LOCK:
-        conv = _CHAT_STORE.get(conv_id)
-        if conv is None:
-            return templates.TemplateResponse(
-                request, "fragments/chat_thread.html", {"stage": "expired"}
-            )
-        conv["messages"].append(user_turn)
-        conv["messages"].append({"role": "assistant", "content": reply["text"]})
+    # Tekrar-al-ve-yaz — arada evict edilmiş olabilir (commit None dönerse expired).
+    def _apply(c: dict) -> None:
+        c["messages"].append(user_turn)
+        c["messages"].append({"role": "assistant", "content": reply["text"]})
         if reply.get("refined"):
-            conv["last_refined"] = reply["refined"]
-        conv["ts"] = _time.monotonic()
-        _chat_evict_locked()
+            c["last_refined"] = reply["refined"]
+
+    conv = _CHAT.commit(conv_id, _apply)
+    if conv is None:
+        return templates.TemplateResponse(
+            request, "fragments/chat_thread.html", {"stage": "expired"}
+        )
 
     return _render_chat_thread(request, conv, conv_id)
 

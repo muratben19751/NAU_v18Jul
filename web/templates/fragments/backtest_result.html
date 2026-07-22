@@ -1,5 +1,5 @@
 {% if last.error %}
-<div class="panel" style="border-color: rgba(248,113,113,0.5);">
+<div class="panel" style="border-color: var(--pnl-down);">
   <div class="panel-header"><div class="panel-title">Result · {{ last.spec_name }}</div></div>
   <div class="panel-body">
     <span class="badge exit">✗ ERROR</span>
@@ -507,8 +507,8 @@
                 {% set k = t.exit_kind %}
                 {% if k == 'sl' %}<span class="chip chip-bad" title="{{ t.exit_reason }}">SL</span>
                 {% elif k == 'tp' %}<span class="chip chip-good" title="{{ t.exit_reason }}">TP</span>
-                {% elif k == 'signal' %}<span class="chip" style="background:rgba(96,165,250,0.18);color:#60a5fa;" title="{{ t.exit_reason }}">Signal</span>
-                {% elif k == 'flip' %}<span class="chip" style="background:rgba(251,191,36,0.18);color:#fbbf24;" title="{{ t.exit_reason }}">Flip</span>
+                {% elif k == 'signal' %}<span class="chip" style="background:var(--accent-soft);color:var(--accent);" title="{{ t.exit_reason }}">Signal</span>
+                {% elif k == 'flip' %}<span class="chip" style="background:rgba(255,207,64,0.18);color:var(--amber);" title="{{ t.exit_reason }}">Flip</span>
                 {% elif k == 'eob' %}<span class="chip" title="{{ t.exit_reason }}">Last</span>
                 {% else %}<span class="text-muted">—</span>{% endif %}
               </td>

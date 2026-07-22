@@ -207,6 +207,7 @@ from web.routes import (  # noqa: E402  (late import: routers import from server
     loop,
     reports,
     strategy,
+    studio,
     wiki,
 )
 from web.routes import (
@@ -223,6 +224,7 @@ from web.routes import (
 )
 
 app.include_router(dashboard.router)
+app.include_router(studio.router)
 app.include_router(strategy.router)
 app.include_router(backtest.router)
 app.include_router(loop.router)

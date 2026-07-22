@@ -1572,6 +1572,312 @@ Return the JSON only."""
     )
 
 
+# ── "Blok kodunu AI ile düzenle" — çok-turlu sohbet ─────────────────────────
+# propose_custom_block (yukarı) tek-atış ÜRETİR; bu ise MEVCUT bir custom block'un
+# kodunu kullanıcıyla SOHBET ederek düzenler. Sohbet danışman tonu _CHAT_SYSTEM_PROMPT
+# (chat_refine) deseninden; kod/güvenlik kuralları CUSTOM_BLOCK_SYSTEM_PROMPT'tan gelir.
+# Protokol: asistan serbest TR sohbet metni verir; kodu DEĞİŞTİRDİĞİNDE yanıtın EN SONUNA
+# tek satır [NET_KOD]: işareti + tek bir JSON {"meta":..., "code":...} bloğu ekler.
+_BLOCK_EDIT_SYSTEM_PROMPT = """Sen bir alım-satım (trading) sinyal BLOĞU (Python kodu) düzenleme asistanısın.
+Kullanıcı MEVCUT bir bloğun kodunu seninle SOHBET ederek düzenliyor.
+TÜM sohbet yanıtların TÜRKÇE, kısa ve net olsun.
+
+Davranış:
+- Kullanıcının isteğine DOĞRUDAN cevap ver; ne değiştirdiğini bir-iki cümleyle açıkla.
+- Bloğun ADINI (name) ASLA değiştirme — sadece meta (label/params/help) ve code üzerinde çalış.
+- Kullanıcı yalnızca SORU sorduysa (değişiklik istemediyse) kodu OLDUĞU GİBİ bırak; [NET_KOD] EKLEME.
+- Mevcut kodu koru; yalnızca istenen değişikliği uygula, gereksiz yere baştan yazma.
+
+Kod kuralları (ihlal edilirse kod reddedilir):
+- `evaluate(state, block, closes, indicators, portfolio)` tanımlı olmalı; "long"/"short"/"exit"/None döner.
+- `max_lookback(params)` modül seviyesinde tanımlı olmalı (gerekli bar sayısı).
+- import YOK; `math`, `statistics`, `ind` (NAU-parite indikatör kütüphanesi) hazır — import gerekmez.
+  Indikatör matematiğini elle yazma; `ind.calc_rsi/calc_atr/calc_adx/...` kullan.
+- try/except, with, async, lambda, yield, global/nonlocal, delete YOK.
+- `_` ile başlayan ad/attribute (dunder) YOK.
+- İzinli built-in'ler: abs, min, max, sum, len, round, sorted, range, int, float, bool, str,
+  list, tuple, dict, set, any, all, enumerate, zip, reversed, isinstance.
+- Sinyal frekansı: blok çok seyrek ateşlerse işlem az olur ve elenir; eşikleri gevşek tut.
+
+Kodu DEĞİŞTİRDİĞİNDE yanıtının EN SONUNA — sohbet metninden sonra — tam olarak şu biçimi ekle:
+[NET_KOD]:
+{"meta": {"label": "...", "params": {...}, "help": "..."}, "code": "def evaluate(...):\\n    ...\\n"}
+Bu JSON tek satır veya çok satır olabilir ama GEÇERLİ JSON olmalı (code alanı \\n kaçışlı string).
+Bu blok dışındaki metin kullanıcıyla serbest sohbetindir. Kodu değiştirmediysen bu bloğu HİÇ ekleme.
+"""
+
+
+def chat_edit_block(
+    name: str,
+    existing_meta: dict,
+    existing_code: str,
+    conversation_messages: list[dict],
+) -> dict:
+    """Mevcut bir custom block'un kodunu çok-turlu sohbetle düzenle.
+
+    ``conversation_messages``: Anthropic messages[] turn'leri. İlk user turn'üne
+    çağıran taraf mevcut kod+meta'yı gömer; bu fonksiyon listeyi olduğu gibi iletir.
+    Döndürür: {"text", "meta", "code", "changed", "error", "usage"}.
+      - ``changed`` True ise ``meta``/``code`` yeni (doğrulanmış) değerlerdir.
+      - ``changed`` False ise kod DEĞİŞMEDİ (kullanıcı soru sormuş) — çağıran eski
+        kod/meta'yı korur; ``error`` doluysa kod önerildi ama doğrulama başarısız.
+    Herhangi bir LLM/parse hatasında nazik TR metin + ``changed=False`` döner.
+    """
+    client = _get_client()
+    try:
+        import re
+
+        resp = _create_message(
+            client,
+            max_tokens=4000,
+            system=_BLOCK_EDIT_SYSTEM_PROMPT,
+            messages=conversation_messages,
+        )
+        usage = _usage_dict(resp)
+        text = "".join(
+            b.text for b in resp.content if getattr(b, "type", "") == "text"
+        ).strip()
+
+        # [NET_KOD]: işaretini ara; sonrasındaki JSON'u ayıkla (chat_refine deseni).
+        m = re.search(r"\[NET_KOD\]\s*:", text)
+        if not m:
+            # Kod değişmedi — kullanıcı soru sormuş olabilir.
+            if not text:
+                text = (
+                    "Anladım. Blokta ne değiştirmemi istediğini biraz daha açar mısın?"
+                )
+            return {
+                "text": text,
+                "meta": existing_meta,
+                "code": existing_code,
+                "changed": False,
+                "error": "",
+                "usage": usage,
+            }
+
+        chat_text = text[: m.start()].rstrip()
+        payload = _extract_json_object(text[m.end() :])
+        try:
+            data = json.loads(payload)
+            new_meta = data["meta"]
+            new_code = data["code"]
+            if (
+                not isinstance(new_meta, dict)
+                or "label" not in new_meta
+                or "params" not in new_meta
+            ):
+                raise ValueError("meta must have label and params")
+        except (json.JSONDecodeError, KeyError, TypeError, ValueError) as e:
+            return {
+                "text": chat_text
+                or "Kodu güncellemeye çalıştım ama çıktı bozuktu. Tekrar dener misin?",
+                "meta": existing_meta,
+                "code": existing_code,
+                "changed": False,
+                "error": f"model output parse error: {e}",
+                "usage": usage,
+            }
+
+        # Güvenlik + smoke: propose_custom_block:1554-1566 ile birebir defense-in-depth.
+        try:
+            _validate_generated_code(new_code)
+            _test_execute_generated(new_code, meta=new_meta, require_max_lookback=True)
+        except GeneratedCodeError as e:
+            # Kod reddedildi — eski geçerli kodu KORU, hatayı kullanıcıya göster
+            # (otomatik iç-tur yok; kullanıcı sohbetle düzelttirir).
+            return {
+                "text": chat_text,
+                "meta": existing_meta,
+                "code": existing_code,
+                "changed": False,
+                "error": str(e),
+                "usage": usage,
+            }
+
+        if not chat_text:
+            chat_text = "Kodu güncelledim. Önizlemeyi kontrol edip kaydedebilirsin."
+        return {
+            "text": chat_text,
+            "meta": new_meta,
+            "code": new_code,
+            "changed": True,
+            "error": "",
+            "usage": usage,
+        }
+    except Exception as _e:
+        import logging as _logging
+
+        _logging.getLogger("agent.chat").warning("chat_edit_block failed: %r", _e)
+        return {
+            "text": ("Şu an AI danışmana ulaşılamadı. Biraz sonra tekrar dener misin?"),
+            "meta": existing_meta,
+            "code": existing_code,
+            "changed": False,
+            "error": "",
+            "usage": {},
+        }
+
+
+# ── "Blok listesini AI ile düzenle" — çok-turlu sohbet ──────────────────────
+# Strateji taslağındaki (draft) SignalBlock listesini kullanıcıyla sohbet ederek
+# düzenler. propose_composed_strategy'nin katalog-gömme (_catalog_summary) ve
+# param-clamp (_coerce_catalog_blocks) mantığını yeniden kullanır; halüsinasyon
+# blok tipi üretmeyi ENGELLER (yalnızca BLOCK_CATALOG'daki tipler geçer).
+_BLOCKS_EDIT_SYSTEM_PROMPT = """Sen bir alım-satım (trading) stratejisi TASLAĞINI düzenleyen bir asistansın.
+Kullanıcı, stratejinin BLOK LİSTESİNİ (giriş/çıkış sinyalleri) seninle SOHBET ederek düzenliyor.
+TÜM sohbet yanıtların TÜRKÇE, kısa ve net olsun.
+
+Kullanabileceğin blok tipleri YALNIZCA aşağıdaki katalogdur — BAŞKA tip UYDURMA:
+{catalog}
+
+Kurallar:
+- Kullanıcının isteğine DOĞRUDAN cevap ver; ne değiştirdiğini bir-iki cümleyle açıkla.
+- Her blok: type (yukarıdaki katalogdan), role ("entry" veya "exit"), params (kataloğun
+  o tip için tanımladığı parametreler; verilmeyenler varsayılana düşer).
+- Yalnızca SORU sorulduysa listeyi OLDUĞU GİBİ bırak; [NET_BLOKLAR] EKLEME.
+- Mevcut listeyi koru; sadece istenen değişikliği uygula (blok ekle/çıkar/parametre değiştir).
+
+Listeyi DEĞİŞTİRDİĞİNDE yanıtının EN SONUNA — sohbet metninden sonra — tam olarak şu biçimi ekle:
+[NET_BLOKLAR]:
+{"blocks": [{"type": "rsi_threshold", "role": "entry", "params": {"period": 14, "threshold": 30}}, ...]}
+Bu GEÇERLİ bir JSON olmalı. Bu blok dışındaki metin kullanıcıyla serbest sohbetindir.
+Listeyi değiştirmediysen bu bloğu HİÇ ekleme.
+"""
+
+
+def _coerce_catalog_blocks(raw_blocks: list) -> list[dict]:
+    """Katalog-dışı tipleri düşür, paramları katalog aralığına clamp'le.
+
+    _validate_composed'daki (agent.py:725) coercion mantığıyla aynı; ancak
+    entry/exit ZORUNLULUĞU ve fallback-exit EKLEMEZ — draft düzenlemede liste
+    yarı-tamamlanmış olabilir. Dönen her öğe {type, role, params}.
+    """
+    from composer import BLOCK_CATALOG
+
+    out: list[dict] = []
+    for b in raw_blocks or []:
+        if not isinstance(b, dict):
+            continue
+        btype = b.get("type")
+        role = b.get("role")
+        if btype not in BLOCK_CATALOG or role not in ("entry", "exit"):
+            continue
+        meta = BLOCK_CATALOG[btype]
+        params: dict = {}
+        for pname, pspec in meta["params"].items():
+            raw = (b.get("params") or {}).get(pname, pspec["default"])
+            try:
+                if pspec["type"] == "int":
+                    params[pname] = max(pspec["min"], min(pspec["max"], int(raw)))
+                elif pspec["type"] == "float":
+                    params[pname] = max(pspec["min"], min(pspec["max"], float(raw)))
+                else:
+                    params[pname] = raw if raw in pspec["options"] else pspec["default"]
+            except (TypeError, ValueError):
+                params[pname] = pspec["default"]
+        # cross-family: slow>fast; atr_stop exit-only (mirror _validate_composed).
+        if btype in ("ma_cross", "ema_cross", "macd_cross") and params.get(
+            "slow", 0
+        ) <= params.get("fast", 0):
+            params["fast"], params["slow"] = 10, max(params.get("slow", 30), 30)
+        if btype == "atr_stop":
+            role = "exit"
+        out.append({"type": btype, "role": role, "params": params})
+    return out
+
+
+def chat_edit_blocks(
+    existing_blocks: list[dict],
+    conversation_messages: list[dict],
+) -> dict:
+    """Strateji taslağının blok listesini çok-turlu sohbetle düzenle.
+
+    ``existing_blocks``: [{type, role, params}, ...]. Döndürür:
+      {"text", "blocks", "changed", "error", "usage"}.
+      - ``changed`` True ise ``blocks`` yeni (katalog-doğrulanmış) listedir.
+      - ``changed`` False ise liste DEĞİŞMEDİ; ``error`` doluysa öneri geçersizdi.
+    LLM/parse hatasında nazik TR metin + ``changed=False`` döner.
+    """
+    client = _get_client()
+    try:
+        import re
+
+        system = _BLOCKS_EDIT_SYSTEM_PROMPT.replace("{catalog}", _catalog_summary())
+        resp = _create_message(
+            client,
+            max_tokens=1500,
+            system=system,
+            messages=conversation_messages,
+        )
+        usage = _usage_dict(resp)
+        text = "".join(
+            b.text for b in resp.content if getattr(b, "type", "") == "text"
+        ).strip()
+
+        m = re.search(r"\[NET_BLOKLAR\]\s*:", text)
+        if not m:
+            if not text:
+                text = "Anladım. Blok listesinde ne değiştirmemi istediğini biraz açar mısın?"
+            return {
+                "text": text,
+                "blocks": existing_blocks,
+                "changed": False,
+                "error": "",
+                "usage": usage,
+            }
+
+        chat_text = text[: m.start()].rstrip()
+        payload = _extract_json_object(text[m.end() :])
+        try:
+            data = json.loads(payload)
+            raw_blocks = data["blocks"]
+            if not isinstance(raw_blocks, list):
+                raise ValueError("blocks must be a list")
+        except (json.JSONDecodeError, KeyError, TypeError, ValueError) as e:
+            return {
+                "text": chat_text
+                or "Listeyi güncellemeye çalıştım ama çıktı bozuktu. Tekrar dener misin?",
+                "blocks": existing_blocks,
+                "changed": False,
+                "error": f"model output parse error: {e}",
+                "usage": usage,
+            }
+
+        clean = _coerce_catalog_blocks(raw_blocks)
+        if not clean:
+            # Model yalnızca geçersiz/katalog-dışı tipler önerdi — eski listeyi koru.
+            return {
+                "text": chat_text,
+                "blocks": existing_blocks,
+                "changed": False,
+                "error": "önerilen bloklar geçersiz (katalog-dışı tip veya boş liste)",
+                "usage": usage,
+            }
+
+        if not chat_text:
+            chat_text = (
+                "Blok listesini güncelledim. Önizlemeyi kontrol edip onaylayabilirsin."
+            )
+        return {
+            "text": chat_text,
+            "blocks": clean,
+            "changed": True,
+            "error": "",
+            "usage": usage,
+        }
+    except Exception as _e:
+        import logging as _logging
+
+        _logging.getLogger("agent.chat").warning("chat_edit_blocks failed: %r", _e)
+        return {
+            "text": ("Şu an AI danışmana ulaşılamadı. Biraz sonra tekrar dener misin?"),
+            "blocks": existing_blocks,
+            "changed": False,
+            "error": "",
+            "usage": {},
+        }
+
+
 _AGENT_IDEA_PROMPT = """\
 You are a {market_tr} research agent.{market_note}
 
