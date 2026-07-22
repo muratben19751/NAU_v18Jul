@@ -38,6 +38,13 @@ REGISTRY_FILE = STORE_DIR / "registry.json"
 
 _NAME_RE = re.compile(r"^[a-z][a-z0-9_]{1,39}$")
 
+# Auto-generated block names carry these prefixes: ``desc_*`` from the AI
+# suggest/edit flows, ``agnt_*`` from the autonomous agent. User-authored blocks
+# are named via _slugify(label) and never start with these. Used by list_custom
+# to keep the UI list free of bulk ephemeral blocks (see the 06 · Custom Blocks
+# panel bloat found in the /studio QA pass).
+_EPHEMERAL_PREFIXES = ("desc_", "agnt_")
+
 
 def _ensure_dir() -> None:
     STORE_DIR.mkdir(parents=True, exist_ok=True)
@@ -75,11 +82,20 @@ def is_valid_name(name: str) -> bool:
     return bool(name and _NAME_RE.match(name))
 
 
-def list_custom() -> list[dict[str, Any]]:
-    """Return list of {name, meta, module_file, generated_at, prompt} entries."""
+def list_custom(include_ephemeral: bool = True) -> list[dict[str, Any]]:
+    """Return list of {name, meta, module_file, generated_at, prompt} entries.
+
+    include_ephemeral=False filters out auto-generated blocks whose names carry
+    an ephemeral prefix (``desc_*`` from the AI suggest/edit flows, ``agnt_*``
+    from the autonomous agent). These accumulate in bulk (hundreds) and bloat
+    the ``06 · Custom Blocks`` UI list; the backtest/resolution path in composer
+    still needs the full set, so the default stays True.
+    """
     reg = _read_registry()
     out = []
     for name, info in reg.items():
+        if not include_ephemeral and name.startswith(_EPHEMERAL_PREFIXES):
+            continue
         out.append({"name": name, **info})
     return out
 
