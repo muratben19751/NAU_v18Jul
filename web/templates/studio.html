@@ -1,0 +1,231 @@
+{% extends "base.html" %}
+{% block content %}
+
+{# ══ Mode switch: OTONOM ↔ MANUEL ══════════════════════════════════════════
+   OTONOM  → the studio becomes a live cockpit for the autonomous research loop
+             (System B: POST /agent/run + self-terminating GET /agent/progress).
+   MANUEL  → the professional, hand-driven Compose/Backtest/Analyze surface.
+   Presentation is client-side (labMode below, persisted in localStorage). The
+   server passes active_run_id so OTONOM auto-reconnects to a running loop. ── #}
+<div class="mode-switch" role="tablist" aria-label="Studio mode">
+  <button type="button" class="mode-btn" data-mode="otonom" role="tab"
+          onclick="labMode('otonom')">
+    <span class="mode-dot"></span> OTONOM
+    <span class="mode-sub">kendi kendine araştırır</span>
+  </button>
+  <button type="button" class="mode-btn active" data-mode="manuel" role="tab"
+          onclick="labMode('manuel')">
+    ⌘ MANUEL
+    <span class="mode-sub">elle tasarla &amp; test et</span>
+  </button>
+</div>
+
+{# ══ OTONOM cockpit ═══════════════════════════════════════════════════════ #}
+<div class="lab-modepanel" id="lab-modepanel-otonom" role="tabpanel">
+  <div class="panel cockpit-hero">
+    <div class="panel-body">
+      <form hx-post="/agent/run"
+            hx-target="#agent-result"
+            hx-swap="innerHTML"
+            hx-indicator="#agent-spinner"
+            class="cockpit-form">
+        <div class="cockpit-head">
+          <div>
+            <div class="section-title" style="margin:0 0 2px;">Otonom Araştırma Döngüsü</div>
+            <div class="text-muted" style="font-size:12px;">
+              Claude strateji üretir → N kez backtest eder → en iyisini robustluk testinden geçirir → kataloğa ekler.
+            </div>
+          </div>
+          <div class="cockpit-actions">
+            <button class="btn btn-primary" type="submit">▶ Başlat</button>
+            <span class="htmx-indicator text-muted mono" id="agent-spinner" style="font-size:11px;">
+              döngü başlatılıyor…
+            </span>
+          </div>
+        </div>
+
+        <div class="cockpit-controls">
+          <label class="field cockpit-hint">Yönlendirme <span class="text-muted" style="font-weight:400;">(boş = tamamen otonom)</span>
+            <input type="text" name="hint" placeholder="ör. momentum + RSI, EMA kesişimi, supertrend…">
+          </label>
+          <label class="field">Sembol
+            <select name="symbol">
+              <option value="BTCUSDT" selected>BTCUSDT</option>
+              <option value="ETHUSDT">ETHUSDT</option>
+              <option value="SOLUSDT">SOLUSDT</option>
+            </select>
+          </label>
+          <label class="field">Kategori
+            <select name="category">
+              <option value="linear" selected>linear</option>
+              <option value="spot">spot</option>
+            </select>
+          </label>
+          <label class="field">Zaman dilimi
+            <select name="interval">
+              <option value="15">15m</option>
+              <option value="60" selected>1h</option>
+              <option value="240">4h</option>
+            </select>
+          </label>
+          <label class="field" style="max-width:150px;">
+            İterasyon <span class="text-muted" style="font-weight:400;" id="iter-val">5</span>
+            <input type="range" name="n_iterations" min="2" max="15" value="5"
+                   oninput="document.getElementById('iter-val').textContent=this.value">
+          </label>
+          <label class="field">Robustluk
+            <select name="strict_mode">
+              <option value="strict" selected>Strict</option>
+              <option value="relaxed">Relaxed</option>
+            </select>
+          </label>
+          <label class="field cockpit-check">
+            <input type="checkbox" name="continuous" value="1">
+            <span>Sürekli çalış <span class="text-muted">(kazanandan sonra yeniden başla)</span></span>
+          </label>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <div id="agent-result">
+    {% if active_run_id %}
+    {# Auto-reconnect to a running loop (restart/refresh/started elsewhere). #}
+    <div id="agent-progress-panel"
+         hx-get="/agent/progress/{{ active_run_id }}"
+         hx-trigger="load, every 1s"
+         hx-target="#agent-result"
+         hx-swap="innerHTML">
+      <div class="panel"><div class="panel-body empty-state">⏳ Çalışan döngüye bağlanılıyor…</div></div>
+    </div>
+    {% else %}
+    <div class="panel cockpit-idle">
+      <div class="panel-body empty-state">
+        <div class="cockpit-idle-mark">◇</div>
+        <div style="font-weight:600;margin-bottom:2px;">Döngü boşta</div>
+        <div class="text-muted" style="font-size:12px;">
+          Yukarıdan <b>▶ Başlat</b>'a bas — Claude kendi başına strateji arayıp test etmeye başlasın.
+        </div>
+      </div>
+    </div>
+    {% endif %}
+  </div>
+</div>
+
+{# ══ MANUEL surface — the existing Compose/Backtest/Analyze tabs ═══════════ #}
+<div class="lab-modepanel active" id="lab-modepanel-manuel" role="tabpanel">
+
+  {# ── Top-level tabs: Compose | Backtest | Analyze. SEPARATE namespace
+     (.lab-tab / .lab-tabpanel / labTab()) from the backtest inner tabs
+     (.bt-tab / btTab()) so the two levels never toggle each other. ── #}
+  <div class="lab-tabs" role="tablist">
+    <button type="button" class="lab-tab active" role="tab" data-lab-tab="compose" onclick="labTab('compose')">
+      ✎ Compose
+    </button>
+    <button type="button" class="lab-tab" role="tab" data-lab-tab="backtest" onclick="labTab('backtest')">
+      ▶ Backtest
+    </button>
+    <button type="button" class="lab-tab" role="tab" data-lab-tab="analyze" onclick="labTab('analyze')">
+      🔬 Analyze
+    </button>
+  </div>
+
+  <div class="lab-tabpanel active" id="lab-tabpanel-compose" role="tabpanel">
+    {% include "fragments/compose_body.html" %}
+  </div>
+
+  <div class="lab-tabpanel" id="lab-tabpanel-backtest" role="tabpanel">
+    {% include "fragments/backtest_body.html" %}
+  </div>
+
+  <div class="lab-tabpanel" id="lab-tabpanel-analyze" role="tabpanel">
+    <div class="panel">
+      <div class="panel-body text-muted">
+        Robustness ve Geçmiş, <b>Backtest</b> sekmesinin sağ panelinde yaşar
+        (bir backtest çalıştırdıktan sonra erişilir). Bu sekme ileride bağımsız
+        analiz araçları için ayrılmıştır.
+      </div>
+    </div>
+  </div>
+
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+{# Composer wiki loader (was strategy.html's inline script) #}
+<script>
+  function loadWiki(t) {
+    fetch("/strategy/wiki?type=" + encodeURIComponent(t))
+      .then(r => r.text())
+      .then(html => { document.getElementById("wiki-panel").outerHTML = html; });
+  }
+
+  // Top-level tab switcher. Presentation only; inner panels keep their ids.
+  window.labTab = function(name) {
+    document.querySelectorAll('.lab-tab').forEach(t =>
+      t.classList.toggle('active', t.dataset.labTab === name));
+    document.querySelectorAll('.lab-tabpanel').forEach(p =>
+      p.classList.toggle('active', p.id === 'lab-tabpanel-' + name));
+  };
+
+  // ── Mode switch: OTONOM ↔ MANUEL. Parallel to labTab (separate namespace:
+  //    .mode-btn / .lab-modepanel), persisted in localStorage so the choice
+  //    survives reloads. When a loop is running the server ships active_run_id
+  //    and the OTONOM panel auto-connects; we default the view to OTONOM then. #}
+  window.labMode = function(mode) {
+    document.querySelectorAll('.mode-btn').forEach(b =>
+      b.classList.toggle('active', b.dataset.mode === mode));
+    document.querySelectorAll('.lab-modepanel').forEach(p =>
+      p.classList.toggle('active', p.id === 'lab-modepanel-' + mode));
+    try { localStorage.setItem('studioMode', mode); } catch (e) {}
+  };
+
+  (function initMode() {
+    var running = {{ 'true' if active_run_id else 'false' }};
+    var saved = null;
+    try { saved = localStorage.getItem('studioMode'); } catch (e) {}
+    // A live loop wins: land the user on the cockpit. Else honor their choice.
+    var mode = running ? 'otonom' : (saved === 'otonom' ? 'otonom' : 'manuel');
+    labMode(mode);
+  })();
+
+  // Catalog → Backtest handoff: "▶ Bununla backtest" (catalog_list.html) sets
+  // this and switches tab; picks the saved spec in the backtest #spec-picker.
+  window.studioBacktestSpec = function(specId) {
+    labMode('manuel');
+    var sel = document.getElementById('spec-picker');
+    if (sel) sel.value = specId;
+    labTab('backtest');
+  };
+
+  // ── Preserve <details> open-state + autoscroll step log across the cockpit's
+  //    1s HTMX swaps (mirrors the /agent page behavior). ──
+  (function () {
+    var openIds = [];
+    document.body.addEventListener('htmx:beforeSwap', function (e) {
+      if (!e.target || e.target.id !== 'agent-result') return;
+      openIds = Array.prototype.map.call(
+        document.querySelectorAll('#agent-result details[open][id]'),
+        function (d) { return d.id; });
+    });
+    document.body.addEventListener('htmx:afterSwap', function (e) {
+      if (!e.target || e.target.id !== 'agent-result') return;
+      openIds.forEach(function (id) {
+        var d = document.getElementById(id); if (d) d.open = true; });
+      var el = document.getElementById('agent-steps');
+      var det = document.getElementById('agent-steps-details');
+      if (det && det.open && el) el.scrollTop = el.scrollHeight;
+    });
+    document.body.addEventListener('click', function (e) {
+      var link = e.target.closest ? e.target.closest('a.tl-link') : null;
+      if (!link) return;
+      var id = link.getAttribute('data-tl-target');
+      var d = id && document.getElementById(id);
+      if (d) { d.open = true; d.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); }
+    });
+  })();
+</script>
+{# Backtest page JS (listeners, tab switcher, panel fillers) #}
+{% include "fragments/backtest_scripts.html" %}
+{% endblock %}

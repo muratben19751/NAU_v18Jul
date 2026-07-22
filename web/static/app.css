@@ -2049,3 +2049,132 @@ body.page-studio .section-title { color: var(--text-secondary); font-weight: 500
 /* Empty states + hero even tighter. */
 body.page-studio .empty-state { padding: 12px 12px; }
 body.page-studio .hero-main { padding: 9px 11px; }
+
+/* ============================================================================
+   STUDIO — width containment (scoped)
+   Everything felt "too wide" because .content has no max-width and flexes to
+   the full viewport, so on a wide monitor every panel stretches edge-to-edge
+   and lines get uncomfortably long. Cap the content column and center it, and
+   pull in the widest inner grids so forms/tables don't sprawl.
+   ========================================================================== */
+
+/* Cap the working column at a comfortable width and center it. */
+body.page-studio .content {
+  max-width: 1160px;
+  margin-inline: auto;
+  width: 100%;
+}
+
+/* The Compose grid was 3fr:2fr (very wide right column). Bias toward the
+   author column and keep the side column a fixed, calmer width. */
+body.page-studio .grid-3 { grid-template-columns: minmax(0, 1fr) minmax(280px, 380px); }
+
+/* Two-up form rows shouldn't stretch full width — keep inputs readable. */
+body.page-studio .grid-2 { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+
+/* Narrow single screens collapse both grids to one column. */
+@media (max-width: 900px) {
+  body.page-studio .grid-3,
+  body.page-studio .grid-2 { grid-template-columns: 1fr; }
+}
+
+/* ============================================================================
+   STUDIO — OTONOM ↔ MANUEL mode switch + autonomous cockpit (scoped)
+   The mode switch sits above the tabs; it toggles between the live autonomous
+   cockpit and the hand-driven Compose/Backtest/Analyze surface. Presentation
+   only (labMode() toggles .active); the panels below control visibility.
+   ========================================================================== */
+
+/* Mode panels: only the .active one shows (mirrors .lab-tabpanel). */
+body.page-studio .lab-modepanel { display: none; }
+body.page-studio .lab-modepanel.active { display: block; }
+
+/* The switch — two big segmented buttons, coral when active. */
+body.page-studio .mode-switch {
+  display: inline-flex;
+  gap: 0;
+  margin-bottom: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--bg-900);
+}
+body.page-studio .mode-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 18px;
+  background: transparent;
+  color: var(--text-muted);
+  border: 0;
+  border-right: 1px solid var(--border);
+  font-family: var(--mono);
+  font-size: 12.5px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+body.page-studio .mode-btn:last-child { border-right: 0; }
+body.page-studio .mode-btn:hover { color: var(--text-secondary); background: var(--panel-2); }
+body.page-studio .mode-btn.active { color: #1a1815; background: var(--accent); }
+body.page-studio .mode-btn.active .mode-sub { color: rgba(26,24,21,0.72); }
+body.page-studio .mode-sub {
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: 0;
+  color: var(--text-muted);
+  text-transform: none;
+}
+
+/* The pulsing "otonom" dot on the OTONOM button. */
+body.page-studio .mode-dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--pnl-up);
+  box-shadow: 0 0 0 0 color-mix(in srgb, var(--pnl-up) 70%, transparent);
+  animation: modeDotPulse 1.8s ease-out infinite;
+}
+body.page-studio .mode-btn.active .mode-dot { background: #1a1815; box-shadow: none; animation: none; }
+@keyframes modeDotPulse {
+  0%   { box-shadow: 0 0 0 0 color-mix(in srgb, var(--pnl-up) 60%, transparent); }
+  70%  { box-shadow: 0 0 0 6px transparent; }
+  100% { box-shadow: 0 0 0 0 transparent; }
+}
+
+/* Cockpit hero — the autonomous control strip. */
+body.page-studio .cockpit-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 12px;
+}
+body.page-studio .cockpit-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+}
+body.page-studio .cockpit-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 10px 14px;
+}
+body.page-studio .cockpit-hint { flex: 1; min-width: 220px; }
+body.page-studio .cockpit-check {
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+  padding-bottom: 6px;
+  font-size: 12px;
+}
+
+/* Idle state — calm, centered, coral diamond. */
+body.page-studio .cockpit-idle .empty-state { text-align: center; }
+body.page-studio .cockpit-idle-mark {
+  font-size: 30px;
+  color: var(--accent);
+  margin-bottom: 6px;
+  line-height: 1;
+}
