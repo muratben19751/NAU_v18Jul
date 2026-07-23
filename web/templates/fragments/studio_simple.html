@@ -1,0 +1,401 @@
+{# Simple-mode wizard — the guided 5-step surface for /studio.
+   Frontend-only orchestration: every action posts to the EXISTING endpoints
+   (/backtest/describe, /backtest/run, /robustness/run, /backtest/chat/*).
+   The live result / robustness / chat nodes (#result, #robustness-result,
+   #chat-thread) are SINGLETONS owned by the Pro surface; labMode() reparents
+   them into the slots below while Simple mode is active (see studio.html),
+   so the progress fragments' hardcoded hx-targets keep working verbatim. #}
+<div id="sw-wizard">
+
+  {# ── Step rail ── #}
+  <div class="sw-rail" role="tablist" aria-label="Wizard steps">
+    {% for n, lbl in [(1, "Strategy"), (2, "Market"), (3, "Backtest"), (4, "Reliability"), (5, "Finish")] %}
+    <button type="button" class="sw-rail-step {% if n == 1 %}active{% endif %}"
+            data-sw-step="{{ n }}" onclick="swGoto({{ n }})">
+      <span class="sw-rail-no">{{ n }}</span>
+      <span class="sw-rail-label">{{ lbl }}</span>
+    </button>
+    {% if not loop.last %}<span class="sw-rail-sep"></span>{% endif %}
+    {% endfor %}
+  </div>
+
+  {# ══ Step 1 · Choose a strategy ══════════════════════════════════════════ #}
+  <div class="sw-step active" id="sw-step-1">
+    <div class="sw-step-head">
+      <div class="sw-step-title">What kind of strategy do you want to test?</div>
+      <div class="sw-step-sub">Pick a ready-made template, describe your own idea, or reuse a saved strategy.</div>
+    </div>
+
+    <div class="sw-cards">
+      {% for t in strategy_templates %}
+      <button type="button" class="sw-card" data-sw-template="{{ t.id }}"
+              data-title="{{ t.title }}" data-desc="{{ t.description }}"
+              onclick="swPickTemplate(this)">
+        <span class="sw-card-icon">{{ t.icon }}</span>
+        <span class="sw-card-title">{{ t.title }}</span>
+        <span class="sw-card-blurb">{{ t.blurb }}</span>
+      </button>
+      {% endfor %}
+
+      <button type="button" class="sw-card" data-sw-template="custom"
+              data-title="My own idea" onclick="swPickTemplate(this)">
+        <span class="sw-card-icon">✏️</span>
+        <span class="sw-card-title">Describe your own</span>
+        <span class="sw-card-blurb">Write your idea in plain English — the AI turns it into a working strategy.</span>
+      </button>
+    </div>
+
+    <div id="sw-custom-box" style="display:none;margin-top:14px;">
+      <label class="field">Describe your strategy idea
+        <textarea id="sw-custom-desc" rows="4"
+                  placeholder="e.g.: BUY when RSI(14) drops below 30 and crosses back up; SELL when it rises above 70 and crosses back down."></textarea>
+      </label>
+    </div>
+
+    {% if catalog %}
+    <details class="sw-saved" style="margin-top:14px;">
+      <summary>Or use a saved strategy ({{ catalog|length }})</summary>
+      <div class="row" style="gap:10px;margin-top:10px;align-items:flex-end;flex-wrap:wrap;">
+        <label class="field" style="flex:1;min-width:220px;">Saved strategy
+          <select id="sw-saved-picker" onchange="swPickSaved(this)">
+            <option value="">— choose —</option>
+            {% for s in catalog %}
+            <option value="{{ s.id }}" data-desc="{{ s.description }}">{{ s.name }}</option>
+            {% endfor %}
+          </select>
+        </label>
+      </div>
+    </details>
+    {% endif %}
+
+    <div class="sw-nav">
+      <span></span>
+      <button type="button" class="btn btn-primary" id="sw-next-1" disabled
+              onclick="swGoto(2)">Continue →</button>
+    </div>
+  </div>
+
+  {# ══ Step 2 · Pick a market ══════════════════════════════════════════════ #}
+  <div class="sw-step" id="sw-step-2">
+    <div class="sw-step-head">
+      <div class="sw-step-title">Which market do you want to test on?</div>
+      <div class="sw-step-sub">Pick a coin and a timeframe — sensible defaults for everything else.</div>
+    </div>
+
+    <div class="sw-field-label">Coin</div>
+    <div class="sw-quick-row">
+      {% for sym in ["BTCUSDT", "ETHUSDT", "SOLUSDT"] %}
+      <button type="button" class="sw-quick {% if sym == 'BTCUSDT' %}active{% endif %}"
+              data-sw-symbol="{{ sym }}" onclick="swPickSymbol('{{ sym }}')">{{ sym[:3] }}</button>
+      {% endfor %}
+      <input type="text" id="sw-symbol" list="bybit-symbols-list" value="BTCUSDT"
+             autocomplete="off" placeholder="or type to search…"
+             oninput="swSymbolTyped(this.value)" class="sw-symbol-input">
+    </div>
+
+    <div class="sw-field-label" style="margin-top:16px;">Timeframe</div>
+    <div class="sw-quick-row">
+      {% for code, lbl in [("15", "15 min"), ("60", "1 hour"), ("240", "4 hours")] %}
+      <button type="button" class="sw-quick {% if code == '60' %}active{% endif %}"
+              data-sw-interval="{{ code }}" onclick="swPickInterval('{{ code }}')">{{ lbl }}</button>
+      {% endfor %}
+    </div>
+
+    <details class="sw-advanced" style="margin-top:16px;">
+      <summary>Advanced — limit the date range</summary>
+      <div class="row" style="gap:12px;margin-top:10px;flex-wrap:wrap;">
+        <label class="field">Start <span class="text-muted" style="font-size:10px;">(blank = all cached data)</span>
+          <input type="date" id="sw-start">
+        </label>
+        <label class="field">End
+          <input type="date" id="sw-end">
+        </label>
+      </div>
+    </details>
+
+    <div class="sw-nav">
+      <button type="button" class="btn btn-ghost" onclick="swGoto(1)">← Back</button>
+      <button type="button" class="btn btn-primary" onclick="swGoto(3)">Continue →</button>
+    </div>
+  </div>
+
+  {# ══ Step 3 · Run the backtest ═══════════════════════════════════════════ #}
+  <div class="sw-step" id="sw-step-3">
+    <div class="sw-step-head">
+      <div class="sw-step-title">Test it on historical data</div>
+      <div class="sw-step-sub">
+        The strategy trades the past as if it were live — you see what it
+        <i>would</i> have earned. <span id="sw-summary" class="sw-summary"></span>
+      </div>
+    </div>
+
+    <div class="row" style="gap:12px;align-items:center;flex-wrap:wrap;">
+      <button type="button" class="btn btn-primary btn-hero" id="sw-run-btn" onclick="swRun()">
+        ▶ Run backtest
+      </button>
+      <span class="text-muted mono" id="sw-run-hint" style="font-size:11px;"></span>
+    </div>
+
+    <div id="sw-result-slot" class="sw-slot">
+      {# Empty catalog → the Pro backtest body renders only an empty-state and
+         owns no #result node; the wizard provides the singleton itself so the
+         very first (fresh-install) describe-run works. #}
+      {% if not catalog %}<div id="result"></div>{% endif %}
+    </div>
+
+    <div class="sw-nav">
+      <button type="button" class="btn btn-ghost" onclick="swGoto(2)">← Back</button>
+      <button type="button" class="btn btn-primary" onclick="swGoto(4)">Continue → Reliability</button>
+    </div>
+  </div>
+
+  {# ══ Step 4 · Reliability check ══════════════════════════════════════════ #}
+  <div class="sw-step" id="sw-step-4">
+    <div class="sw-step-head">
+      <div class="sw-step-title">How trustworthy is that result?</div>
+      <div class="sw-step-sub">
+        A good backtest can still be luck. This check re-tests the strategy on
+        data it has never seen (walk-forward + hold-out + Monte Carlo) and
+        gives a simple verdict: <span class="sw-light">🟢 held up</span> ·
+        <span class="sw-light">🟡 mixed</span> ·
+        <span class="sw-light">🔴 likely overfit</span>.
+      </div>
+    </div>
+
+    <div class="row" style="gap:12px;align-items:center;flex-wrap:wrap;">
+      <button type="button" class="btn btn-primary" id="sw-rob-btn" onclick="swReliability()">
+        🛡 Run reliability test
+      </button>
+      <span class="text-muted mono" id="sw-rob-hint" style="font-size:11px;"></span>
+    </div>
+
+    <div id="sw-rob-slot" class="sw-slot">
+      {% if not catalog %}<div id="robustness-result"></div>{% endif %}
+    </div>
+
+    <div class="sw-nav">
+      <button type="button" class="btn btn-ghost" onclick="swGoto(3)">← Back</button>
+      <button type="button" class="btn btn-primary" onclick="swGoto(5)">Continue → Finish</button>
+    </div>
+  </div>
+
+  {# ══ Step 5 · Finish ═════════════════════════════════════════════════════ #}
+  <div class="sw-step" id="sw-step-5">
+    <div class="sw-step-head">
+      <div class="sw-step-title">Done — what next?</div>
+      <div class="sw-step-sub" id="sw-finish-sub">
+        Strategies generated from a description are saved to your catalog
+        automatically — you'll find them under <b>Saved Strategies</b> in Pro mode.
+      </div>
+    </div>
+
+    <div class="sw-finish-actions row" style="gap:12px;flex-wrap:wrap;align-items:center;">
+      <button type="button" class="btn btn-primary" id="sw-improve-btn" onclick="swImprove()">
+        💬 Improve with AI
+      </button>
+      <button type="button" class="btn btn-secondary" onclick="swReset()">
+        ↺ Test another idea
+      </button>
+      <span class="text-muted mono" id="sw-improve-hint" style="font-size:11px;"></span>
+    </div>
+
+    <div id="sw-chat-slot" class="sw-slot">
+      {% if not catalog %}<div id="chat-thread"></div>{% endif %}
+    </div>
+
+    <div class="sw-nav">
+      <button type="button" class="btn btn-ghost" onclick="swGoto(4)">← Back</button>
+      <span></span>
+    </div>
+  </div>
+
+</div>
+
+<script>
+  // ── Simple-wizard state + navigation ──────────────────────────────────────
+  var swState = { mode: "", templateId: "", title: "", desc: "", specId: "",
+                  symbol: "BTCUSDT", interval: "60" };
+
+  function swGoto(n) {
+    // Step 1 must have a selection before moving on.
+    if (n > 1 && !swState.mode) { swGoto(1); return; }
+    document.querySelectorAll(".sw-step").forEach(function (p) {
+      p.classList.toggle("active", p.id === "sw-step-" + n);
+    });
+    document.querySelectorAll(".sw-rail-step").forEach(function (b) {
+      var bn = parseInt(b.dataset.swStep, 10);
+      b.classList.toggle("active", bn === n);
+      b.classList.toggle("done", bn < n);
+    });
+    if (n === 3) swUpdateSummary();
+    if (n === 5) swUpdateFinish();
+    try { sessionStorage.setItem("swStep", String(n)); } catch (e) {}
+  }
+
+  function swPickTemplate(card) {
+    document.querySelectorAll(".sw-card").forEach(function (c) { c.classList.remove("active"); });
+    card.classList.add("active");
+    var id = card.dataset.swTemplate;
+    swState.mode = id === "custom" ? "custom" : "template";
+    swState.templateId = id;
+    swState.title = card.dataset.title || "";
+    swState.desc = card.dataset.desc || "";
+    swState.specId = "";
+    document.getElementById("sw-custom-box").style.display = id === "custom" ? "" : "none";
+    var saved = document.getElementById("sw-saved-picker");
+    if (saved) saved.value = "";
+    document.getElementById("sw-next-1").disabled = false;
+  }
+
+  function swPickSaved(sel) {
+    if (!sel.value) return;
+    document.querySelectorAll(".sw-card").forEach(function (c) { c.classList.remove("active"); });
+    document.getElementById("sw-custom-box").style.display = "none";
+    var opt = sel.options[sel.selectedIndex];
+    swState.mode = "saved";
+    swState.specId = sel.value;
+    swState.title = opt.text;
+    // Saved specs carry their catalog description — the "Improve with AI"
+    // chat needs a real description text (the endpoint rejects short ones).
+    swState.desc = opt.dataset.desc || "";
+    document.getElementById("sw-next-1").disabled = false;
+  }
+
+  function swPickSymbol(sym) {
+    swState.symbol = sym;
+    document.getElementById("sw-symbol").value = sym;
+    document.querySelectorAll("[data-sw-symbol]").forEach(function (b) {
+      b.classList.toggle("active", b.dataset.swSymbol === sym);
+    });
+  }
+
+  function swSymbolTyped(v) {
+    swState.symbol = (v || "BTCUSDT").toUpperCase();
+    document.querySelectorAll("[data-sw-symbol]").forEach(function (b) {
+      b.classList.toggle("active", b.dataset.swSymbol === swState.symbol);
+    });
+  }
+
+  function swPickInterval(code) {
+    swState.interval = code;
+    document.querySelectorAll("[data-sw-interval]").forEach(function (b) {
+      b.classList.toggle("active", b.dataset.swInterval === code);
+    });
+  }
+
+  function swUpdateSummary() {
+    var tf = { "15": "15 min", "60": "1 hour", "240": "4 hours" }[swState.interval] || swState.interval + "m";
+    var what = swState.mode === "custom" ? "Your own idea" : swState.title;
+    document.getElementById("sw-summary").textContent =
+      "Testing: " + what + " · " + swState.symbol + " · " + tf + ".";
+  }
+
+  // ── Step 3: run via the existing endpoints ────────────────────────────────
+  function swRun() {
+    var hint = document.getElementById("sw-run-hint");
+    var start = (document.getElementById("sw-start") || {}).value || "";
+    var end = (document.getElementById("sw-end") || {}).value || "";
+    if (swState.mode === "saved") {
+      htmx.ajax("POST", "/backtest/run", {
+        target: "#result", swap: "innerHTML",
+        values: { spec_id: swState.specId, symbol: swState.symbol, category: "linear",
+                  interval: swState.interval, bybit_start: start, bybit_end: end },
+      });
+      hint.textContent = "";
+      return;
+    }
+    var desc = swState.mode === "custom"
+      ? (document.getElementById("sw-custom-desc").value || "").trim()
+      : swState.desc;
+    if (desc.length < 10) {
+      hint.textContent = "Please describe the idea in a bit more detail first (step 1).";
+      return;
+    }
+    hint.textContent = "";
+    htmx.ajax("POST", "/backtest/describe", {
+      target: "#result", swap: "innerHTML",
+      values: { description: desc, symbol: swState.symbol, category: "linear",
+                interval: swState.interval, allow_short: "on",
+                bybit_start: start, bybit_end: end },
+    });
+  }
+
+  // ── Step 4: one-click reliability (balanced preset, hardcoded) ────────────
+  function swReliability() {
+    var hint = document.getElementById("sw-rob-hint");
+    var panel = document.querySelector("#result [data-rob-spec-id]");
+    if (!panel) {
+      hint.textContent = "Run a backtest first (step 3) — the reliability test builds on its result.";
+      return;
+    }
+    hint.textContent = "";
+    htmx.ajax("POST", "/robustness/run", {
+      target: "#robustness-result", swap: "innerHTML",
+      values: {
+        spec_id: panel.dataset.robSpecId,
+        symbol: panel.dataset.robSymbol || "BTCUSDT",
+        category: panel.dataset.robCategory || "linear",
+        interval: panel.dataset.robInterval || "60",
+        bybit_start: panel.dataset.robStart || "",
+        bybit_end: panel.dataset.robEnd || "",
+        train_months: 3, test_months: 1, n_optimize: 20,
+        n_sims: 300, split_pct: 0.7, objective: "sharpe",
+      },
+    });
+  }
+
+  // ── Step 5: finish helpers ────────────────────────────────────────────────
+  function swUpdateFinish() {
+    var panel = document.querySelector("#result [data-bt-spec-name]");
+    var sub = document.getElementById("sw-finish-sub");
+    if (panel && panel.dataset.btSpecName) {
+      sub.innerHTML = "✓ <b>" + panel.dataset.btSpecName + "</b> is saved in your catalog " +
+        "— you'll find it under <b>Saved Strategies</b> in Pro mode, and the " +
+        "autonomous Agent can pick it up too.";
+    }
+  }
+
+  function swImprove() {
+    var hint = document.getElementById("sw-improve-hint");
+    var btn = document.getElementById("sw-improve-btn");
+    var desc = swState.mode === "custom"
+      ? (document.getElementById("sw-custom-desc").value || "").trim()
+      : (swState.desc || "").trim();
+    // The chat endpoint rejects descriptions under 12 chars with a "write
+    // more detail" card. Saved specs may have an empty catalog description —
+    // synthesize one from what we know so the chat always starts.
+    if (desc.length < 12) {
+      var tf = { "15": "15m", "60": "1h", "240": "4h" }[swState.interval] || swState.interval;
+      desc = "Strategy \"" + (swState.title || "my strategy") + "\" traded on " +
+             swState.symbol + " at the " + tf + " timeframe. " +
+             "Help me understand its weaknesses and improve it.";
+    }
+    if (btn) btn.disabled = true;
+    if (hint) hint.textContent = "⟳ Claude is thinking… (this can take ~20s)";
+    var done = function () {
+      if (btn) btn.disabled = false;
+      if (hint) hint.textContent = "";
+    };
+    htmx.ajax("POST", "/backtest/chat/new", {
+      target: "#chat-thread", swap: "innerHTML",
+      values: { description: desc, symbol: swState.symbol, category: "linear",
+                interval: swState.interval },
+    }).then(done, function () {
+      if (btn) btn.disabled = false;
+      if (hint) hint.textContent = "✗ The chat could not start — please try again.";
+    });
+  }
+
+  function swReset() {
+    swState = { mode: "", templateId: "", title: "", desc: "", specId: "",
+                symbol: "BTCUSDT", interval: "60" };
+    document.querySelectorAll(".sw-card").forEach(function (c) { c.classList.remove("active"); });
+    document.getElementById("sw-custom-box").style.display = "none";
+    var saved = document.getElementById("sw-saved-picker");
+    if (saved) saved.value = "";
+    document.getElementById("sw-next-1").disabled = true;
+    swPickSymbol("BTCUSDT");
+    swPickInterval("60");
+    swGoto(1);
+  }
+</script>

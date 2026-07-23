@@ -11,17 +11,17 @@
     <div class="panel-header">
       <div class="panel-title">✨ Generating strategy from description</div>
       <div class="spacer"></div>
-      <span class="badge" style="background:rgba(251,191,36,0.18);color:#fbbf24;">⚠ Kesildi</span>
+      <span class="badge" style="background:rgba(251,191,36,0.18);color:#fbbf24;">⚠ Interrupted</span>
     </div>
     <div class="panel-body">
       <div class="empty-state" style="color:#fbbf24;">
-        Üretim yarıda kesildi — sunucu yeniden başlamış görünüyor.
+        Generation was interrupted — the server appears to have restarted.
         <div class="text-muted" style="margin-top:6px;font-size:11px;">
-          Geliştirme modunda <span class="mono">uvicorn --reload</span> açıkken, izlenen bir
-          <span class="mono">.py</span> dosyası (kod düzenlemesi / otomatik biçimlendirme)
-          değişince sunucu yeniden başlar ve devam eden üretimin bellek durumu silinir.
-          Lütfen tekrar deneyin; kalıcıysa sunucuyu <span class="mono">--reload</span> olmadan
-          çalıştırın.
+          In development mode with <span class="mono">uvicorn --reload</span>, the server
+          restarts when a watched <span class="mono">.py</span> file changes (code edit /
+          auto-formatting), wiping the in-memory state of the generation in progress.
+          Please try again; if it persists, run the server without
+          <span class="mono">--reload</span>.
         </div>
       </div>
     </div>

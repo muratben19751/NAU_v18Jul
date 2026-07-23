@@ -5,24 +5,24 @@
 {% if stage == "prompt" %}
   <div class="panel">
     <div class="panel-body empty-state small">
-      Stratejini biraz daha ayrıntılı yaz — sohbet buradan başlayacak.
+      Write your strategy in a bit more detail — the chat starts from there.
     </div>
   </div>
 {% elif stage == "expired" %}
   <div class="panel">
     <div class="panel-body empty-state small">
-      ⌛ Sohbet süresi doldu. Yukarıdan <b>💬 Sohbet ederek iyileştir</b>'e basıp yeniden başlat.
+      ⌛ The chat session expired. Press <b>💬 Improve via chat</b> above to restart.
     </div>
   </div>
 {% else %}
   <div class="panel" style="border-color:rgba(129,140,248,0.4);">
     <div class="panel-header">
-      <div class="panel-title">💬 AI ile sohbet — stratejini birlikte netleştir</div>
+      <div class="panel-title">💬 Chat with AI — refine your strategy together</div>
       <div class="spacer"></div>
       <button class="btn btn-ghost" type="button"
               style="font-size:11px;padding:3px 10px;"
               onclick="document.getElementById('chat-thread').innerHTML='';var pe=document.getElementById('plan-empty');if(pe)pe.style.display='';"
-              title="Sohbeti kapat">✕ Kapat</button>
+              title="Close the chat">✕ Close</button>
     </div>
     <div class="panel-body">
 
@@ -45,36 +45,36 @@
         <input type="hidden" name="conv_id" value="{{ conv_id }}">
         <textarea name="message" rows="2"
                   style="flex:1;resize:vertical;"
-                  placeholder="Netleştir, soru sor… (ör. 'stop'u %2 yap', 'neden bu filtreyi önerdin?')"
-                  aria-label="Sohbet mesajı"></textarea>
+                  placeholder="Clarify, ask questions… (e.g. 'make the stop 2%', 'why did you suggest this filter?')"
+                  aria-label="Chat message"></textarea>
         <button class="btn btn-primary" type="submit">
           <span class="btn-spin spin">⟳</span>
-          Gönder
+          Send
         </button>
       </form>
       <div class="row" style="margin-top:6px;">
         <span class="htmx-indicator text-muted mono" id="chat-spinner" style="font-size:11px;">
-          <span class="spin">⟳</span> Claude yazıyor…
+          <span class="spin">⟳</span> Claude is typing…
         </span>
       </div>
 
       {# ── Güncel net tarif — düzenlenebilir + "Blokları Oluştur" onayı ── #}
       <div class="panel" style="margin-top:14px;border-color:rgba(129,140,248,0.4);">
         <div class="panel-header">
-          <div class="panel-title">✨ Güncel net tarif — düzenleyebilirsiniz</div>
+          <div class="panel-title">✨ Current refined description — editable</div>
           <div class="spacer"></div>
           <button class="btn btn-ghost" type="button"
                   style="font-size:11px;padding:3px 10px;"
                   onclick="btCopyRefined(this);"
-                  title="Önerilen metni panoya kopyala">
+                  title="Copy the suggested text to the clipboard">
             ⧉ COPY
           </button>
         </div>
         <div class="panel-body">
           <textarea id="refined-description" rows="4"
                     class="mono"
-                    aria-label="AI ile netleştirilmiş strateji açıklaması"
-                    placeholder="Sohbet ilerledikçe güncel net tarif burada belirir — düzenleyebilirsiniz"
+                    aria-label="AI-refined strategy description"
+                    placeholder="As the chat progresses, the refined description appears here — you can edit it"
                     style="width:100%;resize:vertical;">{{ refined }}</textarea>
           <div class="row" style="align-items:center;gap:10px;margin-top:10px;">
             <button class="btn btn-primary" type="button"
@@ -86,9 +86,9 @@
                     hx-indicator="#gen-spinner"
                     style="border-color:rgba(129,140,248,0.5);">
               <span class="btn-spin spin">⟳</span>
-              ✅ Tamam — Blokları Oluştur
+              ✅ OK — Generate Blocks
             </button>
-            <span class="text-muted" style="font-size:11px;">Onayladığınızda Python blokları yazılıp backtest edilir</span>
+            <span class="text-muted" style="font-size:11px;">On approval the Python blocks are written and backtested</span>
           </div>
         </div>
       </div>

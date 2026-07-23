@@ -97,7 +97,7 @@
     const text = ta.value;
     const done = () => {
       const orig = btn.innerHTML;
-      btn.innerHTML = "✓ Kopyalandı";
+      btn.innerHTML = "✓ Copied";
       setTimeout(() => { btn.innerHTML = orig; }, 1500);
     };
     if (navigator.clipboard && navigator.clipboard.writeText) {

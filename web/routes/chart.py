@@ -84,13 +84,27 @@ async def chart_data(
         # window spilling out of cache) the 0.15s-sleepy Bybit backfill, making
         # ALL requests wait.
         def _build_payload():
-            df = load_bybit_bars(
-                symbol=symbol,
-                interval=interval,
-                category=category,
-                start=start,
-                end=end,
-            )
+            try:
+                df = load_bybit_bars(
+                    symbol=symbol,
+                    interval=interval,
+                    category=category,
+                    start=start,
+                    end=end,
+                )
+            except Exception:
+                # Offline / Bybit unreachable: the tail-extend fetch inside
+                # load_bybit_bars died on the network call. The chart must
+                # still render — serve whatever the parquet cache holds for
+                # the requested window instead of erroring the whole panel.
+                import pandas as pd
+
+                from data import _bybit_cache_path
+
+                cache_path = _bybit_cache_path(category, symbol, interval)
+                if not cache_path.exists():
+                    raise
+                df = pd.read_parquet(cache_path).loc[start:end]
             if df.empty:
                 return {
                     "candles": [],

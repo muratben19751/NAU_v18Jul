@@ -1,23 +1,37 @@
 {% extends "base.html" %}
 {% block content %}
 
-{# ══ Mode switch: OTONOM ↔ MANUEL ══════════════════════════════════════════
-   OTONOM  → the studio becomes a live cockpit for the autonomous research loop
-             (System B: POST /agent/run + self-terminating GET /agent/progress).
-   MANUEL  → the professional, hand-driven Compose/Backtest/Analyze surface.
+{# ══ Mode switch: SIMPLE ↔ PRO ↔ AUTO ═════════════════════════════════════
+   SIMPLE → guided 5-step wizard for average users (studio_simple.html);
+            reuses the Pro surface's live nodes (#result, #robustness-result,
+            #chat-thread) by reparenting them into wizard slots.
+   PRO    → the professional, hand-driven Compose/Backtest/Analyze surface
+            (formerly MANUEL).
+   AUTO   → live cockpit for the autonomous research loop (formerly OTONOM;
+            System B: POST /agent/run + self-terminating GET /agent/progress).
    Presentation is client-side (labMode below, persisted in localStorage). The
-   server passes active_run_id so OTONOM auto-reconnects to a running loop. ── #}
+   server passes active_run_id so AUTO auto-reconnects to a running loop. ── #}
 <div class="mode-switch" role="tablist" aria-label="Studio mode">
+  <button type="button" class="mode-btn active" data-mode="simple" role="tab"
+          onclick="labMode('simple')">
+    ✨ SIMPLE
+    <span class="mode-sub">guided, step by step</span>
+  </button>
+  <button type="button" class="mode-btn" data-mode="manuel" role="tab"
+          onclick="labMode('manuel')">
+    ⌘ PRO
+    <span class="mode-sub">design &amp; test by hand</span>
+  </button>
   <button type="button" class="mode-btn" data-mode="otonom" role="tab"
           onclick="labMode('otonom')">
-    <span class="mode-dot"></span> OTONOM
-    <span class="mode-sub">kendi kendine araştırır</span>
+    <span class="mode-dot"></span> AUTO
+    <span class="mode-sub">researches on its own</span>
   </button>
-  <button type="button" class="mode-btn active" data-mode="manuel" role="tab"
-          onclick="labMode('manuel')">
-    ⌘ MANUEL
-    <span class="mode-sub">elle tasarla &amp; test et</span>
-  </button>
+</div>
+
+{# ══ SIMPLE wizard ════════════════════════════════════════════════════════ #}
+<div class="lab-modepanel active" id="lab-modepanel-simple" role="tabpanel">
+  {% include "fragments/studio_simple.html" %}
 </div>
 
 {# ══ OTONOM cockpit ═══════════════════════════════════════════════════════ #}
@@ -31,37 +45,37 @@
             class="cockpit-form">
         <div class="cockpit-head">
           <div>
-            <div class="section-title" style="margin:0 0 2px;">Otonom Araştırma Döngüsü</div>
+            <div class="section-title" style="margin:0 0 2px;">Autonomous Research Loop</div>
             <div class="text-muted" style="font-size:12px;">
-              Claude strateji üretir → N kez backtest eder → en iyisini robustluk testinden geçirir → kataloğa ekler.
+              Claude generates a strategy → backtests it N times → puts the best through the robustness test → adds it to the catalog.
             </div>
           </div>
           <div class="cockpit-actions">
-            <button class="btn btn-primary" type="submit">▶ Başlat</button>
+            <button class="btn btn-primary" type="submit">▶ Start</button>
             <span class="htmx-indicator text-muted mono" id="agent-spinner" style="font-size:11px;">
-              döngü başlatılıyor…
+              starting the loop…
             </span>
           </div>
         </div>
 
         <div class="cockpit-controls">
-          <label class="field cockpit-hint">Yönlendirme <span class="text-muted" style="font-weight:400;">(boş = tamamen otonom)</span>
-            <input type="text" name="hint" placeholder="ör. momentum + RSI, EMA kesişimi, supertrend…">
+          <label class="field cockpit-hint">Guidance <span class="text-muted" style="font-weight:400;">(blank = fully autonomous)</span>
+            <input type="text" name="hint" placeholder="e.g. momentum + RSI, EMA cross, supertrend…">
           </label>
-          <label class="field">Sembol
+          <label class="field">Symbol
             <select name="symbol">
               <option value="BTCUSDT" selected>BTCUSDT</option>
               <option value="ETHUSDT">ETHUSDT</option>
               <option value="SOLUSDT">SOLUSDT</option>
             </select>
           </label>
-          <label class="field">Kategori
+          <label class="field">Category
             <select name="category">
               <option value="linear" selected>linear</option>
               <option value="spot">spot</option>
             </select>
           </label>
-          <label class="field">Zaman dilimi
+          <label class="field">Timeframe
             <select name="interval">
               <option value="15">15m</option>
               <option value="60" selected>1h</option>
@@ -69,11 +83,11 @@
             </select>
           </label>
           <label class="field" style="max-width:150px;">
-            İterasyon <span class="text-muted" style="font-weight:400;" id="iter-val">5</span>
+            Iterations <span class="text-muted" style="font-weight:400;" id="iter-val">5</span>
             <input type="range" name="n_iterations" min="2" max="15" value="5"
                    oninput="document.getElementById('iter-val').textContent=this.value">
           </label>
-          <label class="field">Robustluk
+          <label class="field">Robustness
             <select name="strict_mode">
               <option value="strict" selected>Strict</option>
               <option value="relaxed">Relaxed</option>
@@ -81,7 +95,7 @@
           </label>
           <label class="field cockpit-check">
             <input type="checkbox" name="continuous" value="1">
-            <span>Sürekli çalış <span class="text-muted">(kazanandan sonra yeniden başla)</span></span>
+            <span>Run continuously <span class="text-muted">(restart after a winner)</span></span>
           </label>
         </div>
       </form>
@@ -96,15 +110,15 @@
          hx-trigger="load, every 1s"
          hx-target="#agent-result"
          hx-swap="innerHTML">
-      <div class="panel"><div class="panel-body empty-state">⏳ Çalışan döngüye bağlanılıyor…</div></div>
+      <div class="panel"><div class="panel-body empty-state">⏳ Connecting to the running loop…</div></div>
     </div>
     {% else %}
     <div class="panel cockpit-idle">
       <div class="panel-body empty-state">
         <div class="cockpit-idle-mark">◇</div>
-        <div style="font-weight:600;margin-bottom:2px;">Döngü boşta</div>
+        <div style="font-weight:600;margin-bottom:2px;">Loop idle</div>
         <div class="text-muted" style="font-size:12px;">
-          Yukarıdan <b>▶ Başlat</b>'a bas — Claude kendi başına strateji arayıp test etmeye başlasın.
+          Press <b>▶ Start</b> above — let Claude search for and test strategies on its own.
         </div>
       </div>
     </div>
@@ -112,8 +126,8 @@
   </div>
 </div>
 
-{# ══ MANUEL surface — the existing Compose/Backtest/Analyze tabs ═══════════ #}
-<div class="lab-modepanel active" id="lab-modepanel-manuel" role="tabpanel">
+{# ══ PRO surface — the existing Compose/Backtest/Analyze tabs ══════════════ #}
+<div class="lab-modepanel" id="lab-modepanel-manuel" role="tabpanel">
 
   {# ── Top-level tabs: Compose | Backtest | Analyze. SEPARATE namespace
      (.lab-tab / .lab-tabpanel / labTab()) from the backtest inner tabs
@@ -141,9 +155,9 @@
   <div class="lab-tabpanel" id="lab-tabpanel-analyze" role="tabpanel">
     <div class="panel">
       <div class="panel-body text-muted">
-        Robustness ve Geçmiş, <b>Backtest</b> sekmesinin sağ panelinde yaşar
-        (bir backtest çalıştırdıktan sonra erişilir). Bu sekme ileride bağımsız
-        analiz araçları için ayrılmıştır.
+        Robustness and History live in the right panel of the <b>Backtest</b>
+        tab (accessible after running a backtest). This tab is reserved for
+        future standalone analysis tools.
       </div>
     </div>
   </div>
@@ -169,15 +183,47 @@
       p.classList.toggle('active', p.id === 'lab-tabpanel-' + name));
   };
 
-  // ── Mode switch: OTONOM ↔ MANUEL. Parallel to labTab (separate namespace:
-  //    .mode-btn / .lab-modepanel), persisted in localStorage so the choice
-  //    survives reloads. When a loop is running the server ships active_run_id
-  //    and the OTONOM panel auto-connects; we default the view to OTONOM then. #}
+  // ── Mode switch: SIMPLE ↔ PRO(manuel) ↔ AUTO(otonom). Parallel to labTab
+  //    (separate namespace: .mode-btn / .lab-modepanel), persisted in
+  //    localStorage so the choice survives reloads. When a loop is running the
+  //    server ships active_run_id and the AUTO panel auto-connects; we default
+  //    the view to AUTO then.
+  //
+  //    The live nodes #result / #robustness-result / #chat-thread are
+  //    SINGLETONS (the progress fragments hardcode them as hx-target), so the
+  //    Simple wizard cannot own copies. Instead we REPARENT the nodes into the
+  //    wizard slots on entering Simple mode and restore them to their Pro
+  //    homes on leaving — polling, chain triggers and chart re-init keep
+  //    working verbatim wherever the node lives. #}
+  function swMoveNodes(toSimple) {
+    var moves = [
+      ['result',            'sw-result-slot', 'bt-tabpanel-result', null],
+      ['robustness-result', 'sw-rob-slot',    'rob-home',           null],
+      ['chat-thread',       'sw-chat-slot',   'bt-tabpanel-plan',   'plan-preview'],
+    ];
+    moves.forEach(function (m) {
+      var node = document.getElementById(m[0]);
+      if (!node) return;
+      if (toSimple) {
+        var slot = document.getElementById(m[1]);
+        if (slot && node.parentElement !== slot) slot.appendChild(node);
+      } else {
+        var home = document.getElementById(m[2]);
+        if (home && node.parentElement !== home) {
+          var before = m[3] ? document.getElementById(m[3]) : null;
+          if (before && before.parentElement === home) home.insertBefore(node, before);
+          else home.appendChild(node);
+        }
+      }
+    });
+  }
+
   window.labMode = function(mode) {
     document.querySelectorAll('.mode-btn').forEach(b =>
       b.classList.toggle('active', b.dataset.mode === mode));
     document.querySelectorAll('.lab-modepanel').forEach(p =>
       p.classList.toggle('active', p.id === 'lab-modepanel-' + mode));
+    swMoveNodes(mode === 'simple');
     try { localStorage.setItem('studioMode', mode); } catch (e) {}
   };
 
@@ -185,8 +231,10 @@
     var running = {{ 'true' if active_run_id else 'false' }};
     var saved = null;
     try { saved = localStorage.getItem('studioMode'); } catch (e) {}
-    // A live loop wins: land the user on the cockpit. Else honor their choice.
-    var mode = running ? 'otonom' : (saved === 'otonom' ? 'otonom' : 'manuel');
+    // A live loop wins: land the user on the cockpit. Else honor their saved
+    // choice; new users land on the Simple wizard.
+    var valid = { simple: 1, manuel: 1, otonom: 1 };
+    var mode = running ? 'otonom' : (valid[saved] ? saved : 'simple');
     labMode(mode);
   })();
 

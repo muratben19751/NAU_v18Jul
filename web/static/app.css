@@ -2038,6 +2038,31 @@ body.page-studio .content { padding: 8px; }
 body.page-studio .panel-body { padding: 7px 9px; }
 body.page-studio .panel-header { padding: 5px 9px; }
 body.page-studio .stack { gap: 6px; }
+
+/* Metric groups (Risk / Trades / P&L-Cost) — maximum density: small cells,
+   narrow columns, minimal section gaps. */
+body.page-studio .metric-section { margin-bottom: 7px; }
+body.page-studio .metric-section-title {
+  margin-bottom: 3px;
+  padding-bottom: 2px;
+  font-size: 9px;
+}
+body.page-studio .metric-grid {
+  grid-template-columns: repeat(auto-fit, minmax(92px, 1fr));
+}
+body.page-studio .metric { padding: 4px 8px; }
+body.page-studio .metric .label { font-size: 9px; }
+body.page-studio .metric .value { font-size: 13px; }
+body.page-studio .verdict-card {
+  padding: 6px 10px;
+  gap: 10px;
+  margin-bottom: 7px;
+}
+body.page-studio .verdict-metrics { gap: 12px; }
+body.page-studio .verdict-metric .vm-value { font-size: 13px; }
+body.page-studio .result-hero { gap: 7px; }
+body.page-studio .hero-main { padding: 10px 12px; }
+body.page-studio .hero-side-cell { padding: 7px 10px; }
 body.page-studio .grid-2,
 body.page-studio .grid-3 { gap: 8px; }
 
@@ -2178,3 +2203,139 @@ body.page-studio .cockpit-idle-mark {
   margin-bottom: 6px;
   line-height: 1;
 }
+
+/* ══ Simple-mode wizard (studio_simple.html) ═══════════════════════════════ */
+
+/* Step rail — 1→5 with done/current states. */
+.sw-rail {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-bottom: 18px;
+}
+.sw-rail-step {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 14px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--panel);
+  color: var(--text-muted);
+  font-size: 12px;
+  cursor: pointer;
+  transition: border-color .15s, color .15s;
+}
+.sw-rail-step:hover { border-color: var(--accent-dim); color: var(--text-primary); }
+.sw-rail-step.active {
+  border-color: var(--accent);
+  color: var(--text-primary);
+  background: var(--accent-soft);
+}
+.sw-rail-step.done { color: var(--pnl-up); border-color: var(--border); }
+.sw-rail-no {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--border-soft);
+  font-size: 10px;
+  font-weight: 700;
+}
+.sw-rail-step.active .sw-rail-no { background: var(--accent); color: #fff; }
+.sw-rail-step.done .sw-rail-no { background: rgba(61,220,151,0.2); color: var(--pnl-up); }
+.sw-rail-sep { width: 14px; height: 1px; background: var(--border); flex-shrink: 0; }
+
+/* Step panels — only the active one is visible. */
+.sw-step { display: none; }
+.sw-step.active { display: block; }
+.sw-step-head { margin-bottom: 16px; }
+.sw-step-title { font-size: 17px; font-weight: 700; margin-bottom: 4px; }
+.sw-step-sub { font-size: 12px; color: var(--text-muted); line-height: 1.6; max-width: 640px; }
+.sw-summary { color: var(--text-secondary); font-weight: 600; }
+
+/* Template cards. */
+.sw-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+  gap: 12px;
+}
+.sw-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel);
+  color: var(--text-primary);
+  text-align: left;
+  cursor: pointer;
+  transition: border-color .15s, transform .1s, background .15s;
+}
+.sw-card:hover { border-color: var(--accent-dim); transform: translateY(-1px); }
+.sw-card.active {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+.sw-card-icon { font-size: 20px; line-height: 1; }
+.sw-card-title { font-size: 13px; font-weight: 700; }
+.sw-card-blurb { font-size: 11px; color: var(--text-muted); line-height: 1.55; }
+
+/* Quick-pick rows (coin / timeframe). */
+.sw-field-label {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  margin-bottom: 8px;
+}
+.sw-quick-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.sw-quick {
+  padding: 8px 18px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--text-secondary);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: border-color .15s, background .15s, color .15s;
+}
+.sw-quick:hover { border-color: var(--accent-dim); color: var(--text-primary); }
+.sw-quick.active {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--text-primary);
+}
+.sw-symbol-input { max-width: 200px; }
+
+/* Collapsibles + slots + nav. */
+.sw-saved summary, .sw-advanced summary {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .05em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  cursor: pointer;
+  -webkit-user-select: none;
+  user-select: none;
+}
+.sw-slot { margin-top: 16px; }
+.sw-slot:empty { display: none; }
+.sw-nav {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 22px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border-soft);
+}
+.sw-light { white-space: nowrap; }
+.sw-finish-actions { margin-top: 4px; }

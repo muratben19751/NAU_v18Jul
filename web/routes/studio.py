@@ -25,6 +25,91 @@ from web.shared import session_id
 
 router = APIRouter(prefix="/studio")
 
+# ── Simple-mode wizard: ready-made strategy templates ──────────────────────
+# Each template's ``description`` is a natural-language brief that feeds the
+# existing ``POST /backtest/describe`` flow (Claude turns it into signal
+# blocks). ``blurb`` is the plain-English card text shown to the user.
+STRATEGY_TEMPLATES: list[dict] = [
+    {
+        "id": "trend_following",
+        "icon": "📈",
+        "title": "Trend Following",
+        "blurb": (
+            "Rides established trends: buys when a fast average crosses above "
+            "a slow one, exits when the trend bends back. Works best in "
+            "trending markets; struggles in sideways chop."
+        ),
+        "description": (
+            "BUY when the EMA(20) crosses above the EMA(50) and the close is "
+            "above the SMA(200). EXIT the position when the EMA(20) crosses "
+            "back below the EMA(50). Use an ATR(14) based stop loss of 3x ATR."
+        ),
+    },
+    {
+        "id": "mean_reversion",
+        "icon": "🔄",
+        "title": "Mean Reversion (RSI)",
+        "blurb": (
+            "Buys short-term dips and sells the bounce using RSI oversold/"
+            "overbought levels. Works best in ranging markets; risky in "
+            "strong downtrends."
+        ),
+        "description": (
+            "BUY when RSI(14) drops below 30 and then crosses back above 30. "
+            "EXIT when RSI(14) rises above 70 and then crosses back below 70. "
+            "Only take BUY signals while the close is above the SMA(200)."
+        ),
+    },
+    {
+        "id": "breakout",
+        "icon": "🚀",
+        "title": "Breakout",
+        "blurb": (
+            "Buys when price breaks above its recent high with strong volume "
+            "— aiming to catch the start of a new move. Prone to false "
+            "breakouts in quiet markets."
+        ),
+        "description": (
+            "BUY when the close breaks above the highest close of the last 20 "
+            "bars and the volume is at least 1.5x the 20-bar average volume. "
+            "EXIT when the close drops below the lowest close of the last 10 "
+            "bars. Use an ATR(14) based stop loss of 2x ATR."
+        ),
+    },
+    {
+        "id": "momentum",
+        "icon": "⚡",
+        "title": "Momentum",
+        "blurb": (
+            "Buys when recent returns are strongly positive and momentum "
+            "indicators agree. Simple and robust, but gives back profit at "
+            "sharp turning points."
+        ),
+        "description": (
+            "BUY when the 10-bar return is positive and the MACD(12,26,9) "
+            "line crosses above its signal line. EXIT when the MACD line "
+            "crosses back below the signal line or the 10-bar return turns "
+            "negative."
+        ),
+    },
+    {
+        "id": "volatility",
+        "icon": "🌊",
+        "title": "Volatility Squeeze",
+        "blurb": (
+            "Waits for unusually quiet periods (tight Bollinger Bands), then "
+            "trades the expansion when price escapes the range. Patient — "
+            "few but potentially large trades."
+        ),
+        "description": (
+            "BUY when the close breaks above the upper Bollinger Band(20, 2) "
+            "after the band width has been narrowing for at least 10 bars. "
+            "EXIT when the close falls back below the middle Bollinger Band. "
+            "Use an ATR(14) based stop loss of 2.5x ATR."
+        ),
+    },
+]
+
 
 @router.get("", response_class=HTMLResponse)
 def page(request: Request):
@@ -123,6 +208,8 @@ def page(request: Request):
         "bybit_categories": BYBIT_CATEGORIES,
         "bybit_intervals": BYBIT_ALL_INTERVALS,
         "index_symbols": _catalog_index_symbols(),
+        # ── Simple-mode wizard context ──
+        "strategy_templates": STRATEGY_TEMPLATES,
     }
     # Preserve strategy.py's manual render + cookie set (drafts session depends
     # on nautlab_sid; session_id above mints it, we set it if absent).

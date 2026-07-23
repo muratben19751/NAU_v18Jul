@@ -29,14 +29,14 @@
     ">
       <div style="flex:0 0 auto;">
         <div id="rob-hero-icon" style="font-size:28px;line-height:1;">—</div>
-        <div id="rob-hero-verdict" style="font-size:13px;font-weight:700;margin-top:4px;color:#7d848f;">Hesaplanıyor…</div>
+        <div id="rob-hero-verdict" style="font-size:13px;font-weight:700;margin-top:4px;color:#7d848f;">Calculating…</div>
       </div>
       <div style="flex:1;min-width:0;">
         <div id="rob-hero-metrics" class="mono" style="font-size:11px;color:#7d848f;margin-bottom:4px;">—</div>
         <div id="rob-hero-desc" style="font-size:10px;color:#7d848f;">—</div>
       </div>
       <div style="flex:0 0 auto;text-align:right;">
-        <div style="font-size:9px;color:#7d848f;text-transform:uppercase;letter-spacing:.5px;margin-bottom:2px;">Genel Karar</div>
+        <div style="font-size:9px;color:#7d848f;text-transform:uppercase;letter-spacing:.5px;margin-bottom:2px;">Overall Verdict</div>
         <div id="rob-hero-badge" style="
           display:inline-block;
           padding:3px 10px;
@@ -64,9 +64,9 @@
       {# Açıklama kutusu #}
       <div style="background:rgba(255,255,255,0.03);border:1px solid var(--border);border-radius:4px;padding:8px 12px;font-size:10px;color:#7d848f;margin-bottom:12px;line-height:1.6;">
         <strong style="color:#9ca3af;">Walk-Forward Optimization</strong> —
-        Zaman serisi train/test pencerelerine bölünür; her pencerede parametreler train döneminde optimize edilir, test döneminde o parametrelerle gerçek performans ölçülür.
-        <strong style="color:#9ca3af;">Optimize vs. Naive</strong> karşılaştırması overfitting'in ne kadar olduğunu gösterir.
-        <strong style="color:#9ca3af;">WFO Efficiency</strong> = OOS / IS objektif oranı; 1.0'a yakın olması idealdir.
+        The time series is split into train/test windows; in each window the parameters are optimized on the train period, then real performance is measured on the test period with those parameters.
+        The <strong style="color:#9ca3af;">Optimized vs. Naive</strong> comparison shows how much overfitting there is.
+        <strong style="color:#9ca3af;">WFO Efficiency</strong> = OOS / IS objective ratio; close to 1.0 is ideal.
       </div>
 
       <div class="section-title" style="margin-bottom:8px;">
@@ -88,7 +88,7 @@
           <div class="value" style="color:{% if ws.oos_sharpe_optimized is not none %}{% if ws.oos_sharpe_optimized > 0 %}#22c55e{% else %}#ef4444{% endif %}{% else %}#7d848f{% endif %}">
             {{ "%.2f"|format(ws.oos_sharpe_optimized) if ws.oos_sharpe_optimized is not none else '—' }}
           </div>
-          <div class="kpi-sub">Out-of-sample ortalama</div>
+          <div class="kpi-sub">Out-of-sample average</div>
         </div>
 
         {# OOS Sharpe (naive) — > 0 yeşil, < 0 kırmızı #}
@@ -97,7 +97,7 @@
           <div class="value" style="color:{% if ws.oos_sharpe_naive is not none %}{% if ws.oos_sharpe_naive > 0 %}#22c55e{% else %}#ef4444{% endif %}{% else %}#7d848f{% endif %}">
             {{ "%.2f"|format(ws.oos_sharpe_naive) if ws.oos_sharpe_naive is not none else '—' }}
           </div>
-          <div class="kpi-sub">Optimize'sız baseline</div>
+          <div class="kpi-sub">Baseline without optimization</div>
         </div>
 
         {# WFO Efficiency — >= 0.5 yeşil, 0.2-0.5 sarı, < 0.2 kırmızı #}
@@ -188,10 +188,10 @@
       {# Açıklama kutusu #}
       <div style="background:rgba(255,255,255,0.03);border:1px solid var(--border);border-radius:4px;padding:8px 12px;font-size:10px;color:#7d848f;margin-bottom:12px;line-height:1.6;">
         <strong style="color:#9ca3af;">In/Out-of-Sample Split</strong> —
-        Verinin ilk %{{ (sp.split_pct * 100)|int if sp.split_pct is defined else 70 }}'i (in-sample) üzerinde optimize edilmiş parametreler, kalan kısım (out-of-sample) üzerinde test edilir.
+        Parameters optimized on the first {{ (sp.split_pct * 100)|int if sp.split_pct is defined else 70 }}% of the data (in-sample) are tested on the remaining part (out-of-sample).
         <strong style="color:#9ca3af;">Overfitting Score</strong> = OOS Sharpe / In-sample Sharpe.
-        1.0'a yakın → strateji gerçek veriye genellenebilir.
-        0.5 altı → parametreler gürültüye fit olmuş olabilir.
+        Close to 1.0 → the strategy generalizes to real data.
+        Below 0.5 → the parameters may have fit noise.
       </div>
 
       {# Overfitting score banner — eşikler 0.5 / 0.25 #}
@@ -272,12 +272,12 @@
 
       {# Açıklama kutusu #}
       <div style="background:rgba(255,255,255,0.03);border:1px solid var(--border);border-radius:4px;padding:8px 12px;font-size:10px;color:#7d848f;margin-bottom:12px;line-height:1.6;">
-        <strong style="color:#9ca3af;">Monte Carlo Simülasyonu</strong> —
-        {{ mc.n_sims }} simülasyonda trade sırası rastgele karıştırılır ({{ mc.method|default('bootstrap') }}).
-        <strong style="color:#9ca3af;">P5</strong> = en kötü %5 senaryo,
-        <strong style="color:#9ca3af;">P95</strong> = en iyi %5 senaryo.
-        Geniş P5–P95 aralığı → şans payı yüksek strateji.
-        <strong style="color:#9ca3af;">Max DD p95</strong> worst-case drawdown'u temsil eder; %40 üstü riskli.
+        <strong style="color:#9ca3af;">Monte Carlo Simulation</strong> —
+        The trade order is randomly shuffled across {{ mc.n_sims }} simulations ({{ mc.method|default('bootstrap') }}).
+        <strong style="color:#9ca3af;">P5</strong> = worst 5% scenario,
+        <strong style="color:#9ca3af;">P95</strong> = best 5% scenario.
+        A wide P5–P95 range → a strategy with a large luck component.
+        <strong style="color:#9ca3af;">Max DD p95</strong> represents the worst-case drawdown; above 40% is risky.
       </div>
 
       <div class="kpi-grid" style="grid-template-columns:repeat(5,1fr);margin-bottom:12px;">
@@ -288,7 +288,7 @@
           <div class="value" style="color:{% if mc.p5_final >= mc.starting_cash %}#22c55e{% else %}#ef4444{% endif %}">
             ${{ "{:,.0f}".format(mc.p5_final) }}
           </div>
-          <div class="kpi-sub">En kötü %5 senaryo</div>
+          <div class="kpi-sub">Worst 5% scenario</div>
         </div>
 
         {# Median Final #}
@@ -297,14 +297,14 @@
           <div class="value" style="color:{% if mc.median_final >= mc.starting_cash %}#22c55e{% else %}#ef4444{% endif %}">
             ${{ "{:,.0f}".format(mc.median_final) }}
           </div>
-          <div class="kpi-sub">Medyan senaryo</div>
+          <div class="kpi-sub">Median scenario</div>
         </div>
 
         {# P95 Final — her zaman en iyi senaryo → yeşil #}
         <div class="kpi">
           <div class="label">P95 Final</div>
           <div class="value up">${{ "{:,.0f}".format(mc.p95_final) }}</div>
-          <div class="kpi-sub">En iyi %5 senaryo</div>
+          <div class="kpi-sub">Best 5% scenario</div>
         </div>
 
         {# Max DD p50 — abs değer: < %15 yeşil, %15-25 sarı, > %25 kırmızı #}
@@ -314,7 +314,7 @@
           <div class="value" style="color:{% if dd50 < 15 %}#22c55e{% elif dd50 < 25 %}#f59e0b{% else %}#ef4444{% endif %}">
             {{ "%.1f%%"|format(dd50) }}
           </div>
-          <div class="kpi-sub">Medyan max drawdown</div>
+          <div class="kpi-sub">Median max drawdown</div>
         </div>
 
         {# Max DD p95 — abs değer: < %25 yeşil, %25-40 sarı, > %40 kırmızı #}
@@ -367,17 +367,17 @@ function robTab(btn, tab) {
     color = "#22c55e";
     icon  = "✓";
     badgeText = "ROBUST";
-    desc  = "Strateji out-of-sample'da dayanıklı görünüyor. Parametreler gerçek veriye genellenebilir.";
+    desc  = "The strategy held up on data it had never seen. Its parameters look like they generalize to real data.";
   } else if (!isNaN(score) && score >= 0.25) {
     color = "#f59e0b";
     icon  = "⚠";
-    badgeText = "DİKKAT";
-    desc  = "Hafif overfitting riski var. Parametre sayısını azaltmayı veya daha uzun test penceresi kullanmayı değerlendirin.";
+    badgeText = "CAUTION";
+    desc  = "Mixed result — some overfitting risk. Consider fewer parameters or a longer test window.";
   } else {
     color = "#ef4444";
     icon  = "✗";
-    badgeText = "OVERFITTING";
-    desc  = "Güçlü overfitting işareti. Strateji gürültüye fit olmuş olabilir. Parametreleri sadeleştirin.";
+    badgeText = "OVERFIT";
+    desc  = "Strong overfitting signal: the strategy likely fit noise, not signal. Simplify its parameters before trusting it.";
   }
 
   // Hero bileşenlerini güncelle
