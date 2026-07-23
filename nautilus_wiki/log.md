@@ -353,3 +353,16 @@ kapsam-içi). (2) `.claude/hooks` ikinci-beyin vault yolu makine-bağımsızlaş
 (642c955) — dev-ortam konfigürasyonu, wiki kapsamı DIŞI (app modülü değil) →
 bilinçli atlandı, yalnız bu notla kayda geçti. App kodu farkı sıfır
 (`git diff 1e148b4..HEAD -- '*.py' web/` boş); lint öncesi/sonrası 0/0/0/0/0/0.
+
+## 2026-07-24 — Kalıcı per-model token ledger (kod + wiki senkronu)
+
+Kullanıcı "hangi modelde ne kadar token tüketildi listele" istedi; mevcut izleme
+bunu veremiyordu (bkz. ikinci-beyin nau_token_tuketim_izleme: AUTO-only, bellekte,
+tek-model, kalıcı değil). Yeni `token_ledger.py` eklendi: `agent._create_message`
+merkezî çıkış-noktasına `_ledger_record` hook'u — her başarılı LLM çağrısını
+token_usage.jsonl'e yazar, model=resp.model (fallback doğru atfedilir). 4 doğrudan
+narrative/summary çağrısı (_create_message'ı baypas eden backtest/lab×2/agent_backtest)
+wrapper'a yönlendirildi. Rapor: summary/format_table + CLI + GET /agent/tokens.
+webapp_module_map: agent.py satırına ledger-hook notu, Ops tablosuna token_ledger.py
+satırı, değişiklik günlüğüne 2026-07-24 girdisi. Testler test_token_ledger.py 7/7 +
+regression 68/68, ruff temiz. NautilusTrader'a dokunulmadı.

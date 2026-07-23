@@ -922,7 +922,9 @@ def _run_full_robustness(
                 "(can be disabled with NAUTILUS_PARALLEL=0)",
             )
     except Exception as pool_exc:
-        _add_step(run_id, f"⚠ Could not set up parallel pool ({pool_exc}) — sequential mode")
+        _add_step(
+            run_id, f"⚠ Could not set up parallel pool ({pool_exc}) — sequential mode"
+        )
         run_many = None
 
     def _stage(label, fn, /, *args, **kwargs):
@@ -1065,7 +1067,8 @@ def _run_full_robustness(
                 )
         else:
             _add_step(
-                run_id, "  ⚠ Monte Carlo skipped — no trades were opened in the backtest"
+                run_id,
+                "  ⚠ Monte Carlo skipped — no trades were opened in the backtest",
             )
 
         return {"split": split, "wfo_windows": wfo, "mc": mc, "multi_symbol": ms}
@@ -1335,7 +1338,8 @@ def _agent_worker(
                         cutoff = df.index[-1] - pd.Timedelta(days=730)
                         df = df[df.index >= cutoff]
                         _add_step(
-                            run_id, f"1-MINUTE cropped to the last 2 years ({len(df):,} bars)"
+                            run_id,
+                            f"1-MINUTE cropped to the last 2 years ({len(df):,} bars)",
                         )
                     tf_cache[iv] = df
                     return df
@@ -1369,7 +1373,8 @@ def _agent_worker(
                             f"Could not load {symbol}/{category}/{iv} data: {fetch_exc}"
                         ) from fetch_exc
                     _add_step(
-                        run_id, f"Fetch error ({iv}), falling back to cache: {fetch_exc}"
+                        run_id,
+                        f"Fetch error ({iv}), falling back to cache: {fetch_exc}",
                     )
                     df = pd.read_parquet(cache_path)
 
@@ -1382,7 +1387,9 @@ def _agent_worker(
                 if iv == "1" and len(df) > 1_000_000:
                     cutoff = df.index[-1] - pd.Timedelta(days=730)
                     df = df[df.index >= cutoff]
-                    _add_step(run_id, f"1m cropped to the last 2 years ({len(df):,} bars)")
+                    _add_step(
+                        run_id, f"1m cropped to the last 2 years ({len(df):,} bars)"
+                    )
                 tf_cache[iv] = df
                 return df
 
@@ -2037,7 +2044,9 @@ def _agent_worker(
                 bars_info["end"] = str(_win_df.index[-1].date())
 
             if winner_spec is None:
-                _done_phase(run_id, 4, f"✗ None of the {len(eligible)} candidates passed")
+                _done_phase(
+                    run_id, 4, f"✗ None of the {len(eligible)} candidates passed"
+                )
                 if not continuous_mode:
                     with _AGENT_LOCK:
                         if run_id in _AGENT_PROGRESS:
@@ -2452,13 +2461,34 @@ def _generate_custom_spec(
         return spec
 
     except (GeneratedCodeError, Exception) as e:
-        _add_step(run_id, f"  ⚠ Could not generate custom block: {e} — falling back to builtin")
+        _add_step(
+            run_id,
+            f"  ⚠ Could not generate custom block: {e} — falling back to builtin",
+        )
         return None
 
 
 def _cleanup_agent_blocks(run_id: str) -> None:
     """Legacy hook kept for compatibility; run-specific blocks are retained."""
     return None
+
+
+@router.get("/tokens")
+async def tokens(request: Request):
+    """Per-model LLM token usage from the persistent ledger (token_ledger).
+
+    Unlike the in-memory AUTO-loop counters (per-run, single-model, lost on
+    restart), this reads ``~/.cache/nautilus_web_app/token_usage.jsonl`` where
+    EVERY LLM call (AUTO + describe/plan/chat + narratives) is recorded with the
+    model the API actually answered with. ``?format=json`` returns the raw
+    breakdown; the default is a plain-text table (curl-friendly)."""
+    from fastapi.responses import JSONResponse, PlainTextResponse
+
+    import token_ledger
+
+    if request.query_params.get("format") == "json":
+        return JSONResponse(token_ledger.summary())
+    return PlainTextResponse(token_ledger.format_table())
 
 
 @router.get("", response_class=HTMLResponse)
@@ -2891,12 +2921,13 @@ async def progress(request: Request, run_id: str):
 
 def _winner_narrative(last_row: dict, state: dict) -> str:
     try:
-        from agent import MODEL, _get_client
+        from agent import _create_message, _get_client
 
         m = last_row
         client = _get_client()
-        resp = client.messages.create(
-            model=MODEL,
+        resp = _create_message(
+            client,
+            _purpose="narrative",
             max_tokens=200,
             messages=[
                 {

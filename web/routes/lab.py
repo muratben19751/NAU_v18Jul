@@ -319,11 +319,12 @@ def _generate_idea(hint: str) -> dict:
     import json
 
     try:
-        from agent import MODEL, _extract_json_object, _get_client
+        from agent import _create_message, _extract_json_object, _get_client
 
         client = _get_client()
-        resp = client.messages.create(
-            model=MODEL,
+        resp = _create_message(
+            client,
+            _purpose="lab_idea",
             max_tokens=400,
             messages=[{"role": "user", "content": prompt}],
         )
@@ -560,12 +561,13 @@ async def progress(request: Request, run_id: str):
 def _lab_narrative(last_row: dict, state: dict) -> str:
     """Short English narrative about the lab run result."""
     try:
-        from agent import MODEL, _get_client
+        from agent import _create_message, _get_client
 
         m = last_row
         client = _get_client()
-        resp = client.messages.create(
-            model=MODEL,
+        resp = _create_message(
+            client,
+            _purpose="narrative",
             max_tokens=180,
             messages=[
                 {

@@ -414,7 +414,7 @@ def _recent_runs(limit: int = 6) -> list[dict]:
 def _generate_narrative(last_row: dict) -> str:
     """Short English narrative about the completed backtest. Falls back to template."""
     try:
-        from agent import MODEL, _get_client
+        from agent import _create_message, _get_client
 
         m = last_row
         prompt = (
@@ -427,8 +427,9 @@ def _generate_narrative(last_row: dict) -> str:
             f"Short, clear, in trader language. Begin with 'This strategy'."
         )
         client = _get_client()
-        resp = client.messages.create(
-            model=MODEL,
+        resp = _create_message(
+            client,
+            _purpose="narrative",
             max_tokens=200,
             messages=[{"role": "user", "content": prompt}],
         )

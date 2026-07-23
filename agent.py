@@ -79,18 +79,42 @@ def _is_credit_exhausted(exc: Exception) -> bool:
     return any(s in msg for s in _CREDIT_EXHAUSTED_SIGNALS)
 
 
-def _create_message(client, **kwargs):
+def _ledger_record(resp, called_model: str, purpose: str) -> None:
+    """Append this call's token usage to the persistent per-model ledger.
+
+    Best-effort: a ledger I/O error must never break an LLM call. The model
+    recorded is the one the API actually answered with (``resp.model``) so the
+    Fable→Opus fallback is attributed correctly; the CLI response carries no
+    ``.model``, so we fall back to the model we called with. See
+    ``token_ledger`` + [[nau_token_tuketim_izleme]].
+    """
+    try:
+        import token_ledger
+
+        actual = getattr(resp, "model", None) or called_model
+        token_ledger.record(actual, getattr(resp, "usage", None), purpose)
+    except Exception:
+        pass
+
+
+def _create_message(client, _purpose: str = "", **kwargs):
     """messages.create + automatic Fable→Opus fallback on credit exhaustion.
 
     The model kwarg is added HERE; callers do not pass a model. On a credit
     error the active model is permanently switched to FALLBACK_MODEL and the
     request is retried once (the request body is passed as-is — both models
     share the same API surface).
+
+    Every successful call is recorded to the persistent per-model token ledger
+    (``token_ledger``); ``_purpose`` tags the call site (best-effort, "" is
+    fine). This is the single choke point through which all app LLM calls pass.
     """
     global _active_model
     model = current_model()
     try:
-        return client.messages.create(model=model, **kwargs)
+        resp = client.messages.create(model=model, **kwargs)
+        _ledger_record(resp, model, _purpose)
+        return resp
     except Exception as e:
         if model == FALLBACK_MODEL or not _is_credit_exhausted(e):
             raise
@@ -102,7 +126,9 @@ def _create_message(client, **kwargs):
             type(e).__name__,
             FALLBACK_MODEL,
         )
-        return client.messages.create(model=FALLBACK_MODEL, **kwargs)
+        resp = client.messages.create(model=FALLBACK_MODEL, **kwargs)
+        _ledger_record(resp, FALLBACK_MODEL, _purpose)
+        return resp
 
 
 # ── Web research (DuckDuckGo, no API key required) ─────────────────────────
