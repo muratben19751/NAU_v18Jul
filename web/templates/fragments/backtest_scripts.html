@@ -5,6 +5,91 @@
    right-column tabs (.bt-tab); the top-level [Compose|Backtest|Analyze] tabs use
    a separate labTab()/.lab-tab namespace so the two never toggle each other. #}
 <script>
+  // ── Central run-state tracker ──────────────────────────────────────────────
+  // "Is a backtest-family job live in #result?" — true while a polling progress
+  // panel (describe/run/sweep) or a pending describe→run chain trigger is
+  // present. Single source of truth for: disabling every .js-run-btn, the
+  // Result-tab badge (spinner vs. trade count), and the duplicate-submit guard.
+  window.btRunActive = function() {
+    return !!document.querySelector(
+      "#result #describe-progress[hx-get], #result #progress-panel[hx-get], " +
+      "#result #sweep-progress[hx-get], #result #bt-chain-trigger");
+  };
+
+  window.btSyncRunState = function() {
+    var active = window.btRunActive();
+    document.querySelectorAll(".js-run-btn").forEach(function(b) { b.disabled = active; });
+    var badge = document.getElementById("bt-tab-badge-result");
+    if (badge) {
+      if (active) {
+        // Loading badge: spinner only (CSS ::before), no count — a count here
+        // would be the PREVIOUS run's number next to a live spinner.
+        badge.classList.add("running");
+        badge.textContent = "";
+        badge.title = "Backtest in progress…";
+      } else {
+        badge.classList.remove("running");
+        if (!badge.textContent.trim()) {
+          badge.textContent = "–";
+          badge.title = "No completed result yet";
+        }
+      }
+    }
+    // Let mode-specific UIs (Simple wizard) react without their own selectors.
+    document.dispatchEvent(new CustomEvent("bt:run-state", { detail: { active: active } }));
+  };
+
+  // ── Date-range validation (client side) ────────────────────────────────────
+  // ISO yyyy-mm-dd strings compare correctly as strings.
+  window.btDateRangeError = function(start, end) {
+    if (!start || !end) return "";
+    return start > end ? "End date cannot be before the start date." : "";
+  };
+
+  function btShowDateError(msg) {
+    var el = document.getElementById("bt-date-error");
+    if (el) { el.textContent = "⚠ " + msg; el.style.display = ""; }
+    if (window.showToast) showToast(msg, "err");
+  }
+  // Clear the inline date error as soon as the user edits any date input.
+  document.addEventListener("change", function(e) {
+    if (e.target && e.target.type === "date") {
+      var el = document.getElementById("bt-date-error");
+      if (el) el.style.display = "none";
+    }
+  });
+
+  // ── Submit guard: one live run + valid dates ───────────────────────────────
+  // Cancels the request BEFORE it leaves the browser. The describe→run chain
+  // fires exactly one follow-up request past the busy check via _btChainFiring.
+  document.body.addEventListener("htmx:beforeRequest", function(evt) {
+    var cfg = evt.detail.requestConfig || {};
+    var path = cfg.path || "";
+    if (path === "/robustness/run") {
+      // Robustness has its own result slot — only block a concurrent robustness run.
+      if (document.querySelector("#robustness-result [hx-get*='/robustness/progress']")) {
+        evt.preventDefault();
+        if (window.showToast) showToast("A robustness analysis is already running - wait for it to finish.", "err");
+      }
+      return;
+    }
+    if (path !== "/backtest/run" && path !== "/backtest/describe" && path !== "/backtest/sweep") return;
+    if (window._btChainFiring) { window._btChainFiring = false; return; }
+    if (window.btRunActive()) {
+      evt.preventDefault();
+      if (window.showToast) showToast("A run is already in progress - wait for it to finish.", "err");
+      return;
+    }
+    var p = cfg.parameters || {};
+    var bad = btDateRangeError(p.bybit_start, p.bybit_end)
+           || btDateRangeError(p.start_date, p.end_date)
+           || btDateRangeError(p.ext_start, p.ext_end);
+    if (bad) {
+      evt.preventDefault();
+      btShowDateError(bad);
+    }
+  });
+
   // Re-init equity chart after every HTMX swap into #result.
   // Also fires the backtest chain when describe_progress injects a
   // data-bt-chain-url element (hx-trigger="load" doesn't fire on innerHTML swap).
@@ -22,16 +107,14 @@
     if (!evt.detail.target || evt.detail.target.id !== "result") return;
     evt.detail.target.style.display = "";
     // Sonuç #result'a herhangi bir şey (progress ya da sonuç) düştüğünde Sonuç
-    // sekmesine odaklan; progress ise rozeti "running" yap.
+    // sekmesine odaklan; buton/rozet durumunu merkezi tracker günceller.
     if (window.btTab) btTab("result");
-    var badge = document.getElementById("bt-tab-badge-result");
-    if (badge && evt.detail.target.querySelector("#describe-progress, #progress-panel, #sweep-progress")) {
-      badge.classList.add("running"); badge.textContent = "";
-    }
+    btSyncRunState();
     var trigger = evt.detail.target.querySelector("[data-bt-chain-url]");
     if (trigger) {
       var url  = trigger.getAttribute("data-bt-chain-url");
       var vals = JSON.parse(trigger.getAttribute("data-bt-chain-vals") || "{}");
+      window._btChainFiring = true;  // let the chain past the duplicate-submit guard
       htmx.ajax("POST", url, { target: "#result", swap: "innerHTML", values: vals });
     }
   });
@@ -84,9 +167,15 @@
       // önle (robustness_result.html swap'i bunları yeniden dolduracak).
       ["rob-overfitting","rob-verdict","rob-wfo-eff","rob-oos-sharpe","rob-stability"]
         .forEach(function(id){ var el = document.getElementById(id); if (el) el.value = ""; });
-      // Sonuç sekmesi rozetini trade sayısıyla güncelle (final result)
+      // Completed-result badge: trade count + explicit tooltip (the running
+      // spinner is owned by btSyncRunState — the two states never mix).
       var badge = document.getElementById("bt-tab-badge-result");
-      if (badge) { badge.classList.remove("running"); badge.textContent = btPanel.dataset.btNTrades || "0"; }
+      if (badge) {
+        var n = btPanel.dataset.btNTrades || "0";
+        badge.classList.remove("running");
+        badge.textContent = n;
+        badge.title = n + " trades in the last completed backtest";
+      }
     }
   }
 
@@ -164,6 +253,7 @@
   }
 
   document.addEventListener('DOMContentLoaded', () => {
+    btSyncRunState();  // initial button/badge state (also for the Simple wizard)
     if (!document.getElementById('gen-form')) return;  // backtest body absent (e.g. empty catalog)
     btToggleAsset('Bybit');
     const sm = document.querySelector('select[name="trade_size_mode"], input[name="trade_size_mode"]:checked');

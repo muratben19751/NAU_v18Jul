@@ -130,7 +130,7 @@
     </div>
 
     <div class="row" style="gap:12px;align-items:center;flex-wrap:wrap;">
-      <button type="button" class="btn btn-primary btn-hero" id="sw-run-btn" onclick="swRun()">
+      <button type="button" class="btn btn-primary btn-hero js-run-btn" id="sw-run-btn" onclick="swRun()">
         ▶ Run backtest
       </button>
       <span class="text-muted mono" id="sw-run-hint" style="font-size:11px;"></span>
@@ -145,7 +145,11 @@
 
     <div class="sw-nav">
       <button type="button" class="btn btn-ghost" onclick="swGoto(2)">← Back</button>
-      <button type="button" class="btn btn-primary" onclick="swGoto(4)">Continue → Reliability</button>
+      {# Locked until the backtest above has COMPLETED (swSyncGating) — the
+         wizard's later steps build on its result. #}
+      <button type="button" class="btn btn-primary" id="sw-next-3" disabled
+              title="Run the backtest first — the next steps build on its result"
+              onclick="swGoto(4)">Continue → Reliability</button>
     </div>
   </div>
 
@@ -173,9 +177,16 @@
       {% if not catalog %}<div id="robustness-result"></div>{% endif %}
     </div>
 
+    {# This step is OPTIONAL — say so explicitly instead of silently letting
+       Continue through (the backtest step, by contrast, is mandatory). #}
+    <div class="text-muted" id="sw-rob-note" style="font-size:11px;margin-top:10px;">
+      This check is <b>optional</b> — you can continue to Finish without it,
+      but running it is strongly recommended before trusting the result.
+    </div>
+
     <div class="sw-nav">
       <button type="button" class="btn btn-ghost" onclick="swGoto(3)">← Back</button>
-      <button type="button" class="btn btn-primary" onclick="swGoto(5)">Continue → Finish</button>
+      <button type="button" class="btn btn-primary" id="sw-next-4" onclick="swGoto(5)">Skip → Finish</button>
     </div>
   </div>
 
@@ -213,12 +224,26 @@
 
 <script>
   // ── Simple-wizard state + navigation ──────────────────────────────────────
+  // btDone/robDone: completion flags for the mandatory backtest step and the
+  // optional reliability step — steps 4-5 stay locked until btDone (Bug 3).
+  // Both reset when a NEW run starts, so a fresh selection re-locks the flow.
   var swState = { mode: "", templateId: "", title: "", desc: "", specId: "",
-                  symbol: "BTCUSDT", interval: "60" };
+                  symbol: "BTCUSDT", interval: "60",
+                  btDone: false, robDone: false, robRunning: false };
 
   function swGoto(n) {
     // Step 1 must have a selection before moving on.
     if (n > 1 && !swState.mode) { swGoto(1); return; }
+    // Steps 4-5 require a COMPLETED backtest (mandatory step gating).
+    if (n >= 4 && !swState.btDone) {
+      var hint = document.getElementById("sw-run-hint");
+      if (hint) {
+        hint.textContent = (window.btRunActive && btRunActive())
+          ? "⏳ The backtest is still running — the next step unlocks when it finishes."
+          : "Run the backtest first — the next steps build on its result.";
+      }
+      n = 3;
+    }
     document.querySelectorAll(".sw-step").forEach(function (p) {
       p.classList.toggle("active", p.id === "sw-step-" + n);
     });
@@ -231,6 +256,68 @@
     if (n === 5) swUpdateFinish();
     try { sessionStorage.setItem("swStep", String(n)); } catch (e) {}
   }
+
+  // ── Completion-state sync: buttons, rail locks, progress hints (Bugs 3+5) ──
+  function swSyncGating() {
+    var running = window.btRunActive ? btRunActive() : false;
+    var next3 = document.getElementById("sw-next-3");
+    if (next3) {
+      next3.disabled = !swState.btDone;
+      next3.title = swState.btDone ? "" :
+        (running ? "Wait for the backtest to finish…"
+                 : "Run the backtest first — the next steps build on its result");
+    }
+    // Lock rail steps 4-5 until the backtest completed.
+    document.querySelectorAll(".sw-rail-step").forEach(function (b) {
+      var bn = parseInt(b.dataset.swStep, 10);
+      if (bn >= 4) b.disabled = !swState.btDone;
+    });
+    var runHint = document.getElementById("sw-run-hint");
+    if (runHint) {
+      if (running) runHint.textContent = "⏳ Running — this can take a while. Progress appears below.";
+      else if (swState.btDone) runHint.textContent = "✓ Backtest finished — you can continue.";
+      // else: leave whatever message is there (validation hints etc.)
+    }
+    var robBtn = document.getElementById("sw-rob-btn");
+    if (robBtn) robBtn.disabled = swState.robRunning;
+    var next4 = document.getElementById("sw-next-4");
+    if (next4) next4.textContent = swState.robDone ? "Continue → Finish" : "Skip → Finish";
+  }
+
+  // Central tracker (backtest_scripts.html) broadcasts run-state changes.
+  document.addEventListener("bt:run-state", function (e) {
+    if (e.detail && e.detail.active) {
+      // A NEW run started → previous completions no longer describe it.
+      swState.btDone = false;
+      swState.robDone = false;
+    } else {
+      // Run ended — completed only if a final result panel landed (an error
+      // fragment has no data-bt-* panel, so btDone stays false on failure).
+      if (document.querySelector("#result [data-bt-pnl-pct]")) swState.btDone = true;
+    }
+    swSyncGating();
+  });
+
+  // Reliability slot: track robustness progress/result swaps.
+  document.body.addEventListener("htmx:afterSwap", function (e) {
+    var t = e.detail && e.detail.target;
+    if (!t || t.id !== "robustness-result") return;
+    swState.robRunning = !!t.querySelector("[hx-get*='/robustness/progress']");
+    if (t.querySelector("[data-rob-summary]")) swState.robDone = true;
+    var hint = document.getElementById("sw-rob-hint");
+    if (hint) {
+      hint.textContent = swState.robRunning ? "⏳ Running the three tests — progress appears below."
+                       : (swState.robDone ? "✓ Reliability test finished." : hint.textContent);
+    }
+    swSyncGating();
+  });
+
+  // Initial state: a server-rendered previous result unlocks the flow the same
+  // way swReliability() already accepts it as a base.
+  document.addEventListener("DOMContentLoaded", function () {
+    if (document.querySelector("#result [data-bt-pnl-pct]")) swState.btDone = true;
+    swSyncGating();
+  });
 
   function swPickTemplate(card) {
     document.querySelectorAll(".sw-card").forEach(function (c) { c.classList.remove("active"); });
@@ -295,6 +382,17 @@
     var hint = document.getElementById("sw-run-hint");
     var start = (document.getElementById("sw-start") || {}).value || "";
     var end = (document.getElementById("sw-end") || {}).value || "";
+    // Duplicate-submit + date-range guards (the global htmx guard backs these
+    // up; validating here gives the wizard its own inline message).
+    if (window.btRunActive && btRunActive()) {
+      hint.textContent = "⏳ A run is already in progress — wait for it to finish.";
+      return;
+    }
+    var dateErr = window.btDateRangeError ? btDateRangeError(start, end) : "";
+    if (dateErr) {
+      hint.textContent = "⚠ " + dateErr;
+      return;
+    }
     if (swState.mode === "saved") {
       htmx.ajax("POST", "/backtest/run", {
         target: "#result", swap: "innerHTML",
@@ -323,6 +421,10 @@
   // ── Step 4: one-click reliability (balanced preset, hardcoded) ────────────
   function swReliability() {
     var hint = document.getElementById("sw-rob-hint");
+    if (swState.robRunning) {
+      hint.textContent = "⏳ The reliability test is already running.";
+      return;
+    }
     var panel = document.querySelector("#result [data-rob-spec-id]");
     if (!panel) {
       hint.textContent = "Run a backtest first (step 3) — the reliability test builds on its result.";
@@ -388,7 +490,8 @@
 
   function swReset() {
     swState = { mode: "", templateId: "", title: "", desc: "", specId: "",
-                symbol: "BTCUSDT", interval: "60" };
+                symbol: "BTCUSDT", interval: "60",
+                btDone: false, robDone: false, robRunning: false };
     document.querySelectorAll(".sw-card").forEach(function (c) { c.classList.remove("active"); });
     document.getElementById("sw-custom-box").style.display = "none";
     var saved = document.getElementById("sw-saved-picker");
@@ -396,6 +499,9 @@
     document.getElementById("sw-next-1").disabled = true;
     swPickSymbol("BTCUSDT");
     swPickInterval("60");
+    var hint = document.getElementById("sw-run-hint");
+    if (hint) hint.textContent = "";
+    swSyncGating();
     swGoto(1);
   }
 </script>

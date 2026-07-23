@@ -105,6 +105,7 @@ def _last_result_set(sid: str, *, r, spec_name, narrative, bars_info) -> None:
             "bars_info": bars_info,
         }
 
+
 # Progress store: run_id → {steps, done, result, error, spec_name}
 # ProgressStore holds the dict + lock + capped done-first eviction; the
 # _RUN_PROGRESS / _RUN_PROGRESS_LOCK aliases keep every existing direct-access
@@ -135,6 +136,105 @@ _GEN_MAX_BLOCKS = 5  # guard against runaway breakdown (5 conditions = 5 LLM cal
 _SWEEP_STORE = ProgressStore(20)
 _SWEEP_PROGRESS = _SWEEP_STORE.raw()
 _SWEEP_LOCK = _SWEEP_STORE.lock
+
+# ── Per-session single-active-run guard (Bug: duplicate submission) ─────────
+# One session may have ONE unfinished backtest-family job (run / describe-gen /
+# sweep) at a time. A second submit while the first is live returns 409 +
+# HX-Toast; HTMX does not swap non-2xx responses, so the live progress panel in
+# #result is preserved instead of being reset by a new run. The registry
+# self-clears: the worker's ``finally`` sets the store record's ``done`` flag,
+# and _session_active_kind() treats done/evicted records as inactive.
+_ACTIVE_RUNS: dict[str, tuple[str, str]] = {}  # sid → (kind, run/gen/sweep id)
+_ACTIVE_RUNS_LOCK = threading.Lock()
+# Prune threshold — entries self-clear on the owner's next submit, but sessions
+# that never come back would otherwise accumulate forever. The ProgressStores
+# cap at 50+20+20 records, so past ~90 entries the rest are guaranteed stale.
+_ACTIVE_RUNS_MAX = 500
+
+_BUSY_LABELS = {
+    "run": "backtest",
+    "gen": "strategy generation",
+    "sweep": "timeframe sweep",
+}
+
+
+def _active_store(kind: str) -> ProgressStore:
+    return {"run": _RUN_STORE, "gen": _GEN_STORE, "sweep": _SWEEP_STORE}[kind]
+
+
+def _session_active_kind(sid: str) -> str | None:
+    """Return 'run'|'gen'|'sweep' if this session has a live job, else None."""
+    with _ACTIVE_RUNS_LOCK:
+        ent = _ACTIVE_RUNS.get(sid)
+    if ent is None:
+        return None
+    kind, rid = ent
+    raw = _active_store(kind).get(rid)
+    if raw is None or raw.get("done"):
+        # Finished (or evicted/restarted) — drop the stale entry.
+        with _ACTIVE_RUNS_LOCK:
+            if _ACTIVE_RUNS.get(sid) == ent:
+                _ACTIVE_RUNS.pop(sid, None)
+        return None
+    return kind
+
+
+def _session_set_active(sid: str, kind: str, rid: str) -> None:
+    with _ACTIVE_RUNS_LOCK:
+        over_cap = len(_ACTIVE_RUNS) >= _ACTIVE_RUNS_MAX and sid not in _ACTIVE_RUNS
+        snapshot = list(_ACTIVE_RUNS.items()) if over_cap else []
+        _ACTIVE_RUNS[sid] = (kind, rid)
+    if not over_cap:
+        return
+    # Opportunistic prune of abandoned sessions (store lookups deliberately
+    # OUTSIDE the registry lock — no lock nesting).
+    for other_sid, (other_kind, other_rid) in snapshot:
+        raw = _active_store(other_kind).get(other_rid)
+        if raw is None or raw.get("done"):
+            with _ACTIVE_RUNS_LOCK:
+                if _ACTIVE_RUNS.get(other_sid) == (other_kind, other_rid):
+                    _ACTIVE_RUNS.pop(other_sid, None)
+
+
+def _busy_response(kind: str) -> HTMLResponse:
+    """409 for a concurrent submit — body is informational only (no swap)."""
+    label = _BUSY_LABELS.get(kind, "run")
+    resp = HTMLResponse(
+        f"<div class='empty-state'>A {label} is already in progress for this "
+        "session — wait for it to finish.</div>",
+        status_code=409,
+    )
+    resp.headers["HX-Toast"] = (
+        f"err|A {label} is already running - wait for it to finish."
+    )
+    return resp
+
+
+def _invalid_date_range(start: str, end: str) -> str | None:
+    """Return an error message when a start/end pair is inverted or malformed.
+
+    Blank values are fine (blank = full cache). Only rejects when BOTH are
+    given and start > end, or either fails to parse as YYYY-MM-DD.
+    """
+    s, e = (start or "").strip(), (end or "").strip()
+    if not s and not e:
+        return None
+    try:
+        sd = date.fromisoformat(s) if s else None
+        ed = date.fromisoformat(e) if e else None
+    except ValueError:
+        return "Dates must be in YYYY-MM-DD format."
+    if sd and ed and sd > ed:
+        return "End date cannot be before the start date."
+    return None
+
+
+def _date_error_response(msg: str) -> HTMLResponse:
+    """400 for an invalid date range — toast + non-swapping body."""
+    resp = HTMLResponse(f"<div class='empty-state'>{msg}</div>", status_code=400)
+    resp.headers["HX-Toast"] = f"err|{msg}"
+    return resp
+
 
 # Plan-preview FIFO/TTL cache keyed on (desc_lower, allow_short_bool). Avoids
 # repeated propose_condition_breakdown LLM calls during iterative editing.
@@ -453,11 +553,26 @@ async def run(
             "<div class='empty-state'>Spec not found.</div>", status_code=404
         )
 
-    # Capture all form params for the worker (no I/O in this handler)
-    run_id = uuid.uuid4().hex[:8]
+    # Server-side date validation — an inverted range must never start a pipeline.
+    date_err = (
+        _invalid_date_range(bybit_start, bybit_end)
+        or _invalid_date_range(start_date, end_date)
+        or _invalid_date_range(ext_start, ext_end)
+    )
+    if date_err:
+        return _date_error_response(date_err)
+
     # Session id captured HERE (request-time) — the worker thread has no request,
     # so it writes the result into THIS session's slot.
     sid = session_id(request)
+    # One live run per session: a duplicate submit must not reset the progress
+    # panel of the run already in flight.
+    busy = _session_active_kind(sid)
+    if busy:
+        return _busy_response(busy)
+
+    # Capture all form params for the worker (no I/O in this handler)
+    run_id = uuid.uuid4().hex[:8]
     # Evict to stay within cap (done-first, else oldest — see ProgressStore).
     _RUN_STORE.create_evicting(
         run_id,
@@ -471,6 +586,7 @@ async def run(
             "narrative": "",
         },
     )
+    _session_set_active(sid, "run", run_id)
 
     def _progress(msg: str) -> None:
         ts = datetime.now(UTC).strftime("%H:%M:%S")
@@ -1030,6 +1146,23 @@ async def describe(
             status_code=400,
         )
 
+    # Server-side date validation — same rule as /run (the generation would
+    # otherwise burn LLM calls and then chain into a doomed backtest).
+    date_err = (
+        _invalid_date_range(bybit_start, bybit_end)
+        or _invalid_date_range(start_date, end_date)
+        or _invalid_date_range(ext_start, ext_end)
+    )
+    if date_err:
+        return _date_error_response(date_err)
+
+    # One live run per session — a second describe while generation/backtest is
+    # in flight would reset the progress panel (see _session_active_kind).
+    sid = session_id(request)
+    busy = _session_active_kind(sid)
+    if busy:
+        return _busy_response(busy)
+
     # Short/sell direction: the Backtest form carries an allow_short checkbox
     # (defaults ON). An unchecked HTML checkbox sends nothing → "" → False.
     _allow_short = _parse_bool_form(allow_short)
@@ -1089,6 +1222,7 @@ async def describe(
             "chained": False,
         },
     )
+    _session_set_active(sid, "gen", gen_id)
 
     def _worker() -> None:
         from agent import (
@@ -2140,6 +2274,17 @@ async def sweep(
             "<div class='empty-state'>Strategy not found.</div>", status_code=404
         )
 
+    # Same guards as /run: no inverted date range, one live job per session.
+    date_err = _invalid_date_range(bybit_start, bybit_end) or _invalid_date_range(
+        start_date, end_date
+    )
+    if date_err:
+        return _date_error_response(date_err)
+    sid = session_id(request)
+    busy = _session_active_kind(sid)
+    if busy:
+        return _busy_response(busy)
+
     is_index = instrument_kind == "Index"
 
     if is_index:
@@ -2201,6 +2346,7 @@ async def sweep(
             ],
         },
     )
+    _session_set_active(sid, "sweep", sweep_id)
 
     def _row(code: str, **upd) -> None:
         with _SWEEP_LOCK:

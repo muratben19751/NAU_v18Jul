@@ -49,7 +49,7 @@
                 {% endfor %}
               </select>
             </label>
-            <button class="btn btn-secondary" type="button"
+            <button class="btn btn-secondary js-run-btn" type="button"
                     hx-post="/backtest/run"
                     hx-include="#gen-form"
                     hx-target="#result"
@@ -114,6 +114,9 @@
             <datalist id="bybit-symbols-list">
               {% for s in bybit_symbols %}<option value="{{ s.symbol }}" label="{{ s.symbol }} ({{ s.category }})">{% endfor %}
             </datalist>
+            {# Inline date-range validation message (filled by btShowDateError) #}
+            <div id="bt-date-error" role="alert"
+                 style="display:none;margin-top:8px;font-size:11px;color:var(--pnl-down);"></div>
           </div>
 
           {# Index / Equity fields #}
@@ -284,7 +287,7 @@
             </div>
 
             <div class="row" style="align-items:center;gap:14px;flex-wrap:wrap;">
-              <button class="btn btn-primary btn-hero" type="button"
+              <button class="btn btn-primary btn-hero js-run-btn" type="button"
                       hx-post="/backtest/describe"
                       hx-include="closest form"
                       hx-target="#result"
@@ -338,7 +341,8 @@
       </button>
       <button type="button" class="bt-tab" role="tab" data-bt-tab="result" onclick="btTab('result')">
         Result
-        <span class="bt-tab-badge" id="bt-tab-badge-result">{{ last.n_trades if last else '–' }}</span>
+        <span class="bt-tab-badge" id="bt-tab-badge-result"
+              title="{% if last %}{{ last.n_trades }} trades in the last completed backtest{% else %}No completed result yet{% endif %}">{{ last.n_trades if last else '–' }}</span>
       </button>
       <button type="button" class="bt-tab" role="tab" data-bt-tab="robustness" onclick="btTab('robustness')">
         Robustness

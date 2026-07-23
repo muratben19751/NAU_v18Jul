@@ -317,3 +317,20 @@ A-UI + C-backend birleştirmesi 5 fazda uygulandı, webapp_module_map güncellen
 ## 2026-07-22 — Blokları AI ile düzenleme (çok-turlu sohbet) senkronu
 
 `chat_refine` deseni bloklara taşındı: (A) custom block KODU + (B) strateji draft LİSTESİ, ikisi de çok-turlu sohbetle düzenlenebilir. `webapp_module_map` güncellendi: `agent.py` satırına `chat_edit_block`/`chat_edit_blocks` + `_BLOCK_EDIT_SYSTEM_PROMPT`/`_BLOCKS_EDIT_SYSTEM_PROMPT`/`_coerce_catalog_blocks` ([NET_KOD]/[NET_BLOKLAR] protokolleri, codegate defense-in-depth, halüsinasyon-tip önleme); `web/routes/strategy.py` satırına A/B chat endpoint'leri (`/blocks/{name}/chat/new|chat|chat/save` — 409-bypass + unregister/register; `/drafts/chat/new|chat|chat/apply`), `_BLOCK_CHAT`/`_DRAFTS_CHAT = ChatStore()` ayrı örnekler, `_preview_signals` ortak yardımcı; değişiklik günlüğüne 2026-07-22 girdisi. Doğrulama (HTTP surface, verify skill): tüm sunucu-tarafı yol + guard'lar (404/400/409/expired) PASS; save yolu codegate+smoke+register+HX-Redirect canlı çalıştı. Canlı LLM happy-path gözlenemedi — sağlayıcı ısrarlı 429 PROVIDER_RATE_LIMIT_EXCEEDED (ortam kaynaklı); feature 429'u nazik fallback + çökme-yok ile karşıladı. NautilusTrader kütüphanesine dokunulmadı.
+
+## 2026-07-23 — Studio hata düzeltme turu senkronu (6 bug + Simple wizard geriye dönük)
+
+Kullanıcının önceliklendirilmiş 6-maddelik Studio hata raporu (duplicate-submit yarışı,
+result-panel JS SyntaxError, SIMPLE wizard gating yok, tarih validasyonu eksik, uzun-koşu
+UI koruması zayıf, Result rozeti kararsız) tek turda kapatıldı; `webapp_module_map` senkron
+edildi. (1) `web/routes/backtest.py` satırına: `_ACTIVE_RUNS` session-başına tek-aktif-koşu
+guard'ı (409 + HX-Toast, self-clearing + 500-eşik prune, lock-nesting'siz) + `_invalid_date_range`
+sunucu validasyonu (worker başlamadan 400). (2) `web/routes/studio.py` satırına **geriye dönük**:
+2026-07-22 SIMPLE ↔ PRO ↔ AUTO mod anahtarı + `studio_simple.html` 5-adımlı sihirbaz (singleton
+reparenting `swMoveNodes`) — önceki oturumda commit'lenmiş ama wiki'ye hiç senkron edilmemişti —
++ 2026-07-23 adım gating (`btDone/robDone`, backtest zorunlu, reliability açıkça opsiyonel).
+(3) Değişiklik günlüğüne 2026-07-23 girdisi: 6 bug'ın kök neden + düzeltme + test özeti
+(yeni `tests/test_studio_ui_fixes.py` 11 test; describe'daki 7 kırık git-stash ile baseline'da
+da kırık diye izole edildi; code-review'un tek 🟡 bulgusu — registry sınırsız büyüme — prune
+ile kapatıldı). Frontmatter last_updated 2026-07-23 + summary tazelendi. NautilusTrader
+kütüphanesine dokunulmadı — salt route + şablon/JS/CSS.

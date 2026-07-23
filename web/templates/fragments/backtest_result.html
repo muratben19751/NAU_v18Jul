@@ -412,13 +412,19 @@
       buildEquityChart();
       buildDrawdownChart();
       buildMonthlyHeatmap();
-      const _resultEl = document.getElementById("result");
-      if (_resultEl && !_resultEl._chartsBound) {
-        _resultEl._chartsBound = true;  // idempotent — don't add a new listener on every fragment swap
-        _resultEl.addEventListener("htmx:afterSettle", function() {
-          buildEquityChart(); buildDrawdownChart(); buildMonthlyHeatmap();
-        });
-      }
+      // IIFE — this script re-executes on EVERY #result swap; a top-level
+      // `const`/`let` here is a global lexical binding and re-declaring it on
+      // the next run throws "Identifier ... has already been declared" at
+      // parse time, killing the whole script (charts stop rebuilding).
+      (function () {
+        var resultEl = document.getElementById("result");
+        if (resultEl && !resultEl._chartsBound) {
+          resultEl._chartsBound = true;  // idempotent — don't add a new listener on every fragment swap
+          resultEl.addEventListener("htmx:afterSettle", function() {
+            buildEquityChart(); buildDrawdownChart(); buildMonthlyHeatmap();
+          });
+        }
+      })();
     </script>
     {% endif %}
 

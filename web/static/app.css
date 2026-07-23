@@ -2234,6 +2234,12 @@ body.page-studio .cockpit-idle-mark {
   background: var(--accent-soft);
 }
 .sw-rail-step.done { color: var(--pnl-up); border-color: var(--border); }
+/* Locked steps (mandatory backtest not completed yet) */
+.sw-rail-step:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.sw-rail-step:disabled:hover { border-color: var(--border); color: var(--text-muted); }
 .sw-rail-no {
   display: inline-flex;
   align-items: center;
