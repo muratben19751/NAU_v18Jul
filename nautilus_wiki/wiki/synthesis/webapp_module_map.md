@@ -90,6 +90,7 @@ Uygulama Nautilus'un **düşük seviyeli** yolunu kullanır ([[backtesting_guide
 | `capture_baseline.py` | Migration-öncesi parite snapshot'ı | [[v1_to_v2_migration_lessons]] "6 catalog spec bit-identical parite" iddiasını üretir |
 | `wiki_helper.py` | `[[bare]]` → `/wiki/*` HTML rewriter | (app-spesifik) |
 | `nautilus_wiki/tools/wiki_tools.py` | Wiki CLI | (app-spesifik) |
+| `scripts/install-wiki-sync-skill.ps1` | wiki-sync skill kurulumu (2026-07-23): SKILL.md + SCHEMA_TEMPLATE.md + bootstrap_wiki.py + wiki_tools.py dosyalarını gist'ten `~/.claude/skills/wiki-sync` altına klonlar — Windows'ta yeni makine kurulumu; wiki iş akışının kendi kurulum aracı | (app-spesifik) |
 
 ## Uçtan uca akış
 

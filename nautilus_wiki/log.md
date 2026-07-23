@@ -342,3 +342,14 @@ kütüphanesine dokunulmadı — salt route + şablon/JS/CSS.
 - Simple wizard Market adımı: coin butonları bybit_symbols (katalog) + 8 TF butonu.
 - webapp_module_map.md data.py + studio.py satırları güncellendi; test_fixes.py
   unsupported-örneği "30"→"45" taşındı (45 gerçekten desteklenmiyor).
+
+## 2026-07-23 — Ops araçları senkronu (wiki-sync skill kurulum script'i)
+
+Son senkron (1e148b4) sonrası iki chore commit tarandı: (1) `scripts/
+install-wiki-sync-skill.ps1` (38e2f5b) — wiki-sync skill dosyalarını gist'ten
+`~/.claude/skills/wiki-sync`'e kuran Windows kurulum script'i → `webapp_module_map`
+Ops tablosuna satır eklendi (wiki iş akışının kendi kurulum aracı olduğu için
+kapsam-içi). (2) `.claude/hooks` ikinci-beyin vault yolu makine-bağımsızlaştırma
+(642c955) — dev-ortam konfigürasyonu, wiki kapsamı DIŞI (app modülü değil) →
+bilinçli atlandı, yalnız bu notla kayda geçti. App kodu farkı sıfır
+(`git diff 1e148b4..HEAD -- '*.py' web/` boş); lint öncesi/sonrası 0/0/0/0/0/0.
