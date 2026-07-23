@@ -334,3 +334,11 @@ reparenting `swMoveNodes`) — önceki oturumda commit'lenmiş ama wiki'ye hiç 
 da kırık diye izole edildi; code-review'un tek 🟡 bulgusu — registry sınırsız büyüme — prune
 ile kapatıldı). Frontmatter last_updated 2026-07-23 + summary tazelendi. NautilusTrader
 kütüphanesine dokunulmadı — salt route + şablon/JS/CSS.
+
+## [2026-07-23] update | Bybit TF seti + wizard katalog sembolleri
+- Interval seti 1/5/15/60/240/D → 1/5/15/30/60/240/720/D (30m + 12h; 45m Bybit API'de yok).
+- Kapalı-set kopyaları senkron: data.py (_BYBIT_MS/Literal/ALL_INTERVALS), backtest.py
+  (_make_bybit_bar_type/_BYBIT_TO_DSL), chart.py (saniye map ×2), price_chart.html TF şeridi.
+- Simple wizard Market adımı: coin butonları bybit_symbols (katalog) + 8 TF butonu.
+- webapp_module_map.md data.py + studio.py satırları güncellendi; test_fixes.py
+  unsupported-örneği "30"→"45" taşındı (45 gerçekten desteklenmiyor).
