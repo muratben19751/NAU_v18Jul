@@ -395,6 +395,29 @@ html, body {
 .metric .value .down { color: var(--pnl-down); }
 .metric-slash { color: var(--text-muted); font-weight: 400; }
 
+/* Risk · Trades · P&L/Cost side by side — sections in one row, each grid
+   wrapping into 2 rows of narrow cells. Column ratio 2:3:3 matches the
+   4/5/6 tile counts (mg-2 → 2×2, mg-3 → 3+2 and 3×2). */
+.metric-sections-row {
+  display: grid;
+  grid-template-columns: 2fr 3fr 3fr;
+  gap: 10px;
+  align-items: start;
+}
+.metric-sections-row .metric-section { margin-bottom: 0; }
+/* body.page-studio also carries the extra selector so these fixed column
+   counts beat the page-studio auto-fit override (specificity, not order). */
+.metric-grid.mg-2,
+body.page-studio .metric-grid.mg-2 { grid-template-columns: repeat(2, 1fr); }
+.metric-grid.mg-3,
+body.page-studio .metric-grid.mg-3 { grid-template-columns: repeat(3, 1fr); }
+.metric-sections-row .metric { padding: 5px 8px; }
+.metric-sections-row .metric .value { font-size: 13px; }
+@media (max-width: 900px) {
+  .metric-sections-row { grid-template-columns: 1fr; }
+  .metric-sections-row .metric-section { margin-bottom: 10px; }
+}
+
 @media (max-width: 720px) {
   .result-hero { grid-template-columns: 1fr; }
   .hero-side { flex-direction: row; }

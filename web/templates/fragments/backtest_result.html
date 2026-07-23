@@ -106,10 +106,13 @@
       </div>
     </div>
 
+    {# ─── Risk · Trades · P&L/Cost side by side — each wraps into 2 rows of
+       narrow cells (2/3/3 columns ∝ 4/5/6 tiles); stacks again under 900px #}
+    <div class="metric-sections-row">
     {# ─── Group: Risk ratios ─── #}
     <div class="metric-section">
       <div class="metric-section-title">Risk</div>
-      <div class="metric-grid">
+      <div class="metric-grid mg-2">
         <div class="metric">
           <div class="label">Sharpe (252d)</div>
           <div class="value">{{ last.sharpe_fmt }}</div>
@@ -132,7 +135,7 @@
     {# ─── Group: Trade statistics ─── #}
     <div class="metric-section">
       <div class="metric-section-title">Trades</div>
-      <div class="metric-grid">
+      <div class="metric-grid mg-3">
         <div class="metric">
           <div class="label">Trades</div>
           <div class="value">{{ last.n_trades }}</div>
@@ -159,7 +162,7 @@
     {# ─── Group: Per-trade P&L + costs ─── #}
     <div class="metric-section">
       <div class="metric-section-title">P&amp;L / Cost</div>
-      <div class="metric-grid">
+      <div class="metric-grid mg-3">
         <div class="metric">
           <div class="label">Avg Win</div>
           <div class="value up">{{ last.avg_win_fmt }}</div>
@@ -186,6 +189,7 @@
         </div>
       </div>
     </div>
+    </div>{# /metric-sections-row #}
 
     {# ─── Backtest Summary (TradingView-style) ─── #}
     {% if last.equity_curve and last.equity_curve|length > 1 %}

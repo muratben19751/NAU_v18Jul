@@ -457,15 +457,17 @@ def load_index_bars(
 
 
 BybitCategory = Literal["spot", "linear", "inverse"]
-BybitInterval = Literal["1", "5", "15", "60", "240", "D"]
+BybitInterval = Literal["1", "5", "15", "30", "60", "240", "720", "D"]
 _BYBIT_URL = "https://api.bybit.com/v5/market/kline"
 _BYBIT_LIMIT = 1000  # max rows per request
 _BYBIT_MS = {
     "1": 60_000,  # 1 minute
     "5": 300_000,  # 5 minutes
     "15": 900_000,  # 15 minutes
+    "30": 1_800_000,  # 30 minutes
     "60": 3_600_000,  # 1 hour
     "240": 14_400_000,  # 4 hours
+    "720": 43_200_000,  # 12 hours
     "D": 86_400_000,  # 1 day
 }
 
@@ -798,8 +800,10 @@ BYBIT_ALL_INTERVALS: tuple[tuple[str, str], ...] = (
     ("1", "1m"),
     ("5", "5m"),
     ("15", "15m"),
+    ("30", "30m"),
     ("60", "1h"),
     ("240", "4h"),
+    ("720", "12h"),
     ("D", "1d"),
 )
 

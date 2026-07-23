@@ -240,7 +240,7 @@ class TestMakeBybitBarTypeIntervals:
         from backtest import _make_bybit_bar_type
 
         iid = InstrumentId.from_str("BTCUSDT.BYBIT")
-        for interval in ("1", "5", "15", "60", "240", "D"):
+        for interval in ("1", "5", "15", "30", "60", "240", "720", "D"):
             bt = _make_bybit_bar_type(iid, interval)
             assert bt is not None
 
@@ -250,8 +250,9 @@ class TestMakeBybitBarTypeIntervals:
         from backtest import _make_bybit_bar_type
 
         iid = InstrumentId.from_str("BTCUSDT.BYBIT")
+        # "45" is deliberately absent: Bybit's kline API has no 45m interval.
         with pytest.raises(ValueError):
-            _make_bybit_bar_type(iid, "30")
+            _make_bybit_bar_type(iid, "45")
 
 
 class TestComposedStrategySpecValidate:

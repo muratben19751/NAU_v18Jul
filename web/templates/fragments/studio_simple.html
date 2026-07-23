@@ -84,9 +84,12 @@
 
     <div class="sw-field-label">Coin</div>
     <div class="sw-quick-row">
-      {% for sym in ["BTCUSDT", "ETHUSDT", "SOLUSDT"] %}
+      {# Quick buttons come from the cached-data catalog (bybit_symbols context),
+         so they always match what's actually downloadable — static fallback is
+         BTC/ETH/SOL when the cache is empty (see _bybit_symbols in routes/studio). #}
+      {% for sym in bybit_symbols | map(attribute="symbol") | unique | list %}
       <button type="button" class="sw-quick {% if sym == 'BTCUSDT' %}active{% endif %}"
-              data-sw-symbol="{{ sym }}" onclick="swPickSymbol('{{ sym }}')">{{ sym[:3] }}</button>
+              data-sw-symbol="{{ sym }}" onclick="swPickSymbol('{{ sym }}')">{{ sym[:-4] if sym.endswith("USDT") else sym }}</button>
       {% endfor %}
       <input type="text" id="sw-symbol" list="bybit-symbols-list" value="BTCUSDT"
              autocomplete="off" placeholder="or type to search…"
@@ -95,7 +98,8 @@
 
     <div class="sw-field-label" style="margin-top:16px;">Timeframe</div>
     <div class="sw-quick-row">
-      {% for code, lbl in [("15", "15 min"), ("60", "1 hour"), ("240", "4 hours")] %}
+      {% for code, lbl in [("1", "1 min"), ("5", "5 min"), ("15", "15 min"), ("30", "30 min"),
+                           ("60", "1 hour"), ("240", "4 hours"), ("720", "12 hours"), ("D", "24 hours")] %}
       <button type="button" class="sw-quick {% if code == '60' %}active{% endif %}"
               data-sw-interval="{{ code }}" onclick="swPickInterval('{{ code }}')">{{ lbl }}</button>
       {% endfor %}
@@ -371,7 +375,8 @@
   }
 
   function swUpdateSummary() {
-    var tf = { "15": "15 min", "60": "1 hour", "240": "4 hours" }[swState.interval] || swState.interval + "m";
+    var tf = { "1": "1 min", "5": "5 min", "15": "15 min", "30": "30 min", "60": "1 hour",
+               "240": "4 hours", "720": "12 hours", "D": "24 hours" }[swState.interval] || swState.interval + "m";
     var what = swState.mode === "custom" ? "Your own idea" : swState.title;
     document.getElementById("sw-summary").textContent =
       "Testing: " + what + " · " + swState.symbol + " · " + tf + ".";
@@ -467,7 +472,8 @@
     // more detail" card. Saved specs may have an empty catalog description —
     // synthesize one from what we know so the chat always starts.
     if (desc.length < 12) {
-      var tf = { "15": "15m", "60": "1h", "240": "4h" }[swState.interval] || swState.interval;
+      var tf = { "1": "1m", "5": "5m", "15": "15m", "30": "30m", "60": "1h",
+                 "240": "4h", "720": "12h", "D": "1d" }[swState.interval] || swState.interval;
       desc = "Strategy \"" + (swState.title || "my strategy") + "\" traded on " +
              swState.symbol + " at the " + tf + " timeframe. " +
              "Help me understand its weaknesses and improve it.";

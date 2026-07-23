@@ -34,8 +34,10 @@ async def chart_data(
         "1": 60,
         "5": 300,
         "15": 900,
+        "30": 1800,
         "60": 3600,
         "240": 14400,
+        "720": 43200,
         "D": 86400,
     }
     _MAX_WINDOW_CANDLES = 60_000  # browser + fetch protection
@@ -71,8 +73,10 @@ async def chart_data(
                 "1": 60,
                 "5": 300,
                 "15": 900,
+                "30": 1800,
                 "60": 3600,
                 "240": 14400,
+                "720": 43200,
                 "D": 86400,
             }.get(interval, 60)
             end = datetime.now(UTC)

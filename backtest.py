@@ -255,13 +255,15 @@ def _make_bybit_instrument(
 
 
 def _make_bybit_bar_type(instrument_id: InstrumentId, interval: str) -> BarType:
-    """`interval` matches Bybit kline codes: "1","5","15","60","240","D"."""
+    """`interval` matches Bybit kline codes: "1","5","15","30","60","240","720","D"."""
     step = {
         "1": "1-MINUTE",
         "5": "5-MINUTE",
         "15": "15-MINUTE",
+        "30": "30-MINUTE",
         "60": "1-HOUR",
         "240": "4-HOUR",
+        "720": "12-HOUR",
         "D": "1-DAY",
     }.get(interval)
     if step is None:
@@ -1349,8 +1351,10 @@ def run_composed_backtest(
                         "1": "1-MINUTE",
                         "5": "5-MINUTE",
                         "15": "15-MINUTE",
+                        "30": "30-MINUTE",
                         "60": "1-HOUR",
                         "240": "4-HOUR",
+                        "720": "12-HOUR",
                         "D": "1-DAY",
                     }
                     _gran = (
