@@ -7,7 +7,13 @@ active=$(printf '%s' "$input" | jq -r '.stop_hook_active // false' 2>/dev/null)
 if [ "$active" = "true" ]; then
   exit 0   # döngü önleme: ikinci kez tetiklenmede sessizce geç
 fi
-VAULT="/Users/i034216/Desktop/obsidian/murat_obsidian"
+# Makine-bağımsız vault seçimi: Mac ve Windows yolları farklı — var olanı kullan.
+VAULT=""
+for v in "$HOME/OneDrive/Desktop/myOBSIDIAN/murat_obsidian" \
+         "$HOME/Desktop/obsidian/murat_obsidian"; do
+  if [ -d "$v" ]; then VAULT="$v"; break; fi
+done
+[ -n "$VAULT" ] || exit 0   # vault bu makinede yoksa sessizce geç
 msg="İkinci beyin kontrolü: Bu oturumda KALICI değeri olan bir şey öğrenildiyse "
 msg+="(yeni kaynak, kavram, karar, proje özeti) onu $VAULT vault'una Karpathy "
 msg+="deseniyle yaz — sources/ (immutable, gerekiyorsa) + wiki/ sentez sayfası + "
