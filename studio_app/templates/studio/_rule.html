@@ -1,0 +1,20 @@
+{# renders a single Rule; ctx: rule, spec, defn #}
+<div class="rule" id="rule-{{ rule.id }}">
+  <span class="grip">⋮⋮</span>
+  <span class="ind">{{ spec.label if spec else rule.indicator }}</span>
+  {% for name, p in rule.params.items() %}
+    <span class="pchip editable{% if p.optimize %} optd{% endif %}"
+          data-url="/studio/{{ defn.id }}/rules/{{ rule.id }}"
+          data-param="{{ name }}" data-value="{{ p.value }}">{{ name }}: {{ p.value }}</span>
+  {% endfor %}
+  {% if rule.timeframe %}<span class="pchip">tf: {{ rule.timeframe }}</span>{% endif %}
+  <span class="op">{{ rule.operator | replace("_", " ") }}</span>
+  {% if rule.target is not none %}
+    <span class="pchip editable{% if rule.target.optimize %} optd{% endif %}"
+          data-url="/studio/{{ defn.id }}/rules/{{ rule.id }}"
+          data-param="target" data-value="{{ rule.target.value }}">{{ rule.target.value }}</span>
+  {% endif %}
+  <span class="del" hx-delete="/studio/{{ defn.id }}/rules/{{ rule.id }}"
+        hx-target="closest .block" hx-swap="outerHTML"
+        hx-confirm="Delete this rule?">✕</span>
+</div>

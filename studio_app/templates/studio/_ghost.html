@@ -1,0 +1,33 @@
+{# ctx: g = {id, s (Suggestion), trial, base, source}, defn #}
+<div class="ghost" id="ghost-{{ g.id }}">
+  <div class="rule-line">
+    <span class="tag-ai">AI{% if g.source == "loop" %} · LOOP{% endif %}</span>
+    <span class="ind">{{ g.s.kind | replace("_", " ") | title }}</span>
+    {% if g.s.kind == "add_rule" %}
+      <span class="pchip aichg">{{ g.s.diff.indicator }}</span>
+      {% if g.s.diff.as_filter %}<span class="op">as filter</span>{% endif %}
+    {% elif g.s.kind in ["modify_param", "modify_risk"] %}
+      <span class="pchip aichg">{{ g.s.diff.param or g.s.diff.name }} → {{ g.s.diff.value }}</span>
+    {% elif g.s.kind == "remove_rule" %}
+      <span class="pchip aichg">rule {{ g.s.diff.rule_id[:6] }}</span>
+    {% endif %}
+  </div>
+  <div class="why">{{ g.s.rationale }}
+    {% if g.trial and g.base %}
+      <br>Trial: <b>DSR {{ "%.2f" | format(g.base.dsr) }} → {{ "%.2f" | format(g.trial.dsr) }}</b>
+      · DD {{ "%.1f" | format(g.base.max_dd_pct) }} → {{ "%.1f%%" | format(g.trial.max_dd_pct) }}
+      · Trades {{ g.base.trades }} → {{ g.trial.trades }}
+    {% elif g.trial %}
+      <br>Trial: <b>DSR {{ "%.2f" | format(g.trial.dsr) }}</b>
+      · DD {{ "%.1f%%" | format(g.trial.max_dd_pct) }} · {{ g.trial.trades }} trades
+    {% endif %}
+  </div>
+  <div class="actions">
+    <button class="accept"
+            hx-post="/studio/{{ defn.id }}/ai/suggestions/{{ g.id }}/accept"
+            hx-target="closest .block" hx-swap="outerHTML">✓ Accept</button>
+    <button class="dismiss"
+            hx-post="/studio/{{ defn.id }}/ai/suggestions/{{ g.id }}/dismiss"
+            hx-target="closest .block" hx-swap="outerHTML">Dismiss</button>
+  </div>
+</div>

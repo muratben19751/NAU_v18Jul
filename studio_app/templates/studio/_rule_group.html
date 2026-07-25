@@ -1,0 +1,43 @@
+{# ctx: group, block_kind in {entry, exit}, title, registry, defn #}
+<div class="block {{ block_kind }}" id="block-{{ block_kind }}">
+  <div class="block-head">
+    <span class="badge">{{ "ENTRY · LONG" if block_kind == "entry" else "EXIT" }}</span>
+    {{ title }}
+    <button class="ai-improve"
+            hx-post="/studio/{{ defn.id }}/ai/suggest"
+            hx-vals='{"block": "{{ block_kind }}"}'
+            hx-swap="none"
+            hx-indicator="closest .block-head">✦ Improve</button>
+    <span class="logic">Match
+      <select name="match" hx-patch="/studio/{{ defn.id }}/blocks/{{ block_kind }}"
+              hx-target="#block-{{ block_kind }}" hx-swap="outerHTML">
+        <option value="all" {% if group.match == "all" %}selected{% endif %}>ALL (AND)</option>
+        <option value="any" {% if group.match == "any" %}selected{% endif %}>ANY (OR)</option>
+      </select>
+    </span>
+  </div>
+  <div class="block-body">
+    {% for rule in group.rules %}
+      {% if not loop.first %}<div class="and-tag">{{ "AND" if group.match == "all" else "OR" }}</div>{% endif %}
+      {% with spec = registry.get(rule.indicator) %}{% include "studio/_rule.html" %}{% endwith %}
+    {% endfor %}
+    {% if group.filters %}
+      <div class="nested">
+        <div class="and-tag" style="margin-left:0">FILTER · skip if</div>
+        {% for rule in group.filters %}
+          {% with spec = registry.get(rule.indicator) %}{% include "studio/_rule.html" %}{% endwith %}
+        {% endfor %}
+      </div>
+    {% endif %}
+    {% if ghosts is defined %}{% for g in ghosts %}{% include "studio/_ghost.html" %}{% endfor %}{% endif %}
+    <form class="add-rule-form"
+          hx-post="/studio/{{ defn.id }}/blocks/{{ block_kind }}/rules"
+          hx-target="#block-{{ block_kind }}" hx-swap="outerHTML">
+      <select name="indicator">
+        {% for key, s in registry.items() %}<option value="{{ key }}">{{ s.label }}</option>{% endfor %}
+      </select>
+      <label class="chk"><input type="checkbox" name="as_filter" value="true"> as filter</label>
+      <button class="add-rule" type="submit">＋ Add condition</button>
+    </form>
+  </div>
+</div>

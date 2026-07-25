@@ -1,0 +1,16 @@
+{# ctx: defn, metrics, run #}
+<p class="opt-note">Run {{ run.run_id[:6] }} · v{{ run.version }} · fold-by-fold OOS metrics.</p>
+<div class="wf" style="margin-top:0">
+  <div class="t">OOS folds</div>
+  {% for f in metrics.folds %}
+  <div class="wf-row"><span>Fold {{ f.fold }}</span>
+    <span>DSR {{ "%.2f" | format(f.dsr) }} · DD {{ "%.1f%%" | format(f.max_dd_pct) }}</span></div>
+  {% endfor %}
+</div>
+<div class="wf">
+  <div class="t">Aggregate</div>
+  <div class="wf-row"><span>Net P&L</span><span>{{ "%+.1f%%" | format(metrics.net_pnl_pct) }}</span></div>
+  <div class="wf-row"><span>Deflated SR</span><span>{{ "%.2f" | format(metrics.dsr) }}</span></div>
+  <div class="wf-row"><span>Profit factor</span><span>{{ "%.2f" | format(metrics.profit_factor) }}</span></div>
+  <div class="wf-row"><span>Trades</span><span>{{ metrics.trades }}</span></div>
+</div>

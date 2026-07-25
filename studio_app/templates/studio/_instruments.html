@@ -1,0 +1,9 @@
+{# ctx: defn #}
+<div class="instr" id="instruments">
+  {% for inst in defn.instruments %}
+    <div class="chip {% if inst.active %}active{% endif %}"
+         hx-patch="/studio/{{ defn.id }}/instruments/{{ inst.symbol }}"
+         hx-target="#instruments" hx-swap="outerHTML">{{ inst.symbol }} · {{ inst.timeframe }}</div>
+  {% endfor %}
+  <div class="chip" title="Phase 2+: add instrument via config">+ Add</div>
+</div>

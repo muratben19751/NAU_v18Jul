@@ -1,0 +1,24 @@
+{# ctx: item = (block, rule_id, name, param), defn #}
+{% set block, rule_id, name, p = item %}
+{% set owner = "risk" if block == "risk" else rule_id %}
+<div class="param {% if p.optimize %}on{% endif %}">
+  <div class="param-head">
+    <span class="name">{{ name }}</span><span class="of">{{ block }} · {{ rule_id[:6] }}</span>
+    <div class="switch"
+         hx-patch="/studio/{{ defn.id }}/opt/toggle"
+         hx-vals='{"owner": "{{ owner }}", "param": "{{ name }}"}'
+         hx-target="#side-panel" hx-swap="outerHTML"></div>
+  </div>
+  {% if p.optimize %}
+  <form class="grid3"
+        hx-patch="/studio/{{ defn.id }}/opt/range"
+        hx-vals='{"owner": "{{ owner }}", "param": "{{ name }}"}'
+        hx-target="#side-panel" hx-swap="outerHTML"
+        hx-trigger="change from:find input">
+    <div><label>Min</label><input name="min" value="{{ p.optimize.min }}"></div>
+    <div><label>Step</label><input name="step" value="{{ p.optimize.step }}"></div>
+    <div><label>Max</label><input name="max" value="{{ p.optimize.max }}"></div>
+  </form>
+  <div class="combo">{{ p.optimize.n_values }} values</div>
+  {% endif %}
+</div>

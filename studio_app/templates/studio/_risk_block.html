@@ -1,0 +1,34 @@
+{# ctx: risk, defn #}
+<div class="block risk" id="block-risk">
+  <div class="block-head"><span class="badge">RISK</span> Position &amp; risk
+    <button class="ai-improve"
+            hx-post="/studio/{{ defn.id }}/ai/suggest"
+            hx-vals='{"block": "risk"}'
+            hx-swap="none"
+            hx-indicator="closest .block-head">✦ Improve</button></div>
+  <div class="block-body">
+    <div class="rule"><span class="grip">⋮⋮</span><span class="ind">Stop loss</span>
+      <span class="op">ATR ×</span>
+      <span class="pchip editable{% if risk.stop_loss_atr_mult.optimize %} optd{% endif %}"
+            data-url="/studio/{{ defn.id }}/risk" data-param="stop_loss_atr_mult"
+            data-value="{{ risk.stop_loss_atr_mult.value }}">{{ risk.stop_loss_atr_mult.value }}</span>
+      <span class="op">· ATR len</span>
+      <span class="pchip editable" data-url="/studio/{{ defn.id }}/risk"
+            data-param="stop_loss_atr_len"
+            data-value="{{ risk.stop_loss_atr_len.value }}">{{ risk.stop_loss_atr_len.value }}</span></div>
+    <div class="rule"><span class="grip">⋮⋮</span><span class="ind">Take profit</span>
+      <span class="op">R multiple</span>
+      <span class="pchip editable{% if risk.take_profit_r.optimize %} optd{% endif %}"
+            data-url="/studio/{{ defn.id }}/risk" data-param="take_profit_r"
+            data-value="{{ risk.take_profit_r.value }}">{{ risk.take_profit_r.value }}</span></div>
+    <div class="rule"><span class="grip">⋮⋮</span><span class="ind">Risk per trade</span>
+      <span class="pchip editable" data-url="/studio/{{ defn.id }}/risk"
+            data-param="risk_per_trade_pct"
+            data-value="{{ risk.risk_per_trade_pct.value }}">{{ risk.risk_per_trade_pct.value }} %</span>
+      <span class="op">· max concurrent</span>
+      <span class="pchip editable" data-url="/studio/{{ defn.id }}/risk"
+            data-param="max_concurrent"
+            data-value="{{ risk.max_concurrent.value }}">{{ risk.max_concurrent.value }}</span></div>
+    {% if ghosts is defined %}{% for g in ghosts %}{% include "studio/_ghost.html" %}{% endfor %}{% endif %}
+  </div>
+</div>

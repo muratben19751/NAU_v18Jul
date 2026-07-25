@@ -1,0 +1,140 @@
+{# ctx: defn, opt_run, opt_results, max_runs, oob? #}
+{% set sweep = defn.sweep_size() %}
+{% set total = sweep * defn.walkforward.folds %}
+<aside class="side" id="side-panel"{% if oob is defined and oob %} hx-swap-oob="true"{% endif %}
+  {% if (opt_run and opt_run.status == "running") or (ai_loop and ai_loop.status == "running") %}
+    hx-get="/studio/{{ defn.id }}/optimize/panel" hx-trigger="every 2s" hx-swap="outerHTML"
+  {% endif %}>
+  <div class="tabs">
+    <div class="tab active" data-tab="opt">Optimization</div>
+    <div class="tab" data-tab="ai">AI Loop</div>
+    <div class="tab" data-tab="results">Results</div>
+    <div class="tab" data-tab="deploy">Deploy</div>
+  </div>
+  <div class="side-body">
+
+    <div class="pane active" id="pane-opt">
+      <p class="opt-note">Amber chips in the rule tree are <b>included in the sweep</b>.
+        Toggle a parameter on to sweep it; edit min / step / max inline.</p>
+      {% for item in defn.optimized_params() %}
+        {% include "studio/_param_card.html" %}
+      {% endfor %}
+      {% if not defn.optimized_params() %}
+        <p class="opt-note">No parameters in the sweep yet — every eligible
+        param appears here once toggled from a previous state; use the chips'
+        amber state as reference.</p>
+      {% endif %}
+      <div class="combo {% if total > 10000 %}warn{% endif %} {% if total > max_runs %}danger{% endif %}"
+           style="margin:4px 2px 10px">
+        Sweep size: <b>{{ "{:,}".format(sweep) }} combinations</b>
+        × {{ defn.walkforward.folds }} folds ≈ {{ "{:,}".format(total) }} runs
+        {% if total > max_runs %} · exceeds limit {{ "{:,}".format(max_runs) }}{% elif total > 10000 %} · heavy sweep{% endif %}
+      </div>
+      {% if opt_run and opt_run.status == "running" %}
+        <div class="loop-status"><div class="pulse"></div>
+          Optimizing · run {{ opt_run.run_id[:6] }}…</div>
+      {% else %}
+        <button class="btn primary" style="width:100%"
+                {% if total > max_runs or sweep == 0 %}disabled{% endif %}
+                hx-post="/studio/{{ defn.id }}/optimize"
+                hx-target="#side-panel" hx-swap="outerHTML">▶ Run optimization</button>
+        {% if opt_run and opt_run.status == "failed" %}
+          <p class="opt-note" style="color:var(--short)">Last run failed: {{ opt_run.error }}</p>
+        {% endif %}
+      {% endif %}
+      <div class="wf">
+        <div class="t">Walk-forward validation</div>
+        <div class="wf-row"><span>Scheme</span><span>{{ defn.walkforward.scheme | replace("_", " ") }}</span></div>
+        <div class="wf-row"><span>In-sample</span><span>{{ defn.walkforward.in_sample_months }} months</span></div>
+        <div class="wf-row"><span>Out-of-sample</span><span>{{ defn.walkforward.oos_months }} months</span></div>
+        <div class="wf-row"><span>Folds</span><span>{{ defn.walkforward.folds }}</span></div>
+        <div class="wf-row"><span>Objective</span><span>{{ defn.walkforward.objective | upper }}</span></div>
+        <div class="wf-row"><span>Embargo</span><span>{{ defn.walkforward.embargo_bars }} bars</span></div>
+      </div>
+    </div>
+
+    <div class="pane" id="pane-ai">
+      <div class="loop-ctl">
+        <div class="t">✦ Improvement loop</div>
+        {% if ai_loop and ai_loop.status == "running" %}
+          <div class="loop-status"><div class="pulse"></div>
+            Loop {{ ai_loop.loop_id[:6] }} running…</div>
+        {% else %}
+        <form hx-post="/studio/{{ defn.id }}/ai/loop/start"
+              hx-target="#side-panel" hx-swap="outerHTML">
+          <div class="loop-row"><span>Objective</span>
+            <span class="mono">{{ defn.walkforward.objective | upper }} (walk-forward)</span></div>
+          <div class="loop-row"><span>Guardrail (min trades)</span>
+            <input name="min_trades" value="100"></div>
+          <div class="loop-row"><span>Max iterations</span>
+            <input name="max_iterations" value="6"></div>
+          <div class="loop-row"><span>Apply changes</span>
+            <select name="apply_mode">
+              <option value="review">Ask me each time</option>
+              <option value="auto">Auto-accept if OOS improves</option>
+            </select></div>
+          <button class="btn ai" type="submit" style="width:100%;margin-top:10px">▶ Run loop</button>
+        </form>
+        {% if ai_loop and ai_loop.note %}
+          <p class="opt-note" style="margin-top:8px">Last loop: {{ ai_loop.note }}</p>
+        {% endif %}
+        {% endif %}
+      </div>
+      {% for it in ai_iters %}
+      <div class="iter">
+        <div class="iter-head"><span class="n">#{{ it.n }}</span>
+          {% if it.sugg %}{{ it.sugg.kind | replace("_", " ") | title }}{% else %}Failed{% endif %}
+          <span class="st {{ {'accepted':'accepted','rejected':'rejected','review':'review','failed':'rejected'}[it.decision] }}">{{ it.decision | upper }}</span></div>
+        <div class="desc">{% if it.sugg %}{{ it.sugg.rationale }}{% endif %}
+          {% if it.note %} · {{ it.note }}{% endif %}</div>
+        {% if it.trial %}
+        <div class="delta">
+          {% if it.base %}
+            <span class="{{ 'up' if it.trial.dsr >= it.base.dsr else 'dn' }}">DSR {{ "%.2f" | format(it.base.dsr) }}→{{ "%.2f" | format(it.trial.dsr) }}</span>
+            <span class="eq">Trades {{ it.base.trades }}→{{ it.trial.trades }}</span>
+          {% else %}
+            <span class="eq">DSR {{ "%.2f" | format(it.trial.dsr) }}</span>
+          {% endif %}
+        </div>
+        {% endif %}
+      </div>
+      {% endfor %}
+    </div>
+
+    <div class="pane" id="pane-results">
+      {% if opt_results %}
+        <p class="opt-note">Top {{ opt_results | length }} by {{ defn.walkforward.objective | upper }}
+          · run {{ opt_run.run_id[:6] }}. Apply writes params into the draft.</p>
+        {% for r in opt_results %}
+        <div class="iter">
+          <div class="iter-head"><span class="n">#{{ r.rank }}</span>
+            DSR {{ "%.2f" | format(r.dsr) }}
+            <span class="st accepted" style="cursor:pointer"
+                  hx-post="/studio/{{ defn.id }}/optimize/apply"
+                  hx-vals='{"rank": {{ r.rank }}}'
+                  hx-swap="none"
+                  hx-confirm="Apply these parameters to the draft?">APPLY</span></div>
+          <div class="desc mono" style="font-size:.68rem">
+            {% for k, v in r.params.items() %}{{ k.split(".")[-1] }}={{ v }} {% endfor %}</div>
+          <div class="delta"><span class="eq">Sharpe {{ "%.2f" | format(r.sharpe) }}</span>
+            <span class="{{ 'up' if r.net_pnl_pct > 0 else 'dn' }}">P&L {{ "%+.1f%%" | format(r.net_pnl_pct) }}</span>
+            <span class="dn">DD {{ "%.1f%%" | format(r.max_dd_pct) }}</span>
+            <span class="eq">{{ r.trades }} trades</span></div>
+        </div>
+        {% endfor %}
+        <div style="height:10px"></div>
+      {% endif %}
+      <div hx-get="/studio/{{ defn.id }}/runs/latest/folds"
+           hx-trigger="load" hx-swap="innerHTML">
+        <p class="opt-note">Loading latest backtest…</p>
+      </div>
+    </div>
+
+    <div class="pane" id="pane-deploy"
+         hx-get="/studio/{{ defn.id }}/deployments/panel"
+         hx-trigger="load" hx-swap="innerHTML">
+      <p class="opt-note">Loading deployments…</p>
+    </div>
+
+  </div>
+</aside>

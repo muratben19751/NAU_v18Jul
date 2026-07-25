@@ -1,0 +1,4 @@
+# Strategy Studio SQLite store — runtime artifact, recreated on demand
+studio.db
+studio.db-wal
+studio.db-shm

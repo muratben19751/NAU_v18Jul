@@ -1,0 +1,11 @@
+{# ctx: library = {category: [IndicatorSpec]} #}
+<aside class="library">
+  <input class="lib-search" placeholder="Search indicators…">
+  {% for category, specs in library.items() %}
+    <div class="lib-title">{{ category | replace("_", " ") | title }}</div>
+    {% for s in specs %}
+      <div class="lib-item" data-key="{{ s.key }}">{{ s.label }}
+        <span class="tag">{{ s.category[:4] }}</span></div>
+    {% endfor %}
+  {% endfor %}
+</aside>

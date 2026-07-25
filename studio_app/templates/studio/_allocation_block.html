@@ -1,0 +1,56 @@
+{# ctx: allocation (AllocationBlock|None), defn, registry #}
+<div class="block alloc" id="block-allocation">
+  <div class="block-head"><span class="badge">ALLOCATION</span> Universe &amp; weighting
+    <span class="logic">Mode
+      <select name="value" hx-patch="/studio/{{ defn.id }}/allocation"
+              hx-vals='{"name": "mode"}'
+              hx-target="#block-allocation" hx-swap="outerHTML">
+        <option value="single" {% if not allocation or allocation.mode == "single" %}selected{% endif %}>Single (each active)</option>
+        <option value="ranked" {% if allocation and allocation.mode == "ranked" %}selected{% endif %}>Ranked universe</option>
+      </select>
+    </span>
+  </div>
+  <div class="block-body">
+    {% if allocation and allocation.mode == "ranked" %}
+    <div class="rule"><span class="grip">⋮⋮</span><span class="ind">Sort universe by</span>
+      <select class="inline-sel" name="value" hx-patch="/studio/{{ defn.id }}/allocation"
+              hx-vals='{"name": "sort_indicator"}'
+              hx-target="#block-allocation" hx-swap="outerHTML">
+        {% for key, s in registry.items() %}
+          <option value="{{ key }}" {% if allocation.sort_indicator == key %}selected{% endif %}>{{ s.label }}</option>
+        {% endfor %}
+      </select>
+      <select class="inline-sel" name="value" hx-patch="/studio/{{ defn.id }}/allocation"
+              hx-vals='{"name": "sort_direction"}'
+              hx-target="#block-allocation" hx-swap="outerHTML">
+        <option value="desc" {% if allocation.sort_direction == "desc" %}selected{% endif %}>descending</option>
+        <option value="asc" {% if allocation.sort_direction == "asc" %}selected{% endif %}>ascending</option>
+      </select>
+      <span class="op">· take top</span>
+      <span class="pchip editable" data-url="/studio/{{ defn.id }}/allocation"
+            data-param="top_n" data-value="{{ allocation.top_n }}">{{ allocation.top_n }}</span>
+    </div>
+    <div class="rule"><span class="grip">⋮⋮</span><span class="ind">Weighting</span>
+      <select class="inline-sel" name="value" hx-patch="/studio/{{ defn.id }}/allocation"
+              hx-vals='{"name": "weighting"}'
+              hx-target="#block-allocation" hx-swap="outerHTML">
+        <option value="equal" {% if allocation.weighting == "equal" %}selected{% endif %}>Equal weight</option>
+        <option value="inverse_volatility" {% if allocation.weighting == "inverse_volatility" %}selected{% endif %}>Inverse volatility</option>
+      </select>
+      <span class="op">· rebalance</span>
+      <select class="inline-sel" name="value" hx-patch="/studio/{{ defn.id }}/allocation"
+              hx-vals='{"name": "rebalance"}'
+              hx-target="#block-allocation" hx-swap="outerHTML">
+        <option value="daily" {% if allocation.rebalance == "daily" %}selected{% endif %}>daily</option>
+        <option value="weekly" {% if allocation.rebalance == "weekly" %}selected{% endif %}>weekly</option>
+        <option value="on_signal" {% if allocation.rebalance == "on_signal" %}selected{% endif %}>on signal</option>
+      </select>
+    </div>
+    {% else %}
+    <div class="rule dim"><span class="grip">⋮⋮</span>
+      <span class="ind">Each active instrument trades independently</span>
+      <span class="op">— switch to Ranked to sort &amp; weight the universe</span></div>
+    {% endif %}
+    {% if ghosts is defined %}{% for g in ghosts %}{% include "studio/_ghost.html" %}{% endfor %}{% endif %}
+  </div>
+</div>

@@ -1,0 +1,41 @@
+{# ctx: defn, run (dict|None), metrics (BacktestMetrics|None), spark (path|None) #}
+<footer id="footer-metrics"
+  {% if run and run.status == "running" %}
+    hx-get="/studio/{{ defn.id }}/runs/latest" hx-trigger="every 2s" hx-swap="outerHTML"
+  {% endif %}>
+  {% if run and run.status == "running" %}
+    <div class="metric"><span class="k">Status</span><span class="v">Running…</span></div>
+    <span class="status"><span class="pulse-dot"></span>
+      Backtesting v{{ run.version }}{% if run.is_draft %} (draft){% endif %} · run {{ run.run_id[:6] }}</span>
+  {% elif run and run.status == "failed" %}
+    <div class="metric"><span class="k">Status</span><span class="v neg">Failed</span></div>
+    <span class="status err">{{ run.error }}</span>
+  {% elif metrics %}
+    <div class="metric"><span class="k">Net P&L</span>
+      <span class="v {{ 'pos' if metrics.net_pnl_pct > 0 else 'neg' }}">{{ "%+.1f%%" | format(metrics.net_pnl_pct) }}</span></div>
+    <div class="metric"><span class="k">Sharpe</span><span class="v">{{ "%.2f" | format(metrics.sharpe) }}</span></div>
+    <div class="metric"><span class="k">Deflated SR</span>
+      <span class="v {{ 'pos' if metrics.dsr >= 0.8 else '' }}">{{ "%.2f" | format(metrics.dsr) }}</span></div>
+    <div class="metric"><span class="k">Max DD</span><span class="v neg">{{ "%.1f%%" | format(metrics.max_dd_pct) }}</span></div>
+    <div class="metric"><span class="k">Trades</span><span class="v">{{ metrics.trades }}</span></div>
+    <div class="metric"><span class="k">Win rate</span><span class="v">{{ "%.1f%%" | format(metrics.win_rate_pct) }}</span></div>
+    {% if spark %}
+    <svg class="sparkline" viewBox="0 0 260 36" preserveAspectRatio="none" aria-label="Equity curve">
+      <path d="{{ spark }}" fill="none" stroke="#31C48D" stroke-width="1.6"/>
+    </svg>
+    {% endif %}
+    <div class="run">
+      <span class="status">Run {{ run.run_id[:6] }} · v{{ run.version }}{% if run.is_draft %} (draft){% endif %} ✓</span>
+      <button class="btn" hx-post="/studio/{{ defn.id }}/optimize"
+              hx-target="#side-panel" hx-swap="outerHTML">Optimize</button>
+    </div>
+  {% else %}
+    <div class="metric"><span class="k">Status</span><span class="v">No runs yet</span></div>
+    <span class="status">Run a backtest to populate metrics</span>
+    <div class="run">
+      <span class="status">v{{ defn.version }}</span>
+      <button class="btn" hx-post="/studio/{{ defn.id }}/optimize"
+              hx-target="#side-panel" hx-swap="outerHTML">Optimize</button>
+    </div>
+  {% endif %}
+</footer>

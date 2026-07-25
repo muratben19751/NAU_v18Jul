@@ -1,0 +1,89 @@
+{# ctx: regime, registry, defn #}
+{% if regime %}
+<div class="block decision" id="block-regime">
+  <div class="block-head">
+    <span class="badge">IF · REGIME</span>
+    Market regime check
+    <button class="ai-improve"
+            hx-post="/studio/{{ defn.id }}/ai/suggest"
+            hx-vals='{"block": "regime"}'
+            hx-swap="none"
+            hx-indicator="closest .block-head">✦ Improve</button>
+    <span class="logic">Evaluate
+      <select name="evaluate" hx-patch="/studio/{{ defn.id }}/blocks/regime"
+              hx-target="#block-regime" hx-swap="outerHTML">
+        {% for ev in ["every_bar", "4h", "daily_close"] %}
+          <option value="{{ ev }}" {% if regime.evaluate == ev %}selected{% endif %}>{{ ev | replace("_", " ") }}</option>
+        {% endfor %}
+      </select>
+    </span>
+  </div>
+  <div class="block-body">
+    {% for rule in regime.conditions.rules %}
+      {% if not loop.first %}<div class="and-tag">{{ "AND" if regime.conditions.match == "all" else "OR" }}</div>{% endif %}
+      {% with spec = registry.get(rule.indicator) %}{% include "studio/_rule.html" %}{% endwith %}
+    {% endfor %}
+    {% if ghosts is defined %}{% for g in ghosts %}{% include "studio/_ghost.html" %}{% endfor %}{% endif %}
+    <form class="add-rule-form"
+          hx-post="/studio/{{ defn.id }}/blocks/regime/rules"
+          hx-target="#block-regime" hx-swap="outerHTML">
+      <select name="indicator">
+        {% for key, s in registry.items() %}<option value="{{ key }}">{{ s.label }}</option>{% endfor %}
+      </select>
+      <button class="add-rule" type="submit">＋ Add condition</button>
+    </form>
+    <div class="branch then">
+      <div class="branch-label">THEN <small>· trending regime</small></div>
+      <div class="subcard"><span class="arrow">↓</span>
+        <strong>Long trend rules</strong><span>ENTRY · EXIT · RISK blocks below</span>
+        <span class="meta">active</span></div>
+    </div>
+    <div class="branch else">
+      <div class="branch-label">ELSE <small>· ranging regime</small>
+        <select class="inline-sel" name="else_mode"
+                hx-patch="/studio/{{ defn.id }}/blocks/regime"
+                hx-target="#block-regime" hx-swap="outerHTML">
+          <option value="flat" {% if regime.else_ == "flat" %}selected{% endif %}>Stay flat</option>
+          <option value="substrategy" {% if regime.else_ == "substrategy" %}selected{% endif %}>Run substrategy</option>
+        </select>
+      </div>
+      {% if regime.else_ == "substrategy" and regime.substrategy %}
+      <div class="subcard sub-active"><span class="arrow">⇄</span>
+        <strong>{{ regime.substrategy.name }}</strong>
+        <span>entry &amp; exit below · shares main RISK block</span>
+        <span class="meta">active in chop</span></div>
+      <div class="nested sub-rules">
+        <div class="and-tag" style="margin-left:0">SUB · ENTRY</div>
+        {% for rule in regime.substrategy.entry.rules %}
+          {% with spec = registry.get(rule.indicator) %}{% include "studio/_rule.html" %}{% endwith %}
+        {% endfor %}
+        <form class="add-rule-form"
+              hx-post="/studio/{{ defn.id }}/blocks/sub_entry/rules"
+              hx-target="#block-regime" hx-swap="outerHTML">
+          <select name="indicator">
+            {% for key, s in registry.items() %}<option value="{{ key }}">{{ s.label }}</option>{% endfor %}
+          </select>
+          <button class="add-rule" type="submit">＋ Add condition</button>
+        </form>
+        <div class="and-tag" style="margin-left:0">SUB · EXIT</div>
+        {% for rule in regime.substrategy.exit.rules %}
+          {% with spec = registry.get(rule.indicator) %}{% include "studio/_rule.html" %}{% endwith %}
+        {% endfor %}
+        <form class="add-rule-form"
+              hx-post="/studio/{{ defn.id }}/blocks/sub_exit/rules"
+              hx-target="#block-regime" hx-swap="outerHTML">
+          <select name="indicator">
+            {% for key, s in registry.items() %}<option value="{{ key }}">{{ s.label }}</option>{% endfor %}
+          </select>
+          <button class="add-rule" type="submit">＋ Add condition</button>
+        </form>
+      </div>
+      {% else %}
+      <div class="subcard flat"><span class="arrow">⏸</span>
+        <strong>Stay flat</strong><span>no positions in chop</span>
+        <span class="meta">fallback</span></div>
+      {% endif %}
+    </div>
+  </div>
+</div>
+{% endif %}

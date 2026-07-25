@@ -1,0 +1,6 @@
+{# ctx: defn, is_draft #}
+<div class="strategy-name" id="strategy-name">
+  <div class="dot" {% if not is_draft %}style="background:var(--long)"{% endif %}></div>
+  <strong>{{ defn.name }}</strong>
+  <small>· v{{ defn.version }}{% if is_draft %} · draft — unsaved{% else %} · saved{% endif %}</small>
+</div>

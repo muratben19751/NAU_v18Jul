@@ -1,0 +1,37 @@
+{# ctx: defn, deployments (list[dict]) #}
+{% set any_pending = deployments | selectattr("status", "equalto", "pending") | list %}
+<div id="deployments-panel"
+  {% if any_pending %}
+    hx-get="/studio/{{ defn.id }}/deployments/panel" hx-trigger="every 2s" hx-swap="outerHTML"
+  {% endif %}>
+  {% if not deployments %}
+    <p class="opt-note">No deployments yet — use ⇪ Deploy in the header.</p>
+  {% endif %}
+  {% for d in deployments %}
+  <div class="dep">
+    <div class="dep-head">
+      <span class="dep-id">{{ d.deploy_id[:6] }}</span>
+      <span class="env {{ d.environment }}">{{ d.environment | upper }}</span>
+      <span class="op">v{{ d.version }}</span>
+      <span class="dep-st st-{{ d.status }}">
+        {% if d.status == "pending" %}<span class="pulse-dot"></span>{% endif %}
+        {{ d.status | upper }}</span>
+    </div>
+    <div class="dep-actions">
+      {% if d.status == "running" %}
+        <button hx-post="/studio/{{ defn.id }}/deployments/{{ d.deploy_id }}/pause"
+                hx-target="#deployments-panel" hx-swap="outerHTML">⏸ Pause</button>
+      {% elif d.status == "paused" %}
+        <button hx-post="/studio/{{ defn.id }}/deployments/{{ d.deploy_id }}/resume"
+                hx-target="#deployments-panel" hx-swap="outerHTML">▶ Resume</button>
+      {% endif %}
+      {% if d.status in ["pending", "running", "paused"] %}
+        <button class="danger"
+                hx-post="/studio/{{ defn.id }}/deployments/{{ d.deploy_id }}/stop"
+                hx-target="#deployments-panel" hx-swap="outerHTML"
+                hx-confirm="Stop deployment {{ d.deploy_id[:6] }}? This cannot be resumed.">⏹ Stop</button>
+      {% endif %}
+    </div>
+  </div>
+  {% endfor %}
+</div>

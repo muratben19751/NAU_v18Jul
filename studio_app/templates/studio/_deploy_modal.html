@@ -1,0 +1,70 @@
+{# ctx: defn, metrics, objective_value, gate_default, has_draft #}
+<div class="modal-back" id="deploy-modal">
+  <div class="modal">
+    <div class="m-head">⇪ Deploy strategy
+      <span class="x" onclick="document.getElementById('deploy-modal').remove()">✕</span></div>
+    <div class="m-body">
+      <p class="opt-note">Deploys <b>v{{ defn.version }} (saved)</b>{% if has_draft %} —
+        your unsaved draft changes are <b>not</b> included; Save first to deploy them{% endif %}.</p>
+
+      <form hx-post="/studio/{{ defn.id }}/deploy"
+            hx-target="#deploy-result" hx-swap="innerHTML">
+        <div class="m-row">
+          <label>Environment</label>
+          <div class="seg">
+            <label class="seg-opt"><input type="radio" name="environment" value="paper" checked
+                   onchange="document.getElementById('live-confirm').hidden = true">
+              Paper · Nautilus SIM</label>
+            <label class="seg-opt"><input type="radio" name="environment" value="live"
+                   onchange="document.getElementById('live-confirm').hidden = false">
+              Live · Bybit</label>
+          </div>
+        </div>
+        <div class="m-row">
+          <label>Instruments</label>
+          <select name="instruments">
+            <option value="active">Active only
+              ({% for i in defn.instruments if i.active %}{{ i.symbol }}{% if not loop.last %}, {% endif %}{% endfor %})</option>
+            <option value="all">All configured</option>
+          </select>
+        </div>
+        <div class="m-row">
+          <label>Capital (USDT)</label>
+          <input name="capital" value="10000">
+        </div>
+        <div class="m-row">
+          <label>Kill switch · daily loss</label>
+          <select name="kill_switch">
+            <option value="2">Pause at −2% day</option>
+            <option value="3" selected>Pause at −3% day</option>
+            <option value="5">Pause at −5% day</option>
+            <option value="off">Off (not recommended)</option>
+          </select>
+        </div>
+        <div class="m-row gate">
+          <label class="chk">
+            <input type="checkbox" name="gate_enabled" value="true" checked>
+            Deployment gate: require OOS {{ defn.walkforward.objective | upper }} ≥
+            <input name="gate_min" value="{{ gate_default }}" class="gate-min">
+          </label>
+          <div class="gate-now">
+            {% if objective_value is not none %}
+              Current: <b class="{{ 'ok' if objective_value >= gate_default else 'bad' }}">
+                {{ "%.2f" | format(objective_value) }}</b>
+              (run {{ metrics and "done" }})
+            {% else %}
+              Current: <b class="bad">no completed run</b>
+            {% endif %}
+          </div>
+        </div>
+        <div class="m-row" id="live-confirm" hidden>
+          <label>Type the strategy name to confirm LIVE deploy</label>
+          <input name="confirm_name" placeholder="{{ defn.name }}">
+        </div>
+        <button class="btn primary" type="submit" style="width:100%;margin-top:12px">
+          ⇪ Deploy</button>
+      </form>
+      <div id="deploy-result"></div>
+    </div>
+  </div>
+</div>
