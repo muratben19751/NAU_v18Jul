@@ -304,6 +304,8 @@ def route_delete_rule(request: Request, strategy_id: str, rule_id: str):
     defn = _load_working(strategy_id)
     try:
         block = delete_rule(defn, rule_id)
+    except RuleNotFound as e:
+        raise HTTPException(404, str(e))
     except MutationError as e:
         return PlainTextResponse(str(e), status_code=422)
     store.save_draft(defn)
@@ -468,6 +470,8 @@ def route_opt_toggle(request: Request, strategy_id: str,
     try:
         toggle_optimize(defn, owner, param)
         block = _block_of_owner(defn, owner)
+    except RuleNotFound as e:
+        raise HTTPException(404, str(e))
     except MutationError as e:
         return PlainTextResponse(str(e), status_code=422)
     store.save_draft(defn)
@@ -495,6 +499,8 @@ def route_opt_range(request: Request, strategy_id: str,
     defn = _load_working(strategy_id)
     try:
         set_optimize_range(defn, owner, param, min_v, step_v, max_v)
+    except RuleNotFound as e:
+        raise HTTPException(404, str(e))
     except MutationError as e:
         return PlainTextResponse(str(e), status_code=422)
     store.save_draft(defn)
@@ -674,7 +680,16 @@ def route_ai_suggest(request: Request, strategy_id: str,
                      ask: str = Form(""), block: str = Form("")):
     defn = _load_working(strategy_id)
     scope = block or None
-    sid, status = _make_suggestion(defn, ask, scope, "manual")
+    try:
+        sid, status = _make_suggestion(defn, ask, scope, "manual")
+    except Exception as e:  # noqa: BLE001 — an unusable engine is not a 500
+        # _trial_baseline deliberately lets unexpected engine failures through
+        # rather than silently disabling the guardrails. That belongs in the
+        # response, not in a stack trace: HTMX would swap nothing on a 500 and
+        # the user would see the button do nothing at all.
+        return PlainTextResponse(
+            f"AI suggestion could not run: {type(e).__name__}: {e}",
+            status_code=422)
     if status == "failed":
         row = store.get_suggestion(sid)
         return PlainTextResponse(row["note"] or "AI suggestion failed",

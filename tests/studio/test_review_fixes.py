@@ -265,3 +265,55 @@ def test_studio_namespace_has_no_literal_route_shadowing_the_builder():
     assert not literals & {"", *params}, (
         f"literal /studio/{literals} collides with the builder's "
         f"/studio/{{strategy_id}}")
+
+
+# ── second review pass: incomplete edges of the first round ─────────────────
+
+
+def test_every_rule_endpoint_reports_a_missing_rule_as_404(client):
+    """404 was only wired into PATCH; delete and the optimize toggles lagged."""
+    missing = "deadbeefdead"
+
+    assert client.patch(f"/studio/{SID}/rules/{missing}",
+                        data={"param": "len", "value": "9"}).status_code == 404
+    assert client.delete(f"/studio/{SID}/rules/{missing}").status_code == 404
+    assert client.patch(f"/studio/{SID}/opt/toggle",
+                        data={"owner": missing, "param": "len"}
+                        ).status_code == 404
+    assert client.patch(f"/studio/{SID}/opt/range",
+                        data={"owner": missing, "param": "len", "min": "1",
+                              "step": "1", "max": "5"}).status_code == 404
+
+
+def test_a_broken_trial_engine_does_not_500_the_suggest_button(client, monkeypatch):
+    """_trial_baseline lets engine failures through; the route must catch them.
+
+    A 500 means HTMX swaps nothing and the button silently does nothing.
+    """
+    import json as _json
+
+    from strategy_studio.ai import MockLLMClient
+    from strategy_studio.backtest import StubBacktestAdapter
+    from strategy_studio.compiler import compile_strategy
+
+    class _Boom:
+        def run(self, compiled):
+            raise RuntimeError("engine exploded")
+
+    # a completed run must exist, otherwise the baseline path is never reached
+    client.store.create_run("r-x", SID, version=1, is_draft=False)
+    metrics = StubBacktestAdapter().run(compile_strategy(client.store.load(SID)))
+    client.store.finish_run("r-x", metrics.to_json())
+
+    monkeypatch.setattr(client.main, "TRIAL_ADAPTER", _Boom())
+    client.main._TRIAL_BASELINE_CACHE.clear()
+    monkeypatch.setattr(client.main, "LLM", MockLLMClient([_json.dumps({
+        "kind": "modify_risk", "block": "risk",
+        "diff": {"name": "take_profit_r", "value": 2.2},
+        "rationale": "x", "expected": {"dsr_delta": 0.05},
+    })]))
+
+    r = client.post(f"/studio/{SID}/ai/suggest", data={})
+
+    assert r.status_code == 422
+    assert "engine exploded" in r.text
