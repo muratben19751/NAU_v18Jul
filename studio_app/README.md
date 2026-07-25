@@ -101,13 +101,23 @@ so guardrails stay off until the strategy has actually been backtested. The
 it must judge a real run the user triggered. Guarded by
 `tests/studio/test_baseline_engine.py`.
 
-### Known gap: the demo fixture cannot run on the real engine
+### Two seeded fixtures, because the mockup one is stub-only
 
-`wt-funding-v3` uses a regime branch, `funding_z`, price-vs-`ema` and
-`time_stop` — none of which the composer spec can express, so
-`STUDIO_BACKTEST=nautilus` rejects it with all four reasons. Strategies built
-from the mapped indicators (`rsi`, `adx`, `macd`, `stochrsi`, `wavetrend`,
-`relative_volume`, `atr`) run for real.
+`scripts/seed_studio.py` seeds both:
+
+| Strategy | Runs on | Why |
+|---|---|---|
+| `wt-funding-v3` | stub only | Matches the design mockup — regime branch, `funding_z`, price-vs-`ema`, `time_stop`. `to_nautilus` rejects it with all four reasons. |
+| `rsi-adx-btc` | stub **and** real engine | `rsi_threshold` + `adx_threshold` entry, `atr_stop` exit, no regime/allocation, one Bybit instrument (BTCUSDT 1h). |
+
+So the fastest path to real Nautilus metrics is
+`STUDIO_BACKTEST=nautilus` + `/studio/rsi-adx-btc`. Keeping that strategy
+engine-runnable is enforced by `tests/studio/test_seed_fixtures.py` — adding a
+rule that has no composer block will fail there rather than at run time.
+
+More generally, strategies built from the mapped indicators (`rsi`, `adx`,
+`macd`, `stochrsi`, `wavetrend`, `relative_volume`, `atr`) run for real; the
+rest are stub-only until their INTEGRATION POINT is wired.
 
 ## Guarantees worth knowing
 

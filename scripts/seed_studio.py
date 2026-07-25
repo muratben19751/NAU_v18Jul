@@ -1,4 +1,17 @@
-"""Seed the WT-Funding Confluence v3 fixture (matches the design mockup)."""
+"""Seed the studio's demo strategies.
+
+Two fixtures, for two different jobs:
+
+``wt-funding-v3``
+    Matches the design mockup — regime branch, funding z-score, price-vs-EMA,
+    time stop. It exercises the full UI surface, but ``to_nautilus`` refuses
+    it (none of those have a composer block), so it only runs on the stub.
+
+``rsi-adx-btc``
+    The engine-runnable one: every rule maps to a composer block, no regime,
+    no allocation, one Bybit instrument. Use this to see real Nautilus metrics
+    with ``STUDIO_BACKTEST=nautilus``.
+"""
 from __future__ import annotations
 
 import sys
@@ -89,7 +102,57 @@ def build_fixture() -> StrategyDefinition:
     )
 
 
+def build_engine_fixture() -> StrategyDefinition:
+    """A strategy `to_nautilus` accepts — the shortest path to real metrics.
+
+    Every rule maps to a composer block (`rsi_threshold`, `adx_threshold`,
+    `atr_stop`), there is no regime or allocation block, and the single
+    instrument is a Bybit symbol on an interval the loader understands. Keep
+    it that way: `tests/studio/test_seed_fixtures.py` asserts it stays
+    engine-runnable.
+    """
+    return StrategyDefinition(
+        id="rsi-adx-btc",
+        name="RSI Dip + ADX Trend (BTC)",
+        entry=RuleGroup(
+            match="all",
+            rules=[
+                Rule(indicator="rsi",
+                     params={"len": Param(
+                         value=14, optimize=OptimizeRange(min=10, step=2, max=18))},
+                     operator="crosses_below",
+                     target=Param(value=30,
+                                  optimize=OptimizeRange(min=20, step=5, max=35))),
+                Rule(indicator="adx", params={"len": Param(value=14)},
+                     operator="gt", target=Param(value=25)),
+            ],
+        ),
+        exit=RuleGroup(
+            match="any",
+            rules=[
+                Rule(indicator="atr", params={"len": Param(value=14)},
+                     operator="gt",
+                     target=Param(value=3.0,
+                                  optimize=OptimizeRange(min=2.0, step=0.5, max=4.0))),
+            ],
+        ),
+        risk=RiskBlock(
+            stop_loss_atr_mult=Param(value=2.0),
+            stop_loss_atr_len=Param(value=14),
+            take_profit_r=Param(value=1.5),
+            risk_per_trade_pct=Param(value=0.5),
+            max_concurrent=Param(value=1),
+        ),
+        instruments=[
+            InstrumentConfig(symbol="BTCUSDT", timeframe="1h", active=True),
+        ],
+        walkforward=WalkForwardConfig(folds=3),
+    )
+
+
 if __name__ == "__main__":
     store = StrategyStore()
-    v = store.save(build_fixture())
-    print(f"seeded wt-funding-v3 as version {v} -> {store.db_path}")
+    for build in (build_fixture, build_engine_fixture):
+        defn = build()
+        v = store.save(defn)
+        print(f"seeded {defn.id} as version {v} -> {store.db_path}")
