@@ -117,14 +117,17 @@ def build_engine_fixture() -> StrategyDefinition:
         entry=RuleGroup(
             match="all",
             rules=[
+                # Thresholds picked so the strategy actually trades: at
+                # rsi<30 & adx>25 it fired once in 180 days of BTCUSDT 1h,
+                # which tells you nothing about the engine path.
                 Rule(indicator="rsi",
                      params={"len": Param(
                          value=14, optimize=OptimizeRange(min=10, step=2, max=18))},
                      operator="crosses_below",
-                     target=Param(value=30,
-                                  optimize=OptimizeRange(min=20, step=5, max=35))),
+                     target=Param(value=40,
+                                  optimize=OptimizeRange(min=30, step=5, max=45))),
                 Rule(indicator="adx", params={"len": Param(value=14)},
-                     operator="gt", target=Param(value=25)),
+                     operator="gt", target=Param(value=20)),
             ],
         ),
         exit=RuleGroup(

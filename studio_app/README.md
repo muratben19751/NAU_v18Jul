@@ -119,6 +119,30 @@ More generally, strategies built from the mapped indicators (`rsi`, `adx`,
 `macd`, `stochrsi`, `wavetrend`, `relative_volume`, `atr`) run for real; the
 rest are stub-only until their INTEGRATION POINT is wired.
 
+First real run (BTCUSDT 1h, 180 days, 4319 bars, `rsi-adx-btc`): 23 trades,
+net +1.5%, Sharpe 0.51, Deflated SR 0.70, Max DD -2.4%, win rate 47.8%,
+profit factor 1.24 — 1 full run + 3 fold runs in ~2s.
+
+### Open host-app issue: `equity_curve_mtm` collapses while a position is open
+
+`ComposedStrategy._current_equity` (via `portfolio.equity(venue)`) appears to
+report roughly the free cash rather than cash + open-position value. On the
+run above, MTM equity fell 10084 → 589 the bar a position opened, stayed there
+for the 51 bars it was held, and returned to 10084 on exit — while that
+position closed **profitably** (+$69.70), no positions overlapped, and the
+worst trade of the run lost $60 on $10k.
+
+That series feeds the engine's own `max_dd` (a fictional **-94%**) and, when
+MTM is present, its `sharpe` (**18.64**), so it affects the existing
+`/backtest` page too — this is not something the studio introduced.
+
+Until it is fixed, `NautilusBacktestAdapter` deliberately works at trade
+resolution: realized equity curve, `sharpe_per_trade` for Sharpe, drawdown
+recomputed from the realized curve. The trade-off is a coarser sparkline (one
+point per closed trade). `_run_one` carries the note and
+`test_drawdown_ignores_the_mark_to_market_series` pins the behaviour — switch
+back to the MTM curve once the snapshot includes open-position value.
+
 ## Guarantees worth knowing
 
 - Human edits and AI edits share one path (`mutations.py`) — same validation,

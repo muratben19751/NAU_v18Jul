@@ -7,6 +7,8 @@ mapping, i.e. the parts this repo owns.
 
 from __future__ import annotations
 
+import math
+
 import pandas as pd
 import pytest
 
@@ -245,7 +247,7 @@ def fake_bars():
 class _FakeResult:
     error = None
 
-    def __init__(self, curve):
+    def __init__(self, curve, **overrides):
         self.equity_curve = curve
         self.metrics = {
             "n_trades": 10,
@@ -254,6 +256,7 @@ class _FakeResult:
             "n_losses": 4,
             "avg_win": 30.0,
             "avg_loss": -10.0,
+            **overrides,
         }
 
 
@@ -356,3 +359,60 @@ def test_optimizer_runs_on_the_trial_adapter_not_the_single_run_one():
 
     assert strategy_studio.OPTIMIZER.adapter is strategy_studio.TRIAL_ADAPTER
     assert strategy_studio.OPTIMIZER.adapter is not strategy_studio.ADAPTER
+
+
+# ── metrics the engine reports as NaN / from the broken MTM series ──────────
+
+
+def test_no_winners_does_not_produce_a_nan_profit_factor(monkeypatch, fake_bars):
+    """avg_win is NaN when nothing won — NaN is truthy, so `or 0.0` misses it.
+
+    A NaN reaches the store as bare `NaN` in the metrics JSON, which the
+    browser's JSON.parse rejects outright.
+    """
+    import backtest as engine
+
+    monkeypatch.setattr(
+        engine,
+        "run_composed_backtest",
+        lambda spec, bars, **kw: _FakeResult(
+            [10_000, 9_900],
+            n_trades=1, win_rate=0.0, n_wins=0, n_losses=1,
+            avg_win=float("nan"), avg_loss=-34.4,
+        ),
+    )
+
+    adapter = NautilusBacktestAdapter(bars_loader=lambda s, tf: fake_bars)
+    m = adapter.run(compile_strategy(_defn([_rsi_rule()], [_atr_exit()])))
+
+    assert not math.isnan(m.profit_factor)
+    assert "NaN" not in m.to_json()
+
+
+def test_drawdown_ignores_the_mark_to_market_series(monkeypatch, fake_bars):
+    """MTM equity collapses to free cash while a position is open.
+
+    On a real BTCUSDT run that turned a +1.5% strategy into a -94% max_dd, so
+    the adapter measures drawdown on the realized curve until the host app's
+    ComposedStrategy._current_equity includes open-position value.
+    """
+    import backtest as engine
+
+    monkeypatch.setattr(
+        engine,
+        "run_composed_backtest",
+        lambda spec, bars, **kw: _FakeResult(
+            [10_000, 10_100],  # realized: never drops
+            equity_curve_mtm=[("t0", 10_000.0), ("t1", 590.0), ("t2", 10_100.0)],
+            max_dd=-0.94,
+            sharpe=18.64,
+            sharpe_per_trade=0.51,
+        ),
+    )
+
+    adapter = NautilusBacktestAdapter(bars_loader=lambda s, tf: fake_bars)
+    m = adapter.run(compile_strategy(_defn([_rsi_rule()], [_atr_exit()])))
+
+    assert m.max_dd_pct > -5.0, "picked up the fictional MTM drawdown"
+    assert m.sharpe == 0.51, "used the MTM-derived Sharpe instead of per-trade"
+    assert len(m.equity_curve) == 2  # realized curve, not the 3-point MTM one

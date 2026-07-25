@@ -423,22 +423,51 @@ def _normalize(curve: list[float]) -> list[float]:
     return [round(float(v) / base, 5) for v in curve]
 
 
-def _curve_stats(curve: list[float]) -> tuple[float, float, list[float]]:
-    """(sharpe, max_dd_fraction, per-step returns) from a normalized curve."""
+@dataclass
+class _CurveStats:
+    """Statistics of a normalized equity curve.
+
+    ``sharpe_ann`` is annualized for display; ``sharpe_step`` is the raw
+    per-step ratio, which is what PSR needs — feeding it the annualized value
+    would multiply z by √252 and drive every PSR to 0.99.
+    """
+
+    sharpe_ann: float = 0.0
+    sharpe_step: float = 0.0
+    max_dd: float = 0.0
+    returns: list[float] = field(default_factory=list)
+
+
+def _curve_stats(curve: list[float], annualization: float = 252.0) -> _CurveStats:
+    """`annualization` is bars per year — the host engine's convention.
+
+    Pass the engine's own ``annualization`` metric so a recomputed Sharpe sits
+    on the same scale as the one the /backtest page shows for the same run.
+    """
     if len(curve) < 2:
-        return 0.0, 0.0, []
+        return _CurveStats()
     rets = [curve[i + 1] / curve[i] - 1 for i in range(len(curve) - 1) if curve[i] != 0]
     if not rets:
-        return 0.0, 0.0, []
+        return _CurveStats()
     mean = sum(rets) / len(rets)
     sd = math.sqrt(sum((r - mean) ** 2 for r in rets) / len(rets))
-    sharpe = (mean / sd * math.sqrt(252)) if sd > 0 else 0.0
+    step = (mean / sd) if sd > 0 else 0.0
     peak, max_dd = curve[0], 0.0
     for v in curve:
         peak = max(peak, v)
         if peak > 0:
             max_dd = max(max_dd, (peak - v) / peak)
-    return sharpe, max_dd, rets
+    return _CurveStats(sharpe_ann=step * math.sqrt(max(annualization, 1.0)),
+                       sharpe_step=step, max_dd=max_dd, returns=rets)
+
+
+def _finite(value, default: float = 0.0) -> float:
+    """Engine metrics use NaN for 'undefined' (e.g. avg_win with no winners)."""
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        return default
+    return f if math.isfinite(f) else default
 
 
 class NautilusBacktestAdapter:
@@ -499,7 +528,16 @@ class NautilusBacktestAdapter:
         )
         if result.error:
             raise RuntimeError(f"{label}: {result.error}")
-        return _normalize(result.equity_curve), (result.metrics or {})
+        metrics = result.metrics or {}
+        # Trade-resolution curve on purpose. The bar-level `equity_curve_mtm`
+        # would be the better sparkline, but it is currently unusable: while a
+        # position is open the snapshot drops to roughly the free cash — a
+        # 180-day BTCUSDT 1h run of the rsi-adx-btc fixture shows equity fall
+        # 10084 → 589 for the 51 bars one (profitable) position was open, which
+        # feeds a fictional -94% max_dd and an inflated Sharpe. See
+        # ComposedStrategy._current_equity → portfolio.equity(venue). Switch
+        # back here once that snapshot includes open-position value.
+        return _normalize(result.equity_curve), metrics
 
     def _folds(self, spec, bars, n_folds: int) -> list[FoldMetrics]:
         """Sequential (non-overlapping) slices — the fold table's OOS windows."""
@@ -510,16 +548,16 @@ class NautilusBacktestAdapter:
         for i in range(n_folds):
             chunk = bars.iloc[i * size : (i + 1) * size]
             try:
-                curve, _ = self._run_one(spec, chunk, f"fold{i + 1}")
+                curve, m = self._run_one(spec, chunk, f"fold{i + 1}")
             except RuntimeError:
                 continue  # a fold with no fills tells us nothing; skip it
-            sharpe, max_dd, rets = _curve_stats(curve)
+            st = _curve_stats(curve, _finite(m.get("annualization"), 252.0))
             folds.append(
                 FoldMetrics(
                     fold=i + 1,
-                    dsr=_psr(rets, sharpe),
-                    sharpe=round(sharpe, 2),
-                    max_dd_pct=round(-max_dd * 100, 1),
+                    dsr=_psr(st.returns, st.sharpe_step),
+                    sharpe=round(_finite(m.get("sharpe_per_trade"), st.sharpe_ann), 2),
+                    max_dd_pct=round(-st.max_dd * 100, 1),
                 )
             )
         return folds
@@ -528,6 +566,7 @@ class NautilusBacktestAdapter:
         spec = to_nautilus(compiled, initial_capital=self.initial_capital)
 
         curves: list[list[float]] = []
+        sleeves: list[dict] = []
         trades = wins = 0
         gross_win = gross_loss = 0.0
         bars_for_folds = None
@@ -536,17 +575,17 @@ class NautilusBacktestAdapter:
             bars = self._loader(inst["symbol"], inst["timeframe"])
             curve, m = self._run_one(spec, bars, inst["symbol"])
             curves.append(curve)
+            sleeves.append(m)
             if bars_for_folds is None:
                 bars_for_folds = bars
             n = int(m.get("n_trades") or 0)
             trades += n
-            wins += int(round(float(m.get("win_rate") or 0.0) * n))
-            # profit_factor is a ratio; rebuild it from per-sleeve gross P&L
-            avg_win = float(m.get("avg_win") or 0.0)
-            avg_loss = abs(float(m.get("avg_loss") or 0.0))
-            n_wins = int(m.get("n_wins") or 0)
-            gross_win += avg_win * n_wins
-            gross_loss += avg_loss * int(m.get("n_losses") or 0)
+            wins += int(round(_finite(m.get("win_rate")) * n))
+            # profit_factor is a ratio, so it cannot be summed across sleeves —
+            # rebuild it from gross P&L. avg_win/avg_loss are NaN when the side
+            # never traded, hence _finite rather than `or 0.0` (NaN is truthy).
+            gross_win += _finite(m.get("avg_win")) * int(m.get("n_wins") or 0)
+            gross_loss += abs(_finite(m.get("avg_loss"))) * int(m.get("n_losses") or 0)
 
         if not curves:
             raise UnsupportedStrategy(["strategy has no active instruments"])
@@ -554,17 +593,26 @@ class NautilusBacktestAdapter:
         # Equal-weight blend: shortest sleeve bounds the common length.
         width = min(len(c) for c in curves)
         blended = [sum(c[i] for c in curves) / len(curves) for i in range(width)]
+        st = _curve_stats(blended, _finite(sleeves[0].get("annualization"), 252.0))
 
-        sharpe, max_dd, rets = _curve_stats(blended)
+        # Everything below is trade-resolution, so it stays self-consistent:
+        # `sharpe_per_trade` is the engine's frequency-correct per-trade ratio
+        # (mean/std × √n_trades), and the drawdown comes from the same realized
+        # curve. The engine's own `sharpe`/`max_dd` are deliberately NOT used —
+        # both derive from the MTM series described in _run_one.
+        single = sleeves[0] if len(sleeves) == 1 else {}
+        sharpe = _finite(single.get("sharpe_per_trade"), st.sharpe_ann)
+        max_dd = -st.max_dd  # negative fraction, from the realized curve
+
         folds = self._folds(
             spec, bars_for_folds, int(compiled.walkforward.get("folds", 6))
         )
 
         return BacktestMetrics(
-            net_pnl_pct=round((blended[-1] - 1) * 100, 1),
+            net_pnl_pct=round((blended[-1] - 1) * 100, 2),
             sharpe=round(sharpe, 2),
-            dsr=_psr(rets, sharpe),
-            max_dd_pct=round(-max_dd * 100, 1),
+            dsr=_psr(st.returns, st.sharpe_step),
+            max_dd_pct=round(max_dd * 100, 2),
             trades=trades,
             win_rate_pct=round(wins / trades * 100, 1) if trades else 0.0,
             profit_factor=round(gross_win / gross_loss, 2) if gross_loss else 0.0,
