@@ -476,3 +476,24 @@ sweep sessizce deflate edilmemiş PSR'a düşüyor. Beşinci INTEGRATION POINT
 başlarsa koşan her deployment `failed`'a düşer — kalıcılık ayrı bir runner
 süreci ister); `kill_switch_daily_pct` artifact'te taşınıyor ama node tarafında
 uygulanmıyor; paper runner sandbox dolumlarını/PnL'ini panele raporlamıyor.
+
+## 2026-07-25 (5) — eski sweep sonuçlarının render'ı (e427aa8 senkronu)
+
+- **Kapsam boşluğu kapatıldı:** e427aa8 iki wiki senkronunun arasına düşmüştü —
+  IP#3 senkronu ondan önceydi, IP#5 senkronu yalnız deploy/runner'ı işledi.
+- **`wiki/synthesis/strategy_studio.md`** — "Walk-forward optimizer" bölümüne
+  yeni paragraf: walk-forward'dan önce kaydedilmiş optimize koşuları
+  `score`/`folds_valid`/`trials` alanlarını sıfırla yüklüyor ve yeni panel
+  düzeni onları "DSR 0.000 · 0 folds · 0 trials" olarak basıyordu — eski sonuç
+  değil bozuk panel gibi görünüyor. Tek karar noktası `OptResult.walk_forward`
+  (`trials > 0`); eski koşular eski düzende, "in-sample" rozetiyle kalır.
+  Ders kayda geçti: rehydrate ≠ render — eski JSON'un yüklendiğini test etmek,
+  nasıl göründüğünü test etmek değildir.
+- Modül haritasına dokunulmadı (detay sayfası zaten `Detay: [[strategy_studio]]`
+  ile bağlı; satırı şişirmeye değer yeni bilgi yok).
+- Lint öncesi/sonrası temiz (0/0); backlinks 70 sayfada tazelendi; index
+  yeniden üretildi.
+
+**Not:** Delta tek commit'ti (e427aa8); açık boşluklar bir önceki girdideki
+gibi duruyor (node'lar süreç-içi, kill switch uygulanmıyor, sandbox dolumları
+panele raporlanmıyor).

@@ -175,6 +175,19 @@ kullanıcının kural ağacına yazdığı min/step/max'tir — GA sessizce ekra
 aralıkların dışını optimize ederdi. Paylaşılmaya değer olan gelenekler
 paylaşıldı: `penalized_score`, geçerli-fold oranı, işlem sayısı sönümlemesi.
 
+**Eski sweep sonuçları etiketlenir, sıfır olarak basılmaz.** Walk-forward'dan
+önce kaydedilmiş bir optimize koşusunda `score`/`folds_valid`/`trials` yok;
+`OptResult(**row)` bunları varsayılan sıfırlarla yüklüyor ve yeni panel düzeni
+"DSR 0.000 · 0 folds · 0 trials" basıyordu — kullanıcıya eski sonuç değil,
+bozuk panel gibi görünüyor (tooltip bile "best Sharpe **0 trials** would
+produce by luck alone" diyordu). Tek karar noktası `OptResult.walk_forward`
+(`trials > 0`): eski koşular eski düzende kalır (başta DSR + "in-sample"
+rozeti), DSR*/fold/trial satırı hiç basılmaz ve panel koşunun walk-forward'dan
+önce olduğunu, parametrelerin yine de uygulanabileceğini söyler. Ders:
+**rehydrate ≠ render** — eski JSON'un yüklendiğini test etmek, nasıl
+göründüğünü test etmek değildir; regresyon testi eski satırı yeni alanları
+soyarak üretir.
+
 ## HTTP semantiği: 404 kaynak, 422 girdi
 
 HTMX yüzeyinde durum kodu bir UX kararıdır — 2xx dışını HTMX swap etmez, yani
