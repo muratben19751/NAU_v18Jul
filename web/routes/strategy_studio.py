@@ -121,6 +121,21 @@ ENGINE_SWEEP_MAX_RUNS = int(os.environ.get("STUDIO_OPT_MAX_ENGINE_RUNS", "200"))
 OPTIMIZER = WalkForwardOptimizer(adapter=TRIAL_ADAPTER)
 
 
+def _optimizer() -> WalkForwardOptimizer:
+    """The optimizer bound to the CURRENT trial adapter.
+
+    `OPTIMIZER` captures `TRIAL_ADAPTER` at import, so the two are separate
+    sources of truth for one switch: swapping `TRIAL_ADAPTER` afterwards (a test
+    doing it, or any future config reload) left sweeps running on whichever
+    engine was selected when this module was first imported — and the stale one
+    is the one that actually runs. Same instance on the untouched path; rebuilt
+    only when the two have diverged.
+    """
+    if OPTIMIZER.adapter is TRIAL_ADAPTER:
+        return OPTIMIZER
+    return WalkForwardOptimizer(adapter=TRIAL_ADAPTER)
+
+
 def _runner_status(deploy_id: str, status: str, error: str | None) -> None:
     store.set_deployment_status(deploy_id, status, error)
 
@@ -598,7 +613,7 @@ def route_opt_range(
 
 def _execute_opt(run_id: str, defn: StrategyDefinition) -> None:
     try:
-        results = OPTIMIZER.run(defn)
+        results = _optimizer().run(defn)
         store.finish_opt(run_id, json.dumps([r.to_dict() for r in results]))
     except Exception as e:  # noqa: BLE001
         store.fail_opt(run_id, str(e))

@@ -448,3 +448,25 @@ def test_sharpe_is_per_trade_not_bar_frequency(monkeypatch, fake_bars):
 
     assert m.sharpe == 0.51
     assert m.sharpe != 6.02
+
+
+def test_sweeps_follow_a_swapped_trial_adapter(monkeypatch):
+    """OPTIMIZER captured TRIAL_ADAPTER at import — two sources of one truth.
+
+    Swapping the trial engine (a test, or a future config reload) left the
+    optimizer holding the import-time adapter, so sweeps kept running on the
+    engine nobody selected. `_optimizer()` resolves the current one.
+    """
+    from web.routes import strategy_studio as main
+
+    assert main._optimizer() is main.OPTIMIZER, "untouched path must not rebuild"
+
+    class _Other:
+        def run(self, compiled, *, window=None):  # pragma: no cover - identity only
+            raise AssertionError("not called")
+
+    swapped = _Other()
+    monkeypatch.setattr(main, "TRIAL_ADAPTER", swapped)
+    assert main._optimizer().adapter is swapped, (
+        "sweep would have run on the stale import-time adapter"
+    )

@@ -186,37 +186,39 @@ class StrategyStore:
         PRIMARY KEY violation that reached the route as a 500 with the draft
         banner stuck on screen.
         """
-        now = datetime.now(UTC).isoformat()
         with self._connect() as con:
             con.execute("BEGIN IMMEDIATE")
-            row = con.execute(
-                "SELECT latest_version FROM strategy_meta WHERE strategy_id=?",
-                (defn.id,),
-            ).fetchone()
-            version = (row["latest_version"] + 1) if row else 1
-            doc = defn.model_copy(
-                update={
-                    "version": version,
-                    "parent_version": row["latest_version"] if row else None,
-                }
-            )
-            con.execute(
-                "INSERT INTO strategy_versions VALUES (?,?,?,?,?)",
-                (
-                    defn.id,
-                    version,
-                    doc.model_dump_json(by_alias=True),
-                    defn.origin,
-                    now,
-                ),
-            )
-            con.execute(
-                "INSERT INTO strategy_meta VALUES (?,?,?,?) "
-                "ON CONFLICT(strategy_id) DO UPDATE SET "
-                "name=excluded.name, latest_version=excluded.latest_version, "
-                "updated_at=excluded.updated_at",
-                (defn.id, defn.name, version, now),
-            )
+            return self._insert_version(con, defn)
+
+    def _insert_version(self, con, defn: StrategyDefinition) -> int:
+        """Write `defn` as the next version. Caller owns the transaction.
+
+        Split out so `promote_draft` can insert the version and clear the draft
+        inside ONE transaction — see that method for why that matters.
+        """
+        now = datetime.now(UTC).isoformat()
+        row = con.execute(
+            "SELECT latest_version FROM strategy_meta WHERE strategy_id=?",
+            (defn.id,),
+        ).fetchone()
+        version = (row["latest_version"] + 1) if row else 1
+        doc = defn.model_copy(
+            update={
+                "version": version,
+                "parent_version": row["latest_version"] if row else None,
+            }
+        )
+        con.execute(
+            "INSERT INTO strategy_versions VALUES (?,?,?,?,?)",
+            (defn.id, version, doc.model_dump_json(by_alias=True), defn.origin, now),
+        )
+        con.execute(
+            "INSERT INTO strategy_meta VALUES (?,?,?,?) "
+            "ON CONFLICT(strategy_id) DO UPDATE SET "
+            "name=excluded.name, latest_version=excluded.latest_version, "
+            "updated_at=excluded.updated_at",
+            (defn.id, defn.name, version, now),
+        )
         return version
 
     def load(self, strategy_id: str, version: int | None = None) -> StrategyDefinition:
@@ -292,14 +294,37 @@ class StrategyStore:
         return self.load(strategy_id), False
 
     def promote_draft(self, strategy_id: str, origin: str = "user") -> int:
-        """Persist the draft as a new version and clear it."""
-        draft = self.load_draft(strategy_id)
-        if draft is None:
-            raise KeyError(f"no draft for '{strategy_id}'")
-        draft = draft.model_copy(update={"origin": origin})
-        version = self.save(draft)
-        self.delete_draft(strategy_id)
-        return version
+        """Persist the draft as a new version and clear it — atomically.
+
+        Read, version-insert and draft-delete are ONE transaction. As three
+        separate ones, a `save_draft` landing between the insert and the delete
+        (UI autosave, or the AI loop writing back an accepted suggestion) was
+        deleted by that trailing delete: the user's newest edit vanished with no
+        error anywhere. BEGIN IMMEDIATE locks writers out for the whole
+        sequence, so a concurrent draft write now lands strictly after the
+        commit and survives as the next draft.
+
+        The delete is additionally scoped to the exact json that was promoted:
+        inside this transaction nothing else can write, so it is belt and
+        braces — but it states the rule (never delete a draft you did not read)
+        for whoever refactors this next.
+        """
+        with self._connect() as con:
+            con.execute("BEGIN IMMEDIATE")
+            row = con.execute(
+                "SELECT json FROM strategy_drafts WHERE strategy_id=?", (strategy_id,)
+            ).fetchone()
+            if row is None:
+                raise KeyError(f"no draft for '{strategy_id}'")
+            draft = StrategyDefinition.model_validate(
+                json.loads(row["json"])
+            ).model_copy(update={"origin": origin})
+            version = self._insert_version(con, draft)
+            con.execute(
+                "DELETE FROM strategy_drafts WHERE strategy_id=? AND json=?",
+                (strategy_id, row["json"]),
+            )
+            return version
 
     # ── runs (Phase 3) ───────────────────────────────────────────
     def create_run(

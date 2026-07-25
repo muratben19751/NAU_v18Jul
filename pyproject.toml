@@ -41,6 +41,10 @@ extend-exclude = [
     "design_handoff_nautilus_lab",
     "nautilus_wiki",
     "__pycache__",
+    # Vendored Claude Code skill assets, not product code: they ship with their
+    # own style and are overwritten when a skill updates, so linting them only
+    # ever breaks `ruff check .` (the command CI runs) for changes nobody made.
+    ".claude",
 ]
 
 [tool.ruff.lint]

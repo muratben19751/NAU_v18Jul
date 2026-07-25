@@ -82,7 +82,14 @@ EXTERNAL_CATALOGS: list[Path] = [
 # L31: a non-existent root silently turned into an empty panel — warn at module load.
 for _ext_root in EXTERNAL_CATALOGS:
     if not _ext_root.exists():
-        log.warning("EXTERNAL_CATALOGS root does not exist: %s", _ext_root)
+        log.warning(
+            "EXTERNAL_CATALOGS root does not exist: %s — the /data page's external "
+            "catalog panel will be empty. This default points at the NAU_ev desk on "
+            "another machine; set NAUTILUS_EXTERNAL_CATALOGS (%s-separated paths) to "
+            "this box's catalog root, or ignore this if you only use Bybit/Index data.",
+            _ext_root,
+            os.pathsep,
+        )
 
 # Cache instrument metadata per external catalog root (read-only, static).
 _EXT_INSTRUMENT_META: dict[str, dict] = {}
