@@ -4,8 +4,8 @@ type: synthesis
 sources:
   - https://github.com/nautechsystems/nautilus_trader
   - sources/02_architecture_docs.md
-last_updated: 2026-07-25
-summary: /studio/{id} altındaki görsel strateji kurucu; sürümlü şema → derleyici → to_nautilus → composer spec → run_composed_backtest zinciri, çeviremediğini sessizce atmak yerine gerekçesiyle reddeder; sweep pencereli walk-forward ve deflate edilmiş DSR ile skorlanır.
+last_updated: 2026-07-26
+summary: /studio/{id} altındaki görsel strateji kurucu; sürümlü şema → derleyici → to_nautilus → composer spec → run_composed_backtest zinciri, çeviremediğini sessizce atmak yerine gerekçesiyle reddeder; sweep pencereli walk-forward ve deflate edilmiş DSR ile skorlanır. Nav'da ayrı "Strategy Builder" linkiyle erişilir (2026-07-26).
 key_concepts:
   - strategy_and_actor
   - backtesting_guide
@@ -27,6 +27,13 @@ Adı benzese de `/studio` ile **aynı şey değildir**: `/studio` Composer+Backt
 sayfasıdır ([[webapp_module_map]], `web/routes/studio.py`), kurucu ise
 `/studio/{strategy_id}` altında yaşar. İkisi birbirini gölgelemez (farklı yol
 şekilleri), ama ad ortaklığı akılda tutulmalı.
+
+Bu ad çakışması artık ana navigasyonda da görünür (2026-07-26): `base.html`'de
+zaten `/studio`'ya giden bir "Strategy Studio" linki vardı; kurucuya
+(`/studio/wt-funding-v3`) giden ikinci bir link eklendiğinde aynı etiketi
+kullanmak iki farklı sayfaya aynı isimle gitmek anlamına gelirdi. Çözüm: yeni
+link ayrı bir etiketle eklendi — **"Strategy Builder"** → `/studio/wt-funding-v3`
+— var olan "Strategy Studio" → `/studio` linkine dokunulmadı.
 
 ## Katmanlar
 
@@ -86,8 +93,8 @@ sweep için seçiliyse `POST /optimize` ayrıca `STUDIO_OPT_MAX_ENGINE_RUNS`
 elenmediği en kötü durum (`min(sweep, 400) × (1 + folds)`) kullanılır.
 
 Stub adaptör silinmedi ve **her yerde varsayılandır**: piyasa verisi olmadan tüm
-UI döngüsü çalışır, test takımı çevrimdışı kalır (`tests/studio`, 161 test,
-env flag'siz yeşil).
+UI döngüsü çalışır, test takımı çevrimdışı kalır (`tests/studio`, 196 geçti +
+1 atlandı — 2026-07-26'da tekrar ölçüldü — env flag'siz yeşil).
 
 ## Metriklerin kaynağı (ve neden hepsi motordan alınmıyor)
 

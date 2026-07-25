@@ -2,6 +2,15 @@
 
 Append-only. Her ingest, query veya lint operasyonu bir satır bırakır.
 
+## 2026-07-26 (2) — Nav'a "Strategy Builder" linki + bayat doküman keşfi (kod → wiki)
+
+- **bulgu** — Kullanıcı `studio_app`'i ana app'e APIRouter olarak taşıma isteğiyle geldi; iş **zaten 2026-07-25'te tamamlanmıştı** (`web/routes/strategy_studio.py`, `server.py` include_router, paylaşılan templates/static/store). Talep bayat bir öncüle dayanıyordu.
+- **fix** — `web/templates/base.html`: kurucuya (`/studio/{strategy_id}`) giden hiçbir nav linki yoktu — var olan "Strategy Studio" linki farklı bir sayfaya (`/studio`, Composer+Backtest) gidiyordu. Yeni link ayrı etiketle eklendi: **"Strategy Builder" → `/studio/wt-funding-v3`** (kullanıcı onayı ile).
+- **doc-fix** — `studio_app/wiki/strategy-studio.md` merge-öncesi durumda dondurulmuş kalmıştı (hâlâ "pending merge" + "82 test" diyordu) → frontmatter + TL;DR + Integration Points bölümü düzeltildi, [[strategy_studio]]'ya yönlendiren bir üst-not eklendi.
+- **doc-fix** — `wiki/synthesis/strategy_studio.md`: nav çakışması notu genişletildi (Strategy Studio vs Strategy Builder), stale "161 test" → "196 geçti / 1 atlandı" (2026-07-26'da yeniden ölçüldü), `last_updated` tazelendi.
+- **wiki** — `synthesis/webapp_module_map.md`'ye yeni değişiklik-günlüğü maddesi eklendi, `last_updated` tazelendi. Backlinks + index yenilendi, lint temiz (0 broken_links/orphans/missing_summary/missing_frontmatter/stale/stubs).
+- **karar** — StrategyStore'un ayrı `studio.db`'si **korundu** (kullanıcıya soruldu): uygulamanın paylaşılacak "ana SQLite"si yok, bu zaten bilinçli bir tasarımdı.
+
 ## 2026-07-20 (8) — Robustness polling fix + AI Plan sekme sırası + plan cache refactor (kod → wiki)
 
 - **fix** — `robustness_progress.html`: `hx-swap="outerHTML"` → `hx-target="#robustness-result" hx-swap="innerHTML"`. `#robustness-result` DOM'dan kalkınca polling duruyordu.

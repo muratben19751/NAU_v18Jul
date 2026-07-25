@@ -1,10 +1,18 @@
 ---
 title: Strategy Studio
-status: standalone package — pending merge into nautilus_web_app
-updated: 2026-07-25
+status: merged into nautilus_web_app (2026-07-25) — this page is the frozen pre-merge design doc
+updated: 2026-07-26
 tags: [ui, strategy, backtest, optimize, ai-loop, deploy]
 related: ["[[backtest]]", "[[optimize]]", "[[llm-loop]]", "[[live]]", "[[universe]]"]
 ---
+
+> **Bu sayfa dondurulmuş bir tasarım dokümanıdır** (merge-öncesi Faz 1-6
+> planı). Merge zaten tamamlandı — güncel durum ve yaşayan kod haritası için
+> `studio_app/README.md` ("Merged" bölümü, dosya taşınma tablosu) ve
+> [[strategy_studio]] (nautilus_wiki synthesis, canlı sayfa) sayfalarına bakın.
+> Bu dosyadaki `app/studio/`, `app/main.py` gibi yollar artık `strategy_studio/`,
+> `web/routes/strategy_studio.py`'dir — tarihsel bağlam için korunuyor,
+> güncellenmiyor.
 
 # Strategy Studio
 
@@ -16,7 +24,9 @@ onu düzenler, compiler onu nötr `CompiledStrategy`'ye çevirir. Draft → Save
 (append-only versiyon) → Backtest → Optimize → AI loop → gated Deploy akışının
 tamamı çalışır durumda; motorlar (Nautilus runner, walk-forward optimizer,
 LLM client) stub'larla ayakta ve 5 INTEGRATION POINT'ten gerçekleriyle
-değiştirilir. 82 test + Ruff temiz.
+değiştirilir. 82 test + Ruff temiz *(merge-öncesi anlık görüntü; merge
+sonrası hepsi bağlandı, güncel sayı `tests/studio` — 196 geçti, 1 atlandı,
+bkz. [[strategy_studio]])*.
 
 ## Mental Model
 
@@ -79,17 +89,22 @@ değiştirilir. 82 test + Ruff temiz.
 - Regime `substrategy_id` alanı rezerve (kayıtlı stratejiyi referanslama) —
   şimdilik sadece inline `substrategy` derlenir.
 
-## Integration Points (merge checklist)
+## Integration Points (merge checklist) — TAMAMLANDI
 
-1. `registry.py` → indikatör `impl`'lerini kendi feature fonksiyonlarına bağla.
-2. `backtest.py` → `NautilusBacktestAdapter` + `to_nautilus(CompiledStrategy)`.
-3. `optimizer.py` → kendi walk-forward optimizer'ın (adreslemeyi koruyarak).
-4. `ai.py` → mevcut LLM loop'unun istemcisi (`HttpAnthropicClient` yerine).
-5. `deploy.py` / `_stub_runner_pickup` → gerçek live/sim TradingNode hand-off;
-   pickup'ta satırı `running`'e çek.
+Aşağıdaki beşi de bağlandı (bkz. `studio_app/README.md` "INTEGRATION POINT
+status"); liste tarihsel referans için korunuyor:
 
-Ayrıca: route'ları APIRouter'a taşı, `StrategyStore(DB_PATH)`'i uygulama
-SQLite'ına yönlendir (tablolar additive).
+1. `registry.py` → indikatör `impl`'lerini kendi feature fonksiyonlarına bağla. ✅
+2. `backtest.py` → `NautilusBacktestAdapter` + `to_nautilus(CompiledStrategy)`. ✅
+3. `optimizer.py` → kendi walk-forward optimizer'ın (adreslemeyi koruyarak). ✅
+4. `ai.py` → mevcut LLM loop'unun istemcisi (`HttpAnthropicClient` yerine). — hâlâ `HttpAnthropicClient` (bilinçli, bkz. README).
+5. `deploy.py` / `_stub_runner_pickup` → gerçek live/sim TradingNode hand-off. ✅ (`PaperRunner`, `STUDIO_RUNNER=paper`)
+
+Route'lar `APIRouter`'a taşındı (`web/routes/strategy_studio.py`,
+`server.py`'de `include_router`). `StrategyStore(DB_PATH)` **bilerek** ayrı
+`studio.db` kaldı — uygulamanın paylaşılacak başka bir "ana SQLite"si yok
+(2026-07-26'da tekrar doğrulandı); bkz. README "The store keeps its own
+SQLite file..." notu.
 
 ## Open Questions
 
