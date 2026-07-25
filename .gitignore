@@ -33,3 +33,8 @@ env/
 
 # Local QQQ data downloads (198MB — not versioned)
 data_downloads/
+
+# Strategy Studio SQLite store — runtime artifact, recreated by scripts/seed_studio.py
+studio.db
+studio.db-wal
+studio.db-shm

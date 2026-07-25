@@ -8,12 +8,12 @@ from __future__ import annotations
 import json
 import sqlite3
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from .schema import StrategyDefinition
 
-DB_PATH = Path(__file__).resolve().parents[2] / "studio.db"
+DB_PATH = Path(__file__).resolve().parents[1] / "studio.db"
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS strategy_versions (
@@ -120,7 +120,7 @@ class StrategyStore:
     # ── API ──────────────────────────────────────────────────────
     def save(self, defn: StrategyDefinition) -> int:
         """Persist as a NEW version; returns the version number written."""
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         with self._connect() as con:
             row = con.execute(
                 "SELECT latest_version FROM strategy_meta WHERE strategy_id=?",
@@ -187,7 +187,7 @@ class StrategyStore:
         return StrategyDefinition.model_validate(json.loads(row["json"]))
 
     def save_draft(self, defn: StrategyDefinition) -> None:
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         with self._connect() as con:
             con.execute(
                 "INSERT INTO strategy_drafts VALUES (?,?,?) "
@@ -221,7 +221,7 @@ class StrategyStore:
     # ── runs (Phase 3) ───────────────────────────────────────────
     def create_run(self, run_id: str, strategy_id: str, version: int,
                    is_draft: bool) -> None:
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         with self._connect() as con:
             con.execute(
                 "INSERT INTO studio_runs "
@@ -230,14 +230,14 @@ class StrategyStore:
                 (run_id, strategy_id, version, int(is_draft), now))
 
     def finish_run(self, run_id: str, metrics_json: str) -> None:
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         with self._connect() as con:
             con.execute(
                 "UPDATE studio_runs SET status='done', metrics=?, finished_at=? "
                 "WHERE run_id=?", (metrics_json, now, run_id))
 
     def fail_run(self, run_id: str, error: str) -> None:
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         with self._connect() as con:
             con.execute(
                 "UPDATE studio_runs SET status='failed', error=?, finished_at=? "
@@ -253,7 +253,7 @@ class StrategyStore:
     # ── optimize runs (Phase 4) ──────────────────────────────────
     def create_opt(self, run_id: str, strategy_id: str, version: int,
                    is_draft: bool) -> None:
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         with self._connect() as con:
             con.execute(
                 "INSERT INTO optimize_runs "
@@ -262,14 +262,14 @@ class StrategyStore:
                 (run_id, strategy_id, version, int(is_draft), now))
 
     def finish_opt(self, run_id: str, results_json: str) -> None:
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         with self._connect() as con:
             con.execute(
                 "UPDATE optimize_runs SET status='done', results=?, "
                 "finished_at=? WHERE run_id=?", (results_json, now, run_id))
 
     def fail_opt(self, run_id: str, error: str) -> None:
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         with self._connect() as con:
             con.execute(
                 "UPDATE optimize_runs SET status='failed', error=?, "
@@ -290,7 +290,7 @@ class StrategyStore:
                        baseline: str | None = None,
                        note: str | None = None,
                        source: str = "manual") -> None:
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         with self._connect() as con:
             con.execute(
                 "INSERT INTO ai_suggestions VALUES (?,?,?,?,?,?,?,?,?,?)",
@@ -339,7 +339,7 @@ class StrategyStore:
 
     def create_loop(self, loop_id: str, strategy_id: str,
                     config_json: str) -> None:
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         with self._connect() as con:
             con.execute(
                 "INSERT INTO ai_loops "
@@ -349,7 +349,7 @@ class StrategyStore:
 
     def finish_loop(self, loop_id: str, status: str,
                     note: str | None = None) -> None:
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         with self._connect() as con:
             con.execute(
                 "UPDATE ai_loops SET status=?, note=?, finished_at=? "
@@ -364,7 +364,7 @@ class StrategyStore:
 
     def add_iteration(self, loop_id: str, n: int, suggestion_id: str,
                       decision: str) -> None:
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         with self._connect() as con:
             con.execute("INSERT INTO ai_iterations VALUES (?,?,?,?,?)",
                         (loop_id, n, suggestion_id, decision, now))
@@ -387,7 +387,7 @@ class StrategyStore:
     def create_deployment(self, deploy_id: str, strategy_id: str,
                           version: int, environment: str,
                           config_json: str) -> None:
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         with self._connect() as con:
             con.execute(
                 "INSERT INTO deployments VALUES (?,?,?,?,?,'pending',?)",

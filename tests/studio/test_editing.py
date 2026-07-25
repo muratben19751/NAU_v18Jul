@@ -4,13 +4,14 @@ from fastapi.testclient import TestClient
 
 @pytest.fixture()
 def client(tmp_path, monkeypatch):
-    from app import main
-    from app.studio.store import StrategyStore
     from scripts.seed_studio import build_fixture
+    from server import app as _host
+    from strategy_studio.store import StrategyStore
+    from web.routes import strategy_studio as main
     store = StrategyStore(tmp_path / "t.db")
     store.save(build_fixture())
     monkeypatch.setattr(main, "store", store)
-    c = TestClient(main.app)
+    c = TestClient(_host)
     c.store = store
     return c
 
@@ -155,7 +156,7 @@ def test_discard(client):
 
 
 def test_compiler_still_accepts_edited_draft(client):
-    from app.studio.compiler import compile_strategy
+    from strategy_studio.compiler import compile_strategy
     client.post(f"/studio/{SID}/blocks/entry/rules", data={"indicator": "rsi"})
     d = _draft(client)
     c = compile_strategy(d)

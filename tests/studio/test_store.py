@@ -1,5 +1,5 @@
-from app.studio.store import StrategyStore
 from scripts.seed_studio import build_fixture
+from strategy_studio.store import StrategyStore
 
 
 def test_versioning_append_only(tmp_path):

@@ -8,20 +8,21 @@ SID = "wt-funding-v3"
 
 @pytest.fixture()
 def client(tmp_path, monkeypatch):
-    from app import main
-    from app.studio.store import StrategyStore
     from scripts.seed_studio import build_fixture
+    from server import app as _host
+    from strategy_studio.store import StrategyStore
+    from web.routes import strategy_studio as main
     store = StrategyStore(tmp_path / "t.db")
     store.save(build_fixture())
     monkeypatch.setattr(main, "store", store)
-    c = TestClient(main.app)
+    c = TestClient(_host)
     c.store = store
     return c
 
 
 def _run_backtest(client):
     client.post(f"/studio/{SID}/backtest")
-    from app.studio.backtest import BacktestMetrics
+    from strategy_studio.backtest import BacktestMetrics
     return BacktestMetrics.from_json(client.store.latest_run(SID)["metrics"])
 
 

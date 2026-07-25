@@ -1,11 +1,11 @@
 import pytest
 from pydantic import ValidationError
 
-from app.studio.schema import (
+from scripts.seed_studio import build_fixture
+from strategy_studio.schema import (
     OptimizeRange,
     StrategyDefinition,
 )
-from scripts.seed_studio import build_fixture
 
 
 def test_roundtrip_json():

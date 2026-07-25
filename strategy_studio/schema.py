@@ -6,7 +6,7 @@ the compiler translates it. Nothing else holds strategy state.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -142,7 +142,7 @@ class StrategyDefinition(BaseModel):
     risk: RiskBlock
     instruments: list[InstrumentConfig] = Field(default_factory=list)
     walkforward: WalkForwardConfig = Field(default_factory=WalkForwardConfig)
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     parent_version: int | None = None
     origin: Literal["user", "ai"] = "user"
 

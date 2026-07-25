@@ -6,14 +6,17 @@ wiring, an AI improvement layer with server-side guardrails, and gated
 deployment. Delivered as a standalone FastAPI package; every place that must
 touch your existing code is marked `INTEGRATION POINT` in the source.
 
+> **Merged.** This package is no longer standalone — it now runs inside the
+> main app. See "Where it lives now" below for the file map and the state of
+> each INTEGRATION POINT. Only docs remain in `studio_app/`.
+
 ## Run it
 
 ```bash
-pip install fastapi jinja2 uvicorn pytest httpx python-multipart
 python scripts/seed_studio.py           # creates studio.db + demo strategy
-uvicorn app.main:app --reload
+uvicorn server:app --reload
 # open http://127.0.0.1:8000/studio/wt-funding-v3
-python -m pytest tests/ -q              # 69 tests (+1 env-flagged LLM smoke)
+python -m pytest tests/studio -q        # 111 tests (+1 env-flagged LLM smoke)
 ```
 
 ## What each phase added
@@ -31,22 +34,70 @@ python -m pytest tests/ -q              # 69 tests (+1 env-flagged LLM smoke)
 | +opt | Deployment lifecycle: stub pickup, pause/resume/stop | `main.py`, `_deployments.html` |
 | +opt | Side-panel tab state survives OOB refresh | `studio.js` |
 
-## Merging into nautilus_web_app
+## Where it lives now
 
-1. Copy `app/studio/`, `templates/studio/`, `static/studio.{css,js}`.
-2. Convert `app/main.py` routes to an `APIRouter` and `include_router()`.
-3. Point `StrategyStore(DB_PATH)` at your app's SQLite (tables are additive).
-4. Wire the four INTEGRATION POINTs:
-   - `registry.py` — map each indicator's `impl` to your feature functions.
-   - `backtest.py` — `NautilusBacktestAdapter.run()` over your runner
-     (write `to_nautilus(CompiledStrategy)` next to your strategy classes).
-   - `optimizer.py` — adapt your walk-forward optimizer; keep the
-     `"<rule_id>.<param>"` addressing so Apply keeps working.
-   - `ai.py` — swap `HttpAnthropicClient` for your LLM loop's client.
-   - `deploy.py` — `launch(artifact)` against your live/sim TradingNode;
-     flip the deployment row to `running` on pickup.
-5. Set `ANTHROPIC_API_KEY` if you keep the built-in HTTP client.
-   `STUDIO_LLM_SMOKE=1 pytest tests/studio/test_ai.py -k smoke` for a live check.
+| Was | Is |
+|---|---|
+| `app/studio/` | `strategy_studio/` |
+| `app/main.py` (FastAPI app) | `web/routes/strategy_studio.py` (`APIRouter`, mounted in `server.py`) |
+| `templates/studio/` | `web/templates/studio/` |
+| `static/studio.{css,js}` | `web/static/studio.{css,js}` |
+| `tests/studio/` | `tests/studio/` (repo root) |
+| `scripts/seed_studio.py` | `scripts/seed_studio.py` (repo root) |
+| `studio.db` | repo root (gitignored) |
+
+`/studio/{strategy_id}` is the builder; the bare `/studio` route is the
+Composer+Backtest page in `web/routes/studio.py`. They coexist — neither
+shadows the other — but the shared name is worth remembering.
+
+The store keeps its own SQLite file rather than joining an existing one: the
+app has no other SQLite database.
+
+### INTEGRATION POINT status
+
+- **`registry.py` — wired.** Eight indicators (`rsi`, `ema`, `adx`, `atr`,
+  `wavetrend`, `stochrsi`, `nadaraya_watson`, `relative_volume`) call the real
+  functions in `indicators.py` through `impl(bars, **schema_params)`; the
+  adapters translate schema param names to each function's own. The remaining
+  seven have no feature function and stay `impl=None`. Guarded by
+  `tests/studio/test_registry_impl.py`.
+- **`backtest.py` — wired.** `to_nautilus(CompiledStrategy)` lowers onto a
+  composer `ComposedStrategySpec`; `NautilusBacktestAdapter.run()` executes it
+  through `run_composed_backtest`. What it cannot express faithfully (regime
+  branch, ranked allocation, indicators with no composer block) raises
+  `UnsupportedStrategy` listing every reason instead of silently dropping
+  rules. **The stub is still the default** — see the two switches below.
+  Guarded by `tests/studio/test_nautilus_adapter.py`.
+- **`optimizer.py` — still the stub.** Adapting `wfo_optimizer` / 
+  `backtest_robustness.run_walk_forward` is untouched; keep the
+  `"<rule_id>.<param>"` addressing so Apply keeps working.
+- **`ai.py` — still `HttpAnthropicClient`.** Set `ANTHROPIC_API_KEY`, or swap
+  for `agent.py`'s client loop.
+  `STUDIO_LLM_SMOKE=1 pytest tests/studio/test_ai.py -k smoke` for a live check.
+- **`deploy.py` — still the stub runner.** `launch(artifact)` against a live/sim
+  TradingNode is not wired.
+
+### Two engine switches, on purpose
+
+| Env var | Selects the engine for | Default |
+|---|---|---|
+| `STUDIO_BACKTEST=nautilus` | the Run button — one backtest per click | stub |
+| `STUDIO_BACKTEST_OPT=nautilus` | optimizer sweeps and AI-loop trials | stub |
+
+They are separate because the fan-out consumers call `adapter.run()` once per
+combination (capped at `OPTIMIZER_MAX_RUNS = 20_000`) or per AI suggestion,
+and `NautilusBacktestAdapter` costs `1 + walkforward.folds` engine runs per
+call — so a 100-combination sweep is ~700 Nautilus runs. Flipping the
+single-run switch alone must not trigger that, and it doesn't: the optimizer
+and `evaluate_trial` read `TRIAL_ADAPTER`, the Run button reads `ADAPTER`.
+
+### Known gap: the demo fixture cannot run on the real engine
+
+`wt-funding-v3` uses a regime branch, `funding_z`, price-vs-`ema` and
+`time_stop` — none of which the composer spec can express, so
+`STUDIO_BACKTEST=nautilus` rejects it with all four reasons. Strategies built
+from the mapped indicators (`rsi`, `adx`, `macd`, `stochrsi`, `wavetrend`,
+`relative_volume`, `atr`) run for real.
 
 ## Guarantees worth knowing
 

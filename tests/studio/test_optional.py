@@ -8,13 +8,14 @@ SID = "wt-funding-v3"
 
 @pytest.fixture()
 def client(tmp_path, monkeypatch):
-    from app import main
-    from app.studio.store import StrategyStore
     from scripts.seed_studio import build_fixture
+    from server import app as _host
+    from strategy_studio.store import StrategyStore
+    from web.routes import strategy_studio as main
     store = StrategyStore(tmp_path / "t.db")
     store.save(build_fixture())
     monkeypatch.setattr(main, "store", store)
-    c = TestClient(main.app)
+    c = TestClient(_host)
     c.store = store
     return c
 
@@ -22,7 +23,7 @@ def client(tmp_path, monkeypatch):
 # ── 1 · regime substrategy ───────────────────────────────────────
 
 def test_else_toggle_seeds_compilable_substrategy(client):
-    from app.studio.compiler import compile_strategy
+    from strategy_studio.compiler import compile_strategy
     r = client.patch(f"/studio/{SID}/blocks/regime",
                      data={"else_mode": "substrategy"})
     assert r.status_code == 200
@@ -42,7 +43,7 @@ def test_else_toggle_back_preserves_substrategy(client):
     d = client.store.load_draft(SID)
     assert d.regime.else_ == "flat"
     assert d.regime.substrategy is not None      # kept for re-enable
-    from app.studio.compiler import compile_strategy
+    from strategy_studio.compiler import compile_strategy
     assert "else_strategy" not in compile_strategy(d).regime
 
 

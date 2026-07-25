@@ -1,7 +1,8 @@
 import pytest
 
-from app.studio.compiler import CompileError, compile_strategy
-from app.studio.schema import (
+from scripts.seed_studio import build_fixture
+from strategy_studio.compiler import CompileError, compile_strategy
+from strategy_studio.schema import (
     InstrumentConfig,
     Param,
     RiskBlock,
@@ -9,7 +10,6 @@ from app.studio.schema import (
     RuleGroup,
     StrategyDefinition,
 )
-from scripts.seed_studio import build_fixture
 
 
 def _risk():
@@ -91,7 +91,8 @@ def test_empty_entry_raises():
 
 
 def test_risk_pct_bounds():
-    r = _risk(); r.risk_per_trade_pct = Param(value=9.0)
+    r = _risk()
+    r.risk_per_trade_pct = Param(value=9.0)
     d = _minimal(risk=r)
     with pytest.raises(CompileError):
         compile_strategy(d)

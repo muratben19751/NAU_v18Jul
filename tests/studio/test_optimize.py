@@ -8,13 +8,14 @@ SID = "wt-funding-v3"
 
 @pytest.fixture()
 def client(tmp_path, monkeypatch):
-    from app import main
-    from app.studio.store import StrategyStore
     from scripts.seed_studio import build_fixture
+    from server import app as _host
+    from strategy_studio.store import StrategyStore
+    from web.routes import strategy_studio as main
     store = StrategyStore(tmp_path / "t.db")
     store.save(build_fixture())
     monkeypatch.setattr(main, "store", store)
-    c = TestClient(main.app)
+    c = TestClient(_host)
     c.store = store
     return c
 
@@ -25,7 +26,7 @@ def _tiny_sweep(client):
     for _b, _rid, name, p in d.optimized_params():
         p.optimize = None
     wt = d.entry.rules[0]
-    from app.studio.schema import OptimizeRange
+    from strategy_studio.schema import OptimizeRange
     wt.params["n1"].optimize = OptimizeRange(min=8, step=2, max=12)
     d.risk.take_profit_r.optimize = OptimizeRange(min=1.4, step=0.2, max=2.0)
     client.store.save_draft(d)
@@ -94,7 +95,7 @@ def test_optimize_no_params_422(client):
 
 
 def test_optimize_limit_422(client, monkeypatch):
-    from app import main
+    from web.routes import strategy_studio as main
     _tiny_sweep(client)
     monkeypatch.setattr(main, "OPTIMIZER_MAX_RUNS", 10)
     r = client.post(f"/studio/{SID}/optimize")

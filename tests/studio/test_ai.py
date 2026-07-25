@@ -19,20 +19,21 @@ def _sugg(kind="modify_risk", block="risk", diff=None, rationale="tighten TP"):
 
 @pytest.fixture()
 def client(tmp_path, monkeypatch):
-    from app import main
-    from app.studio.store import StrategyStore
     from scripts.seed_studio import build_fixture
+    from server import app as _host
+    from strategy_studio.store import StrategyStore
+    from web.routes import strategy_studio as main
     store = StrategyStore(tmp_path / "t.db")
     store.save(build_fixture())
     monkeypatch.setattr(main, "store", store)
-    c = TestClient(main.app)
+    c = TestClient(_host)
     c.store = store
     c.main = main
     return c
 
 
 def _mock_llm(client, monkeypatch, responses):
-    from app.studio.ai import MockLLMClient
+    from strategy_studio.ai import MockLLMClient
     llm = MockLLMClient(responses)
     monkeypatch.setattr(client.main, "LLM", llm)
     return llm
@@ -136,7 +137,7 @@ def test_loop_review_mode_pauses_on_first_review(client, monkeypatch):
 
 
 def test_loop_guardrail_autoreject_even_in_auto_mode(client, monkeypatch):
-    from app import main
+    from web.routes import strategy_studio as main
 
     class NoTrades:
         def run(self, compiled):
@@ -144,7 +145,8 @@ def test_loop_guardrail_autoreject_even_in_auto_mode(client, monkeypatch):
             m.trades = 5
             return m
 
-    monkeypatch.setattr(main, "ADAPTER", NoTrades())
+    # AI trials run on TRIAL_ADAPTER, not the single-run ADAPTER.
+    monkeypatch.setattr(main, "TRIAL_ADAPTER", NoTrades())
     _mock_llm(client, monkeypatch, [_sugg()])
     client.post(f"/studio/{SID}/ai/loop/start",
                 data={"max_iterations": "1", "min_trades": "100",

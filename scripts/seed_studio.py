@@ -6,7 +6,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app.studio.schema import (
+from strategy_studio.schema import (
     InstrumentConfig,
     OptimizeRange,
     Param,
@@ -17,7 +17,7 @@ from app.studio.schema import (
     StrategyDefinition,
     WalkForwardConfig,
 )
-from app.studio.store import StrategyStore
+from strategy_studio.store import StrategyStore
 
 
 def build_fixture() -> StrategyDefinition:

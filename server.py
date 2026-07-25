@@ -222,9 +222,15 @@ from web.routes import (
 from web.routes import (
     sessions as sessions_route,
 )
+from web.routes import (
+    strategy_studio as strategy_studio_route,
+)
 
 app.include_router(dashboard.router)
 app.include_router(studio.router)
+# Strategy Studio builder: /studio/{strategy_id} — the bare /studio above is the
+# Composer+Backtest page, so the two coexist without shadowing each other.
+app.include_router(strategy_studio_route.router)
 app.include_router(strategy.router)
 app.include_router(backtest.router)
 app.include_router(loop.router)

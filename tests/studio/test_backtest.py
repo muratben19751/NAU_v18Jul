@@ -6,21 +6,22 @@ SID = "wt-funding-v3"
 
 @pytest.fixture()
 def client(tmp_path, monkeypatch):
-    from app import main
-    from app.studio.store import StrategyStore
     from scripts.seed_studio import build_fixture
+    from server import app as _host
+    from strategy_studio.store import StrategyStore
+    from web.routes import strategy_studio as main
     store = StrategyStore(tmp_path / "t.db")
     store.save(build_fixture())
     monkeypatch.setattr(main, "store", store)
-    c = TestClient(main.app)
+    c = TestClient(_host)
     c.store = store
     return c
 
 
 def test_stub_adapter_deterministic_and_param_sensitive():
-    from app.studio.backtest import StubBacktestAdapter
-    from app.studio.compiler import compile_strategy
     from scripts.seed_studio import build_fixture
+    from strategy_studio.backtest import StubBacktestAdapter
+    from strategy_studio.compiler import compile_strategy
     a = StubBacktestAdapter()
     d = build_fixture()
     m1, m2 = a.run(compile_strategy(d)), a.run(compile_strategy(d))
@@ -64,7 +65,7 @@ def test_compile_error_surfaces_with_rule_id(client):
 
 
 def test_engine_failure_marks_run_failed(client, monkeypatch):
-    from app import main
+    from web.routes import strategy_studio as main
 
     class Boom:
         def run(self, compiled):
@@ -91,6 +92,6 @@ def test_folds_pane_no_runs(client):
 
 
 def test_spark_path_downsamples():
-    from app.main import _spark_path
+    from web.routes.strategy_studio import _spark_path
     path = _spark_path([1.0 + i / 1000 for i in range(5000)])
     assert path.startswith("M") and path.count("L") <= 260
