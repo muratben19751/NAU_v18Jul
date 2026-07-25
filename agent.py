@@ -39,7 +39,7 @@ FALLBACK_MODEL = os.environ.get("NAUTILUS_LLM_FALLBACK_MODEL", "claude-opus-4-8"
 _active_model: str | None = None
 _model_lock = threading.Lock()
 
-_client: Anthropic | _ClaudeCLIClient | None = None
+_client: Anthropic | _ClaudeCLIClient | _OpenRouterClient | None = None
 _client_lock = threading.Lock()
 
 
@@ -317,6 +317,80 @@ class _ClaudeCLIClient:
         self.messages = _ClaudeCLIMessages(cli_path)
 
 
+class _ORTextBlock:
+    type = "text"
+
+    def __init__(self, text: str) -> None:
+        self.text = text
+
+
+class _ORUsage:
+    def __init__(self, prompt_tokens: int = 0, completion_tokens: int = 0) -> None:
+        self.input_tokens = int(prompt_tokens or 0)
+        self.output_tokens = int(completion_tokens or 0)
+        # Anthropic yüzeyiyle uyum için mevcut alanlar da sağlanır.
+        self.cache_read_input_tokens = 0
+        self.cache_creation_input_tokens = 0
+
+
+class _ORResponse:
+    def __init__(
+        self, text: str, prompt_tokens: int = 0, completion_tokens: int = 0
+    ) -> None:
+        self.content = [_ORTextBlock(text)]
+        self.usage = _ORUsage(prompt_tokens=prompt_tokens, completion_tokens=completion_tokens)
+
+
+class _OpenRouterMessages:
+    def __init__(self, client: Any, extra_headers: dict[str, str] | None = None) -> None:
+        self._client = client
+        self._extra_headers = extra_headers or {}
+
+    def create(
+        self,
+        *,
+        model: str,
+        messages: list[dict],
+        system: str | None = None,
+        max_tokens: int = 0,
+        **_ignored: Any,
+    ) -> _ORResponse:
+        or_messages: list[dict[str, str]] = []
+        if system:
+            or_messages.append({"role": "system", "content": system})
+        for m in messages:
+            role = str(m.get("role", "user"))
+            content = m.get("content", "")
+            if not isinstance(content, str):
+                continue
+            if role not in ("user", "assistant", "system"):
+                role = "user"
+            or_messages.append({"role": role, "content": content})
+
+        req: dict[str, Any] = {
+            "model": model,
+            "messages": or_messages,
+        }
+        if max_tokens and max_tokens > 0:
+            req["max_tokens"] = int(max_tokens)
+        if self._extra_headers:
+            req["extra_headers"] = self._extra_headers
+
+        resp = self._client.chat.completions.create(**req)
+        text = (resp.choices[0].message.content or "") if resp.choices else ""
+        usage = getattr(resp, "usage", None)
+        return _ORResponse(
+            text=text,
+            prompt_tokens=getattr(usage, "prompt_tokens", 0),
+            completion_tokens=getattr(usage, "completion_tokens", 0),
+        )
+
+
+class _OpenRouterClient:
+    def __init__(self, client: Any, extra_headers: dict[str, str] | None = None) -> None:
+        self.messages = _OpenRouterMessages(client, extra_headers=extra_headers)
+
+
 def _find_claude_cli() -> str | None:
     override = os.environ.get("NAUTILUS_CLAUDE_CLI", "").strip()
     if override:
@@ -324,14 +398,47 @@ def _find_claude_cli() -> str | None:
     return shutil.which("claude")
 
 
-def _build_client() -> Anthropic | _ClaudeCLIClient:
+def _build_client() -> Anthropic | _ClaudeCLIClient | _OpenRouterClient:
     """Backend seçimi (NAUTILUS_LLM_BACKEND env var):
 
     - "api":        anthropic SDK — ANTHROPIC_API_KEY / ~/.nautilus_proxy_key zorunlu
     - "claude-cli": Claude Code CLI (`claude -p`) — abonelik (OAuth), key gerekmez
+    - "openrouter": OpenRouter (OpenAI-uyumlu API) — OPENROUTER_API_KEY gerekir
     - "auto" (varsayılan): key varsa API, yoksa claude CLI
     """
     backend = os.environ.get("NAUTILUS_LLM_BACKEND", "auto").strip().lower()
+
+    if backend == "openrouter":
+        api_key = os.environ.get("OPENROUTER_API_KEY", "").strip()
+        if not api_key:
+            raise RuntimeError(
+                "NAUTILUS_LLM_BACKEND=openrouter but OPENROUTER_API_KEY is not set."
+            )
+
+        # openai paketi sadece bu backend seçilince gerekir.
+        try:
+            from openai import OpenAI
+        except Exception as e:
+            raise RuntimeError(
+                "OpenRouter backend requires the `openai` package. Install with: pip install openai"
+            ) from e
+
+        base_url = os.environ.get(
+            "OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"
+        ).strip()
+        extra_headers: dict[str, str] = {}
+        referer = os.environ.get("OPENROUTER_HTTP_REFERER", "").strip()
+        if referer:
+            extra_headers["HTTP-Referer"] = referer
+        title = os.environ.get("OPENROUTER_X_TITLE", "").strip()
+        if title:
+            extra_headers["X-Title"] = title
+
+        logging.info("LLM backend: openrouter (%s)", base_url)
+        return _OpenRouterClient(
+            OpenAI(base_url=base_url, api_key=api_key),
+            extra_headers=extra_headers,
+        )
 
     # Hyperspace AI proxy takes priority; falls back to direct Anthropic.
     # The proxy key must be set via ANTHROPIC_API_KEY env var or
@@ -368,7 +475,7 @@ def _build_client() -> Anthropic | _ClaudeCLIClient:
     )
 
 
-def _get_client() -> Anthropic | _ClaudeCLIClient:
+def _get_client() -> Anthropic | _ClaudeCLIClient | _OpenRouterClient:
     global _client
     if _client is None:
         with _client_lock:
