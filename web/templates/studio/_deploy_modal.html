@@ -61,7 +61,19 @@
           <label>Type the strategy name to confirm LIVE deploy</label>
           <input name="confirm_name" placeholder="{{ defn.name }}">
         </div>
-        <button class="btn primary" type="submit" style="width:100%;margin-top:12px">
+        {# The artifact IS the lowered spec, so a strategy `to_nautilus` refuses
+           has nothing to deploy. Saying so here beats letting the user fill the
+           form and submit into a 422. #}
+        {% if unrunnable %}
+        <div class="m-row" style="border-left:2px solid var(--short);padding-left:8px">
+          <b class="bad">No runner can execute this strategy</b>
+          <ul class="opt-note" style="margin:4px 0 0 14px">
+            {% for reason in unrunnable %}<li>{{ reason }}</li>{% endfor %}
+          </ul>
+        </div>
+        {% endif %}
+        <button class="btn primary" type="submit" style="width:100%;margin-top:12px"
+                {% if unrunnable %}disabled{% endif %}>
           ⇪ Deploy</button>
       </form>
       <div id="deploy-result"></div>

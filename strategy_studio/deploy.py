@@ -1,12 +1,22 @@
 """Deployment (STUDIO_SPEC Phase 6).
 
-INTEGRATION POINT for nautilus_web_app: implement `launch(artifact)` against
-your live/sim NautilusTrader runner (TradingNode config). Until then this
-module compiles the SAVED version, enforces the deployment gate server-side,
-and persists a deployment record + compiled artifact for the runner to pick
-up. The kill switch is passed through in the artifact; if your runner lacks
-native support, add a monitor task that pauses the deployment when realized
-daily PnL breaches `kill_switch_daily_pct`.
+Compiles the SAVED version, enforces the deployment gate server-side, and
+persists a deployment record plus the artifact a runner consumes.
+
+The artifact is **runnable**, not a summary: it carries the lowered
+``ComposedStrategySpec`` (the same object the backtest path executes) and the
+instruments to run it on. Anything ``to_nautilus`` cannot lower is refused at
+deploy time with its reasons — deploying a strategy no runner can execute
+would record a deployment that is a lie, and the failure would surface later,
+detached from the click that caused it.
+
+INTEGRATION POINT for nautilus_web_app: a runner that consumes this artifact.
+The strategy layer is venue-agnostic (``ComposedStrategy`` subscribes to bars
+and submits orders), so a live/sim ``TradingNode`` can host it unchanged; what
+this repo has no infrastructure for yet is the node itself, its market-data
+client, and credentials. The kill switch is passed through; if the runner
+lacks native support, add a monitor task that pauses the deployment when
+realized daily PnL breaches ``kill_switch_daily_pct``.
 
 Wiki References
 ---------------
@@ -17,11 +27,17 @@ from __future__ import annotations
 import json
 from dataclasses import asdict, dataclass
 
-from .backtest import BacktestMetrics
+from .backtest import BacktestMetrics, to_nautilus
 from .compiler import CompiledStrategy, compile_strategy
 from .schema import StrategyDefinition
 
 DEFAULT_GATE_DSR = 0.8
+
+# Bumped when the artifact's shape changes in a way a runner must notice.
+# v1 carried only condition *counts* under "compiled" — not runnable; v2
+# carries the lowered spec. A runner must refuse a version it does not know
+# rather than guess at missing fields.
+ARTIFACT_SCHEMA = 2
 
 
 class DeployBlocked(Exception):
@@ -57,25 +73,51 @@ def check_gate(defn: StrategyDefinition,
             f"below required {cfg.gate_min_objective:.2f}")
 
 
+def artifact_instruments(defn: StrategyDefinition, compiled: CompiledStrategy,
+                         cfg: DeployConfig) -> list[dict[str, str]]:
+    """The instruments the runner should trade, per ``cfg.instruments``.
+
+    ``compile_strategy`` already narrows to the active ones, so 'active' takes
+    the compiler's answer rather than recomputing it (one definition of
+    "active"). 'all' has to come from the definition — and it genuinely differs:
+    previously the artifact always listed the active set while ``config`` said
+    "all", so a runner reading both saw a contradiction.
+    """
+    if cfg.instruments == "all":
+        return [{"symbol": i.symbol, "timeframe": i.timeframe}
+                for i in defn.instruments]
+    if cfg.instruments != "active":
+        raise DeployBlocked(
+            f"unknown instrument selection '{cfg.instruments}' "
+            "(expected 'active' or 'all')")
+    return compiled.instruments
+
+
 def build_artifact(defn: StrategyDefinition, compiled: CompiledStrategy,
                    cfg: DeployConfig) -> str:
-    """The JSON document a runner consumes. INTEGRATION POINT: feed this to
-    to_nautilus()/your TradingNode bootstrap."""
+    """The JSON document a runner consumes — runnable, not a description.
+
+    ``spec`` is a serialized ``ComposedStrategySpec``: feed it through
+    ``ComposedStrategySpec.from_dict`` and hand it to a ``ComposedStrategy``,
+    one per entry in ``instruments``. The spec carries no instrument of its
+    own, which is why the two are separate keys.
+
+    Raises:
+        UnsupportedStrategy: the strategy cannot be lowered onto a runnable
+            spec (regime branch, ranked allocation, an indicator with no engine
+            block, …) — with every reason listed.
+    """
+    spec = to_nautilus(compiled, initial_capital=cfg.capital)
     return json.dumps({
+        "artifact_schema": ARTIFACT_SCHEMA,
         "strategy_id": defn.id,
         "version": defn.version,
         "environment": cfg.environment,
         "capital": cfg.capital,
         "kill_switch_daily_pct": cfg.kill_switch_daily_pct,
-        "instruments": compiled.instruments,
-        "allocation": compiled.allocation,
+        "instruments": artifact_instruments(defn, compiled, cfg),
         "risk": compiled.risk,
-        "compiled": {
-            "entry_conditions": len(compiled.entry.conditions),
-            "exit_conditions": len(compiled.exit.conditions),
-            "has_regime": compiled.regime is not None,
-            "regime_else": (compiled.regime or {}).get("else"),
-        },
+        "spec": spec.to_dict(),
         "config": asdict(cfg),
     }, indent=2)
 

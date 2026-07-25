@@ -39,6 +39,7 @@ from strategy_studio.backtest import (
     NautilusBacktestAdapter,
     StubBacktestAdapter,
     UnsupportedStrategy,
+    to_nautilus,
 )
 from strategy_studio.compiler import CompileError, compile_strategy
 from strategy_studio.deploy import (
@@ -808,11 +809,20 @@ def route_deploy_modal(request: Request, strategy_id: str):
         objective_value = {"sharpe": metrics.sharpe,
                            "max_dd": metrics.max_dd_pct}.get(
             defn.walkforward.objective, metrics.dsr)
+    # Same lowering the artifact does, run early so the modal can say why the
+    # button is dead instead of letting the user submit into a 422.
+    unrunnable: list[str] = []
+    try:
+        to_nautilus(compile_strategy(defn))
+    except UnsupportedStrategy as e:
+        unrunnable = e.reasons
+    except CompileError as e:
+        unrunnable = [str(e)]
     return HTMLResponse(_tpl().get_template(
         "studio/_deploy_modal.html").render(_ctx(
             request, defn, metrics=metrics,
             objective_value=objective_value,
-            gate_default=DEFAULT_GATE_DSR,
+            gate_default=DEFAULT_GATE_DSR, unrunnable=unrunnable,
             has_draft=store.load_draft(strategy_id) is not None)))
 
 
@@ -840,6 +850,14 @@ def route_deploy(request: Request, strategy_id: str,
                        gate_enabled=gate_enabled, gate_min_objective=gate_min)
     try:
         artifact = prepare_deployment(defn, _baseline_metrics(strategy_id), cfg)
+    except UnsupportedStrategy as e:
+        # The artifact is what a runner executes, so a strategy that cannot be
+        # lowered has nothing to deploy. Refusing here keeps the failure
+        # attached to the click; a recorded deployment would fail later, on
+        # the runner, detached from the cause.
+        return PlainTextResponse(
+            "cannot deploy — no runner can execute this strategy:\n"
+            + "\n".join(f"· {r}" for r in e.reasons), status_code=422)
     except (DeployBlocked, CompileError) as e:
         return PlainTextResponse(str(e), status_code=422)
     deploy_id = uuid.uuid4().hex[:12]

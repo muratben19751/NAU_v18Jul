@@ -1,19 +1,21 @@
-import json
 
 import pytest
 from fastapi.testclient import TestClient
 
 SID = "wt-funding-v3"
+# Deployment needs a strategy that lowers onto a runnable spec; SID does not.
+EID = "rsi-adx-btc"
 
 
 @pytest.fixture()
 def client(tmp_path, monkeypatch):
-    from scripts.seed_studio import build_fixture
+    from scripts.seed_studio import build_engine_fixture, build_fixture
     from server import app as _host
     from strategy_studio.store import StrategyStore
     from web.routes import strategy_studio as main
     store = StrategyStore(tmp_path / "t.db")
     store.save(build_fixture())
+    store.save(build_engine_fixture())
     monkeypatch.setattr(main, "store", store)
     c = TestClient(_host)
     c.store = store
@@ -119,25 +121,32 @@ def test_allocation_top_n_vs_active_instruments(client):
     assert r.status_code == 422 and "top_n" in r.text
 
 
-def test_allocation_lands_in_deploy_artifact(client):
-    client.patch(f"/studio/{SID}/allocation", data={"name": "mode", "value": "ranked"})
-    client.patch(f"/studio/{SID}/allocation", data={"name": "top_n", "value": "1"})
-    client.post(f"/studio/{SID}/save")
-    client.post(f"/studio/{SID}/backtest")
-    client.post(f"/studio/{SID}/deploy",
-                data={"environment": "paper", "kill_switch": "off"})
-    art = json.loads(client.store.latest_deployment(SID)["config"])
-    assert art["allocation"]["mode"] == "ranked"
-    assert art["allocation"]["top_n"] == 1
+def test_ranked_allocation_is_refused_at_deploy_not_filed_into_the_artifact(client):
+    """It used to be written into the artifact, which read as support.
+
+    No runner honours it — `to_nautilus` refuses ranked allocation outright —
+    so an artifact carrying `allocation.mode='ranked'` promised something that
+    would never happen. Refusing at the click is the honest version.
+    """
+    client.patch(f"/studio/{EID}/allocation", data={"name": "mode", "value": "ranked"})
+    client.patch(f"/studio/{EID}/allocation", data={"name": "top_n", "value": "1"})
+    client.post(f"/studio/{EID}/save")
+    client.post(f"/studio/{EID}/backtest")
+
+    r = client.post(f"/studio/{EID}/deploy",
+                    data={"environment": "paper", "kill_switch": "off"})
+
+    assert r.status_code == 422 and "allocation" in r.text
+    assert client.store.latest_deployment(EID) is None
 
 
 # ── 4 · deployment lifecycle ─────────────────────────────────────
 
 def _deploy(client):
-    client.post(f"/studio/{SID}/backtest")
-    client.post(f"/studio/{SID}/deploy",
+    client.post(f"/studio/{EID}/backtest")
+    client.post(f"/studio/{EID}/deploy",
                 data={"environment": "paper", "kill_switch": "off"})
-    return client.store.latest_deployment(SID)
+    return client.store.latest_deployment(EID)
 
 
 def test_stub_runner_picks_up(client):
@@ -148,32 +157,32 @@ def test_stub_runner_picks_up(client):
 def test_pause_resume_stop_transitions(client):
     dep = _deploy(client)
     did = dep["deploy_id"]
-    r = client.post(f"/studio/{SID}/deployments/{did}/pause")
+    r = client.post(f"/studio/{EID}/deployments/{did}/pause")
     assert r.status_code == 200
     assert client.store.get_deployment(did)["status"] == "paused"
     assert "▶ Resume" in r.text
-    client.post(f"/studio/{SID}/deployments/{did}/resume")
+    client.post(f"/studio/{EID}/deployments/{did}/resume")
     assert client.store.get_deployment(did)["status"] == "running"
-    client.post(f"/studio/{SID}/deployments/{did}/stop")
+    client.post(f"/studio/{EID}/deployments/{did}/stop")
     assert client.store.get_deployment(did)["status"] == "stopped"
 
 
 def test_invalid_transitions_422(client):
     dep = _deploy(client)
     did = dep["deploy_id"]
-    client.post(f"/studio/{SID}/deployments/{did}/stop")
+    client.post(f"/studio/{EID}/deployments/{did}/stop")
     for action in ("pause", "resume", "stop"):
-        r = client.post(f"/studio/{SID}/deployments/{did}/{action}")
+        r = client.post(f"/studio/{EID}/deployments/{did}/{action}")
         assert r.status_code == 422, action
-    r2 = client.post(f"/studio/{SID}/deployments/{did}/launch")
+    r2 = client.post(f"/studio/{EID}/deployments/{did}/launch")
     assert r2.status_code == 422 and "unknown action" in r2.text
 
 
 def test_deployments_panel_lists_and_polls_pending(client):
     _deploy(client)
-    r = client.get(f"/studio/{SID}/deployments/panel")
+    r = client.get(f"/studio/{EID}/deployments/panel")
     assert "PAPER" in r.text and "RUNNING" in r.text
     # a hand-inserted pending row makes the panel poll
-    client.store.create_deployment("pend01", SID, 1, "paper", "{}")
-    r2 = client.get(f"/studio/{SID}/deployments/panel")
+    client.store.create_deployment("pend01", EID, 1, "paper", "{}")
+    r2 = client.get(f"/studio/{EID}/deployments/panel")
     assert 'hx-trigger="every 2s"' in r2.text and "PENDING" in r2.text
