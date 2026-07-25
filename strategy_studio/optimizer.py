@@ -8,6 +8,10 @@ an adapter over your existing walk-forward optimizer. Contract:
 Param addressing uses "<rule_id>.<param_name>" (or "risk.<field>") keys —
 apply_result() below shows how results map back onto a StrategyDefinition and
 must keep working whatever engine sits behind.
+
+Wiki References
+---------------
+Bkz: [[strategy_studio]], [[backtesting_guide]]
 """
 from __future__ import annotations
 

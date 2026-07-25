@@ -7,6 +7,10 @@ and persists a deployment record + compiled artifact for the runner to pick
 up. The kill switch is passed through in the artifact; if your runner lacks
 native support, add a monitor task that pauses the deployment when realized
 daily PnL breaches `kill_switch_daily_pct`.
+
+Wiki References
+---------------
+Bkz: [[strategy_studio]], [[environment_contexts]]
 """
 from __future__ import annotations
 

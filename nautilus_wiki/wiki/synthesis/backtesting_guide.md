@@ -121,6 +121,7 @@ BacktestDataConfig(
 - [[getting_started_roadmap]]
 - [[index_backtest_via_equity_proxy]]
 - [[reports]]
+- [[strategy_studio]]
 - [[tutorial_backtest_fx_bars]]
 - [[tutorial_backtest_high_level]]
 - [[tutorial_backtest_low_level]]

@@ -23,6 +23,10 @@ given, matching what a rule comparison evaluates against.
 for (``macd``, ``funding_z``, ``oi_z``, ``cvd_divergence``, ``volume_profile``,
 ``time_stop``, ``session_filter``) — those stay declarative until an
 implementation exists.
+
+Wiki References
+---------------
+Bkz: [[strategy_studio]]
 """
 
 from __future__ import annotations

@@ -7,6 +7,10 @@ INTEGRATION POINT for nautilus_web_app: write one adapter
     to_nautilus(compiled: CompiledStrategy) -> <your BacktestRunConfig>
 in your repo and feed it to your existing NautilusTrader runner. Everything
 upstream (schema, UI, AI diffs) stays unchanged.
+
+Wiki References
+---------------
+Bkz: [[strategy_studio]], [[strategy_and_actor]]
 """
 from __future__ import annotations
 

@@ -2,6 +2,10 @@
 
 Single source of truth: the UI renders this document, the LLM edits it,
 the compiler translates it. Nothing else holds strategy state.
+
+Wiki References
+---------------
+Bkz: [[strategy_studio]], [[strategy_and_actor]]
 """
 from __future__ import annotations
 

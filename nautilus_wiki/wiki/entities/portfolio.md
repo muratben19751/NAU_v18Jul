@@ -29,6 +29,47 @@ v1'deki `engine.portfolio.analyzer.get_performance_stats_returns()` kaldırıld�
 - `engine.portfolio.statistics() -> PortfolioStatistics(pnls, returns, general)`
 - `engine.get_result() -> BacktestResult` — `stats_returns`, `stats_pnls`, `stats_general` property'leri.
 
+## Kritik: `Portfolio.equity()` **dict döndürür**, Money değil
+
+(v1.230.0'da doğrulandı — imza: `equity(venue=None, account_id=None) -> dict`)
+
+```
+dict[Currency, Money]
+  cash / betting hesap : balance.total + Σ mark_value(açık pozisyonlar)
+  margin hesap         : balance.total + Σ unrealized_pnl(açık pozisyonlar)
+```
+
+Yani **istenen equity tam olarak budur** — ama skaler değil, para birimi başına
+bir sözlüktür. Sözlükte enstrümanın settlement para birimi (linear USDT perp
+için `USDT`) yanında başka para birimi girdileri de bulunur (cash hesapta satın
+alınan `BTC` bakiyesi gibi); bunlar **aynı değerin başka birimdeki karşılığı
+değil, ayrı bakiyelerdir** — toplamak çift sayım olur, doğru olan settlement
+para birimi girdisini okumaktır.
+
+**Tuzak:** `float(portfolio.equity(venue))` bir `TypeError` fırlatır. Bu çağrı
+geniş bir `except` içindeyse hata yutulur ve kod sessizce bir yedeğe düşer.
+`nautilus_web_app`'te tam olarak bu oldu: `ComposedStrategy._current_equity`
+yedek olarak hesap bakiyelerini tarıyordu ve **CASH hesapta** (`allow_short`
+kapalıyken varsayılan) o bakiye *harcanmamış nakit*tir — BTC alınca USDT düşer,
+alınan BTC sayılmaz. Sonuç: bar-başına MTM equity serisi pozisyon açık kaldığı
+sürece çöküyordu.
+
+180 günlük BTCUSDT 1h koşusunda ölçülen etki:
+
+| | önce | sonra |
+|---|---|---|
+| MTM equity minimumu | 588.84 | 9 898.82 |
+| 5000'in altındaki bar | 51 / 4319 | 0 |
+| `max_dd` | −%94.27 | −%2.99 |
+| `sharpe` (bar-frekanslı) | 18.64 | 6.02 |
+
+Bu seri `_metrics()`'in `max_dd`/`sharpe` alanlarını beslediği için etki
+`/backtest`, robustness ve WFO çıktılarının tamamına yayılıyordu. Ayrıntı ve
+kod köprüsü: [[webapp_module_map]] (`composer.py` satırı), [[strategy_studio]].
+
+Hesap tipi seçimi ([[accounting]]) bu tuzağın önkoşuludur: `allow_short=True`
+MARGIN açar (bakiye taraması tesadüfen daha az yanlıştır), kapalıysa CASH.
+
 ## Kritik: Multi-Currency Hesaplarda Sessiz İstatistik Hatası
 
 Araştırmayla doğrulanmış kritik bulgu (kaynak: docs/latest/concepts/portfolio + kaynak kod analizi):
@@ -64,6 +105,7 @@ Docstring bunu açıkça belgeliyor:
 - [[option_greeks_pipeline]]
 - [[positions]]
 - [[strategy_and_actor]]
+- [[strategy_studio]]
 - [[v1_to_v2_migration_lessons]]
 - [[webapp_module_map]]
 <!-- BACKLINKS:END -->

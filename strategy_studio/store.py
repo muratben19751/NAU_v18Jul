@@ -2,6 +2,10 @@
 
 INTEGRATION POINT: replace `_connect` with your app's existing SQLite
 session/engine if you prefer a single database file.
+
+Wiki References
+---------------
+Bkz: [[strategy_studio]]
 """
 from __future__ import annotations
 

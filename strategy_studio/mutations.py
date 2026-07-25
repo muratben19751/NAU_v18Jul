@@ -2,6 +2,10 @@
 
 Every edit operates on a StrategyDefinition (the draft) and returns the
 mutated copy. Validation errors raise MutationError with UI-friendly text.
+
+Wiki References
+---------------
+Bkz: [[strategy_studio]]
 """
 from __future__ import annotations
 

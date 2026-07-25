@@ -366,3 +366,27 @@ wrapper'a yönlendirildi. Rapor: summary/format_table + CLI + GET /agent/tokens.
 webapp_module_map: agent.py satırına ledger-hook notu, Ops tablosuna token_ledger.py
 satırı, değişiklik günlüğüne 2026-07-24 girdisi. Testler test_token_ledger.py 7/7 +
 regression 68/68, ruff temiz. NautilusTrader'a dokunulmadı.
+
+## 2026-07-25 — Strategy Studio birleştirmesi + Portfolio.equity() tuzağı
+
+- **Yeni sayfa** `wiki/synthesis/strategy_studio.md` — /studio/{id} görsel strateji
+  kurucusu: katmanlar (şema → derleyici → to_nautilus → composer spec → runner),
+  sessiz-atlama yasağı ve reddedilenler listesi, indikatör köprüsü sözleşmesi
+  (`impl(bars, **schema_params)`), iki motor anahtarı ve maliyet gerekçesi,
+  metriklerin kaynağı (neden Sharpe işlem bazlı, dsr neden PSR), AI guardrail
+  baseline'ının hangi motorda ölçüldüğü.
+- **`wiki/entities/portfolio.md`** — yeni bölüm: `Portfolio.equity()` skaler değil
+  `dict[Currency, Money]` döndürür (v1.230.0'da doğrulandı). `float(dict)` TypeError'ı
+  geniş bir `except` içinde yutulunca kod bakiye taramasına düşüyor; CASH hesapta o
+  bakiye harcanmamış nakit olduğundan MTM equity serisi pozisyon açıkken çöküyor.
+  Ölçülen etki tabloyla kayda geçti (max_dd -%94.27 → -%2.99).
+- **`wiki/synthesis/webapp_module_map.md`** — iki yeni satır (`web/routes/strategy_studio.py`,
+  `strategy_studio/` paketi); `composer.py` satırına `_current_equity` düzeltmesi işlendi;
+  frontmatter tazelendi.
+- **Kod → doküman köprüsü**: `strategy_studio/` altındaki 9 modüle `Wiki References`
+  bloğu eklendi (ters yön modül haritasında zaten var).
+- Lint öncesi/sonrası temiz (0/0); backlinks 70 sayfada tazelendi; index yeniden üretildi.
+
+**Açık boşluk:** `dsr` gerçek DSR'a deflate edilmiyor (deneme sayısı optimizer
+entegrasyonundan gelecek); `walkforward.scheme`/`in_sample_months`/`oos_months`
+UI'da ayarlanabiliyor ama fold dilimlemesi yalnız `folds` + `embargo_bars` kullanıyor.

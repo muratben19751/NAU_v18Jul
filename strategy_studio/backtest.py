@@ -24,6 +24,10 @@ or an indicator with no engine equivalent. Rather than silently dropping such
 rules — which would return metrics for a *different* strategy than the one on
 screen — ``to_nautilus`` raises ``UnsupportedStrategy`` naming the offending
 rule ids. The studio surfaces that as a failed run.
+
+Wiki References
+---------------
+Bkz: [[strategy_studio]], [[backtesting_guide]], [[portfolio]]
 """
 
 from __future__ import annotations

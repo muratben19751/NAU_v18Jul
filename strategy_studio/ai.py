@@ -5,6 +5,10 @@ with the LLM client from your existing optimization loop (same prompts style,
 same plumbing). Everything else — the Suggestion contract, guardrails, and
 apply logic — is engine-agnostic and should be reused as-is so human edits
 and AI edits go through the same mutation/validation path.
+
+Wiki References
+---------------
+Bkz: [[strategy_studio]]
 """
 from __future__ import annotations
 
