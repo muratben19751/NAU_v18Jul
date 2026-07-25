@@ -14,10 +14,11 @@ smaller scope.
 
 from __future__ import annotations
 
+import csv
+import gzip
 import json
 import logging
 import os
-import subprocess
 import threading
 import time
 from contextlib import contextmanager
@@ -27,8 +28,6 @@ from typing import Literal
 
 import pandas as pd
 import requests
-
-from app_constants import NO_WINDOW_FLAGS
 
 log = logging.getLogger(__name__)
 
@@ -208,8 +207,26 @@ _GRAN_BARSPEC: dict[str, tuple[int, str]] = {
 
 
 def _ticker_to_filename(t: str) -> str:
-    """`I:AAVE100` -> `I_AAVE100` (filesystem-safe; Nautilus Symbol keeps raw)."""
-    return t.replace(":", "_").replace("/", "_")
+    """`I:AAVE100` -> `I_AAVE100` (filesystem-safe; Nautilus Symbol keeps raw).
+
+    Path-traversal guard, same contract as `_bybit_cache_path`: every caller
+    builds `INDEX_CACHE_DIR / f"{this}_{granularity}.parquet"` from a `ticker`
+    that arrives straight from the `/backtest/run` and `/backtest/sweep` form
+    bodies. Replacing only ":" and "/" left "\\" and ".." intact, so
+    `..\\..\\Users\\…\\evil` escaped the cache directory and could overwrite an
+    arbitrary file. The ticker is reduced to a filesystem-safe charset (ASCII
+    alnum plus `_-.`), which preserves the historical "I:SPX" -> "I_SPX" and
+    "BRK.B" -> "BRK.B" filenames, and any ".." run is collapsed. A ticker with
+    nothing usable left raises ValueError BEFORE any file is touched.
+    """
+    safe = "".join(
+        c if ((c.isascii() and c.isalnum()) or c in "_-.") else "_" for c in t
+    )
+    while ".." in safe:
+        safe = safe.replace("..", "_")
+    if not safe.strip("._-"):
+        raise ValueError(f"invalid ticker: {t!r}")
+    return safe
 
 
 def _index_file_for(d: date) -> Path:
@@ -240,26 +257,23 @@ def discover_index_tickers(force: bool = False) -> list[str]:
 
     src = _latest_available_file()
     if src is None:
-        raise RuntimeError(f"no index files found under {INDEX_ROOT}")
+        # FileNotFoundError, not RuntimeError: the route maps the former to 404
+        # ("no index data on this box") and everything else to a 500 stack.
+        raise FileNotFoundError(f"no index files found under {INDEX_ROOT}")
 
-    import shlex as _shlex
-
-    # Tickers are stored in contiguous blocks — awk print-when-changed is
-    # both memory-cheap and file-order deterministic.
-    cmd = (
-        f"gunzip -c {_shlex.quote(str(src))} | "
-        f"awk -F, 'NR>1 && $1!=prev {{print $1; prev=$1}}'"
-    )
-    proc = subprocess.run(
-        ["bash", "-c", cmd],
-        check=True,
-        capture_output=True,
-        text=True,
-        creationflags=NO_WINDOW_FLAGS,  # Windows: don't open a console window
-    )
-    tickers = sorted(
-        set(line.strip() for line in proc.stdout.splitlines() if line.strip())
-    )
+    # Pure-Python streaming scan. This used to shell out to
+    # `bash -c "gunzip -c … | awk …"`, which does not exist on a stock Windows
+    # box (the app's primary platform): `bash` resolved to the WSL launcher and
+    # the whole index pipeline failed with execvpe(/bin/bash). gzip+csv reads the
+    # same file incrementally, so memory stays flat on the ~2 GB dailies.
+    tickers_seen: set[str] = set()
+    with gzip.open(src, mode="rt", newline="") as fh:
+        reader = csv.reader(fh)
+        next(reader, None)  # header
+        for row in reader:
+            if row and row[0].strip():
+                tickers_seen.add(row[0].strip())
+    tickers = sorted(tickers_seen)
 
     INDEX_CACHE_DIR.mkdir(parents=True, exist_ok=True)
     TICKER_REGISTRY.write_text(
@@ -276,37 +290,39 @@ def discover_index_tickers(force: bool = False) -> list[str]:
 
 
 def _stream_ticker_rows(ticker: str, day: date) -> pd.DataFrame:
-    """Filter one day's CSV.gz for `ticker` via awk pipe → DataFrame.
+    """Filter one day's CSV.gz for `ticker` → DataFrame.
 
     Returns empty DataFrame with the same columns if the day is missing.
+
+    Pure Python (gzip + csv), for the same reason as `discover_index_tickers`:
+    the previous `bash -c "gunzip | awk"` pipe made the whole index path
+    unusable on Windows. Rows are filtered while streaming, so only the matching
+    ticker's rows are held in memory.
     """
+    empty_cols = ["ticker", "value", "timestamp"]
     src = _index_file_for(day)
     if not src.exists():
-        return pd.DataFrame(columns=["ticker", "value", "timestamp"])
+        return pd.DataFrame(columns=empty_cols)
 
-    import shlex as _shlex
+    try:
+        with gzip.open(src, mode="rt", newline="") as fh:
+            reader = csv.reader(fh)
+            header = next(reader, None)
+            if not header:
+                # Missing/corrupt/empty gzip — match the missing-day contract.
+                return pd.DataFrame(columns=empty_cols)
+            matched = [row for row in reader if row and row[0] == ticker]
+    except (OSError, EOFError, csv.Error) as e:
+        log.warning("unreadable index file %s: %s", src, e)
+        return pd.DataFrame(columns=empty_cols)
 
-    # Use list-form awk with -v to avoid shell injection via ticker name.
-    cmd = [
-        "bash",
-        "-c",
-        f"gunzip -c {_shlex.quote(str(src))} | "
-        f"awk -F, -v T={_shlex.quote(ticker)} 'NR==1 || $1==T'",
-    ]
-    # Windows: don't open and close a console window on every ticker load.
-    with subprocess.Popen(
-        cmd, stdout=subprocess.PIPE, creationflags=NO_WINDOW_FLAGS
-    ) as proc:
-        try:
-            df = pd.read_csv(proc.stdout)
-        except pd.errors.EmptyDataError:
-            # awk produced no output at all (missing/corrupt/empty gzip, or the
-            # header row itself was absent) — pandas can't infer columns. Match
-            # the missing-day contract and return an empty typed frame.
-            return pd.DataFrame(columns=["ticker", "value", "timestamp"])
-        finally:
-            proc.stdout.close()
-            proc.wait()
+    if not matched:
+        return pd.DataFrame(columns=empty_cols)
+    df = pd.DataFrame(matched, columns=header)
+    # csv gives str; the awk|read_csv path used to infer these types.
+    for col in ("value", "timestamp"):
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
     return df
 
 

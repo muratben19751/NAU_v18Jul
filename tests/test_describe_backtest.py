@@ -8,6 +8,7 @@ carrying instrument parameters + the new spec_id.
 
 from __future__ import annotations
 
+import html
 import json
 import re
 import time
@@ -76,27 +77,34 @@ def _client():
     return TestClient(app)
 
 
+# The chain trigger is no longer an hx-post attribute: describe_progress.html
+# emits <div id="bt-chain-trigger" data-bt-chain-url=... data-bt-chain-vals=...>
+# and backtest_scripts.html fires the request from JS (hx-trigger="load" does
+# not fire on an innerHTML swap). These helpers read that contract.
+def _chain_url(page_text):
+    """The URL the finished page will chain to, or None if it does not chain."""
+    m = re.search(r'data-bt-chain-url="([^"]+)"', page_text)
+    return m.group(1) if m else None
+
+
+def _chain_vals(page_text):
+    m = re.search(r"data-bt-chain-vals='([^']+)'", page_text)
+    assert m, "no chain trigger on the page"
+    return json.loads(html.unescape(m.group(1)))
+
+
 def _poll(c, gen_id, tries=60):
+    """Wait for the generation to finish: either it chains, or it gave up."""
     for _ in range(tries):
         p = c.get(f"/backtest/describe/progress/{gen_id}")
-        if "empty-state" in p.text or 'hx-post="/backtest/run"' in p.text:
+        if "empty-state" in p.text or _chain_url(p.text):
             return p
         time.sleep(0.1)
     raise AssertionError("generation did not finish")
 
 
-def _poll_chain(c, gen_id, tries=60):
-    """The chain may be /run OR /sweep (single/multi TF) — expect either."""
-    for _ in range(tries):
-        p = c.get(f"/backtest/describe/progress/{gen_id}")
-        if (
-            "empty-state" in p.text
-            or 'hx-post="/backtest/run"' in p.text
-            or 'hx-post="/backtest/sweep"' in p.text
-        ):
-            return p
-        time.sleep(0.1)
-    raise AssertionError("generation did not finish")
+# Single- and multi-TF both land on the same trigger; only the URL differs.
+_poll_chain = _poll
 
 
 class TestDescribeBacktest:
@@ -127,7 +135,8 @@ class TestDescribeBacktest:
         assert [b.role for b in spec.blocks] == ["entry", "exit"]
 
         # Chain: NEW spec + SAME instrument settings to /backtest/run
-        vals = json.loads(re.search(r"hx-vals='([^']+)'", page.text).group(1))
+        assert _chain_url(page.text) == "/backtest/run"
+        vals = _chain_vals(page.text)
         assert vals["spec_id"] == spec.id
         assert vals["symbol"] == "ETHUSDT"
         assert vals["interval"] == "15"
@@ -149,7 +158,7 @@ class TestDescribeBacktest:
         gen_id = re.search(r"describe/progress/([0-9a-f]+)", r.text).group(1)
         page = _poll(c, gen_id)
         # Error → backtest is NOT CHAINED (a wrong strategy must not silently run).
-        assert 'hx-post="/backtest/run"' not in page.text
+        assert _chain_url(page.text) is None
         assert (
             "Generation failed" in page.text
             or "could be generated" in page.text
@@ -205,7 +214,7 @@ class TestDescribeMultiBlock:
         # 3 SEPARATE blocks written to disk (not embedded into a single block).
         assert len(wired["saved"]) == 3
         # Chain runs the new spec.
-        vals = json.loads(re.search(r"hx-vals='([^']+)'", page.text).group(1))
+        vals = _chain_vals(page.text)
         assert vals["spec_id"] == spec.id
 
     def test_block_names_unique_across_roles(self, wired, monkeypatch):
@@ -263,9 +272,8 @@ class TestDescribeMultiTF:
         gen_id = re.search(r"describe/progress/([0-9a-f]+)", r.text).group(1)
         page = _poll_chain(c, gen_id)
         # 2+ TF → sweep comparison table, NOT /run.
-        assert 'hx-post="/backtest/sweep"' in page.text
-        assert 'hx-post="/backtest/run"' not in page.text
-        vals = json.loads(re.search(r"hx-vals='([^']+)'", page.text).group(1))
+        assert _chain_url(page.text) == "/backtest/sweep"
+        vals = _chain_vals(page.text)
         assert vals["intervals"] == ["15", "60", "240"]
         # csv fallback: even if hx-vals array encoding does not hold, /sweep reads this.
         assert vals["intervals_csv"] == "15,60,240"
@@ -284,9 +292,8 @@ class TestDescribeMultiTF:
         gen_id = re.search(r"describe/progress/([0-9a-f]+)", r.text).group(1)
         page = _poll_chain(c, gen_id)
         # Single TF → full result (/run), NOT sweep.
-        assert 'hx-post="/backtest/run"' in page.text
-        assert 'hx-post="/backtest/sweep"' not in page.text
-        vals = json.loads(re.search(r"hx-vals='([^']+)'", page.text).group(1))
+        assert _chain_url(page.text) == "/backtest/run"
+        vals = _chain_vals(page.text)
         assert vals["interval"] == "240"
 
     def test_invalid_tf_codes_dropped(self, wired):
@@ -301,6 +308,6 @@ class TestDescribeMultiTF:
         )
         gen_id = re.search(r"describe/progress/([0-9a-f]+)", r.text).group(1)
         page = _poll_chain(c, gen_id)
-        vals = json.loads(re.search(r"hx-vals='([^']+)'", page.text).group(1))
+        vals = _chain_vals(page.text)
         assert vals["intervals"] == ["15", "60"]
-        assert 'hx-post="/backtest/sweep"' in page.text
+        assert _chain_url(page.text) == "/backtest/sweep"

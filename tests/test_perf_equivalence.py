@@ -61,14 +61,42 @@ def _run(spec, bars):
     )
 
 
+# Fields that decide what the run EARNED: which side, opened and closed when, at
+# what price, for how much. The hash deliberately excludes entry_detail /
+# exit_detail / entry_reason / exit_reason — those are human-readable annotations
+# (block labels, indicator readouts, sequence numbers) that get reworded whenever
+# the trade-reasons UI changes. Hashing them made this golden fail on wording,
+# which says nothing about engine behaviour, and a golden that cries wolf gets
+# regenerated on reflex — exactly how a real regression slips through.
+_ECONOMIC_FIELDS = (
+    "side",
+    "entry_time",
+    "exit_time",
+    "entry_price",
+    "exit_price",
+    "pnl",
+    "dur_min",
+    "exit_kind",
+)
+
+
 def _trades_sha(trades) -> str:
+    economic = [
+        {k: t.get(k) for k in _ECONOMIC_FIELDS if k in t} for t in (trades or [])
+    ]
     return hashlib.sha256(
-        json.dumps(trades or [], sort_keys=True, default=str).encode()
+        json.dumps(economic, sort_keys=True, default=str).encode()
     ).hexdigest()
 
 
 class TestGoldenParity:
     """Golden values (20k bars, seed=42).
+
+    2026-07-25: the trade hash now covers only the economic fields (see
+    _trades_sha). PnL and n_trades were unchanged by that switch — the three
+    hashes below were regenerated from runs that reproduce the previous
+    40455.724 / 38420.341 / 360.482 exactly, so this is a narrowing of what the
+    golden asserts, not an accepted behaviour change.
 
     L13 (2026-07): delay_fill is now also applied to EXITS (entry symmetry).
     M5 (2026-07): Bybit commissions were ENABLED (maker/taker + MakerTakerFeeModel)
@@ -100,7 +128,7 @@ class TestGoldenParity:
         m = r.metrics
         assert round(m["pnl"], 3) == 40455.724
         assert m["n_trades"] == 106
-        assert _trades_sha(r.trades).startswith("be4c21d2e6d8")
+        assert _trades_sha(r.trades).startswith("dc5d657743d2")
 
     def test_breakout_golden(self):
         spec = ComposedStrategySpec(
@@ -125,7 +153,7 @@ class TestGoldenParity:
         assert r.error is None
         assert round(r.metrics["pnl"], 3) == 38420.341
         assert r.metrics["n_trades"] == 107
-        assert _trades_sha(r.trades).startswith("914415a578d8")
+        assert _trades_sha(r.trades).startswith("bb1392f9bad2")
 
     def test_volume_and_rsi_golden(self):
         spec = ComposedStrategySpec(
@@ -159,7 +187,7 @@ class TestGoldenParity:
         # actually fires (106 exits). Golden regenerated.
         assert round(r.metrics["pnl"], 3) == 360.482
         assert r.metrics["n_trades"] == 106
-        assert _trades_sha(r.trades).startswith("77080483ec85")
+        assert _trades_sha(r.trades).startswith("fc937072c758")
 
 
 class TestCustomAdapterIsolation:

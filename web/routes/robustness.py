@@ -33,6 +33,22 @@ def _add_step(run_id: str, msg: str) -> None:
             s["steps"].append({"ts": ts, "msg": msg})
 
 
+def _set_progress(run_id: str, **fields) -> None:
+    """Update a progress entry if it still exists.
+
+    `create_evicting` drops the oldest entry when the store is full, including
+    one that is still running. Subscript assignment on an evicted run_id raised
+    KeyError inside the worker — and the handler that was supposed to record the
+    failure raised the same KeyError again, killing the daemon thread and
+    orphaning its child process. A vanished entry means nobody is watching, so
+    dropping the update is the whole correct response.
+    """
+    with _LOCK:
+        s = _PROGRESS.get(run_id)
+        if s is not None:
+            s.update(fields)
+
+
 # _log_robustness now lives in web.shared (imported above as a re-export alias)
 # — single source of truth; the robustness log path + write helper were
 # duplicated / cross-imported with backtest.py and reports.py.
@@ -138,10 +154,9 @@ async def run(
                 end=end_dt,
             )
             if bars.empty:
-                with _LOCK:
-                    _PROGRESS[run_id]["error"] = (
-                        "Data not found. Fetch it from the Data screen."
-                    )
+                _set_progress(
+                    run_id, error="Data not found. Fetch it from the Data screen."
+                )
                 return
             _add_step(run_id, f"{len(bars):,} candles loaded")
 
@@ -166,8 +181,7 @@ async def run(
                 progress_fn=lambda m: _add_step(run_id, m),
             )
             if suite.get("error") and "wfo_windows" not in suite:
-                with _LOCK:
-                    _PROGRESS[run_id]["error"] = suite["error"]
+                _set_progress(run_id, error=suite["error"])
                 return
 
             result = {
@@ -190,16 +204,12 @@ async def run(
             }
             _add_step(run_id, "Completed")
             _log_robustness(spec.id, spec.name, result)
-            with _LOCK:
-                _PROGRESS[run_id]["result"] = result
+            _set_progress(run_id, result=result)
 
         except Exception as e:
-            with _LOCK:
-                _PROGRESS[run_id]["error"] = f"{type(e).__name__}: {e}"
+            _set_progress(run_id, error=f"{type(e).__name__}: {e}")
         finally:
-            with _LOCK:
-                if run_id in _PROGRESS:
-                    _PROGRESS[run_id]["done"] = True
+            _set_progress(run_id, done=True)
 
     threading.Thread(target=_worker, daemon=True).start()
 

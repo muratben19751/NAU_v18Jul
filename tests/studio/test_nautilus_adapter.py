@@ -261,16 +261,19 @@ class _FakeResult:
 
 
 def test_run_maps_runner_output_onto_studio_metrics(monkeypatch, fake_bars):
-    import backtest as engine
+    import sandbox
 
     calls = []
 
-    def _fake_run(spec, bars, **kw):
+    # The adapter runs the engine through the sandbox child (force_subprocess),
+    # never run_composed_backtest in-process — patching the engine directly
+    # would not reach a child anyway.
+    def _fake_run(spec, bars, recipe, **kw):
         calls.append(len(bars))
         step = 10_000 / 100
         return _FakeResult([10_000 + step * i for i in range(101)])
 
-    monkeypatch.setattr(engine, "run_composed_backtest", _fake_run)
+    monkeypatch.setattr(sandbox, "run_backtest_guarded", _fake_run)
 
     adapter = NautilusBacktestAdapter(bars_loader=lambda s, tf: fake_bars)
     compiled = compile_strategy(_defn([_rsi_rule()], [_atr_exit()]))
@@ -292,7 +295,7 @@ def test_run_maps_runner_output_onto_studio_metrics(monkeypatch, fake_bars):
 def test_runner_error_surfaces_instead_of_returning_fake_metrics(
     monkeypatch, fake_bars
 ):
-    import backtest as engine
+    import sandbox
 
     class _Err:
         error = "no fills"
@@ -300,7 +303,7 @@ def test_runner_error_surfaces_instead_of_returning_fake_metrics(
         metrics: dict = {}
 
     monkeypatch.setattr(
-        engine, "run_composed_backtest", lambda spec, bars, **kw: _Err()
+        sandbox, "run_backtest_guarded", lambda spec, bars, recipe, **kw: _Err()
     )
 
     adapter = NautilusBacktestAdapter(bars_loader=lambda s, tf: fake_bars)
@@ -370,15 +373,19 @@ def test_no_winners_does_not_produce_a_nan_profit_factor(monkeypatch, fake_bars)
     A NaN reaches the store as bare `NaN` in the metrics JSON, which the
     browser's JSON.parse rejects outright.
     """
-    import backtest as engine
+    import sandbox
 
     monkeypatch.setattr(
-        engine,
-        "run_composed_backtest",
-        lambda spec, bars, **kw: _FakeResult(
+        sandbox,
+        "run_backtest_guarded",
+        lambda spec, bars, recipe=None, **kw: _FakeResult(
             [10_000, 9_900],
-            n_trades=1, win_rate=0.0, n_wins=0, n_losses=1,
-            avg_win=float("nan"), avg_loss=-34.4,
+            n_trades=1,
+            win_rate=0.0,
+            n_wins=0,
+            n_losses=1,
+            avg_win=float("nan"),
+            avg_loss=-34.4,
         ),
     )
 
@@ -389,19 +396,19 @@ def test_no_winners_does_not_produce_a_nan_profit_factor(monkeypatch, fake_bars)
     assert "NaN" not in m.to_json()
 
 
-def test_curve_and_drawdown_come_from_the_bar_level_mtm_series(
-    monkeypatch, fake_bars
-):
+def test_curve_and_drawdown_come_from_the_bar_level_mtm_series(monkeypatch, fake_bars):
     """The realized curve only moves on trade closes; MTM moves every bar."""
-    import backtest as engine
+    import sandbox
 
     monkeypatch.setattr(
-        engine,
-        "run_composed_backtest",
-        lambda spec, bars, **kw: _FakeResult(
+        sandbox,
+        "run_backtest_guarded",
+        lambda spec, bars, recipe=None, **kw: _FakeResult(
             [10_000, 10_100],  # realized: two points, never dips
             equity_curve_mtm=[
-                ("t0", 10_000.0), ("t1", 9_700.0), ("t2", 10_100.0),
+                ("t0", 10_000.0),
+                ("t1", 9_700.0),
+                ("t2", 10_100.0),
             ],
             max_dd=-0.03,
             sharpe=6.02,
@@ -423,12 +430,12 @@ def test_sharpe_is_per_trade_not_bar_frequency(monkeypatch, fake_bars):
     the per-trade ratio — otherwise rarely-trading strategies win on exposure
     rather than on edge.
     """
-    import backtest as engine
+    import sandbox
 
     monkeypatch.setattr(
-        engine,
-        "run_composed_backtest",
-        lambda spec, bars, **kw: _FakeResult(
+        sandbox,
+        "run_backtest_guarded",
+        lambda spec, bars, recipe=None, **kw: _FakeResult(
             [10_000, 10_100],
             equity_curve_mtm=[("t0", 10_000.0), ("t1", 10_100.0)],
             sharpe=6.02,

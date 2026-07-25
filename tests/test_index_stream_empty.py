@@ -12,8 +12,6 @@ from __future__ import annotations
 import gzip
 from datetime import date
 
-import pandas as pd
-
 EXPECTED_COLS = ["ticker", "value", "timestamp"]
 
 
@@ -53,11 +51,11 @@ class TestStreamTickerEmpty:
         monkeypatch.setattr(data, "INDEX_ROOT", tmp_path)
         day = date(2024, 3, 16)
         content = (
-            "ticker,value,timestamp\n"
-            "AAPL,150.0,1710547200000000000\n"
-            "MSFT,300.0,1710547200000000000\n"
-            "AAPL,151.0,1710547260000000000\n"
-        ).encode()
+            b"ticker,value,timestamp\n"
+            b"AAPL,150.0,1710547200000000000\n"
+            b"MSFT,300.0,1710547200000000000\n"
+            b"AAPL,151.0,1710547260000000000\n"
+        )
         _seed_index_file(tmp_path, day, content)
 
         df = data._stream_ticker_rows("AAPL", day)

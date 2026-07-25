@@ -35,7 +35,7 @@ rule ids. The studio surfaces that as a failed run.
 
 Wiki References
 ---------------
-Bkz: [[strategy_studio]], [[backtesting_guide]], [[portfolio]]
+Bkz: [[strategy_studio]], [[nau_guvenlik_dayaniklilik_duzeltmeleri]], [[backtesting_guide]], [[portfolio]]
 """
 
 from __future__ import annotations
@@ -44,6 +44,8 @@ import hashlib
 import json
 import math
 import random
+import threading
+import time
 from dataclasses import asdict, dataclass, field
 from typing import Protocol
 
@@ -101,8 +103,9 @@ class Window:
 
 
 class BacktestAdapter(Protocol):
-    def run(self, compiled: CompiledStrategy,
-            *, window: Window | None = None) -> BacktestMetrics: ...
+    def run(
+        self, compiled: CompiledStrategy, *, window: Window | None = None
+    ) -> BacktestMetrics: ...
 
 
 class StubBacktestAdapter:
@@ -110,8 +113,7 @@ class StubBacktestAdapter:
 
     N_BARS = 220  # equity curve points (fits the 260px sparkline budget)
 
-    def _seed(self, compiled: CompiledStrategy,
-              window: Window | None = None) -> int:
+    def _seed(self, compiled: CompiledStrategy, window: Window | None = None) -> int:
         payload = json.dumps(
             {
                 "instruments": compiled.instruments,
@@ -147,8 +149,9 @@ class StubBacktestAdapter:
         )
         return int(hashlib.sha256(payload.encode()).hexdigest()[:12], 16)
 
-    def run(self, compiled: CompiledStrategy,
-            *, window: Window | None = None) -> BacktestMetrics:
+    def run(
+        self, compiled: CompiledStrategy, *, window: Window | None = None
+    ) -> BacktestMetrics:
         rng = random.Random(self._seed(compiled, window))
 
         # plausible-looking drifted random walk
@@ -329,8 +332,9 @@ _NO_ENGINE_BLOCK = {
 }
 
 
-def _lower_conditions(conds, role: str, reasons: list[str],
-                      timeframes: set[str] | None = None) -> list:
+def _lower_conditions(
+    conds, role: str, reasons: list[str], timeframes: set[str] | None = None
+) -> list:
     from composer import SignalBlock
 
     blocks = []
@@ -343,7 +347,8 @@ def _lower_conditions(conds, role: str, reasons: list[str],
             reasons.append(
                 f"rule {c.rule_id}: timeframe '{c.timeframe}' differs from the "
                 f"instrument timeframe(s) {sorted(timeframes)} — the composer "
-                "spec runs on a single bar feed")
+                "spec runs on a single bar feed"
+            )
             continue
         why = _NO_ENGINE_BLOCK.get(c.indicator)
         if why:
@@ -458,8 +463,9 @@ def _norm_cdf(x: float) -> float:
     return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
 
 
-def probabilistic_sharpe(returns: list[float], sharpe: float,
-                         benchmark: float = 0.0) -> float:
+def probabilistic_sharpe(
+    returns: list[float], sharpe: float, benchmark: float = 0.0
+) -> float:
     """Probability that the true Sharpe exceeds ``benchmark``.
 
     ``benchmark=0`` is the Probabilistic Sharpe Ratio — what a *single* run can
@@ -536,8 +542,12 @@ def _curve_stats(curve: list[float], annualization: float = 252.0) -> _CurveStat
         peak = max(peak, v)
         if peak > 0:
             max_dd = max(max_dd, (peak - v) / peak)
-    return _CurveStats(sharpe_ann=step * math.sqrt(max(annualization, 1.0)),
-                       sharpe_step=step, max_dd=max_dd, returns=rets)
+    return _CurveStats(
+        sharpe_ann=step * math.sqrt(max(annualization, 1.0)),
+        sharpe_step=step,
+        max_dd=max_dd,
+        returns=rets,
+    )
 
 
 def _downsample(curve: list[float], limit: int = 260) -> list[float]:
@@ -576,8 +586,11 @@ class NautilusBacktestAdapter:
 
     ``bars_loader(symbol, timeframe) -> DataFrame`` is injectable; the default
     resolves the studio timeframe to a Bybit interval code and calls
-    ``data.load_bybit_bars``.
+    ``data.load_bybit_bars``. Loader results are memoized for ``BARS_TTL_S``
+    so one sweep does not reload the same parquet hundreds of times.
     """
+
+    BARS_TTL_S = 300.0
 
     def __init__(
         self,
@@ -589,11 +602,12 @@ class NautilusBacktestAdapter:
         self._loader = bars_loader or self._default_loader
         self.initial_capital = initial_capital
         self.lookback_days = lookback_days
+        self._bars_cache: dict[tuple[str, str], tuple[float, object]] = {}
+        self._bars_lock = threading.Lock()
 
-    def _default_loader(self, symbol: str, timeframe: str):
-        from datetime import UTC, datetime, timedelta
-
-        from data import BYBIT_ALL_INTERVALS, load_bybit_bars
+    @staticmethod
+    def _interval_code(timeframe: str) -> str:
+        from data import BYBIT_ALL_INTERVALS
 
         code = {label: raw for raw, label in BYBIT_ALL_INTERVALS}.get(timeframe)
         if code is None:
@@ -603,6 +617,23 @@ class NautilusBacktestAdapter:
                     f"({', '.join(label for _, label in BYBIT_ALL_INTERVALS)})"
                 ]
             )
+        return code
+
+    def _recipe(self, symbol: str, timeframe: str) -> dict:
+        """Ingredients the sandbox child needs to rebuild the instrument."""
+        return {
+            "symbol": symbol,
+            "interval": self._interval_code(timeframe),
+            "category": "linear",
+            "initial_capital": self.initial_capital,
+        }
+
+    def _default_loader(self, symbol: str, timeframe: str):
+        from datetime import UTC, datetime, timedelta
+
+        from data import load_bybit_bars
+
+        code = self._interval_code(timeframe)
         end = datetime.now(UTC)
         return load_bybit_bars(
             symbol,
@@ -611,15 +642,48 @@ class NautilusBacktestAdapter:
             end=end,
         )
 
-    def _run_one(self, spec, bars, label: str) -> tuple[list[float], dict]:
-        from backtest import run_composed_backtest
+    def load_bars(self, symbol: str, timeframe: str):
+        """Loader result, memoized per (symbol, timeframe) for BARS_TTL_S.
 
-        result = run_composed_backtest(
+        An optimizer sweep runs the same (symbol, timeframe) for every candidate
+        and every fold; without this, each of those runs re-decoded the whole
+        parquet cache and (on the default loader) re-hit Bybit and rewrote the
+        cache file — hundreds of times for one sweep.
+
+        The adapter is a module-level singleton in the studio routes, so the
+        entry has to expire: a TTL well above one sweep and well below a trading
+        session keeps a sweep internally consistent without pinning stale bars
+        for the life of the server.
+        """
+        key = (symbol, timeframe)
+        now = time.monotonic()
+        with self._bars_lock:
+            hit = self._bars_cache.get(key)
+            if hit is not None and now - hit[0] < self.BARS_TTL_S:
+                return hit[1]
+        bars = self._loader(symbol, timeframe)
+        with self._bars_lock:
+            self._bars_cache[key] = (time.monotonic(), bars)
+        return bars
+
+    def _run_one(
+        self, spec, bars, label: str, recipe: dict
+    ) -> tuple[list[float], dict]:
+        # Engine runs go through the sandbox child like every other engine call
+        # in the app (agent, /backtest, robustness, loop). A Nautilus backtest
+        # holds the GIL for its entire run, so calling run_composed_backtest
+        # directly from this background task froze the whole web process —
+        # an "Optimize" click could stall every HTMX poll for minutes, with no
+        # timeout and no way to kill it.
+        from sandbox import run_backtest_guarded
+
+        result = run_backtest_guarded(
             spec,
             bars,
+            recipe,
             iteration_id=0,
             rationale=f"studio:{label}",
-            initial_capital=self.initial_capital,
+            force_subprocess=True,
         )
         if result.error:
             raise RuntimeError(f"{label}: {result.error}")
@@ -631,8 +695,14 @@ class NautilusBacktestAdapter:
         curve = [eq for _ts, eq in mtm] if mtm else result.equity_curve
         return _normalize(curve), metrics
 
-    def _folds(self, spec, per_instrument_bars: list, n_folds: int,
-               embargo_bars: int = 0) -> list[FoldMetrics]:
+    def _folds(
+        self,
+        spec,
+        per_instrument_bars: list,
+        n_folds: int,
+        embargo_bars: int = 0,
+        recipes: list[dict] | None = None,
+    ) -> list[FoldMetrics]:
         """Sequential OOS slices, one row per fold.
 
         Each fold drops its first ``embargo_bars`` rows so a position (or an
@@ -652,8 +722,9 @@ class NautilusBacktestAdapter:
                 if size <= embargo_bars + 1:
                     continue
                 chunk = bars.iloc[i * size + embargo_bars : (i + 1) * size]
+                recipe = (recipes or [])[n] if recipes and n < len(recipes) else {}
                 try:
-                    curve, m = self._run_one(spec, chunk, f"fold{i + 1}")
+                    curve, m = self._run_one(spec, chunk, f"fold{i + 1}", recipe)
                 except UnsupportedStrategy:
                     raise  # a config problem is not a per-fold hiccup
                 except Exception:  # noqa: BLE001 — a dead fold tells us nothing
@@ -674,7 +745,9 @@ class NautilusBacktestAdapter:
                     sharpe=round(
                         _finite(single.get("sharpe_per_trade"), st.sharpe_ann), 2
                     ),
-                    max_dd_pct=round(_finite(single.get("max_dd"), -st.max_dd) * 100, 1),
+                    max_dd_pct=round(
+                        _finite(single.get("max_dd"), -st.max_dd) * 100, 1
+                    ),
                 )
             )
         return folds
@@ -695,8 +768,9 @@ class NautilusBacktestAdapter:
             )
         return chunk
 
-    def run(self, compiled: CompiledStrategy,
-            *, window: Window | None = None) -> BacktestMetrics:
+    def run(
+        self, compiled: CompiledStrategy, *, window: Window | None = None
+    ) -> BacktestMetrics:
         spec = to_nautilus(compiled, initial_capital=self.initial_capital)
 
         curves: list[list[float]] = []
@@ -704,12 +778,15 @@ class NautilusBacktestAdapter:
         trades = wins = 0
         gross_win = gross_loss = 0.0
         all_bars: list = []
+        recipes: list[dict] = []
 
         for inst in compiled.instruments:
-            bars = self._loader(inst["symbol"], inst["timeframe"])
+            bars = self.load_bars(inst["symbol"], inst["timeframe"])
             if window is not None:
                 bars = self._slice(bars, window)
-            curve, m = self._run_one(spec, bars, inst["symbol"])
+            recipe = self._recipe(inst["symbol"], inst["timeframe"])
+            recipes.append(recipe)
+            curve, m = self._run_one(spec, bars, inst["symbol"], recipe)
             curves.append(curve)
             sleeves.append(m)
             all_bars.append(bars)
@@ -750,11 +827,16 @@ class NautilusBacktestAdapter:
         # fold table would describe sub-slices of a slice, and it would cost
         # `folds` extra engine runs per candidate per fold.
         wf = compiled.walkforward
-        folds = [] if window is not None else self._folds(
-            spec,
-            all_bars,
-            int(wf.get("folds", 6)),
-            embargo_bars=int(wf.get("embargo_bars", 0) or 0),
+        folds = (
+            []
+            if window is not None
+            else self._folds(
+                spec,
+                all_bars,
+                int(wf.get("folds", 6)),
+                embargo_bars=int(wf.get("embargo_bars", 0) or 0),
+                recipes=recipes,
+            )
         )
 
         return BacktestMetrics(

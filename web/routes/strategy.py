@@ -203,6 +203,7 @@ def _preview_signals(code: str, meta: dict, role_hint: str) -> dict:
             _ALLOWED_BUILTINS,
             compile_with_loop_budget,
             has_builtin,
+            safe_module_proxy,
             validate_generated_code,
         )
         from data import BYBIT_CACHE_DIR
@@ -226,9 +227,13 @@ def _preview_signals(code: str, meta: dict, role_hint: str) -> dict:
                 for k in _ALLOWED_BUILTINS
                 if has_builtin(k)
             },
-            "math": _math,
-            "statistics": _stats,
-            "ind": _ind_mod,
+            # Read-only proxies (see codegate.safe_module_proxy): this preview
+            # exec's inside the web-server process, so handing out the live
+            # modules would let one generated block rewrite `ind.calc_rsi` for
+            # every strategy that runs afterwards.
+            "math": safe_module_proxy(_math, "math"),
+            "statistics": safe_module_proxy(_stats, "statistics"),
+            "ind": safe_module_proxy(_ind_mod, "ind"),
         }
         ns: dict = {}
         exec(compile_with_loop_budget(code, "<preview>"), _ALLOWED, ns)

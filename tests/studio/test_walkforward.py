@@ -158,7 +158,7 @@ def test_two_windows_of_one_config_do_not_return_the_same_metrics():
 def test_nautilus_adapter_slices_bars_and_applies_the_embargo(monkeypatch):
     import pandas as pd
 
-    import backtest as engine
+    import sandbox
     from strategy_studio.backtest import NautilusBacktestAdapter
 
     n = 1000
@@ -176,11 +176,11 @@ def test_nautilus_adapter_slices_bars_and_applies_the_embargo(monkeypatch):
         metrics = {"n_trades": 8, "win_rate": 0.5, "n_wins": 4, "n_losses": 4,
                    "avg_win": 20.0, "avg_loss": -10.0}
 
-    def _fake(spec, b, **kw):
+    def _fake(spec, b, recipe=None, **kw):
         lengths.append(len(b))
         return _Res()
 
-    monkeypatch.setattr(engine, "run_composed_backtest", _fake)
+    monkeypatch.setattr(sandbox, "run_backtest_guarded", _fake)
     adapter = NautilusBacktestAdapter(bars_loader=lambda s, tf: bars)
     m = adapter.run(
         compile_strategy(_defn()), window=Window(0.5, 0.75, embargo_bars=50)

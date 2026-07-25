@@ -7,8 +7,10 @@ Wiki References
 ---------------
 Bkz: [[strategy_studio]], [[strategy_and_actor]]
 """
+
 from __future__ import annotations
 
+import math
 import uuid
 from datetime import UTC, datetime
 from typing import Literal
@@ -16,8 +18,16 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 Operator = Literal[
-    "crosses_above", "crosses_below", "gt", "lt", "gte", "lte",
-    "price_above", "price_below", "within_session", "true",
+    "crosses_above",
+    "crosses_below",
+    "gt",
+    "lt",
+    "gte",
+    "lte",
+    "price_above",
+    "price_below",
+    "within_session",
+    "true",
 ]
 
 
@@ -40,7 +50,15 @@ class OptimizeRange(BaseModel):
 
     @property
     def n_values(self) -> int:
-        return round((self.max - self.min) / self.step) + 1
+        """How many grid points fit in [min, max] — never one past `max`.
+
+        `round` used to be applied here, so min=10 step=6 max=20 yielded three
+        values and the last one was 22: the sweep tried a value the user never
+        allowed and the UI never showed. Floor, with a small epsilon so that a
+        clean division (10→20 by 2.5) is not cut short by binary float error.
+        """
+        span = self.max - self.min
+        return int(math.floor(span / self.step + 1e-9)) + 1
 
 
 class Param(BaseModel):
@@ -66,6 +84,7 @@ class RuleGroup(BaseModel):
 class SubStrategy(BaseModel):
     """Inline strategy for the regime ELSE branch (e.g. mean-revert in chop).
     Shares the main strategy's risk block and instruments."""
+
     name: str = "Else branch"
     entry: RuleGroup = Field(default_factory=RuleGroup)
     exit: RuleGroup = Field(default_factory=RuleGroup)
@@ -112,6 +131,7 @@ class AllocationBlock(BaseModel):
     behavior (trade every active instrument independently); 'ranked' sorts
     the active universe by an indicator and trades the top N with the
     chosen weighting."""
+
     mode: Literal["single", "ranked"] = "single"
     sort_indicator: str = "relative_volume"
     sort_direction: Literal["desc", "asc"] = "desc"

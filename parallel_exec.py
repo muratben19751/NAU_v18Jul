@@ -376,6 +376,14 @@ class BacktestPool:
             for _proc in (getattr(old_pool, "_processes", None) or {}).values():
                 try:
                     _proc.terminate()
+                    # terminate() only signals; without a join the exited child
+                    # stays a zombie (and its handle leaks on Windows). A short
+                    # bounded wait, then SIGKILL and reap — a rebuilt pool per
+                    # timeout would otherwise accumulate one leak per worker.
+                    _proc.join(timeout=5)
+                    if _proc.is_alive():
+                        _proc.kill()
+                        _proc.join(timeout=5)
                 except Exception:
                     pass
             self._pool = type(self._pool)(

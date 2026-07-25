@@ -129,7 +129,7 @@ def test_folds_cover_every_instrument_not_just_the_first(monkeypatch):
     """The headline blends all sleeves, so the fold rows must too."""
     import pandas as pd
 
-    import backtest as engine
+    import sandbox
     from strategy_studio.backtest import NautilusBacktestAdapter
 
     seen = []
@@ -140,11 +140,11 @@ def test_folds_cover_every_instrument_not_just_the_first(monkeypatch):
         metrics = {"n_trades": 2, "win_rate": 0.5, "n_wins": 1, "n_losses": 1,
                    "avg_win": 10.0, "avg_loss": -5.0}
 
-    def _fake(spec, bars, **kw):
+    def _fake(spec, bars, recipe=None, **kw):
         seen.append(kw.get("rationale", ""))
         return _R()
 
-    monkeypatch.setattr(engine, "run_composed_backtest", _fake)
+    monkeypatch.setattr(sandbox, "run_backtest_guarded", _fake)
 
     defn = build_engine_fixture()
     defn.instruments.append(
@@ -165,7 +165,7 @@ def test_folds_cover_every_instrument_not_just_the_first(monkeypatch):
 def test_embargo_drops_the_leading_bars_of_each_fold(monkeypatch):
     import pandas as pd
 
-    import backtest as engine
+    import sandbox
     from strategy_studio.backtest import NautilusBacktestAdapter
 
     sizes = []
@@ -175,12 +175,12 @@ def test_embargo_drops_the_leading_bars_of_each_fold(monkeypatch):
         equity_curve = [10_000, 10_100]
         metrics: dict = {}
 
-    def _fake(spec, bars, **kw):
+    def _fake(spec, bars, recipe=None, **kw):
         if kw.get("rationale", "").startswith("studio:fold"):
             sizes.append(len(bars))
         return _R()
 
-    monkeypatch.setattr(engine, "run_composed_backtest", _fake)
+    monkeypatch.setattr(sandbox, "run_backtest_guarded", _fake)
 
     defn = build_engine_fixture()
     defn.walkforward.folds = 3
@@ -204,7 +204,7 @@ def test_stored_equity_curve_is_downsampled_for_the_sparkline(monkeypatch):
     """A 4319-point curve was ~39 KB of JSON per run to fill a 260px path."""
     import pandas as pd
 
-    import backtest as engine
+    import sandbox
     from strategy_studio.backtest import NautilusBacktestAdapter
 
     long_curve = [10_000 + i for i in range(4000)]
@@ -214,8 +214,8 @@ def test_stored_equity_curve_is_downsampled_for_the_sparkline(monkeypatch):
         equity_curve = [10_000, 10_100]
         metrics = {"equity_curve_mtm": [(str(i), v) for i, v in enumerate(long_curve)]}
 
-    monkeypatch.setattr(engine, "run_composed_backtest",
-                        lambda spec, bars, **kw: _R())
+    monkeypatch.setattr(sandbox, "run_backtest_guarded",
+                        lambda spec, bars, recipe=None, **kw: _R())
     bars = pd.DataFrame(
         {"open": [1.0] * 50, "high": [1.0] * 50, "low": [1.0] * 50,
          "close": [1.0] * 50, "volume": [1.0] * 50},

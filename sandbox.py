@@ -619,6 +619,12 @@ def run_backtest_guarded(
             bar_type=bar_type,
             venue=instrument.id.venue,
             progress_fn=progress_fn,
+            # Same two recipe keys the child path reads. Dropping them here made
+            # the two "equivalent" paths silently disagree: the fast path ran on
+            # the default capital and commission while the UI displayed the
+            # values the caller asked for.
+            initial_capital=recipe.get("initial_capital"),
+            commission_bps_override=recipe.get("commission_bps_override"),
         )
 
     # ── Sandbox path: custom code → one killable child for the whole run ─────

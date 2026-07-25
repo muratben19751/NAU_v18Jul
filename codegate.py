@@ -7,7 +7,22 @@ validate through here, so stored ``.py`` files are re-checked before they are
 ever ``exec``'d — closing the hole where a hand-edited or corrupted block would
 run unvalidated at server startup.
 
+Two layers, because this code is exec'd INSIDE the web-server process on the
+preview/smoke path (that path never crosses ``sandbox``'s subprocess boundary):
+the AST walk decides what may be written as well as read, and
+``safe_module_proxy`` hands out read-only views of the injected modules instead
+of the live ones. Both draw their allowed names from ``_ALLOWED_ATTRS`` so the
+static check and the runtime view cannot drift apart.
+
 Only ``ast`` and ``builtins`` are imported; keep it that way.
+
+Wiki References
+---------------
+Bkz: [[nau_guvenlik_dayaniklilik_duzeltmeleri]], [[strategy_and_actor]]
+
+The AST allowlist is the only thing standing between generated code and the
+server process; the write-context rule is why an allowlisted attribute name is
+still not an allowlisted assignment target.
 """
 
 from __future__ import annotations
@@ -216,6 +231,50 @@ class GeneratedCodeError(ValueError):
     """Raised when generated/stored code fails AST/security checks."""
 
 
+class _ReadOnlyModuleProxy:
+    """Shallow, read-only stand-in for a module injected into block namespaces.
+
+    Blocks are exec'd inside the web-server process, so injecting the live
+    ``math``/``statistics``/``indicators`` module objects means one write reaches
+    every other caller in the process. This proxy exposes only the whitelisted
+    attribute names and refuses writes, so the AST ban on attribute stores is
+    backed by a runtime boundary rather than being the only line of defence.
+    """
+
+    def __init__(self, name: str, attrs: dict):
+        object.__setattr__(self, "_name", name)
+        object.__setattr__(self, "_attrs", attrs)
+
+    def __getattr__(self, item: str):
+        attrs = object.__getattribute__(self, "_attrs")
+        if item in attrs:
+            return attrs[item]
+        name = object.__getattribute__(self, "_name")
+        raise AttributeError(f"module {name!r} has no attribute {item!r}")
+
+    def __setattr__(self, item: str, value) -> None:
+        name = object.__getattribute__(self, "_name")
+        raise AttributeError(f"module {name!r} is read-only (cannot set {item!r})")
+
+    def __delattr__(self, item: str) -> None:
+        name = object.__getattribute__(self, "_name")
+        raise AttributeError(f"module {name!r} is read-only (cannot delete {item!r})")
+
+    def __repr__(self) -> str:
+        return f"<read-only module {object.__getattribute__(self, '_name')!r}>"
+
+
+def safe_module_proxy(module, name: str = "") -> _ReadOnlyModuleProxy:
+    """Wrap `module` so blocks can read whitelisted attributes but not write any.
+
+    Only names in ``_ALLOWED_ATTRS`` are forwarded — the same set the AST walk
+    permits — so the runtime view and the static check cannot drift apart.
+    """
+    label = name or getattr(module, "__name__", "module")
+    attrs = {a: getattr(module, a) for a in _ALLOWED_ATTRS if hasattr(module, a)}
+    return _ReadOnlyModuleProxy(label, attrs)
+
+
 def has_builtin(name: str) -> bool:
     import builtins
 
@@ -305,6 +364,17 @@ def validate_generated_code(src: str) -> ast.Module:
                 raise GeneratedCodeError(f"disallowed attribute access: .{node.attr}")
             if node.attr not in _ALLOWED_ATTRS:
                 raise GeneratedCodeError(f"attribute not in whitelist: .{node.attr}")
+            # The whitelist above only constrains WHICH attribute is touched, not
+            # whether it is read or written. `ind`/`math`/`statistics` are injected
+            # into the exec namespace, so `ind.calc_rsi = <lambda>` or `math.pi = 0`
+            # would monkey-patch modules shared by the whole server process — every
+            # later strategy/backtest in that process would run the poisoned version.
+            # Generated blocks are pure functions over their arguments; none of the
+            # 233 stored blocks assigns to an attribute. Reads only.
+            if not isinstance(node.ctx, ast.Load):
+                raise GeneratedCodeError(
+                    f"attribute assignment/deletion not allowed: .{node.attr}"
+                )
         if isinstance(node, ast.Call):
             # Reject callables that aren't in the builtin/module/local-function whitelist.
             fn = node.func
@@ -442,7 +512,7 @@ def compile_with_loop_budget(src: str, filename: str = "<custom-block>"):
     preview environment use the same function (generation/runtime parity)."""
     tree = ast.parse(src, mode="exec")
     tree = _LoopBudgetInjector().visit(tree)
-        # Budget preamble added at the start of the module (counter + tick helper).
+    # Budget preamble added at the start of the module (counter + tick helper).
     preamble = ast.parse(_BUDGET_PREAMBLE).body
     tree.body = preamble + tree.body
     ast.fix_missing_locations(tree)

@@ -379,11 +379,15 @@ class _ORResponse:
         self, text: str, prompt_tokens: int = 0, completion_tokens: int = 0
     ) -> None:
         self.content = [_ORTextBlock(text)]
-        self.usage = _ORUsage(prompt_tokens=prompt_tokens, completion_tokens=completion_tokens)
+        self.usage = _ORUsage(
+            prompt_tokens=prompt_tokens, completion_tokens=completion_tokens
+        )
 
 
 class _OpenRouterMessages:
-    def __init__(self, client: Any, extra_headers: dict[str, str] | None = None) -> None:
+    def __init__(
+        self, client: Any, extra_headers: dict[str, str] | None = None
+    ) -> None:
         self._client = client
         self._extra_headers = extra_headers or {}
 
@@ -428,7 +432,9 @@ class _OpenRouterMessages:
 
 
 class _OpenRouterClient:
-    def __init__(self, client: Any, extra_headers: dict[str, str] | None = None) -> None:
+    def __init__(
+        self, client: Any, extra_headers: dict[str, str] | None = None
+    ) -> None:
         self.messages = _OpenRouterMessages(client, extra_headers=extra_headers)
 
 
@@ -1052,16 +1058,19 @@ def _test_execute_generated(
     import statistics as _stats
 
     import indicators as _ind_mod
-    from codegate import compile_with_loop_budget
+    from codegate import compile_with_loop_budget, safe_module_proxy
 
     safe_globals = {
         # Single source of truth shared with composer._load_module_from_path so
         # smoke and runtime resolve the SAME restricted builtins (incl. the
         # RuntimeError the injected loop-budget guard raises).
         "__builtins__": _safe_builtins(),
-        "math": _math,
-        "statistics": _stats,
-        "ind": _ind_mod,
+        # Read-only proxies, not the live modules: this exec runs inside the web
+        # server process, so a write through an injected module would poison every
+        # later strategy in the process.
+        "math": safe_module_proxy(_math, "math"),
+        "statistics": safe_module_proxy(_stats, "statistics"),
+        "ind": safe_module_proxy(_ind_mod, "ind"),
     }
     ns: dict = {}
     try:

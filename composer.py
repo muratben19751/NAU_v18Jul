@@ -845,7 +845,9 @@ def _eval_donchian_channel(strategy, idx, block, closes):
     highs, lows = strategy._highs, strategy._lows
     if len(highs) < period + 1 or len(lows) < period + 1 or not closes:
         return None
-    upper = max(highs[-period - 1 : -1])  # previous N candles EXCLUDING the current candle
+    upper = max(
+        highs[-period - 1 : -1]
+    )  # previous N candles EXCLUDING the current candle
     lower = min(lows[-period - 1 : -1])
     last = closes[-1]
     if block.role == "exit":
@@ -1095,6 +1097,7 @@ def _load_module_from_path(name: str, path: Path):
         GeneratedCodeError,
         compile_with_loop_budget,
         safe_builtins,
+        safe_module_proxy,
         validate_generated_code,
     )
 
@@ -1114,9 +1117,11 @@ def _load_module_from_path(name: str, path: Path):
     # math/statistics while the loader did not; blocks using math.* silently no-op'd
     # every candle with a NameError (validated live). `ind` = the NAU parity
     # library (indicators.py, M27/M33).
-    module.__dict__["math"] = _math
-    module.__dict__["statistics"] = _statistics
-    module.__dict__["ind"] = _ind_mod
+    # Injected as read-only proxies (codegate.safe_module_proxy) so a block
+    # cannot rebind `ind.calc_rsi` / `math.pi` for the rest of the process.
+    module.__dict__["math"] = safe_module_proxy(_math, "math")
+    module.__dict__["statistics"] = safe_module_proxy(_statistics, "statistics")
+    module.__dict__["ind"] = safe_module_proxy(_ind_mod, "ind")
     # Restrict builtins to the same whitelist the smoke test uses (parity is
     # asserted by this module's own docstring). Setting `__builtins__` here stops
     # CPython from injecting the FULL builtins on exec, so even a codegate miss
@@ -1473,6 +1478,8 @@ def build_spec(
 
 
 CATALOG_FILE = Path.home() / ".cache" / "nautilus_web_app" / "strategy_catalog.json"
+
+
 def _catalog_block_names(spec: ComposedStrategySpec) -> list[str]:
     return [b.type for b in spec.blocks]
 
@@ -1538,10 +1545,17 @@ def load_catalog() -> list[ComposedStrategySpec]:
         return []
     import custom_block_store as cbs
 
+    # H(store): if the registry cannot be READ, we do not know which custom blocks
+    # exist. Falling back to an empty set made every custom-block strategy look
+    # invalid, and the auto-save below then wrote that pruned catalog to disk —
+    # permanent strategy loss from one transient file lock. `None` = unknown:
+    # keep every spec and skip the rewrite.
+    custom_names: set[str] | None
     try:
         custom_names = {rec["name"] for rec in cbs.list_custom()}
-    except Exception:
-        custom_names = set()
+    except Exception as e:
+        print(f"[composer] custom block registry unreadable ({e}) — catalog untouched")
+        custom_names = None
 
     # M1342: per-record try/except — a SINGLE broken record (unknown field,
     # exception-raising custom validate) could turn the whole catalog into [], then
@@ -1553,6 +1567,8 @@ def load_catalog() -> list[ComposedStrategySpec]:
             catalog.append(ComposedStrategySpec.from_dict(d))
         except Exception:
             n_broken += 1
+    if custom_names is None:
+        return catalog  # registry unreadable → no pruning, no rewrite
     filtered = []
     for spec in catalog:
         try:

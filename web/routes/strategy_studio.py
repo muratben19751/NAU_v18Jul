@@ -2,7 +2,8 @@
 
 Wiki References
 ---------------
-See: [[strategy_studio]], [[strategy_and_actor]], [[backtesting_guide]], [[portfolio]]
+See: [[strategy_studio]], [[strategy_and_actor]], [[backtesting_guide]], [[portfolio]],
+[[nau_guvenlik_dayaniklilik_duzeltmeleri]]
 
 Mounted on the main app in ``server.py``. Owns ``/studio/{strategy_id}`` and
 its HTMX action endpoints; the plain ``/studio`` entry point belongs to the
@@ -11,6 +12,7 @@ Composer+Backtest page in ``web/routes/studio.py``.
 Templates live in ``web/templates/studio/``, static assets in
 ``web/static/studio.{css,js}`` — both served by the host app's existing mounts.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -73,7 +75,7 @@ from strategy_studio.optimizer import (
 from strategy_studio.registry import INDICATOR_REGISTRY, library_by_category
 from strategy_studio.runner import PaperRunner, RunnerError, reconcile_orphans
 from strategy_studio.schema import StrategyDefinition
-from strategy_studio.store import StrategyStore
+from strategy_studio.store import StrategyStore, definition_hash
 
 router = APIRouter()
 
@@ -86,15 +88,18 @@ def _tpl():
 
     return templates
 
+
 def _adapter_for(env_var: str):
     """Stub unless `env_var` selects the real engine.
 
     The stub is the default everywhere so the studio stays usable — and the
     suite stays offline — without market data. Both satisfy BacktestAdapter.
     """
-    return (NautilusBacktestAdapter()
-            if os.environ.get(env_var, "").lower() == "nautilus"
-            else StubBacktestAdapter())
+    return (
+        NautilusBacktestAdapter()
+        if os.environ.get(env_var, "").lower() == "nautilus"
+        else StubBacktestAdapter()
+    )
 
 
 # One run per click — STUDIO_BACKTEST=nautilus is safe to flip on its own.
@@ -124,17 +129,23 @@ def _runner_status(deploy_id: str, status: str, error: str | None) -> None:
 # live Bybit market-data connection, so it is opt-in and the suite stays
 # offline. STUDIO_RUNNER=paper starts sandbox TradingNodes (simulated fills, no
 # credentials); anything else keeps the simulated pickup.
-RUNNER = (PaperRunner(on_status=_runner_status)
-          if os.environ.get("STUDIO_RUNNER", "").lower() == "paper"
-          else None)
+RUNNER = (
+    PaperRunner(on_status=_runner_status)
+    if os.environ.get("STUDIO_RUNNER", "").lower() == "paper"
+    else None
+)
 # INTEGRATION POINT: swap for the LLM client of your existing loop (ai.py)
 LLM = HttpAnthropicClient()
 
 _BLOCK_TEMPLATE = {
-    "entry": ("studio/_rule_group.html",
-              {"block_kind": "entry", "title": "Long conditions"}),
-    "exit": ("studio/_rule_group.html",
-             {"block_kind": "exit", "title": "Exit conditions"}),
+    "entry": (
+        "studio/_rule_group.html",
+        {"block_kind": "entry", "title": "Long conditions"},
+    ),
+    "exit": (
+        "studio/_rule_group.html",
+        {"block_kind": "exit", "title": "Exit conditions"},
+    ),
     "regime": ("studio/_regime_block.html", {}),
     "sub_entry": ("studio/_regime_block.html", {}),
     "sub_exit": ("studio/_regime_block.html", {}),
@@ -144,8 +155,7 @@ _BLOCK_TEMPLATE = {
 
 
 def _ctx(request: Request, defn: StrategyDefinition, **extra) -> dict:
-    return {"request": request, "defn": defn,
-            "registry": INDICATOR_REGISTRY, **extra}
+    return {"request": request, "defn": defn, "registry": INDICATOR_REGISTRY, **extra}
 
 
 def _side_ctx(request: Request, defn: StrategyDefinition, **extra) -> dict:
@@ -160,24 +170,38 @@ def _side_ctx(request: Request, defn: StrategyDefinition, **extra) -> dict:
             it["sugg"] = Suggestion.model_validate_json(row["suggestion"])
         except Exception:  # noqa: BLE001 — failed suggestions store raw notes
             it["sugg"] = None
-        it["trial"] = (BacktestMetrics.from_json(row["trial_metrics"])
-                       if row["trial_metrics"] else None)
-        it["base"] = (BacktestMetrics.from_json(row["baseline"])
-                      if row["baseline"] else None)
+        it["trial"] = (
+            BacktestMetrics.from_json(row["trial_metrics"])
+            if row["trial_metrics"]
+            else None
+        )
+        it["base"] = (
+            BacktestMetrics.from_json(row["baseline"]) if row["baseline"] else None
+        )
         iters.append(it)
-    return _ctx(request, defn, opt_run=opt_run, opt_results=opt_results,
-                max_runs=OPTIMIZER_MAX_RUNS,
-                ai_loop=store.latest_loop(defn.id), ai_iters=iters, **extra)
+    return _ctx(
+        request,
+        defn,
+        opt_run=opt_run,
+        opt_results=opt_results,
+        max_runs=OPTIMIZER_MAX_RUNS,
+        ai_loop=store.latest_loop(defn.id),
+        ai_iters=iters,
+        **extra,
+    )
 
 
-def _render_side(request: Request, defn: StrategyDefinition,
-                 oob: bool = False) -> str:
-    return _tpl().get_template("studio/_side_panel.html").render(
-        _side_ctx(request, defn, oob=oob))
+def _render_side(request: Request, defn: StrategyDefinition, oob: bool = False) -> str:
+    return (
+        _tpl()
+        .get_template("studio/_side_panel.html")
+        .render(_side_ctx(request, defn, oob=oob))
+    )
 
 
-def _render_block(request: Request, defn: StrategyDefinition, block: str,
-                  oob_side: bool = True) -> HTMLResponse:
+def _render_block(
+    request: Request, defn: StrategyDefinition, block: str, oob_side: bool = True
+) -> HTMLResponse:
     """Re-render one block; append the side panel out-of-band so sweep
     size / param cards stay in sync after any mutation."""
     html = _block_html(request, defn, block)
@@ -186,10 +210,11 @@ def _render_block(request: Request, defn: StrategyDefinition, block: str,
     return HTMLResponse(html)
 
 
-def _block_html(request: Request, defn: StrategyDefinition, block: str,
-                oob: bool = False) -> str:
+def _block_html(
+    request: Request, defn: StrategyDefinition, block: str, oob: bool = False
+) -> str:
     if block in ("sub_entry", "sub_exit"):
-        block = "regime"                     # sub rules live inside the card
+        block = "regime"  # sub rules live inside the card
     tpl, extra = _BLOCK_TEMPLATE[block]
     ctx = _ctx(request, defn, **extra)
     if block == "regime":
@@ -203,8 +228,9 @@ def _block_html(request: Request, defn: StrategyDefinition, block: str,
     ctx["ghosts"] = _ghost_ctx(defn, block)
     html = _tpl().get_template(tpl).render(ctx)
     if oob:
-        html = html.replace(f'id="block-{block}"',
-                            f'id="block-{block}" hx-swap-oob="true"', 1)
+        html = html.replace(
+            f'id="block-{block}"', f'id="block-{block}" hx-swap-oob="true"', 1
+        )
     return html
 
 
@@ -213,10 +239,14 @@ def _ghost_of(row: dict) -> dict:
         "id": row["id"],
         "source": row["source"],
         "s": Suggestion.model_validate_json(row["suggestion"]),
-        "trial": (BacktestMetrics.from_json(row["trial_metrics"])
-                  if row["trial_metrics"] else None),
-        "base": (BacktestMetrics.from_json(row["baseline"])
-                 if row["baseline"] else None),
+        "trial": (
+            BacktestMetrics.from_json(row["trial_metrics"])
+            if row["trial_metrics"]
+            else None
+        ),
+        "base": (
+            BacktestMetrics.from_json(row["baseline"]) if row["baseline"] else None
+        ),
     }
 
 
@@ -253,9 +283,9 @@ def _load_working(strategy_id: str) -> StrategyDefinition:
 
 # ── pages ────────────────────────────────────────────────────────
 
+
 @router.get("/studio/{strategy_id}", response_class=HTMLResponse)
-def studio_page(request: Request, strategy_id: str,
-                version: int | None = None):
+def studio_page(request: Request, strategy_id: str, version: int | None = None):
     try:
         if version is not None:
             defn, is_draft = store.load(strategy_id, version), False
@@ -268,10 +298,20 @@ def studio_page(request: Request, strategy_id: str,
     if run and run["status"] == "done" and run["metrics"]:
         metrics = BacktestMetrics.from_json(run["metrics"])
         spark = _spark_path(metrics.equity_curve)
-    return _tpl().TemplateResponse(request, "studio/page.html", _side_ctx(
-        request, defn, library=library_by_category(), is_draft=is_draft,
-        initial_run=run, initial_metrics=metrics, initial_spark=spark,
-        ghosts_by_block=_ghosts_by_block(defn)))
+    return _tpl().TemplateResponse(
+        request,
+        "studio/page.html",
+        _side_ctx(
+            request,
+            defn,
+            library=library_by_category(),
+            is_draft=is_draft,
+            initial_run=run,
+            initial_metrics=metrics,
+            initial_spark=spark,
+            ghosts_by_block=_ghosts_by_block(defn),
+        ),
+    )
 
 
 @router.get("/studio/{strategy_id}/history")
@@ -286,10 +326,15 @@ def healthz():
 
 # ── mutations (Phase 2) ──────────────────────────────────────────
 
+
 @router.post("/studio/{strategy_id}/blocks/{block}/rules")
-def route_add_rule(request: Request, strategy_id: str, block: str,
-                   indicator: str = Form(...),
-                   as_filter: bool = Form(False)):
+def route_add_rule(
+    request: Request,
+    strategy_id: str,
+    block: str,
+    indicator: str = Form(...),
+    as_filter: bool = Form(False),
+):
     defn = _load_working(strategy_id)
     try:
         add_rule(defn, block, indicator, as_filter)
@@ -300,8 +345,13 @@ def route_add_rule(request: Request, strategy_id: str, block: str,
 
 
 @router.patch("/studio/{strategy_id}/rules/{rule_id}")
-def route_edit_rule(request: Request, strategy_id: str, rule_id: str,
-                    param: str = Form(...), value: str = Form(...)):
+def route_edit_rule(
+    request: Request,
+    strategy_id: str,
+    rule_id: str,
+    param: str = Form(...),
+    value: str = Form(...),
+):
     defn = _load_working(strategy_id)
     try:
         update_rule_param(defn, rule_id, param, value)
@@ -328,17 +378,21 @@ def route_delete_rule(request: Request, strategy_id: str, rule_id: str):
 
 
 @router.patch("/studio/{strategy_id}/blocks/{block}")
-def route_block_attr(request: Request, strategy_id: str, block: str,
-                     match: str | None = Form(None),
-                     evaluate: str | None = Form(None),
-                     else_mode: str | None = Form(None)):
+def route_block_attr(
+    request: Request,
+    strategy_id: str,
+    block: str,
+    match: str | None = Form(None),
+    evaluate: str | None = Form(None),
+    else_mode: str | None = Form(None),
+):
     defn = _load_working(strategy_id)
     try:
         if else_mode is not None:
             if block != "regime":
                 return PlainTextResponse(
-                    "else_mode only applies to the regime block",
-                    status_code=422)
+                    "else_mode only applies to the regime block", status_code=422
+                )
             set_regime_else(defn, else_mode)
         else:
             set_block_attr(defn, block, match=match, evaluate=evaluate)
@@ -349,8 +403,9 @@ def route_block_attr(request: Request, strategy_id: str, block: str,
 
 
 @router.patch("/studio/{strategy_id}/allocation")
-def route_allocation(request: Request, strategy_id: str,
-                     name: str = Form(...), value: str = Form(...)):
+def route_allocation(
+    request: Request, strategy_id: str, name: str = Form(...), value: str = Form(...)
+):
     defn = _load_working(strategy_id)
     try:
         update_allocation(defn, name, value)
@@ -361,8 +416,13 @@ def route_allocation(request: Request, strategy_id: str,
 
 
 @router.patch("/studio/{strategy_id}/risk")
-def route_risk(request: Request, strategy_id: str, value: str = Form(...),
-               name: str | None = Form(None), param: str | None = Form(None)):
+def route_risk(
+    request: Request,
+    strategy_id: str,
+    value: str = Form(...),
+    name: str | None = Form(None),
+    param: str | None = Form(None),
+):
     # The rule endpoints call this field `param`; risk historically called it
     # `name`. Accept both so one vocabulary works across the whole surface.
     field = name or param
@@ -385,8 +445,7 @@ def route_instrument(request: Request, strategy_id: str, symbol: str):
     except MutationError as e:
         return PlainTextResponse(str(e), status_code=422)
     store.save_draft(defn)
-    html = _tpl().get_template("studio/_instruments.html").render(
-        _ctx(request, defn))
+    html = _tpl().get_template("studio/_instruments.html").render(_ctx(request, defn))
     return HTMLResponse(html)
 
 
@@ -397,20 +456,26 @@ def route_save(request: Request, strategy_id: str):
     except KeyError:
         return PlainTextResponse("nothing to save", status_code=422)
     defn = store.load(strategy_id)
-    html = _tpl().get_template("studio/_strategy_name.html").render(
-        _ctx(request, defn, is_draft=False))
+    html = (
+        _tpl()
+        .get_template("studio/_strategy_name.html")
+        .render(_ctx(request, defn, is_draft=False))
+    )
     return HTMLResponse(html)
 
 
-def _render_footer(request: Request, defn: StrategyDefinition,
-                   run: dict | None) -> HTMLResponse:
+def _render_footer(
+    request: Request, defn: StrategyDefinition, run: dict | None
+) -> HTMLResponse:
     metrics = spark = None
     if run and run["status"] == "done" and run["metrics"]:
         metrics = BacktestMetrics.from_json(run["metrics"])
         spark = _spark_path(metrics.equity_curve)
-    return HTMLResponse(_tpl().get_template(
-        "studio/_footer_metrics.html").render(_ctx(
-            request, defn, run=run, metrics=metrics, spark=spark)))
+    return HTMLResponse(
+        _tpl()
+        .get_template("studio/_footer_metrics.html")
+        .render(_ctx(request, defn, run=run, metrics=metrics, spark=spark))
+    )
 
 
 def _spark_path(curve: list[float], w: int = 260, h: int = 36) -> str:
@@ -439,8 +504,9 @@ def _execute_run(run_id: str, defn: StrategyDefinition) -> None:
 
 
 @router.post("/studio/{strategy_id}/backtest")
-def route_backtest(request: Request, strategy_id: str,
-                   background_tasks: BackgroundTasks):
+def route_backtest(
+    request: Request, strategy_id: str, background_tasks: BackgroundTasks
+):
     try:
         defn, is_draft = store.working_copy(strategy_id)
     except KeyError:
@@ -454,7 +520,9 @@ def route_backtest(request: Request, strategy_id: str,
             resp.headers["X-Rule-Id"] = e.rule_id
         return resp
     run_id = uuid.uuid4().hex[:12]
-    store.create_run(run_id, strategy_id, defn.version, is_draft)
+    # The hash records WHICH definition this run measures, so the deploy gate
+    # can insist on a run of the definition being deployed (see _gate_baseline).
+    store.create_run(run_id, strategy_id, defn.version, is_draft, definition_hash(defn))
     background_tasks.add_task(_execute_run, run_id, defn)
     return _render_footer(request, defn, store.latest_run(strategy_id))
 
@@ -463,13 +531,13 @@ def route_backtest(request: Request, strategy_id: str,
 def route_run_folds(request: Request, strategy_id: str):
     run = store.latest_run(strategy_id)
     if not run or run["status"] != "done" or not run["metrics"]:
-        return HTMLResponse(
-            '<p class="opt-note">No completed run yet.</p>')
+        return HTMLResponse('<p class="opt-note">No completed run yet.</p>')
     metrics = BacktestMetrics.from_json(run["metrics"])
-    return HTMLResponse(_tpl().get_template(
-        "studio/_results_pane.html").render(
-            _ctx(request, _load_working(strategy_id),
-                 metrics=metrics, run=run)))
+    return HTMLResponse(
+        _tpl()
+        .get_template("studio/_results_pane.html")
+        .render(_ctx(request, _load_working(strategy_id), metrics=metrics, run=run))
+    )
 
 
 @router.get("/studio/{strategy_id}/runs/latest")
@@ -479,8 +547,9 @@ def route_latest_run(request: Request, strategy_id: str):
 
 
 @router.patch("/studio/{strategy_id}/opt/toggle")
-def route_opt_toggle(request: Request, strategy_id: str,
-                     owner: str = Form(...), param: str = Form(...)):
+def route_opt_toggle(
+    request: Request, strategy_id: str, owner: str = Form(...), param: str = Form(...)
+):
     defn = _load_working(strategy_id)
     try:
         toggle_optimize(defn, owner, param)
@@ -500,17 +569,22 @@ def route_opt_toggle(request: Request, strategy_id: str,
     else:
         ctx["group"] = defn.entry if block == "entry" else defn.exit
     blk = _tpl().get_template(tpl).render(ctx)
-    blk = blk.replace(f'id="block-{block}"',
-                      f'id="block-{block}" hx-swap-oob="true"', 1)
+    blk = blk.replace(
+        f'id="block-{block}"', f'id="block-{block}" hx-swap-oob="true"', 1
+    )
     return HTMLResponse(html + blk)
 
 
 @router.patch("/studio/{strategy_id}/opt/range")
-def route_opt_range(request: Request, strategy_id: str,
-                    owner: str = Form(...), param: str = Form(...),
-                    min_v: str = Form(..., alias="min"),
-                    step_v: str = Form(..., alias="step"),
-                    max_v: str = Form(..., alias="max")):
+def route_opt_range(
+    request: Request,
+    strategy_id: str,
+    owner: str = Form(...),
+    param: str = Form(...),
+    min_v: str = Form(..., alias="min"),
+    step_v: str = Form(..., alias="step"),
+    max_v: str = Form(..., alias="max"),
+):
     defn = _load_working(strategy_id)
     try:
         set_optimize_range(defn, owner, param, min_v, step_v, max_v)
@@ -531,8 +605,9 @@ def _execute_opt(run_id: str, defn: StrategyDefinition) -> None:
 
 
 @router.post("/studio/{strategy_id}/optimize")
-def route_optimize(request: Request, strategy_id: str,
-                   background_tasks: BackgroundTasks):
+def route_optimize(
+    request: Request, strategy_id: str, background_tasks: BackgroundTasks
+):
     try:
         defn, is_draft = store.working_copy(strategy_id)
     except KeyError:
@@ -540,13 +615,15 @@ def route_optimize(request: Request, strategy_id: str,
     sweep = defn.sweep_size()
     if sweep == 0:
         return PlainTextResponse(
-            "no parameters marked for optimization", status_code=422)
+            "no parameters marked for optimization", status_code=422
+        )
     total = sweep * defn.walkforward.folds
     if total > OPTIMIZER_MAX_RUNS:
         return PlainTextResponse(
             f"sweep of {total:,} runs exceeds the optimizer limit "
             f"({OPTIMIZER_MAX_RUNS:,}) — narrow some ranges",
-            status_code=422)
+            status_code=422,
+        )
     # A sweep on the real engine is a different order of cost: the optimizer
     # samples up to MAX_EVALS combinations, each costing one in-sample screen
     # plus (if it survives) walkforward.folds fold runs. The bound below is the
@@ -560,7 +637,8 @@ def route_optimize(request: Request, strategy_id: str,
                 f"{ENGINE_SWEEP_MAX_RUNS:,} limit for STUDIO_BACKTEST_OPT="
                 "nautilus — narrow the ranges, cut folds, or raise "
                 "STUDIO_OPT_MAX_ENGINE_RUNS",
-                status_code=422)
+                status_code=422,
+            )
     try:
         compile_strategy(defn)
     except CompileError as e:
@@ -596,13 +674,30 @@ def route_opt_apply(strategy_id: str, rank: int = Form(...)):
 
 
 def _baseline_metrics(strategy_id: str) -> BacktestMetrics | None:
-    """Last recorded run — the deploy gate's baseline.
+    """Last recorded run, whatever it measured.
 
-    Deliberately reads what the user actually ran, not a freshly measured
-    number: the gate must judge a real engine run they triggered themselves.
+    Used as an "has this strategy ever been backtested?" signal (AI guardrails).
+    The deploy gate must NOT use this — see `_gate_baseline`.
     """
     run = store.latest_run(strategy_id)
     if run and run["status"] == "done" and run["metrics"]:
+        return BacktestMetrics.from_json(run["metrics"])
+    return None
+
+
+def _gate_baseline(defn: StrategyDefinition) -> BacktestMetrics | None:
+    """The deploy gate's baseline: a completed run OF THIS EXACT DEFINITION.
+
+    Deploy compiles the SAVED version while the footer shows the newest run,
+    which may have measured an unsaved draft. Reading `latest_run` therefore let
+    a draft tuned to a passing number clear the gate for a saved version that
+    was never run — the artifact then came from a definition the gate never
+    judged. Matching on the content hash also keeps the normal
+    draft → backtest → save → deploy flow working, because promoting a draft
+    changes only version bookkeeping, which the hash excludes.
+    """
+    run = store.latest_run_for_hash(defn.id, definition_hash(defn))
+    if run and run["metrics"]:
         return BacktestMetrics.from_json(run["metrics"])
     return None
 
@@ -635,8 +730,10 @@ def _trial_baseline(defn: StrategyDefinition) -> BacktestMetrics | None:
     """
     if not _baseline_metrics(defn.id):
         return None
-    key = (type(TRIAL_ADAPTER).__name__,
-           hashlib.sha256(defn.model_dump_json().encode()).hexdigest())
+    key = (
+        type(TRIAL_ADAPTER).__name__,
+        hashlib.sha256(defn.model_dump_json().encode()).hexdigest(),
+    )
     hit = _TRIAL_BASELINE_CACHE.get(key)
     if hit is not None:
         _TRIAL_BASELINE_CACHE.move_to_end(key)
@@ -655,45 +752,70 @@ def _trial_baseline(defn: StrategyDefinition) -> BacktestMetrics | None:
     return metrics
 
 
-def _make_suggestion(defn: StrategyDefinition, ask: str,
-                     scope: str | None, source: str,
-                     min_trades: int = 0) -> tuple[str, str]:
+def _make_suggestion(
+    defn: StrategyDefinition,
+    ask: str,
+    scope: str | None,
+    source: str,
+    min_trades: int = 0,
+) -> tuple[str, str]:
     """suggest -> trial -> guardrails. Returns (suggestion_id, status)."""
     from strategy_studio.registry import INDICATOR_REGISTRY as REG
+
     # Same engine as the trial — see _trial_baseline.
     baseline = _trial_baseline(defn)
-    prompt = build_prompt(defn, baseline, ask, scope,
-                          store.rejected_rationales(defn.id),
-                          list(REG.keys()))
+    prompt = build_prompt(
+        defn, baseline, ask, scope, store.rejected_rationales(defn.id), list(REG.keys())
+    )
     sid = uuid.uuid4().hex[:12]
     try:
         sugg = parse_suggestion(LLM, prompt)
     except SuggestionFailure as e:
-        store.add_suggestion(sid, defn.id, scope or "entry",
-                             json.dumps({"rationale": str(e)}),
-                             "failed", note=str(e), source=source)
+        store.add_suggestion(
+            sid,
+            defn.id,
+            scope or "entry",
+            json.dumps({"rationale": str(e)}),
+            "failed",
+            note=str(e),
+            source=source,
+        )
         return sid, "failed"
     if scope and sugg.block != scope:
         sugg = sugg.model_copy(update={"block": scope})
     try:
         trial_metrics, _trial = evaluate_trial(
-            defn, sugg, TRIAL_ADAPTER, baseline, min_trades)
+            defn, sugg, TRIAL_ADAPTER, baseline, min_trades
+        )
     except GuardrailReject as e:
-        store.add_suggestion(sid, defn.id, sugg.block,
-                             sugg.model_dump_json(), "rejected",
-                             baseline=baseline.to_json() if baseline else None,
-                             note=str(e), source=source)
+        store.add_suggestion(
+            sid,
+            defn.id,
+            sugg.block,
+            sugg.model_dump_json(),
+            "rejected",
+            baseline=baseline.to_json() if baseline else None,
+            note=str(e),
+            source=source,
+        )
         return sid, "rejected"
-    store.add_suggestion(sid, defn.id, sugg.block, sugg.model_dump_json(),
-                         "review", trial_metrics=trial_metrics.to_json(),
-                         baseline=baseline.to_json() if baseline else None,
-                         source=source)
+    store.add_suggestion(
+        sid,
+        defn.id,
+        sugg.block,
+        sugg.model_dump_json(),
+        "review",
+        trial_metrics=trial_metrics.to_json(),
+        baseline=baseline.to_json() if baseline else None,
+        source=source,
+    )
     return sid, "review"
 
 
 @router.post("/studio/{strategy_id}/ai/suggest")
-def route_ai_suggest(request: Request, strategy_id: str,
-                     ask: str = Form(""), block: str = Form("")):
+def route_ai_suggest(
+    request: Request, strategy_id: str, ask: str = Form(""), block: str = Form("")
+):
     defn = _load_working(strategy_id)
     scope = block or None
     try:
@@ -704,17 +826,16 @@ def route_ai_suggest(request: Request, strategy_id: str,
         # response, not in a stack trace: HTMX would swap nothing on a 500 and
         # the user would see the button do nothing at all.
         return PlainTextResponse(
-            f"AI suggestion could not run: {type(e).__name__}: {e}",
-            status_code=422)
+            f"AI suggestion could not run: {type(e).__name__}: {e}", status_code=422
+        )
     if status == "failed":
         row = store.get_suggestion(sid)
-        return PlainTextResponse(row["note"] or "AI suggestion failed",
-                                 status_code=422)
+        return PlainTextResponse(row["note"] or "AI suggestion failed", status_code=422)
     if status == "rejected":
         row = store.get_suggestion(sid)
         return PlainTextResponse(
-            f"AI proposal auto-rejected by guardrails: {row['note']}",
-            status_code=422)
+            f"AI proposal auto-rejected by guardrails: {row['note']}", status_code=422
+        )
     target = store.get_suggestion(sid)["block"]
     return HTMLResponse(_block_html(request, defn, target, oob=True))
 
@@ -733,8 +854,9 @@ def route_ai_accept(request: Request, strategy_id: str, sid: str):
         return PlainTextResponse(str(e), status_code=422)
     store.set_suggestion_status(sid, "accepted")
     store.save_draft(defn)
-    return HTMLResponse(_block_html(request, defn, row["block"])
-                        + _render_side(request, defn, oob=True))
+    return HTMLResponse(
+        _block_html(request, defn, row["block"]) + _render_side(request, defn, oob=True)
+    )
 
 
 @router.post("/studio/{strategy_id}/ai/suggestions/{sid}/dismiss")
@@ -751,30 +873,52 @@ def _execute_loop(loop_id: str, strategy_id: str, cfg: dict) -> None:
     try:
         for n in range(1, cfg["max_iterations"] + 1):
             defn, _ = store.working_copy(strategy_id)
+            # What the suggestion is being made AGAINST. An LLM call plus an
+            # engine run takes tens of seconds, and writing `defn` back after
+            # that would silently revert anything the user changed meanwhile.
+            base_hash = definition_hash(defn)
             sid, status = _make_suggestion(
-                defn, cfg.get("ask", ""), None, "loop",
-                min_trades=cfg["min_trades"])
+                defn, cfg.get("ask", ""), None, "loop", min_trades=cfg["min_trades"]
+            )
             if status == "review" and cfg["apply_mode"] == "auto":
                 row = store.get_suggestion(sid)
                 trial = BacktestMetrics.from_json(row["trial_metrics"])
-                base = (BacktestMetrics.from_json(row["baseline"])
-                        if row["baseline"] else None)
+                base = (
+                    BacktestMetrics.from_json(row["baseline"])
+                    if row["baseline"]
+                    else None
+                )
                 sugg = Suggestion.model_validate_json(row["suggestion"])
                 if improved(defn, trial, base):
+                    current, _ = store.working_copy(strategy_id)
+                    if definition_hash(current) != base_hash:
+                        # The user edited the strategy while this iteration ran.
+                        # Saving now would overwrite their change with a stale
+                        # copy, so drop the suggestion and stop: the remaining
+                        # iterations would all be built on the same stale base.
+                        note = "strategy was edited while the suggestion ran"
+                        store.set_suggestion_status(sid, "rejected", note)
+                        store.add_iteration(loop_id, n, sid, "rejected")
+                        store.finish_loop(
+                            loop_id, "done", f"stopped at iteration {n}: {note}"
+                        )
+                        return
                     apply_suggestion(defn, sugg)
                     store.save_draft(defn)
-                    store.set_suggestion_status(sid, "accepted",
-                                                "auto-accepted (OOS improved)")
+                    store.set_suggestion_status(
+                        sid, "accepted", "auto-accepted (OOS improved)"
+                    )
                     status = "accepted"
                 else:
-                    store.set_suggestion_status(sid, "rejected",
-                                                "no OOS improvement")
+                    store.set_suggestion_status(sid, "rejected", "no OOS improvement")
                     status = "rejected"
             store.add_iteration(loop_id, n, sid, status)
             if status == "review":
-                store.finish_loop(loop_id, "done",
-                                  "paused for review at iteration "
-                                  f"{n}/{cfg['max_iterations']}")
+                store.finish_loop(
+                    loop_id,
+                    "done",
+                    f"paused for review at iteration {n}/{cfg['max_iterations']}",
+                )
                 return
         store.finish_loop(loop_id, "done", "max iterations reached")
     except Exception as e:  # noqa: BLE001
@@ -782,22 +926,27 @@ def _execute_loop(loop_id: str, strategy_id: str, cfg: dict) -> None:
 
 
 @router.post("/studio/{strategy_id}/ai/loop/start")
-def route_loop_start(request: Request, strategy_id: str,
-                     background_tasks: BackgroundTasks,
-                     max_iterations: int = Form(6),
-                     min_trades: int = Form(100),
-                     apply_mode: str = Form("review"),
-                     ask: str = Form("")):
+def route_loop_start(
+    request: Request,
+    strategy_id: str,
+    background_tasks: BackgroundTasks,
+    max_iterations: int = Form(6),
+    min_trades: int = Form(100),
+    apply_mode: str = Form("review"),
+    ask: str = Form(""),
+):
     _load_working(strategy_id)
     active = store.latest_loop(strategy_id)
     if active and active["status"] == "running":
         return PlainTextResponse("a loop is already running", status_code=422)
     if apply_mode not in ("review", "auto"):
-        return PlainTextResponse("apply_mode must be review|auto",
-                                 status_code=422)
-    cfg = {"max_iterations": max(1, min(50, max_iterations)),
-           "min_trades": max(0, min_trades),
-           "apply_mode": apply_mode, "ask": ask}
+        return PlainTextResponse("apply_mode must be review|auto", status_code=422)
+    cfg = {
+        "max_iterations": max(1, min(50, max_iterations)),
+        "min_trades": max(0, min_trades),
+        "apply_mode": apply_mode,
+        "ask": ask,
+    }
     loop_id = uuid.uuid4().hex[:12]
     store.create_loop(loop_id, strategy_id, json.dumps(cfg))
     background_tasks.add_task(_execute_loop, loop_id, strategy_id, cfg)
@@ -814,15 +963,17 @@ def route_ai_panel(request: Request, strategy_id: str):
 @router.get("/studio/{strategy_id}/deploy/modal")
 def route_deploy_modal(request: Request, strategy_id: str):
     try:
-        defn = store.load(strategy_id)   # latest SAVED version only
+        defn = store.load(strategy_id)  # latest SAVED version only
     except KeyError:
         raise HTTPException(404, f"strategy '{strategy_id}' not found")
-    metrics = _baseline_metrics(strategy_id)
+    # Show exactly what the gate will judge — the run that measured THIS saved
+    # definition — so the modal cannot promise a pass the deploy then refuses.
+    metrics = _gate_baseline(defn)
     objective_value = None
     if metrics:
-        objective_value = {"sharpe": metrics.sharpe,
-                           "max_dd": metrics.max_dd_pct}.get(
-            defn.walkforward.objective, metrics.dsr)
+        objective_value = {"sharpe": metrics.sharpe, "max_dd": metrics.max_dd_pct}.get(
+            defn.walkforward.objective, metrics.dsr
+        )
     # Same lowering the artifact does, run early so the modal can say why the
     # button is dead instead of letting the user submit into a 422.
     unrunnable: list[str] = []
@@ -832,38 +983,68 @@ def route_deploy_modal(request: Request, strategy_id: str):
         unrunnable = e.reasons
     except CompileError as e:
         unrunnable = [str(e)]
-    return HTMLResponse(_tpl().get_template(
-        "studio/_deploy_modal.html").render(_ctx(
-            request, defn, metrics=metrics,
-            objective_value=objective_value,
-            gate_default=DEFAULT_GATE_DSR, unrunnable=unrunnable,
-            has_draft=store.load_draft(strategy_id) is not None)))
+    return HTMLResponse(
+        _tpl()
+        .get_template("studio/_deploy_modal.html")
+        .render(
+            _ctx(
+                request,
+                defn,
+                metrics=metrics,
+                objective_value=objective_value,
+                gate_default=DEFAULT_GATE_DSR,
+                unrunnable=unrunnable,
+                has_draft=store.load_draft(strategy_id) is not None,
+            )
+        )
+    )
 
 
 @router.post("/studio/{strategy_id}/deploy")
-def route_deploy(request: Request, strategy_id: str,
-                 background_tasks: BackgroundTasks,
-                 environment: str = Form(...),
-                 instruments: str = Form("active"),
-                 capital: float = Form(10000.0),
-                 kill_switch: str = Form("3"),
-                 gate_enabled: bool = Form(False),
-                 gate_min: float = Form(DEFAULT_GATE_DSR),
-                 confirm_name: str = Form("")):
+def route_deploy(
+    request: Request,
+    strategy_id: str,
+    background_tasks: BackgroundTasks,
+    environment: str = Form(...),
+    instruments: str = Form("active"),
+    capital: float = Form(10000.0),
+    kill_switch: str = Form("3"),
+    gate_enabled: bool = Form(False),
+    gate_min: float = Form(DEFAULT_GATE_DSR),
+    confirm_name: str = Form(""),
+):
     try:
-        defn = store.load(strategy_id)   # deploy compiles the SAVED version
+        defn = store.load(strategy_id)  # deploy compiles the SAVED version
     except KeyError:
         raise HTTPException(404, f"strategy '{strategy_id}' not found")
     if environment == "live" and confirm_name.strip() != defn.name:
         return PlainTextResponse(
             "live deploy requires typing the exact strategy name to confirm",
-            status_code=422)
-    kill = None if kill_switch in ("", "off") else float(kill_switch)
-    cfg = DeployConfig(environment=environment, instruments=instruments,
-                       capital=capital, kill_switch_daily_pct=kill,
-                       gate_enabled=gate_enabled, gate_min_objective=gate_min)
+            status_code=422,
+        )
+    # Anything non-numeric here used to raise straight out of the handler as a
+    # 500, and HTMX drops a non-2xx body — the Deploy button just did nothing.
+    kill_raw = kill_switch.strip().replace(",", ".")
+    if kill_raw.lower() in ("", "off", "none", "disabled"):
+        kill = None
+    else:
+        try:
+            kill = float(kill_raw)
+        except ValueError:
+            return PlainTextResponse(
+                f"kill switch must be a number or 'off' (got {kill_switch!r})",
+                status_code=422,
+            )
+    cfg = DeployConfig(
+        environment=environment,
+        instruments=instruments,
+        capital=capital,
+        kill_switch_daily_pct=kill,
+        gate_enabled=gate_enabled,
+        gate_min_objective=gate_min,
+    )
     try:
-        artifact = prepare_deployment(defn, _baseline_metrics(strategy_id), cfg)
+        artifact = prepare_deployment(defn, _gate_baseline(defn), cfg)
     except UnsupportedStrategy as e:
         # The artifact is what a runner executes, so a strategy that cannot be
         # lowered has nothing to deploy. Refusing here keeps the failure
@@ -871,17 +1052,19 @@ def route_deploy(request: Request, strategy_id: str,
         # the runner, detached from the cause.
         return PlainTextResponse(
             "cannot deploy — no runner can execute this strategy:\n"
-            + "\n".join(f"· {r}" for r in e.reasons), status_code=422)
+            + "\n".join(f"· {r}" for r in e.reasons),
+            status_code=422,
+        )
     except (DeployBlocked, CompileError) as e:
         return PlainTextResponse(str(e), status_code=422)
     deploy_id = uuid.uuid4().hex[:12]
-    store.create_deployment(deploy_id, strategy_id, defn.version,
-                            environment, artifact)
+    store.create_deployment(deploy_id, strategy_id, defn.version, environment, artifact)
     background_tasks.add_task(_runner_pickup, deploy_id, artifact)
     return HTMLResponse(
         f'<div class="deploy-ok">Deployment <b>{deploy_id[:6]}</b> created '
-        f'({environment}, v{defn.version}) — pending runner pickup.</div>'
-        + _render_deployments(request, defn, oob=True))
+        f"({environment}, v{defn.version}) — pending runner pickup.</div>"
+        + _render_deployments(request, defn, oob=True)
+    )
 
 
 _DEPLOY_TRANSITIONS = {
@@ -925,14 +1108,19 @@ except Exception:  # noqa: BLE001 — a stale row must not stop the app booting
     pass
 
 
-def _render_deployments(request: Request, defn: StrategyDefinition,
-                        oob: bool = False) -> str:
+def _render_deployments(
+    request: Request, defn: StrategyDefinition, oob: bool = False
+) -> str:
     deployments = store.list_deployments(defn.id)
-    html = _tpl().get_template("studio/_deployments.html").render(
-        _ctx(request, defn, deployments=deployments))
+    html = (
+        _tpl()
+        .get_template("studio/_deployments.html")
+        .render(_ctx(request, defn, deployments=deployments))
+    )
     if oob:
-        html = html.replace('id="deployments-panel"',
-                            'id="deployments-panel" hx-swap-oob="true"', 1)
+        html = html.replace(
+            'id="deployments-panel"', 'id="deployments-panel" hx-swap-oob="true"', 1
+        )
     return html
 
 
@@ -943,8 +1131,9 @@ def route_deployments_panel(request: Request, strategy_id: str):
 
 
 @router.post("/studio/{strategy_id}/deployments/{deploy_id}/{action}")
-def route_deployment_action(request: Request, strategy_id: str,
-                            deploy_id: str, action: str):
+def route_deployment_action(
+    request: Request, strategy_id: str, deploy_id: str, action: str
+):
     defn = _load_working(strategy_id)
     if action not in _DEPLOY_TRANSITIONS:
         return PlainTextResponse(f"unknown action '{action}'", status_code=422)
@@ -954,8 +1143,8 @@ def route_deployment_action(request: Request, strategy_id: str,
     allowed_from, to = _DEPLOY_TRANSITIONS[action]
     if dep["status"] not in allowed_from:
         return PlainTextResponse(
-            f"cannot {action} a deployment in status '{dep['status']}'",
-            status_code=422)
+            f"cannot {action} a deployment in status '{dep['status']}'", status_code=422
+        )
     if RUNNER is not None:
         # Drive the node first: recording 'paused' for a node that refused to
         # pause would put the panel and reality out of step, and the panel is
