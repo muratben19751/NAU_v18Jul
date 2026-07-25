@@ -525,3 +525,28 @@ bulguları kapatıldı; yeni sayfa: [[nau_guvenlik_dayaniklilik_duzeltmeleri]].
 
 **Not:** `defn_hash` migrasyonu geriye dönük NULL'dur — geçit *açık* bir deploy,
 o strateji için bir kez yeni backtest ister (hata güvenli yönde).
+
+## 2026-07-26 — İkinci tur inceleme bulguları
+
+Düzeltme turunun ardından yapılan bağımsız incelemenin 4 bulgusu ele alındı;
+detay: [[nau_guvenlik_dayaniklilik_duzeltmeleri]] bölüm 9.
+
+- **ORTA — `promote_draft` atomik değildi**: load → save → delete üç ayrı işlemdi;
+  araya düşen `save_draft` sondaki delete tarafından siliniyordu (kullanıcının en
+  yeni düzenlemesi sessizce kayboluyordu). Tek `BEGIN IMMEDIATE` işlemine alındı,
+  silme okunan json'a koşullandırıldı, ortak gövde `_insert_version`'a çıkarıldı.
+- **ORTA/DÜŞÜK — sweep'ler bayat adaptörle koşabiliyordu**: `OPTIMIZER` adaptörü
+  import anında yakalıyordu; `_optimizer()` artık güncel `TRIAL_ADAPTER`'ı çözüyor.
+- **DÜŞÜK — `ruff check .` tüm repoda düşüyordu**: vendor edilmiş `.claude` skill
+  script'leri yüzünden; `.claude` ruff extend-exclude'a eklendi (CI artık geçer).
+- **ORTAM — EXTERNAL_CATALOGS uyarısı**: bug değil, varsayılan yol başka makineyi
+  gösteriyor. Mesaj eyleme dönüştürüldü (hangi env değişkeni, ne zaman yok sayılır).
+- **Kapatılmadı (bilinçli)**: Studio route bağımlılıklarının import-anı kurulumu —
+  somut kusuru (bayat adaptör) düzeltildi, DI/factory refactor'ü tasarım değişikliği
+  olduğu için kullanıcıya bırakıldı. Bkz. bölüm 9.5.
+
+**Yöntem notu:** promote_draft için ilk yazılan thread-yarışı testi eski kodda da
+geçiyordu (boşluk mikrosaniye mertebesinde) — ayırt edici olmadığı için atıldı;
+yerine "tek bağlantı" invaryantı ölçülüyor, eski kodda 3 != 1 ile düşüyor.
+
+Testler: 539 → **545 geçen / 0 hatalı**. `ruff check .` (tüm repo) temiz.

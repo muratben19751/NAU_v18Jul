@@ -12,7 +12,7 @@ related:
   - wiki/synthesis/nau_performans_denetimi.md
   - wiki/synthesis/strategy_studio.md
   - wiki/synthesis/webapp_module_map.md
-last_updated: 2026-07-25
+last_updated: 2026-07-26
 ---
 
 # Güvenlik & Dayanıklılık Düzeltmeleri — 2026-07-25
@@ -20,7 +20,8 @@ last_updated: 2026-07-25
 [[nau_mimari_denetimi]] ve [[nau_performans_denetimi]] *neyin bozuk olduğunu* anlatır;
 bu sayfa o denetimlerin **kritik/yüksek bulgularının nasıl kapatıldığını** ve geriye
 kalan **yeni sözleşmeleri** anlatır. Test tabanı 518 geçen/12 hatalı durumdan
-**539 geçen / 0 hatalı**'ya çıktı (12 hata giderildi, 9 yeni regresyon testi eklendi).
+**545 geçen / 0 hatalı**'ya çıktı (12 hata giderildi, 15 yeni regresyon testi eklendi;
+son 6'sı aşağıdaki ikinci tur incelemesinden).
 
 ## 1. Sandbox kaçışı — AI kodu paylaşılan modülleri değiştiremez
 
@@ -149,6 +150,66 @@ normal akış geçer).
   doğrulandıktan sonra hash'ler yeniden üretildi.
 - **1× `test_data_page`**: `discover_index_tickers` artık `FileNotFoundError` fırlatıyor → 404.
 - **1× `test_index_stream_empty`**: saf-Python index hattı ile Windows'ta geçiyor.
+
+## 9. İkinci tur inceleme (2026-07-26)
+
+Düzeltme turunun ardından yapılan bağımsız incelemenin bulguları:
+
+### 9.1 `promote_draft` atomik değildi — ORTA, düzeltildi
+
+Draft'ı kaydetmek üç ayrı işlemdi: `load_draft` → `save` → `delete_draft`. Aradaki
+boşluğa düşen bir `save_draft` (UI otomatik kaydı ya da AI döngüsünün kabul edilen
+öneriyi geri yazması) **sondaki delete tarafından siliniyordu** — kullanıcının en yeni
+düzenlemesi hiçbir yerde hata üretmeden kayboluyordu.
+
+Artık tamamı tek `BEGIN IMMEDIATE` işlemi: yazarlar tüm dizi boyunca dışarıda tutulur,
+eşzamanlı bir draft yazımı commit'ten **sonra** iner ve sıradaki draft olarak yaşar.
+Silme ayrıca okunan json'a koşullandırıldı (`WHERE strategy_id=? AND json=?`) — işlem
+içinde gereksiz, ama kuralı kodun içinde söylüyor: *okumadığın draft'ı silme*.
+`save()` ile paylaşılan gövde `_insert_version(con, defn)` yardımcısına çıkarıldı.
+
+**Test notu (yöntem):** ilk yazılan thread-yarışı testi eski (hatalı) kodda da
+geçiyordu — yani ayırt edici değildi; boşluk mikrosaniyeler mertebesinde olduğu için
+zamanlamaya dayalı bir test bu iki uygulamayı güvenilir biçimde ayıramıyor. Test
+bunun yerine düzeltmenin özünü doğrudan ölçüyor: `promote_draft` **tek bağlantı**
+açmalı. Eski kodda 3 açıyor ve test `3 != 1` ile düşüyor (doğrulandı).
+Bkz. `tests/studio/test_promote_draft_atomicity.py`.
+
+### 9.2 Sweep'ler bayat adaptörle koşabiliyordu — ORTA/DÜŞÜK, düzeltildi
+
+`OPTIMIZER = WalkForwardOptimizer(adapter=TRIAL_ADAPTER)` adaptörü **import anında**
+yakalıyordu. `TRIAL_ADAPTER` sonradan değiştirilirse (test, ya da ileride bir config
+yeniden yüklemesi) optimizer eski nesneyi tutmaya devam ediyordu: tek bir anahtar için
+iki doğruluk kaynağı, üstelik **koşan** olan bayat olanı. `_optimizer()` artık güncel
+adaptörü çözüyor (dokunulmamış yolda aynı nesne, ayrışma varsa yeniden kuruluyor).
+
+### 9.3 `ruff check .` tüm repoda düşüyordu — DÜŞÜK, düzeltildi
+
+Ürün kodu temizdi; `.claude/skills/**` altındaki **vendor edilmiş** skill helper
+script'leri 22 hata veriyordu. CI aynı komutu koşarsa kimsenin yazmadığı kod yüzünden
+build kırılırdı. `.claude` ruff `extend-exclude` listesine eklendi (skill güncellemesi
+bu dosyaları zaten üzerine yazıyor — onları düzeltmek kalıcı olmaz).
+
+### 9.4 `EXTERNAL_CATALOGS` uyarısı — ORTAM, bug değil
+
+Varsayılan yol başka bir makinenin diskini gösteriyor (NAU_ev masası, `E:` sürücüsü),
+bu kutuda yok. Uyarı L31'de **bilerek** eklenmişti (sessizce boş panel yerine sesli
+uyarı). Kod mantığı değişmedi, yalnız mesaj eyleme dönüştürüldü: hangi env
+değişkeninin (`NAUTILUS_EXTERNAL_CATALOGS`) ayarlanacağını ve bunu görmezden gelmenin
+ne zaman doğru olduğunu söylüyor. Bybit ve index yolları etkilenmez; harici katalog
+entegrasyonu bu makinede gerçek veriyle **doğrulanmadı** (veri yok).
+
+### 9.5 Kapatılmayan: Studio route bağımlılıklarının import-anı kurulumu
+
+`store`, `ADAPTER`/`TRIAL_ADAPTER`, `OPTIMIZER`, `LLM`, `RUNNER` modül içe aktarılırken
+kuruluyor. Somut kusuru (9.2) kapatıldı; kalan **mimari** öneri (DI/factory) bilinçli
+olarak yapılmadı — `store.` çağrısı ~40 yerde geçiyor ve bu, davranış-koruyan bir
+refactor'dan çok bir tasarım değişikliği. Bugünkü etkileri: (a) `studio.db` import
+anında açılır/oluşturulur, (b) motor anahtarları (`STUDIO_BACKTEST`, `STUDIO_RUNNER`)
+import'tan sonra değiştirilemez, (c) testler modül global'lerini monkeypatch'ler.
+(c) bugün çalışıyor; (b) tek-worker kısıtıyla birlikte [[nau_mimari_denetimi]]'ndeki
+H9 (global tek-instance `AppState`) ile aynı ailedendir. Yapılacaksa doğru sıra:
+`deps.py` + FastAPI `Depends` override'ları.
 
 ## İlgili sayfalar
 
