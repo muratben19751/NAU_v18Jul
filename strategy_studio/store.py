@@ -85,7 +85,7 @@ CREATE TABLE IF NOT EXISTS deployments (
     version     INTEGER NOT NULL,
     environment TEXT NOT NULL,        -- paper | live
     config      TEXT NOT NULL,
-    status      TEXT NOT NULL,        -- pending | running | paused | stopped
+    status      TEXT NOT NULL,        -- pending | running | paused | stopped | failed
     created_at  TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS studio_runs (
@@ -110,11 +110,27 @@ class StrategyMeta:
     updated_at: str
 
 
+# Columns added after a table shipped. `CREATE TABLE IF NOT EXISTS` is a no-op
+# on an existing database, so new columns need an explicit additive step —
+# ALTER TABLE ... ADD COLUMN is cheap and non-destructive in SQLite.
+_ADDED_COLUMNS = [
+    # A deployment can now fail (the runner refused it, or the node died); the
+    # reason has to live somewhere the panel can read.
+    ("deployments", "error", "TEXT"),
+]
+
+
 class StrategyStore:
     def __init__(self, db_path: Path | str = DB_PATH):
         self.db_path = str(db_path)
         with self._connect() as con:
             con.executescript(_SCHEMA)
+            for table, column, decl in _ADDED_COLUMNS:
+                have = {r["name"] for r in con.execute(
+                    f"PRAGMA table_info({table})")}
+                if column not in have:
+                    con.execute(
+                        f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
 
     def _connect(self) -> sqlite3.Connection:
         con = sqlite3.connect(self.db_path)
@@ -393,8 +409,12 @@ class StrategyStore:
                           config_json: str) -> None:
         now = datetime.now(UTC).isoformat()
         with self._connect() as con:
+            # Columns listed explicitly: `error` was added later, so a bare
+            # VALUES tuple silently shifts once the migration has run.
             con.execute(
-                "INSERT INTO deployments VALUES (?,?,?,?,?,'pending',?)",
+                "INSERT INTO deployments "
+                "(deploy_id, strategy_id, version, environment, config, "
+                " status, created_at) VALUES (?,?,?,?,?,'pending',?)",
                 (deploy_id, strategy_id, version, environment,
                  config_json, now))
 
@@ -405,10 +425,26 @@ class StrategyStore:
                 "ORDER BY created_at DESC LIMIT 1", (strategy_id,)).fetchone()
         return dict(row) if row else None
 
-    def set_deployment_status(self, deploy_id: str, status: str) -> None:
+    def set_deployment_status(self, deploy_id: str, status: str,
+                              error: str | None = None) -> None:
+        """`error` is written on every call, so a recovered deployment does not
+        keep displaying the reason it failed the last time."""
         with self._connect() as con:
-            con.execute("UPDATE deployments SET status=? WHERE deploy_id=?",
-                        (status, deploy_id))
+            con.execute(
+                "UPDATE deployments SET status=?, error=? WHERE deploy_id=?",
+                (status, error, deploy_id))
+
+    def live_deployments(self) -> list[dict]:
+        """Every row the database believes is alive, across all strategies.
+
+        Startup reconciliation needs this: the runner's node registry is
+        in-process, so after a restart these rows have nothing behind them.
+        """
+        with self._connect() as con:
+            rows = con.execute(
+                "SELECT * FROM deployments WHERE status IN ('running','paused')"
+            ).fetchall()
+        return [dict(r) for r in rows]
 
     def get_deployment(self, deploy_id: str) -> dict | None:
         with self._connect() as con:

@@ -71,6 +71,7 @@ from strategy_studio.optimizer import (
     apply_params,
 )
 from strategy_studio.registry import INDICATOR_REGISTRY, library_by_category
+from strategy_studio.runner import PaperRunner, RunnerError, reconcile_orphans
 from strategy_studio.schema import StrategyDefinition
 from strategy_studio.store import StrategyStore
 
@@ -113,6 +114,19 @@ TRIAL_ADAPTER = _adapter_for("STUDIO_BACKTEST_OPT")
 ENGINE_SWEEP_MAX_RUNS = int(os.environ.get("STUDIO_OPT_MAX_ENGINE_RUNS", "200"))
 
 OPTIMIZER = WalkForwardOptimizer(adapter=TRIAL_ADAPTER)
+
+
+def _runner_status(deploy_id: str, status: str, error: str | None) -> None:
+    store.set_deployment_status(deploy_id, status, error)
+
+
+# Third engine switch, same reasoning as the other two: a real runner opens a
+# live Bybit market-data connection, so it is opt-in and the suite stays
+# offline. STUDIO_RUNNER=paper starts sandbox TradingNodes (simulated fills, no
+# credentials); anything else keeps the simulated pickup.
+RUNNER = (PaperRunner(on_status=_runner_status)
+          if os.environ.get("STUDIO_RUNNER", "").lower() == "paper"
+          else None)
 # INTEGRATION POINT: swap for the LLM client of your existing loop (ai.py)
 LLM = HttpAnthropicClient()
 
@@ -863,9 +877,7 @@ def route_deploy(request: Request, strategy_id: str,
     deploy_id = uuid.uuid4().hex[:12]
     store.create_deployment(deploy_id, strategy_id, defn.version,
                             environment, artifact)
-    # INTEGRATION POINT: replace _stub_runner_pickup with a hand-off to your
-    # live/sim runner; it should flip the row to status='running' on start.
-    background_tasks.add_task(_stub_runner_pickup, deploy_id)
+    background_tasks.add_task(_runner_pickup, deploy_id, artifact)
     return HTMLResponse(
         f'<div class="deploy-ok">Deployment <b>{deploy_id[:6]}</b> created '
         f'({environment}, v{defn.version}) — pending runner pickup.</div>'
@@ -879,12 +891,38 @@ _DEPLOY_TRANSITIONS = {
 }
 
 
-def _stub_runner_pickup(deploy_id: str) -> None:
-    """Simulated runner: picks a pending deployment up and starts it."""
-    time.sleep(1.0)
+def _runner_pickup(deploy_id: str, artifact: str) -> None:
+    """Hand the artifact to the runner (or simulate the pickup without one).
+
+    Runs after the response is sent, so nothing here may raise into the client;
+    `PaperRunner.launch` reports failure through the deployment row instead.
+    """
     dep = store.get_deployment(deploy_id)
-    if dep and dep["status"] == "pending":
+    if not dep or dep["status"] != "pending":
+        return
+    if RUNNER is None:
+        time.sleep(1.0)  # simulated pickup; keeps the panel's poll meaningful
         store.set_deployment_status(deploy_id, "running")
+        return
+    RUNNER.launch(deploy_id, json.loads(artifact))
+
+
+def _reconcile_deployments() -> None:
+    """Rows the database calls live with no node behind them.
+
+    The node registry is in-process. After a restart a `running` row is a
+    green badge for something that is not running — worse than a failure,
+    because it looks fine.
+    """
+    active = RUNNER.active_ids() if RUNNER else set()
+    for deploy_id, reason in reconcile_orphans(store.live_deployments(), active):
+        store.set_deployment_status(deploy_id, "failed", reason)
+
+
+try:
+    _reconcile_deployments()
+except Exception:  # noqa: BLE001 — a stale row must not stop the app booting
+    pass
 
 
 def _render_deployments(request: Request, defn: StrategyDefinition,
@@ -918,6 +956,15 @@ def route_deployment_action(request: Request, strategy_id: str,
         return PlainTextResponse(
             f"cannot {action} a deployment in status '{dep['status']}'",
             status_code=422)
+    if RUNNER is not None:
+        # Drive the node first: recording 'paused' for a node that refused to
+        # pause would put the panel and reality out of step, and the panel is
+        # the only thing the user can see.
+        try:
+            getattr(RUNNER, action)(deploy_id)
+        except RunnerError as e:
+            store.set_deployment_status(deploy_id, "failed", str(e))
+            return PlainTextResponse(str(e), status_code=422)
     store.set_deployment_status(deploy_id, to)
     return HTMLResponse(_render_deployments(request, defn))
 

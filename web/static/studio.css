@@ -506,6 +506,7 @@ footer .run{margin-left:auto;display:flex;gap:10px;align-items:center}
 .dep-st{margin-left:auto;font-family:'IBM Plex Mono',monospace;font-size:.66rem;font-weight:600}
 .st-pending{color:var(--opt)} .st-running{color:var(--long)}
 .st-paused{color:var(--opt)} .st-stopped{color:var(--muted)}
+.st-failed{color:var(--short)}
 .dep-actions{display:flex;gap:8px;margin-top:8px}
 .dep-actions button{font-family:inherit;font-size:.7rem;font-weight:600;cursor:pointer;
   background:var(--chip);border:1px solid var(--line);color:var(--text);
