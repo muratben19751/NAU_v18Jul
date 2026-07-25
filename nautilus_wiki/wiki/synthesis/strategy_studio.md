@@ -5,7 +5,7 @@ sources:
   - https://github.com/nautechsystems/nautilus_trader
   - sources/02_architecture_docs.md
 last_updated: 2026-07-25
-summary: /studio/{id} altındaki görsel strateji kurucu; sürümlü şema → derleyici → to_nautilus → composer spec → run_composed_backtest zinciri, çeviremediğini sessizce atmak yerine gerekçesiyle reddeder.
+summary: /studio/{id} altındaki görsel strateji kurucu; sürümlü şema → derleyici → to_nautilus → composer spec → run_composed_backtest zinciri, çeviremediğini sessizce atmak yerine gerekçesiyle reddeder; sweep pencereli walk-forward ve deflate edilmiş DSR ile skorlanır.
 key_concepts:
   - strategy_and_actor
   - backtesting_guide
@@ -39,6 +39,9 @@ composer ComposedStrategySpec  ← mevcut blok kataloğu
    ↓ run_composed_backtest()   backtest.py → BacktestEngine
 BacktestMetrics                → sparkline + fold tablosu + deploy kapısı
 ```
+
+Sweep aynı zincire pencereli girer: `optimizer.py` geometriyi kurar, adaptör
+`run(compiled, window=…)` ile örneklemin o kesitini koşar.
 
 `CompiledStrategy` nötr bir ara temsildir: şema/UI/AI tarafı motor
 değişikliğinden etkilenmez, motor yüzeyi tek dosyada (`backtest.py`) toplanır.
@@ -75,14 +78,15 @@ yeniden adlandırılsa bile sabit kalır. 15 kayıttan 8'i bağlı; kalanların
 | `STUDIO_BACKTEST=nautilus` | Run butonu — tıklama başına tek koşu | stub |
 | `STUDIO_BACKTEST_OPT=nautilus` | optimizer sweep + AI döngüsü denemeleri | stub |
 
-Ayrı olmalarının nedeni maliyet: adaptörün her `run()` çağrısı
+Ayrı olmalarının nedeni maliyet: penceresiz her `run()` çağrısı
 `1 + walkforward.folds` motor koşusudur ve optimizer 400 kombinasyona kadar
-örnekler → tek sweep ~1 600 koşu. Tek-koşu anahtarını çevirmek bunu
-tetiklememelidir. Gerçek motor sweep için seçiliyse `POST /optimize` ayrıca
-`STUDIO_OPT_MAX_ENGINE_RUNS` (varsayılan 200) üstünde baştan 422 döner.
+örnekler. Tek-koşu anahtarını çevirmek bunu tetiklememelidir. Gerçek motor
+sweep için seçiliyse `POST /optimize` ayrıca `STUDIO_OPT_MAX_ENGINE_RUNS`
+(varsayılan 200) üstünde baştan 422 döner — üst sınır olarak hiçbir adayın
+elenmediği en kötü durum (`min(sweep, 400) × (1 + folds)`) kullanılır.
 
 Stub adaptör silinmedi ve **her yerde varsayılandır**: piyasa verisi olmadan tüm
-UI döngüsü çalışır, test takımı çevrimdışı kalır (`tests/studio`, 140 test,
+UI döngüsü çalışır, test takımı çevrimdışı kalır (`tests/studio`, 161 test,
 env flag'siz yeşil).
 
 ## Metriklerin kaynağı (ve neden hepsi motordan alınmıyor)
@@ -96,12 +100,15 @@ env flag'siz yeşil).
   koşu: 6.02 bar-frekanslı, 0.51 işlem bazlı). Studio strateji **sıralar**
   (optimizer objective, deploy kapısı) — bu yanlılık az işlem yapanı sistematik
   kayırırdı. `/backtest` bar-frekanslıyı gösterir; fark bilinçlidir.
-- **`dsr`** — aslında PSR (tek denemeli DSR). Gerçek deflasyon, Sharpe'ın kaç
-  deneme arasından seçildiğini bilmeyi gerektirir; o sayı optimizer entegre
-  edilince gelir. Deploy kapısı bu yüzden iyimser tarafa hata yapar.
+- **`dsr`** — tek koşuda PSR'dır (tek denemeli DSR); deploy kapısı bu yüzden
+  iyimser tarafa hata yapar. Optimizer sonuçlarındaki `dsr` ise **gerçekten
+  deflate edilmiştir** — aşağıya bakınız. İkisi aynı ölçekte değildir ve
+  karşılaştırılmamalıdır; panel deflate edileni `DSR*` diye ayırır.
 - **Fold'lar** — ardışık OOS dilimleri; `walkforward.embargo_bars` kadar baş
   kısmı atılır. Her enstrüman aynı şekilde dilimlenip başlıkla aynı biçimde
-  harmanlanır.
+  harmanlanır. Bu **tek koşunun kendi örneklemi üzerindeki purged k-fold
+  sağlamlık tablosudur** — optimizer'ın IS/OOS bölmesiyle karıştırılmamalı;
+  `in_sample_months`/`oos_months` buraya değil, optimizer'a aittir.
 
 Bu serinin pozisyon açıkken çökmesine yol açan `Portfolio.equity()` tuzağı ve
 ölçülen etkisi [[portfolio]] sayfasındadır.
@@ -109,6 +116,64 @@ Bu serinin pozisyon açıkken çökmesine yol açan `Portfolio.equity()` tuzağ�
 Çok enstrümanlı stratejide metrikler eşit ağırlıklı equity harmanıdır: her
 sleeve kendi sermayesiyle koşar, rebalance yoktur — ortak sermayeli portföy
 koşusu **değildir**.
+
+## Walk-forward optimizer
+
+Stub, tam örneklemde grid koşup **aynı örneklemin** metriğine göre sıralıyordu:
+seçim de değerlendirme de aynı veride, yani sıralamanın kendisi in-sample'dı.
+Yerine iki aşama; ikisi de adaptörün kendi örnekleminden kestiği pencerelerde:
+
+1. **Ankrajlı in-sample eleme** — baştaki `in_sample_months` payında tek koşu.
+   `min_trades` (5) altı ya da `-inf` objektif ⇒ aday fold'lara hiç girmez.
+   Pahalı aşamayı küçük tutan ucuz filtre.
+2. **Purged walk-forward fold'ları** — ankrajdan sonra uç uca dizilmiş `folds`
+   adet OOS penceresi, her birinin **önünde** `embargo_bars` purge (sınırı geçen
+   pozisyon ya da indikatör durumu önceki pencereyi sızdırmasın).
+
+Purge/embargo gerekçesi ve genel walk-forward çerçevesi [[backtesting_guide]]
+sayfasındadır; buradaki fark, bölmenin kullanıcının şemaya yazdığı alanlardan
+türetilmesi ve sonucun tek bir uygulanabilir parametre setine indirgenmesi.
+
+Sıralama anahtarı fold objektiflerinin `mean − 0.5·std`'sidir — host
+[[webapp_module_map|wfo_optimizer]]'ın `penalized_score` geleneği: tek fold'da
+parlayıp gerisinde çöken aday, istikrarlıya kaybeder. `dsr`/`sharpe` fold'ları
+işlem sayısıyla sönümlenir (`n/(n+20)`), `max_dd` **sönümlenmez** — negatif bir
+sayıyı 0'a çekmek ince geçmişli adayı ödüllendirirdi. Aday, fold'larının
+%60'ında geçerli olmak zorundadır (tek ölü fold sağlam adayı düşürmesin).
+
+**Pencere kesir olarak verilir.** `run(compiled, window=Window(start, end,
+embargo_bars))` — örneklemin sahibi adaptördür (kaç gün, hangi timeframe), kesri
+satıra çevirebilecek tek yer orası; optimizer yalnız geometriyi kurar. Pencereli
+koşu kendi fold tablosunu üretmez, çünkü fold'layan zaten çağırandır: aday
+başına maliyet `1 + folds` yerine 1 eleme + `folds` fold'da kalır.
+
+**Aylar takvim değil orandır.** `in_sample_months`/`oos_months` yüklenen
+örneklemi `1 + folds` pencereye böler; 9/3 ve 3 fold → örneklemin yarısı IS,
+kalan yarısı üç OOS penceresi. Literal olmalarını istiyorsan
+`NautilusBacktestAdapter.lookback_days`'i (varsayılan 180 gün) büyütmen gerekir.
+Panel bu yüzden ayın yanına ürettiği payı da yazar ("9 months · %33 of sample";
+şema varsayılanı 9/3/6 fold) — yoksa sayı takvim uzunluğu gibi okunur. `scheme` tek değerlidir; ikinci bir şema **yalnızca**
+geometride dallanır.
+
+**Deflasyon.** `OptResult.dsr` artık gerçek DSR: dikilmiş OOS getiri serisinin
+PSR'ı, benchmark 0 değil `expected_max_sharpe(σ_trial, N)` — N kombinasyonun
+şans eseri üreteceği en iyi Sharpe (Bailey & López de Prado). Tek fonksiyon iki
+işi görür: `probabilistic_sharpe(returns, sharpe, benchmark)`, `benchmark=0`
+tek koşunun PSR'ı olarak kalır. N tüm denenen kombinasyondur (çoklu-test orada
+olur), σ ise ancak Sharpe üretebilmiş adaylardan ölçülebilir; tek adaylı bir
+sweep'te yayılım yoktur, deflasyon da yoktur.
+
+**Sıralama anahtarı görünür sayı olmak zorundadır**: panel satır başında artık
+objektif skorunu gösterir. Aksi halde başlıkta DSR yazıp skora göre sıralardı,
+sıra bozuk okunurdu. Hiçbir aday hayatta kalmazsa `NoViableCandidates` —
+reddedilme dökümüyle, başarısız koşu olarak; "0 sonuç" ile "optimizer hiç
+koşmadı" ayırt edilemez.
+
+Host'un `wfo_optimizer`'ı **yeniden kullanılmadı**: o, `BLOCK_REGISTRY`
+sınırlarından türettiği uzayda GA koşar; studio'nun arama uzayı ise
+kullanıcının kural ağacına yazdığı min/step/max'tir — GA sessizce ekrandaki
+aralıkların dışını optimize ederdi. Paylaşılmaya değer olan gelenekler
+paylaşıldı: `penalized_score`, geçerli-fold oranı, işlem sayısı sönümlemesi.
 
 ## HTTP semantiği: 404 kaynak, 422 girdi
 
@@ -139,10 +204,10 @@ kendi tetiklediği gerçek koşuyu yargılamalıdır.
 
 ## Durum
 
-Beş INTEGRATION POINT'ten ikisi bağlı: `registry.py` (indikatörler) ve
-`backtest.py` (motor). `optimizer.py`, `ai.py` ve `deploy.py` hâlâ stub —
-sırasıyla `wfo_optimizer` / [[backtesting_guide]] walk-forward'ı, mevcut LLM
-istemcisi ve canlı/sim TradingNode bağlanacak.
+Beş INTEGRATION POINT'ten dördü bağlı: `registry.py` (indikatörler, 15'te 8),
+`backtest.py` (motor), `optimizer.py` (walk-forward) ve `ai.py` (LLM istemcisi).
+Kalan: `deploy.py` — `_stub_runner_pickup` yaşam döngüsünü simüle ediyor,
+gerçek canlı/sim TradingNode hand-off'u bağlanacak.
 
 Tohumlanan iki demo stratejisi: `wt-funding-v3` (tasarım maketi — rejim dalı +
 `funding_z` içerdiği için yalnız stub'da koşar) ve `rsi-adx-btc` (motorda
@@ -150,13 +215,22 @@ koşabilen; `rsi_threshold` + `adx_threshold` girişi, `atr_stop` çıkışı, t
 Bybit enstrümanı). Gerçek koşu (BTCUSDT 1h, 180 gün, 4319 bar): 23 işlem,
 net +%1.54, Sharpe 0.51, DSR 0.71, Max DD −%2.99, ~2 sn.
 
+Gerçek motorda walk-forward doğrulaması (rsi-adx-btc, 3 kombinasyon, 3 fold):
+12 motor koşusu (3 eleme + 3×3 fold), 6.4 sn. Sıralama sönümlemenin beklendiği
+gibi 19 işlemli adayı, 3 işlemli `sharpe=48` tuzağının üstüne koydu.
+
 ## Bilinen boşluklar
 
-- `dsr` gerçek DSR'a deflate edilmiyor (deneme sayısı optimizer'dan gelmeli).
+- Tek koşunun `dsr`'ı hâlâ deflate edilmemiş PSR — deploy kapısı orayı okur.
+  Deflate edilen yalnız optimizer sonuçlarıdır.
+- Deflasyon yayılım ölçmeyi gerektirir; tek aday skorlayan bir sweep'te
+  `dsr` sessizce deflate edilmemiş PSR'a düşer.
+- `in_sample_months`/`oos_months` takvim uzunluğu değil oran; literal olmaları
+  `lookback_days`'i büyütmeye bağlı ve ikisi bugün birbirine bağlı değil.
 - Çok enstrümanlı harman ortak sermayeli portföy koşusu değil.
-- `walkforward` şemasının `scheme` / `in_sample_months` / `oos_months` alanları
-  UI'da ayarlanabiliyor ama fold dilimlemesi yalnız `folds` + `embargo_bars`
-  kullanıyor.
+- `OptResult.sharpe` fold Sharpe'larının düz ortalamasıdır; `min_trades`
+  eşiğine yakın fold'larda per-trade Sharpe hâlâ büyük sayılar üretebilir
+  (sıralamayı bozmaz — sıralama sönümlenmiş skoru kullanır).
 
 <!-- BACKLINKS:BEGIN -->
 ## Referenced by

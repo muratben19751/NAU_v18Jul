@@ -409,3 +409,38 @@ UI'da ayarlanabiliyor ama fold dilimlemesi yalnız `folds` + `embargo_bars` kull
 
 **Not:** Bu senkronun deltası küçüktü — son senkrondan (025b527) beri tek kod
 commit'i vardı (b834d86). Açık boşluklar bir önceki girdideki gibi duruyor.
+
+## 2026-07-25 (3) — IP#3: walk-forward optimizer
+
+- **`wiki/synthesis/strategy_studio.md`** — yeni bölüm "Walk-forward optimizer".
+  Stub tam örneklemde grid koşup aynı örneklemin metriğine göre sıralıyordu:
+  seçim de değerlendirme de aynı veride, yani sıralamanın kendisi in-sample'dı.
+  Yeni akış iki aşama — ankrajlı IS eleme + purged OOS fold'ları — ve ikisi de
+  adaptörün `run(compiled, window=Window(...))` kesitlerinde koşar. Sıralama
+  `mean − 0.5·std` (host `wfo_optimizer` geleneği); `dsr`/`sharpe` işlem
+  sayısıyla sönümlenir, `max_dd` bilerek sönümlenmez.
+- Aynı sayfada iki boşluk kapandı, ikisi de yerine daha dar boşluk bıraktı:
+  `dsr` optimizer sonuçlarında artık gerçekten deflate ediliyor (benchmark
+  `expected_max_sharpe(σ_trial, N)`) ama **tek koşununki hâlâ PSR** — deploy
+  kapısı orayı okuyor; `in_sample_months`/`oos_months` artık iş yapıyor ama
+  takvim uzunluğu değil **oran** olarak, literal olmaları `lookback_days`'e
+  bağlı. Panelin ayın yanına payı yazması (`%33 of sample`) bu yüzden var.
+- **Ayrım kayda geçti**: tek koşunun fold tablosu (purged k-fold, kendi
+  örneklemi) ile optimizer'ın IS/OOS bölmesi iki ayrı şey — `in_sample_months`
+  ilkine ait değil. Önceki senkronda ikisi tek boşluk gibi yazılmıştı.
+- **`wiki/synthesis/webapp_module_map.md`** — `strategy_studio/` satırında
+  `optimizer.py` artık gerçek; `web/routes/strategy_studio.py` satırında sweep
+  maliyeti `min(sweep, 400) × (1 + folds)` üst sınırı olarak düzeltildi (eski
+  "~1600 koşu" sabit sayısı pencereli koşuyla geçersiz); `wfo_optimizer.py`
+  satırına **studio'nun onu neden yeniden kullanmadığı** işlendi (GA
+  `BLOCK_REGISTRY` sınırlarından uzay türetir, studio'nun uzayı kullanıcının
+  yazdığı min/step/max — GA ekrandaki aralıkların dışını optimize ederdi).
+- Kod → doküman köprüsü: `optimizer.py`/`backtest.py` `Wiki References`
+  blokları zaten `[[strategy_studio]]`'ya işaret ediyordu, içerikleri o sayfayla
+  hizalandı.
+- Lint öncesi/sonrası temiz (0/0); backlinks 70 sayfada tazelendi; index
+  yeniden üretildi; `lint/2026-07-25_health.md` yazıldı.
+
+**Açık boşluk:** Deflasyon yayılım ölçmeyi gerektiriyor — tek aday skorlayan
+sweep sessizce deflate edilmemiş PSR'a düşüyor. Beşinci INTEGRATION POINT
+(`deploy.py` → gerçek TradingNode hand-off) hâlâ stub.
