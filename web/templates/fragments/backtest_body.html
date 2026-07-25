@@ -1,0 +1,565 @@
+{# Backtest body — shared between the standalone /backtest page and the merged
+   /studio "Backtest" tab. Included with the page context (catalog, last,
+   recent_runs, bybit_*, index_symbols, block_catalog…). Ids kept intact
+   (#gen-form, #result, #chat-thread, #plan-preview, #robustness-section …) —
+   the backtest JS keys on them; the merged top-level tabs use a SEPARATE
+   namespace (.lab-tab) so this file's inner .bt-tabs are untouched. #}
+{% if not catalog %}
+  <div class="panel">
+    <div class="panel-body empty-state">
+      No saved strategies yet.<br>
+      <a href="/studio" class="btn btn-primary mt-3" style="margin-top:14px;">→ Open Strategy Composer</a>
+    </div>
+  </div>
+{% else %}
+
+<div class="grid-2 equal bt-airy" style="align-items:start;">
+
+  {# ── LEFT: form + plan preview ── #}
+  <div class="stack">
+
+    <div class="panel">
+      <div class="panel-header">
+        <div class="panel-title">Set Up a Backtest</div>
+        <div class="panel-meta">
+          <a href="/data" class="link small">◫ Data →</a>
+        </div>
+      </div>
+      <div class="panel-body">
+        <form id="gen-form" onsubmit="return false;">
+
+          {# ── ⓪ Kayıtlı stratejiyle çalıştır (opsiyonel) — Composer→Backtest devri.
+             Katalogdan bir spec seçersen "▶ Kayıtlı ile Çalıştır" onu /backtest/run'a
+             gönderir; boşsa aşağıdaki doğal-dil akışı yeni spec üretir. `preferred_spec_id`
+             (?spec_id=) önceden seçili gelir — eskiden template'te render edilmiyordu. ── #}
+          <div class="bt-step">
+            <span class="bt-step-no">0</span>
+            <span class="bt-step-text">
+              <span class="bt-step-title">Saved strategy <span class="text-muted" style="font-weight:400;">(optional)</span></span>
+              <span class="bt-step-sub">Run a strategy you saved in the Composer directly</span>
+            </span>
+          </div>
+          <div class="row" style="align-items:flex-end;gap:12px;flex-wrap:wrap;">
+            <label class="field" style="flex:1;min-width:200px;">
+              Strategy
+              <select name="spec_id" id="spec-picker">
+                <option value="">— new (describe below) —</option>
+                {% for s in catalog %}
+                <option value="{{ s.id }}" {% if s.id == preferred_spec_id %}selected{% endif %}>{{ s.name }} · {{ s.id }}</option>
+                {% endfor %}
+              </select>
+            </label>
+            <button class="btn btn-secondary js-run-btn" type="button"
+                    hx-post="/backtest/run"
+                    hx-include="#gen-form"
+                    hx-target="#result"
+                    hx-swap="innerHTML"
+                    title="Run the selected saved strategy on the selected instrument/TF">
+              ▶ Run Saved
+            </button>
+          </div>
+
+          {# ── ① Enstrüman & Veri ── #}
+          <div class="bt-step">
+            <span class="bt-step-no">1</span>
+            <span class="bt-step-text">
+              <span class="bt-step-title">Instrument &amp; data</span>
+              <span class="bt-step-sub">What to test, and from which source</span>
+            </span>
+          </div>
+
+          {# Asset type — segmented toggle (radios preserved) #}
+          <div class="seg-toggle" role="radiogroup" aria-label="Instrument type">
+            <label class="seg-opt">
+              <input type="radio" name="instrument_kind" value="Bybit" checked
+                     onchange="btToggleAsset('Bybit');">
+              Bybit
+            </label>
+            <label class="seg-opt">
+              <input type="radio" name="instrument_kind" value="Index"
+                     onchange="btToggleAsset('Index');">
+              Index / Equity
+            </label>
+          </div>
+
+          {# Bybit fields #}
+          <div id="bybit-fields">
+            <div class="row" style="align-items:flex-end;gap:12px;flex-wrap:wrap;margin-top:14px;">
+              <label class="field" style="flex:1;min-width:150px;">
+                Symbol <span class="text-muted" style="font-size:10px;">(type to search)</span>
+                <input type="text" name="symbol" list="bybit-symbols-list"
+                       value="BTCUSDT" autocomplete="off" placeholder="BTC, ETH, SOL…">
+              </label>
+              <label class="field">Category
+                <select name="category">
+                  {% for cat in bybit_categories %}
+                  <option value="{{ cat }}" {% if cat == 'linear' %}selected{% endif %}>{{ cat }}</option>
+                  {% endfor %}
+                </select>
+              </label>
+              <label class="field" id="bybit-interval-field">Interval
+                <select name="interval">
+                  {% for code, lbl in bybit_intervals %}
+                  <option value="{{ code }}" {% if code == '1' %}selected{% endif %}>{{ lbl }}</option>
+                  {% endfor %}
+                </select>
+              </label>
+              <label class="field">Start <span class="text-muted" style="font-size:10px;">(blank = full cache)</span>
+                <input type="date" name="bybit_start">
+              </label>
+              <label class="field">End
+                <input type="date" name="bybit_end">
+              </label>
+            </div>
+            <datalist id="bybit-symbols-list">
+              {% for s in bybit_symbols %}<option value="{{ s.symbol }}" label="{{ s.symbol }} ({{ s.category }})">{% endfor %}
+            </datalist>
+            {# Inline date-range validation message (filled by btShowDateError) #}
+            <div id="bt-date-error" role="alert"
+                 style="display:none;margin-top:8px;font-size:11px;color:var(--pnl-down);"></div>
+          </div>
+
+          {# Index / Equity fields #}
+          <div id="index-fields" style="display:none;">
+            <div class="row" style="align-items:flex-end;gap:12px;flex-wrap:wrap;margin-top:14px;">
+              <label class="field" style="flex:1;min-width:150px;">
+                Ticker <span class="text-muted" style="font-size:10px;">(e.g. QQQ, SPY)</span>
+                <input type="text" name="ticker" list="index-tickers-list"
+                       value="" autocomplete="off" placeholder="QQQ"
+                       hx-get="/backtest/tickers" hx-trigger="focus once" hx-target="#index-tickers-list" hx-swap="innerHTML">
+              </label>
+              <label class="field" id="index-granularity-field">Granularity
+                <select name="granularity">
+                  {% for code, lbl in [('1m','1m'),('5m','5m'),('15m','15m'),('60m','1h'),('1d','1d')] %}
+                  <option value="{{ code }}" {% if code == '1d' %}selected{% endif %}>{{ lbl }}</option>
+                  {% endfor %}
+                </select>
+              </label>
+              <label class="field">Start <span class="text-muted" style="font-size:10px;">(blank = full cache)</span>
+                <input type="date" name="start_date">
+              </label>
+              <label class="field">End
+                <input type="date" name="end_date">
+              </label>
+            </div>
+            <datalist id="index-tickers-list">
+              {% for s in index_symbols %}<option value="{{ s }}">{% endfor %}
+            </datalist>
+            <label class="field" style="margin-top:14px;">Timeframes</label>
+            <div id="index-tf-row" class="chip-row" style="margin-top:6px;">
+              {% for code, tflabel in [('1m','1m'),('5m','5m'),('15m','15m'),('60m','1h'),('1d','1d')] %}
+              <label class="chip-choice">
+                <input type="checkbox" name="granularity" value="{{ code }}"
+                       {% if code == '15m' %}checked{% endif %}>
+                {{ tflabel }}
+              </label>
+              {% endfor %}
+            </div>
+          </div>
+
+          {# ── ② Strateji ── #}
+          <div class="bt-step">
+            <span class="bt-step-no">2</span>
+            <span class="bt-step-text">
+              <span class="bt-step-title">Describe your strategy</span>
+              <span class="bt-step-sub">Claude writes the Python block(s) for the logic you describe</span>
+            </span>
+          </div>
+
+          <div id="describe-section">
+            <textarea name="description" rows="5"
+                   placeholder="e.g.: BUY when RSI drops below 30 and turns back up while volume is 2x the 20-bar average; EXIT on a 3x ATR drop"
+                   style="width:100%;resize:vertical;">BUY when RSI(14) drops below 30 and then crosses back above 30; SELL (close the position) when RSI rises above 70 and then crosses back below 70. Additionally, only apply BUY signals while the price is above the 200-period moving average (SMA200), and only SELL signals while it is below.</textarea>
+
+            <label class="field" style="margin-top:16px;">Timeframes
+              <span class="text-muted" style="font-size:10px;text-transform:none;letter-spacing:0;">(pick 2+ for a comparison sweep)</span>
+            </label>
+            <div id="tf-row" class="chip-row" style="margin-top:6px;">
+              {% for code, tflabel in bybit_intervals %}
+              <label class="chip-choice">
+                <input type="checkbox" name="intervals" value="{{ code }}"
+                       {% if code in ('15','60','240','D') %}checked{% endif %}>
+                {{ tflabel }}
+              </label>
+              {% endfor %}
+            </div>
+
+            <div style="margin-top:16px;">
+              <label class="switch">
+                <input type="checkbox" name="allow_short" value="on" checked>
+                <span class="switch-track"></span>
+                <span class="switch-label">Allow short trades
+                  <span class="text-muted" style="font-size:11px;">· MARGIN · both directions</span>
+                </span>
+              </label>
+            </div>
+
+            {# ── Gelişmiş ayarlar (broker + pozisyon boyutu) ── #}
+            <details style="margin-top:18px;border:1px solid var(--border-soft);border-radius:10px;">
+              <summary style="padding:11px 14px;font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--text-muted);cursor:pointer;-webkit-user-select:none;user-select:none;">
+                ⚙ Advanced settings — capital · commission · position size
+              </summary>
+              <div style="padding:14px;display:flex;gap:14px;flex-wrap:wrap;align-items:flex-end;border-top:1px solid var(--border-soft);">
+                <label class="field" style="min-width:120px;">
+                  Initial capital ($)
+                  <input type="number" name="initial_capital" value="10000" min="100" step="100"
+                         title="Starting cash for the backtest (default: $10,000)">
+                </label>
+                <label class="field" style="min-width:120px;">
+                  Commission (%)
+                  <input type="number" name="commission_pct" value="0.055" min="0" max="5" step="0.001"
+                         title="Taker+Maker fee percentage (e.g. 0.055 = 0.055%). Leave unchanged for the Bybit default.">
+                </label>
+                <label class="field" style="min-width:110px;">
+                  Trade Size
+                  <input type="number" name="trade_size" value="0" min="0" step="0.001"
+                         title="Position size in the base currency (e.g. 0.01 BTC). 0 = the strategy's own default.">
+                </label>
+                <div style="font-size:10px;color:var(--text-muted);align-self:center;padding-top:14px;">
+                  0 = strategy default
+                </div>
+              </div>
+              {# ── Position sizing mode — segmented toggle (radios preserved) ── #}
+              <div style="padding:0 14px 14px;border-top:1px solid var(--border-soft);">
+                <label class="field" style="margin-top:14px;">Position sizing</label>
+                <div class="seg-toggle" style="margin-top:6px;flex-wrap:wrap;" role="radiogroup" aria-label="Position sizing">
+                  <label class="seg-opt">
+                    <input type="radio" name="trade_size_mode" value="fixed" checked
+                           onchange="btToggleSizeMode('fixed');">
+                    Fixed
+                  </label>
+                  <label class="seg-opt">
+                    <input type="radio" name="trade_size_mode" value="percent_equity"
+                           onchange="btToggleSizeMode('percent_equity');">
+                    % Equity
+                  </label>
+                  <label class="seg-opt">
+                    <input type="radio" name="trade_size_mode" value="atr_target"
+                           onchange="btToggleSizeMode('atr_target');">
+                    ATR target
+                  </label>
+                  <label class="seg-opt">
+                    <input type="radio" name="trade_size_mode" value="vol_target"
+                           onchange="btToggleSizeMode('vol_target');">
+                    Vol target (EWMA)
+                  </label>
+                </div>
+                <div class="row" style="align-items:flex-end;gap:12px;flex-wrap:wrap;margin-top:12px;">
+                  {# %Equity params #}
+                  <label class="field size-param sp-percent_equity" style="min-width:110px;display:none;">
+                    Equity %
+                    <input type="number" name="trade_size_percent" value="5" min="0.1" max="100" step="0.1"
+                           title="Percentage of equity used on each entry">
+                  </label>
+                  {# ATR-target params #}
+                  <label class="field size-param sp-atr_target" style="min-width:110px;display:none;">
+                    ATR risk %
+                    <input type="number" name="trade_size_atr_risk" value="1" min="0.1" max="100" step="0.1"
+                           title="Percentage of equity risked per trade (risk_usd = equity·%)">
+                  </label>
+                  <label class="field size-param sp-atr_target" style="min-width:100px;display:none;">
+                    ATR period
+                    <input type="number" name="atr_period" value="14" min="2" max="100">
+                  </label>
+                  {# Vol-target params (capital = Initial Capital yukarıdaki alan) #}
+                  <label class="field size-param sp-vol_target" style="min-width:120px;display:none;">
+                    Vol Target <span class="text-muted" style="font-size:10px;">(0.02=%2)</span>
+                    <input type="number" name="trade_size_vol_target" value="0.02" min="0.001" max="0.1" step="0.001">
+                  </label>
+                  <label class="field size-param sp-vol_target" style="min-width:100px;display:none;">
+                    Vol Span
+                    <input type="number" name="trade_size_vol_span" value="10" min="2" max="60">
+                  </label>
+                  <div class="size-param sp-vol_target" style="font-size:10px;color:var(--text-muted);align-self:center;padding-top:14px;display:none;">
+                    capital = Initial capital above
+                  </div>
+                </div>
+              </div>
+            </details>
+
+            {# ── ③ Çalıştır ── #}
+            <div class="bt-step" style="margin-top:26px;">
+              <span class="bt-step-no">3</span>
+              <span class="bt-step-text">
+                <span class="bt-step-title">Run</span>
+                <span class="bt-step-sub">Start directly, or see the AI plan first</span>
+              </span>
+            </div>
+
+            <div class="row" style="align-items:center;gap:14px;flex-wrap:wrap;">
+              <button class="btn btn-primary btn-hero js-run-btn" type="button"
+                      hx-post="/backtest/describe"
+                      hx-include="closest form"
+                      hx-target="#result"
+                      hx-swap="innerHTML"
+                      hx-indicator="#gen-spinner">
+                <span class="btn-spin spin">⟳</span>
+                ▶ Run Backtest
+              </button>
+            </div>
+
+            <div class="row" style="gap:16px;flex-wrap:wrap;margin-top:10px;">
+              <span class="htmx-indicator text-muted mono" id="gen-spinner" style="font-size:11px;">
+                <span class="spin">⟳</span> Claude is writing the blocks · preparing the backtest…
+              </span>
+            </div>
+
+            <div class="text-muted" style="margin-top:12px;font-size:11px;line-height:1.6;">
+              For each selected TF, bars at that resolution must have been fetched from the
+              <a href="/data" class="link">Data</a> screen; a TF without data shows "no cache".
+              If the dates are blank, the whole cache is used.
+            </div>
+
+          </div>
+
+          {# Hidden inputs — backtest sonuçları /backtest/plan'a gönderilir #}
+          <input type="hidden" name="bt_pnl_pct"   id="bt-pnl-pct">
+          <input type="hidden" name="bt_sharpe"     id="bt-sharpe">
+          <input type="hidden" name="bt_max_dd"     id="bt-max-dd">
+          <input type="hidden" name="bt_n_trades"   id="bt-n-trades">
+          <input type="hidden" name="bt_win_rate"   id="bt-win-rate">
+          <input type="hidden" name="bt_spec_name"  id="bt-spec-name">
+          <input type="hidden" name="bt_best_tf"    id="bt-best-tf">
+
+          {# Robustness özeti — analiz sonrası /backtest/plan'a gider (overfitting-farkındalık) #}
+          <input type="hidden" name="rob_overfitting" id="rob-overfitting">
+          <input type="hidden" name="rob_verdict"     id="rob-verdict">
+          <input type="hidden" name="rob_wfo_eff"     id="rob-wfo-eff">
+          <input type="hidden" name="rob_oos_sharpe"  id="rob-oos-sharpe">
+          <input type="hidden" name="rob_stability"   id="rob-stability">
+
+        </form>
+      </div>
+    </div>
+  </div>
+
+  {# ── RIGHT: tabbed shell — Sonuç / Robustness / Geçmiş ── #}
+  <div class="panel" style="overflow:visible;">
+    <div class="bt-tabs" role="tablist">
+      <button type="button" class="bt-tab active" role="tab" data-bt-tab="plan" onclick="btTab('plan')">
+        ✨ AI Plan
+      </button>
+      <button type="button" class="bt-tab" role="tab" data-bt-tab="result" onclick="btTab('result')">
+        Result
+        <span class="bt-tab-badge" id="bt-tab-badge-result"
+              title="{% if last %}{{ last.n_trades }} trades in the last completed backtest{% else %}No completed result yet{% endif %}">{{ last.n_trades if last else '–' }}</span>
+      </button>
+      <button type="button" class="bt-tab" role="tab" data-bt-tab="robustness" onclick="btTab('robustness')">
+        Robustness
+      </button>
+      <button type="button" class="bt-tab" role="tab" data-bt-tab="history" onclick="btTab('history')">
+        History
+        {% if recent_runs %}<span class="bt-tab-badge">{{ recent_runs|length }}</span>{% endif %}
+      </button>
+    </div>
+
+    <div class="panel-body" style="padding-top:0;">
+
+      {# ── TAB: Sonuç ── #}
+      <div class="bt-tabpanel" id="bt-tabpanel-result" role="tabpanel">
+        <div id="result">
+          {% if last %}
+            {% include "fragments/backtest_result.html" %}
+          {% else %}
+            <div class="panel">
+              <div class="panel-body empty-state">Describe your strategy and press <b>▶ Run Backtest</b>.</div>
+            </div>
+          {% endif %}
+        </div>
+      </div>
+
+      {# ── TAB: AI Plan (AI ile iyileştir) ── #}
+      <div class="bt-tabpanel active" id="bt-tabpanel-plan" role="tabpanel">
+        <div id="chat-thread"></div>
+        <div id="plan-preview"></div>
+        <div id="plan-empty" class="panel">
+          <div class="panel-body empty-state" style="text-align:center;">
+            <div style="margin-bottom:14px;">
+              Claude refines your description and suggests improvements; the backtest starts once you approve.
+            </div>
+            <div class="row" style="justify-content:center;gap:10px;flex-wrap:wrap;">
+              <button class="btn btn-primary" type="button"
+                      hx-post="/backtest/plan"
+                      hx-include="#gen-form"
+                      hx-target="#plan-preview"
+                      hx-swap="innerHTML"
+                      hx-indicator="#plan-spinner"
+                      title="Claude refines your description + suggests improvements (one-shot)">
+                <span class="btn-spin spin">⟳</span>
+                ✨ Improve with AI
+              </button>
+              <button class="btn btn-secondary" type="button"
+                      hx-post="/backtest/chat/new"
+                      hx-include="#gen-form"
+                      hx-target="#chat-thread"
+                      hx-swap="innerHTML"
+                      hx-indicator="#plan-spinner"
+                      title="Mature your strategy together with Claude in a back-and-forth chat">
+                <span class="btn-spin spin">⟳</span>
+                💬 Improve via chat
+              </button>
+            </div>
+            <div class="row" style="justify-content:center;margin-top:10px;">
+              <span class="htmx-indicator text-muted mono" id="plan-spinner" style="font-size:11px;">
+                <span class="spin">⟳</span> Claude is preparing the plan…
+              </span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {# ── TAB: Robustness ── #}
+      <div class="bt-tabpanel" id="bt-tabpanel-robustness" role="tabpanel">
+        {# ④ Robustness Analysis Panel #}
+        <div id="robustness-section" {% if not last %}style="display:none"{% endif %}>
+          <div class="panel-header" style="padding-left:0;padding-right:0;">
+            <div class="panel-title">Robustness Test</div>
+            <div class="spacer"></div>
+            <div class="panel-meta text-muted mono small">WFO · Monte Carlo · In/Out-of-Sample</div>
+          </div>
+          {# id=rob-home: the Pro-side home of #robustness-result — labMode()'s
+             swMoveNodes (studio.html) reparents the node into the Simple wizard
+             and back here. #}
+          <div id="rob-home" style="padding-top:12px;">
+            {# Genel açıklama — robustness üç bağımsız testi tek çalıştırmada koşar #}
+            <div class="rob-form-intro">
+              This analysis puts your strategy through <b>three independent tests</b>:
+              <b>Walk-Forward</b> (parameters are optimized in one period and tested in
+              the next, unseen one), <b>In/Out-of-Sample</b> (the data is split in two;
+              the second half is measured as untouched "future") and
+              <b>Monte Carlo</b> (the trade order is shuffled thousands of times to
+              derive the distribution of possible outcomes). Pick a preset or tune the
+              fields by hand.
+            </div>
+
+            {# Hazır presetler — tek tıkla tüm alanları makul değerlerle doldurur #}
+            <div class="rob-presets">
+              <span class="rob-presets-label">Preset:</span>
+              <button type="button" class="btn btn-secondary btn-sm"
+                      onclick="robPreset('fast')"
+                      title="Rough look · fastest (few trials/simulations)">⚡ Fast</button>
+              <button type="button" class="btn btn-secondary btn-sm"
+                      onclick="robPreset('balanced')"
+                      title="Balanced setting for daily use (recommended)">⚖ Balanced</button>
+              <button type="button" class="btn btn-secondary btn-sm"
+                      onclick="robPreset('thorough')"
+                      title="Most reliable · slowest (many trials/simulations)">🔬 Thorough</button>
+            </div>
+
+            <form hx-post="/robustness/run"
+                  hx-target="#robustness-result"
+                  hx-swap="innerHTML"
+                  class="rob-form">
+              <input type="hidden" name="spec_id"   id="rob-spec-id">
+              <input type="hidden" name="symbol"    id="rob-symbol">
+              <input type="hidden" name="category"  id="rob-category">
+              <input type="hidden" name="interval"  id="rob-interval">
+              <input type="hidden" name="bybit_start" id="rob-start">
+              <input type="hidden" name="bybit_end"   id="rob-end">
+
+              {# ── Grup 1: Walk-Forward ── #}
+              <fieldset class="rob-group">
+                <legend>Walk-Forward Optimization</legend>
+                <div class="rob-group-grid">
+                  <label class="field">Train window (months)
+                    <input type="number" name="train_months" value="3" min="1" max="24">
+                    <span class="field-hint">The past period parameters are optimized
+                      on. <b>Suggested: 3–6</b> · range 1–24. Longer train = more stable
+                      parameters, but fewer test windows.</span>
+                  </label>
+                  <label class="field">Test window (months)
+                    <input type="number" name="test_months" value="1" min="1" max="12">
+                    <span class="field-hint">The period the optimized parameters are
+                      tested on, using unseen data. <b>Suggested: 1</b> · range 1–12.
+                      ~1/3 of the train window is typical.</span>
+                  </label>
+                  <label class="field">Trials / window
+                    <input type="number" name="n_optimize" value="20" min="1" max="200" step="1">
+                    <span class="field-hint">Number of parameter combinations tried in
+                      each train window. <b>Suggested: 20–50</b> · range 1–200. Higher =
+                      better optimization but slower.</span>
+                  </label>
+                  <label class="field">Optimization objective
+                    <select name="objective">
+                      <option value="sharpe">Sharpe (risk-adjusted return)</option>
+                      <option value="sortino">Sortino (downside risk only)</option>
+                      <option value="calmar">Calmar (return / max drawdown)</option>
+                    </select>
+                    <span class="field-hint">What gets maximized on train.
+                      <b>Sharpe</b> is general purpose; <b>Sortino</b> is downside-sensitive;
+                      <b>Calmar</b> prioritizes low drawdown.</span>
+                  </label>
+                </div>
+              </fieldset>
+
+              {# ── Grup 2: In/Out-of-Sample ── #}
+              <fieldset class="rob-group">
+                <legend>In / Out-of-Sample Split</legend>
+                <div class="rob-group-grid">
+                  <label class="field">In-sample ratio
+                    <input type="number" name="split_pct" value="0.7" min="0.5" max="0.9" step="0.05">
+                    <span class="field-hint">How much of the data is used for "training"
+                      (in-sample); the rest is measured as untouched "future" (OOS).
+                      <b>Suggested: 0.70</b> · range 0.50–0.90. 0.70 → 70% train,
+                      30% test.</span>
+                  </label>
+                </div>
+              </fieldset>
+
+              {# ── Grup 3: Monte Carlo ── #}
+              <fieldset class="rob-group">
+                <legend>Monte Carlo Simulation</legend>
+                <div class="rob-group-grid">
+                  <label class="field">Number of simulations
+                    <input type="number" name="n_sims" value="300" min="50" max="1000" step="50">
+                    <span class="field-hint">How many times the trade order is randomly
+                      shuffled; produces the distribution of possible equity curves
+                      (P5–P95). <b>Suggested: 300–500</b> · range 50–1000. Higher =
+                      smoother distribution, slower.</span>
+                  </label>
+                </div>
+              </fieldset>
+
+              <div class="rob-form-actions">
+                <button class="btn btn-primary" type="submit">▶ Run Analysis</button>
+                <span class="rob-form-note text-muted">All three tests run in one go · a test is skipped if there isn't enough data.</span>
+              </div>
+            </form>
+            <div id="robustness-result" style="margin-top:12px;"></div>
+          </div>
+        </div>
+        {% if not last %}
+        <div class="empty-state">Run a backtest first — the robustness test builds on its result.</div>
+        {% endif %}
+      </div>
+
+      {# ── TAB: Geçmiş ── #}
+      <div class="bt-tabpanel" id="bt-tabpanel-history" role="tabpanel">
+        {% if recent_runs %}
+          <div class="text-muted" style="font-size:11px;margin-bottom:10px;">
+            Click a run → the result screen is restored exactly as it was.
+          </div>
+          {% for r in recent_runs %}
+          <div class="bt-hist-row"
+               {% if r.run_id %}hx-get="/backtest/result/{{ r.run_id }}"
+               hx-target="#result" hx-swap="innerHTML"
+               onclick="btTab('result')"{% endif %}
+               title="{{ r.name }}">
+            <span class="bt-hist-time">{{ r.time }}</span>
+            <span class="bt-hist-name">{{ r.name }}</span>
+            <span class="bt-hist-pnl {% if r.pnl is not none and r.pnl >= 0 %}up{% elif r.pnl is not none %}down{% endif %}">
+              {% if r.pnl is not none %}{{ "%+.2f"|format(r.pnl) }}{% else %}—{% endif %}
+            </span>
+            <span class="bt-hist-arrow">→</span>
+          </div>
+          {% endfor %}
+        {% else %}
+          <div class="empty-state">No runs yet.</div>
+        {% endif %}
+      </div>
+
+    </div>
+  </div>
+
+</div>
+{% endif %}

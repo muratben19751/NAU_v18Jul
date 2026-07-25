@@ -48,6 +48,7 @@ CPU-yoğun tek işlem çekirdeği durdurur. Uzun süreli hesaplamalar Actor içi
 ## Referenced by
 
 - [[getting_started_roadmap]]
+- [[nau_performans_denetimi]]
 - [[nautilus_kernel]]
 - [[webapp_module_map]]
 <!-- BACKLINKS:END -->

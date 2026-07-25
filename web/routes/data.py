@@ -6,18 +6,17 @@ Endpoints:
     POST /data/refresh/index           Fetch a (ticker, granularity) row.
     POST /data/index/discover          Rebuild the US-index ticker registry.
     POST /data/catalog/write           Write pandas cache → Nautilus ParquetDataCatalog.
-    GET  /data/fragments/row/{source}/{key}   Return one row for HTMX polling.
 
 All fetch endpoints return a rendered fragment (single row / cell) so HTMX
 can hot-swap the DOM in place without re-fetching the whole page.
 
 Wiki References
 ---------------
-Bkz: [[parquet_data_catalog]], [[bar_aggregation_and_type_syntax]],
+See: [[parquet_data_catalog]], [[bar_aggregation_and_type_syntax]],
 [[index_backtest_via_equity_proxy]], [[precision_modes]]
 
-Ekran wiki-flagged pitfall'lara (size_precision=0 Equity trap; BarType DSL
-origin ayrımı; book_type ↔ granularity uyuşmazlığı) rozet olarak yer verir.
+The screen surfaces wiki-flagged pitfalls (size_precision=0 Equity trap; BarType DSL
+origin distinction; book_type ↔ granularity mismatch) as badges.
 """
 
 from __future__ import annotations
@@ -25,7 +24,7 @@ from __future__ import annotations
 import asyncio
 
 from fastapi import APIRouter, Form, HTTPException, Query, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse
 
 from data import (
     _BYBIT_MS,
@@ -62,7 +61,7 @@ async def page(
 ):
     from server import templates
 
-    # H93: ağır senkron katalog taraması thread'de — event loop bloklanmasın.
+    # H93: heavy synchronous catalog scan in a thread — so the event loop is not blocked.
     cat = await asyncio.to_thread(
         list_catalog,
         index_query=q,
@@ -120,10 +119,15 @@ async def refresh_index(
     start: str | None = Form(default=None),
     end: str | None = Form(default=None),
 ):
+    from data import _GRAN_BARSPEC
     from server import templates
 
-    if granularity not in ("1d", "1m"):
-        raise HTTPException(400, f"unsupported granularity {granularity!r}")
+    if granularity not in _GRAN_BARSPEC:
+        raise HTTPException(
+            400,
+            f"unsupported granularity {granularity!r}; "
+            f"supported: {list(_GRAN_BARSPEC)}",
+        )
     try:
         row = await asyncio.to_thread(
             refresh_row,
@@ -144,16 +148,24 @@ async def refresh_index(
     )
 
 
-@router.post("/index/discover", response_class=JSONResponse)
-async def index_discover(force: bool = Form(default=False)):
-    """Rebuild ``_tickers.json`` from ``INDEX_ROOT``. Slow; returns a summary."""
+@router.post("/index/discover", response_class=HTMLResponse)
+async def index_discover(request: Request, force: bool = Form(default=False)):
+    """Rebuild ``_tickers.json`` from ``INDEX_ROOT``. Slow; returns an HTML
+    fragment swapped into ``#discover-result`` (not JSON — the form does
+    ``hx-swap="innerHTML"``)."""
+    from server import templates
+
     try:
         tickers = await asyncio.to_thread(discover_index_tickers, force=force)
     except FileNotFoundError as e:
         raise HTTPException(404, f"INDEX_ROOT not found: {e}")
     except Exception as e:
         raise HTTPException(500, str(e))
-    return {"count": len(tickers), "sample": tickers[:5]}
+    return templates.TemplateResponse(
+        request,
+        "fragments/data/discover_result.html",
+        {"count": len(tickers), "sample": tickers[:5]},
+    )
 
 
 @router.post("/catalog/write", response_class=HTMLResponse)
@@ -201,31 +213,6 @@ async def catalog_write(
         row = await asyncio.to_thread(refresh_row, source, **kw)
     except Exception as e:
         raise HTTPException(500, str(e))
-    return templates.TemplateResponse(
-        request,
-        "fragments/data/instrument_row.html",
-        {"row": row},
-    )
-
-
-@router.get("/fragments/row/{source}/{key:path}", response_class=HTMLResponse)
-async def row_fragment(request: Request, source: str, key: str):
-    from server import templates
-
-    if source == "bybit":
-        cat = await asyncio.to_thread(list_catalog, index_limit=1)
-        row = next((r for r in cat["bybit"] if r["key"] == key), None)
-    elif source == "index":
-        # For big catalogs, avoid scanning the whole list — re-query by ticker.
-        cat = await asyncio.to_thread(
-            list_catalog, index_query=key, index_limit=None
-        )
-        idx_rows = [r for r in cat["index"] if r["key"] == key]
-        row = idx_rows[0] if idx_rows else None
-    else:
-        raise HTTPException(404, f"unknown source {source!r}")
-    if row is None:
-        raise HTTPException(404, f"row not found for {source}/{key}")
     return templates.TemplateResponse(
         request,
         "fragments/data/instrument_row.html",

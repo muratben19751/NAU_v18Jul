@@ -1,7 +1,7 @@
-"""Robustness analiz endpoint'leri — WFO, Monte Carlo, In/Out-of-Sample.
+"""Robustness analysis endpoints — WFO, Monte Carlo, In/Out-of-Sample.
 
-POST /robustness/run   → daemon thread başlat, progress fragment dön
-GET  /robustness/progress/{run_id} → poll → sonuç gelince result.html
+POST /robustness/run   → start daemon thread, return progress fragment
+GET  /robustness/progress/{run_id} → poll → return result.html when ready
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ from web.shared import log_robustness as _log_robustness  # noqa: E402
 
 # ProgressStore holds dict + lock + capped eviction; aliases keep existing
 # direct-access sites unchanged. Log writer/path now live in web.shared.
-_STORE = ProgressStore(20)  # terkedilmiş run'ları sınırla (#21)
+_STORE = ProgressStore(20)  # limit abandoned runs (#21)
 _PROGRESS = _STORE.raw()
 _LOCK = _STORE.lock
 
@@ -57,12 +57,12 @@ async def run(
     from composer import load_catalog
     from server import templates
 
-    # L6: HTML input'un min/max'ı yalnız tarayıcı tarafında — doğrudan POST
-    # (curl/otomasyon) sınır dışı değer geçirebiliyordu; [0.5, 0.9]'a clamp.
+    # L6: the HTML input's min/max is only browser-side — a direct POST
+    # (curl/automation) could pass out-of-range values; clamp to [0.5, 0.9].
     split_pct = max(0.5, min(0.9, split_pct))
-    # L6 (kapsam): aynı biçimde diğer sayısal alanları da sunucu tarafında
-    # HTML min/max sınırlarına clamp'le — 0/negatif ay WFO penceresini bozar,
-    # aşırı n_sims/n_optimize kaynağı israf eder.
+    # L6 (scope): likewise clamp the other numeric fields server-side to the
+    # HTML min/max bounds — a 0/negative month breaks the WFO window,
+    # excessive n_sims/n_optimize wastes resources.
     train_months = max(1, min(24, train_months))
     test_months = max(1, min(12, test_months))
     n_sims = max(50, min(1000, n_sims))
@@ -97,9 +97,9 @@ async def run(
         from data import _bybit_cache_path, load_bybit_bars
 
         try:
-            _add_step(run_id, f"Başlatılıyor · {spec.name}")
+            _add_step(run_id, f"Starting · {spec.name}")
 
-            # ── Veri yükle ────────────────────────────────────────────────
+            # ── Load data ─────────────────────────────────────────────────
             cache_path = _bybit_cache_path(category, symbol, interval)
             if cache_path.exists():
                 df_check = _pd.read_parquet(cache_path)
@@ -127,7 +127,7 @@ async def run(
 
             _add_step(
                 run_id,
-                f"Veri okunuyor · {symbol}/{category}/{interval} "
+                f"Reading data · {symbol}/{category}/{interval} "
                 f"{start_dt.date()} → {end_dt.date()}",
             )
             bars = load_bybit_bars(
@@ -140,15 +140,15 @@ async def run(
             if bars.empty:
                 with _LOCK:
                     _PROGRESS[run_id]["error"] = (
-                        "Veri bulunamadı. Data ekranından fetch edin."
+                        "Data not found. Fetch it from the Data screen."
                     )
                 return
-            _add_step(run_id, f"{len(bars):,} bar yüklendi")
+            _add_step(run_id, f"{len(bars):,} candles loaded")
 
-            # ── Suite: killable child'da (WFO + IS/OOS + tam backtest + MC) ──
-            # Daha önce bu suite bu daemon thread'de HAM koşuyordu; Nautilus
-            # backtest'leri GIL'i tuttuğu için sunucunun event loop'u donuyordu
-            # (agent'ta düzeltilen bug'ın kopyası). Artık sandbox child'ında.
+            # ── Suite: in killable child (WFO + IS/OOS + full backtest + MC) ──
+            # Previously this suite ran RAW in this daemon thread; because
+            # Nautilus backtests hold the GIL, the server's event loop froze
+            # (a copy of the bug fixed in the agent). Now in a sandbox child.
             from sandbox import run_manual_suite_guarded
 
             suite = run_manual_suite_guarded(
@@ -181,14 +181,14 @@ async def run(
                 "wfo_windows": suite.get("wfo_windows") or [],
                 "wfo_summary": suite.get("wfo_summary") or {},
                 "split": suite.get("split") or {},
-                "mc": suite.get("mc") or {"error": "Trade verisi yok."},
+                "mc": suite.get("mc") or {"error": "No Trade data."},
                 "train_months": train_months,
                 "test_months": test_months,
                 "n_sims": n_sims,
                 "n_optimize": n_optimize,
                 "objective": objective,
             }
-            _add_step(run_id, "Tamamlandı")
+            _add_step(run_id, "Completed")
             _log_robustness(spec.id, spec.name, result)
             with _LOCK:
                 _PROGRESS[run_id]["result"] = result
@@ -217,7 +217,7 @@ async def progress(request: Request, run_id: str):
     with _LOCK:
         raw = _PROGRESS.get(run_id)
         if raw is None:
-            return HTMLResponse("<div class='empty-state'>Bilinmeyen run ID.</div>")
+            return HTMLResponse("<div class='empty-state'>Unknown run ID.</div>")
         state = {
             "done": raw["done"],
             "result": raw["result"],

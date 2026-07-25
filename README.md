@@ -43,8 +43,23 @@ python3.12 -m venv .venv && source .venv/bin/activate && pip install -e ".[dev]"
 ## Çalıştırma
 
 ```bash
-uvicorn server:app --host 127.0.0.1 --port 8000 --reload
+# Prod / kesintisiz üretim (önerilen): reload YOK
+uvicorn server:app --host 127.0.0.1 --port 8000
+
+# Geliştirme (auto-reload) — wiki/skill/test dizinlerini hariç tut
+uvicorn server:app --host 127.0.0.1 --port 8000 --reload \
+    --reload-exclude "$PWD/nautilus_wiki" --reload-exclude "$PWD/.claude" \
+    --reload-exclude "$PWD/tests"
 ```
+
+> **Not:** `--reload` izlenen ağaçtaki her `*.py` değişiminde sunucuyu yeniden
+> başlatır. Strateji üretimi (`/backtest` → doğal dil) ~15-20 sn süren bir
+> worker thread'de çalışıp ilerleme durumunu **bellekte** tutar; bu sırada
+> izlenen bir `.py` değişirse (kod düzenlemesi / otomatik biçimlendirme) sunucu
+> yeniden başlar ve üretim paneli kaybolur. `--reload-exclude`'a **mutlak dizin
+> yolu** verin (`$PWD/…`) — uvicorn göreli adı veya glob'u eşleştirmez, yalnızca
+> var olan bir dizini recursive dışlar. Uzun üretimler için `--reload`'sız
+> çalıştırın.
 
 - **`/`** (dashboard) — Otonom legacy döngüyü başlat/durdur; iterasyonlar canlı akar.
 - **`/agent`** — Otonom backtest ajanı (canlı Gantt zaman çizelgesiyle).

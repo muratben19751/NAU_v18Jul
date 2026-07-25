@@ -9,7 +9,7 @@
 <textarea id="description-input" name="description" rows="2" placeholder="Optional note about what this strategy does…"
           form="save-form" hx-swap-oob="outerHTML">{{ description }}</textarea>
 
-{# Section 02: Add block formunu ilk bloğun tipi + rolüyle güncelle (OOB) #}
+{# Section 02: Update the Add block form with the first block's type + role (OOB) #}
 {% if drafts %}
 {% set first = drafts[0] %}
 <div id="add-block-form-wrapper" hx-swap-oob="outerHTML:#add-block-form-wrapper">

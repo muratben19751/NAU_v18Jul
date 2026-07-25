@@ -1,36 +1,50 @@
-/* Nautilus Lab — monochrome black palette (design2 hifi redesign) */
+/* Nautilus Lab — graphite + cold-blue palette (trading-terminal redesign).
+   Black/grey surfaces preserved; a single cold-blue accent carries interactive
+   state (buttons, focus rings, active nav, chart series). Depth is expressed
+   with layered shadows + a faint top highlight, never with lighter fills. */
 :root {
-  /* Surfaces */
-  --bg-950: #080808;   /* page */
-  --bg-900: #0e0e0e;   /* sidebar / topbar */
-  --panel:  #121212;   /* panel surface */
-  --panel-2:#1c1c1c;   /* elevated inner surface / secondary btn */
-  --inset:  #0c0c0c;   /* input & inner-card ground */
+  /* Surfaces — near-black graphite, subtly cool */
+  --bg-950: #070809;   /* page */
+  --bg-900: #0c0d0f;   /* sidebar / topbar */
+  --panel:  #111316;   /* panel surface */
+  --panel-2:#191c20;   /* elevated inner surface / secondary btn */
+  --inset:  #0a0b0d;   /* input & inner-card ground */
+  --panel-glass: rgba(17,19,22,0.72);  /* frosted overlay surfaces */
   /* Legacy aliases (kept so existing rules keep working) */
-  --bg-850: #171717;
-  --bg-800: #1a1a1a;
-  --bg-700: #2a2a2a;
+  --bg-850: #16181c;
+  --bg-800: #191c20;
+  --bg-700: #2a2e34;
   /* Borders */
-  --border:       #242424;
-  --border-soft:  #1d1d1d;
-  --border-input: #2c2c2c;
-  --border-btn2:  #3a3a3a;
-  /* Accents (monochrome — white primary) */
-  --accent:        #f2f2f2;
-  --accent-strong: #ffffff;
-  --accent-grad-top:#f2f2f2;
+  --border:       #23262c;
+  --border-soft:  #1a1d21;
+  --border-input: #2b2f36;
+  --border-btn2:  #383d45;
+  /* Accent — cold blue (fintech terminal) */
+  --accent:        #4a9eff;  /* primary interactive blue */
+  --accent-strong: #6cb2ff;  /* hover / focus highlight */
+  --accent-dim:    #2f6bb8;  /* pressed / muted accent */
+  --accent-deep:   #1b4a86;  /* gradient bottom */
+  --accent-soft:   rgba(74,158,255,0.14);  /* tinted fills */
+  --accent-glow:   rgba(74,158,255,0.35);  /* focus ring / glow */
+  --accent-grad-top:#5aa6ff;
   /* PnL / status */
-  --pnl-up:        #4ade80;
-  --pnl-down:      #f87171;
-  --pnl-down-soft: #fca5a5;
-  --amber:         #f0b100;
-  /* Text */
-  --text-primary:   #f2f2f2;
-  --text-secondary: #c8c8c8;
-  --text-muted:     #8a8a8a;
-  --code:           #c8c8c8;
+  --pnl-up:        #3ddc97;
+  --pnl-down:      #ff5d6c;
+  --pnl-down-soft: #ff8b95;
+  --amber:         #f5b638;
+  /* Text — cool grey ramp */
+  --text-primary:   #eef1f5;
+  --text-secondary: #c3c9d2;
+  --text-muted:     #7d848f;
+  --code:           #c3c9d2;
   /* legacy text alias */
-  --text: #f2f2f2;
+  --text: #eef1f5;
+  /* Depth — layered shadows + hairline top highlight */
+  --shadow-sm: 0 1px 2px rgba(0,0,0,0.4);
+  --shadow-md: 0 4px 16px rgba(0,0,0,0.45), 0 1px 3px rgba(0,0,0,0.5);
+  --shadow-lg: 0 12px 40px rgba(0,0,0,0.55), 0 2px 8px rgba(0,0,0,0.5);
+  --edge-hi: inset 0 1px 0 rgba(255,255,255,0.035);  /* faint top bevel */
+  --ring: 0 0 0 3px var(--accent-glow);
   --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   --sans: "IBM Plex Sans", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
 }
@@ -73,7 +87,8 @@ html, body {
 .brand-logo {
   width: 30px; height: 30px;
   border-radius: 8px;
-  background: linear-gradient(135deg, #2a2a2a, #1a1a1a);
+  background: linear-gradient(135deg, var(--accent), var(--accent-deep));
+  box-shadow: 0 2px 10px var(--accent-glow), var(--edge-hi);
   display: flex; align-items: center; justify-content: center;
   flex-shrink: 0;
 }
@@ -105,12 +120,13 @@ html, body {
   border-radius: 7px;
   transition: background 0.15s, color 0.15s;
 }
-.nav a:hover { background: #161616; color: var(--text-primary); }
+.nav a:hover { background: #14161a; color: var(--text-primary); }
 .nav a.active {
-  background: #1a1a1a;
+  background: linear-gradient(90deg, var(--accent-soft), transparent 70%);
   color: #ffffff;
-  box-shadow: inset 2px 0 0 0 #ffffff;
+  box-shadow: inset 2px 0 0 0 var(--accent);
 }
+.nav a.active .nav-icon { color: var(--accent-strong); }
 .nav-icon { display: inline-flex; width: 15px; height: 15px; opacity: 0.95; }
 .nav-live-dot {
   width: 7px; height: 7px; border-radius: 50%;
@@ -138,16 +154,18 @@ html, body {
 .engine-dot.idle { background: var(--text-muted); }
 .engine-sub { font-size: 10px; color: var(--text-muted); margin-top: 4px; }
 
-/* min-width:0 şart: grid öğesinin varsayılanı min-width:auto'dur — geniş
-   tablolar (reports 26 kolon ~2400px) tüm sayfayı yana genişletiyordu.
-   Bununla panel kendi içinde kaydırır, sayfa genişliği viewport'ta kalır. */
+/* min-width:0 is required: a grid item's default is min-width:auto — wide
+   tables (reports 26 columns ~2400px) were stretching the whole page sideways.
+   With this the panel scrolls within itself and the page width stays in the viewport. */
 .main { display: flex; flex-direction: column; min-height: 100vh; min-width: 0; }
 
 .topbar {
   height: 58px;
-  background: rgba(14,14,14,0.85);
-  backdrop-filter: blur(8px);
+  background: var(--panel-glass);
+  backdrop-filter: blur(14px) saturate(140%);
+  -webkit-backdrop-filter: blur(14px) saturate(140%);
   border-bottom: 1px solid var(--border);
+  box-shadow: 0 1px 0 rgba(255,255,255,0.02);
   display: flex;
   align-items: center;
   padding: 0 24px;
@@ -186,11 +204,15 @@ html, body {
 
 .content { padding: 24px; flex: 1; }
 
+
 /* ------- Panels ------- */
 .panel {
-  background: var(--panel);
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.015), transparent 120px),
+    var(--panel);
   border: 1px solid var(--border);
   border-radius: 10px;
+  box-shadow: var(--shadow-md), var(--edge-hi);
 }
 .panel-header {
   padding: 12px 16px;
@@ -255,12 +277,13 @@ html, body {
 .hero-main {
   position: relative;
   background:
-    radial-gradient(120% 140% at 0% 0%, rgba(255,255,255,0.05), transparent 60%),
+    radial-gradient(120% 140% at 0% 0%, var(--accent-soft), transparent 60%),
     var(--panel);
   border: 1px solid var(--border);
   border-radius: 12px;
   padding: 20px 22px;
   overflow: hidden;
+  box-shadow: var(--shadow-md), var(--edge-hi);
 }
 .hero-main::before {
   content: "";
@@ -350,7 +373,7 @@ html, body {
   padding: 12px 15px;
   transition: background 0.12s;
 }
-.metric:hover { background: var(--panel-2); }
+.metric:hover { background: var(--panel-2); box-shadow: inset 2px 0 0 0 var(--accent); }
 .metric .label {
   font-size: 9.5px;
   letter-spacing: 0.12em;
@@ -371,6 +394,29 @@ html, body {
 .metric .value .up { color: var(--pnl-up); }
 .metric .value .down { color: var(--pnl-down); }
 .metric-slash { color: var(--text-muted); font-weight: 400; }
+
+/* Risk · Trades · P&L/Cost side by side — sections in one row, each grid
+   wrapping into 2 rows of narrow cells. Column ratio 2:3:3 matches the
+   4/5/6 tile counts (mg-2 → 2×2, mg-3 → 3+2 and 3×2). */
+.metric-sections-row {
+  display: grid;
+  grid-template-columns: 2fr 3fr 3fr;
+  gap: 10px;
+  align-items: start;
+}
+.metric-sections-row .metric-section { margin-bottom: 0; }
+/* body.page-studio also carries the extra selector so these fixed column
+   counts beat the page-studio auto-fit override (specificity, not order). */
+.metric-grid.mg-2,
+body.page-studio .metric-grid.mg-2 { grid-template-columns: repeat(2, 1fr); }
+.metric-grid.mg-3,
+body.page-studio .metric-grid.mg-3 { grid-template-columns: repeat(3, 1fr); }
+.metric-sections-row .metric { padding: 5px 8px; }
+.metric-sections-row .metric .value { font-size: 13px; }
+@media (max-width: 900px) {
+  .metric-sections-row { grid-template-columns: 1fr; }
+  .metric-sections-row .metric-section { margin-bottom: 10px; }
+}
 
 @media (max-width: 720px) {
   .result-hero { grid-template-columns: 1fr; }
@@ -400,7 +446,7 @@ table.data td {
   border-bottom: 1px solid var(--border-soft);
   color: var(--text-primary);
 }
-table.data tr:hover td { background: #171717; }
+table.data tr:hover td { background: var(--accent-soft); }
 table.data td.num, table.data th.num { text-align: right; font-family: var(--mono); }
 table.data td.up { color: var(--pnl-up); }
 table.data td.down { color: var(--pnl-down); }
@@ -434,15 +480,20 @@ table.data .strat {
   letter-spacing: 0.02em;
 }
 .btn-primary {
-  background: #f2f2f2;
-  color: #0a0a0a;
-  border-color: #ffffff;
+  background: linear-gradient(180deg, var(--accent-strong), var(--accent));
+  color: #04121f;
+  border-color: var(--accent);
+  box-shadow: 0 2px 10px var(--accent-glow), var(--edge-hi);
 }
-.btn-primary:hover { background: #ffffff; }
+.btn-primary:hover {
+  background: linear-gradient(180deg, #86c2ff, var(--accent-strong));
+  box-shadow: 0 4px 16px var(--accent-glow), var(--edge-hi);
+}
 .btn-primary:disabled {
-  background: #2a2a2a;
-  color: #6a6a6a;
-  border-color: #2a2a2a;
+  background: #202429;
+  color: #5c626b;
+  border-color: #202429;
+  box-shadow: none;
   cursor: not-allowed;
 }
 .btn-secondary {
@@ -485,9 +536,12 @@ input[type="text"], input[type="number"], input[type="date"], select, textarea {
   font-family: var(--sans);
   font-size: 13px;
   outline: none;
-  transition: border-color 0.15s;
+  transition: border-color 0.15s, box-shadow 0.15s;
 }
-input:focus, select:focus, textarea:focus { border-color: var(--accent-strong); }
+input:focus, select:focus, textarea:focus {
+  border-color: var(--accent);
+  box-shadow: var(--ring);
+}
 select { cursor: pointer; }
 
 /* ------- Badge / pill ------- */
@@ -575,6 +629,7 @@ pre.diagram {
 
 /* ------- Layout helpers ------- */
 .grid-2 { display: grid; grid-template-columns: 2fr 1fr; gap: 16px; }
+.grid-2.equal { grid-template-columns: 1fr 1fr; }
 .grid-3 { display: grid; grid-template-columns: 3fr 2fr; gap: 16px; }
 .stack { display: flex; flex-direction: column; gap: 16px; }
 .row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
@@ -582,6 +637,10 @@ pre.diagram {
 .spacer { flex: 1; }
 .text-muted { color: var(--text-muted); }
 .text-mono { font-family: var(--mono); font-size: 12px; }
+/* Size-only utility — composes with .text-muted/.mono/.link (used app-wide). */
+.small { font-size: 11px; line-height: 1.5; }
+/* Right-aligned meta block inside a .panel-header (flex row). */
+.panel-meta { margin-left: auto; display: flex; align-items: center; gap: 8px; }
 .mt-3 { margin-top: 12px; } .mt-4 { margin-top: 16px; } .mt-6 { margin-top: 24px; }
 .mb-2 { margin-bottom: 8px; } .mb-3 { margin-bottom: 12px; }
 .section-title {
@@ -596,6 +655,18 @@ pre.diagram {
 /* HTMX indicator */
 .htmx-indicator { opacity: 0; transition: opacity 0.2s; }
 .htmx-request .htmx-indicator, .htmx-indicator.htmx-request { opacity: 1; }
+
+/* Spinning icon (buttons that kick off long work) */
+.spin {
+  display: inline-block;
+  animation: spin 0.8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+/* The button's spinner is hidden until its form/button is mid-request. */
+.btn .btn-spin { display: none; }
+.btn.htmx-request .btn-spin,
+.htmx-request .btn .btn-spin { display: inline-block; }
+.btn.htmx-request { opacity: 0.85; cursor: progress; }
 
 .pulse-border { animation: pulse-border 2s ease-in-out infinite; }
 @keyframes pulse-border {
@@ -666,71 +737,109 @@ pre.diagram {
   flex-wrap: wrap;
 }
 
-/* Bar list (Yahoo / Index) */
-.bar-list { display: flex; flex-direction: column; gap: 6px; }
-.bar-row {
-  display: grid;
-  grid-template-columns: minmax(320px, 1.4fr) minmax(200px, 1fr) auto;
-  gap: 12px;
-  align-items: center;
-  padding: 8px 10px;
-  background: var(--bg-850);
-  border: 1px solid var(--border);
-  border-radius: 6px;
+/* Unified timeframe grid — shared by Bybit / US-Index / External sources.
+   Bybit renders one .tf-lane per category (spot/linear/inverse); index &
+   external render a single label-less lane. Same cell vocabulary everywhere. */
+.tf-grid { display: flex; flex-direction: column; gap: 8px; }
+.tf-lane { display: grid; grid-template-columns: 84px 1fr; align-items: start; gap: 12px; }
+.tf-lane.no-label { grid-template-columns: 1fr; }
+.tf-lane-label {
+  font-family: var(--mono); font-size: 11px; letter-spacing: 0.05em;
+  text-transform: uppercase; color: var(--text-secondary); padding-top: 8px;
 }
-.bar-dsl { font-size: 12px; color: var(--text-primary); word-break: break-all; }
-.bar-stats { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.bar-actions .btn { padding: 4px 10px; font-size: 12px; }
-.bar-row.state-ingested { border-left: 3px solid var(--pnl-up); }
-.bar-row.state-available { border-left: 3px solid var(--bg-700); }
+.tf-cells { display: grid; grid-template-columns: repeat(auto-fill, minmax(112px, 1fr)); gap: 6px; }
+.tf-cell { margin: 0; display: flex; flex-direction: column; gap: 4px; }
+.tf-cell form { margin: 0; }
+.tf-catalog-btn { width: 100%; font-size: 10px; padding: 3px 6px; }
+/* Catalog-write busy state: swap "→ Catalog" for "Writing…" while HTMX runs.
+   htmx adds .htmx-request to the form for the duration of the request. */
+.tf-catalog-busy { display: none; }
+.tf-catalog-form.htmx-request { pointer-events: none; }
+.tf-catalog-form.htmx-request .tf-catalog-idle { display: none; }
+.tf-catalog-form.htmx-request .tf-catalog-busy { display: inline; }
+.tf-catalog-form.htmx-request .tf-catalog-btn { opacity: 0.7; }
+/* Fetch cell: dim + amber border while its request is in flight. */
+.tf-cell form.htmx-request { pointer-events: none; }
+.tf-cell form.htmx-request .tf-btn {
+  opacity: 0.6; border-color: var(--amber); cursor: progress;
+}
+.tf-btn {
+  width: 100%; padding: 8px; border: 1px solid var(--bg-700); border-radius: 6px;
+  background: var(--bg-850); color: var(--text-primary); font-family: var(--sans);
+  cursor: pointer; text-align: left; transition: background 0.12s, border-color 0.12s;
+}
+.tf-btn:hover:not(:disabled) { background: var(--bg-800); border-color: var(--accent); }
+.tf-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+.tf-cell.state-ingested .tf-btn { background: rgba(74,222,128,0.06); border-color: rgba(74,222,128,0.35); }
+.tf-cell.state-readonly .tf-btn { cursor: default; opacity: 1; }
+.tf-cell.state-readonly .tf-btn:hover { border-color: var(--bg-700); background: var(--bg-850); }
+.tf-cell.state-unsupported .tf-btn { background: transparent; border-style: dashed; }
+.tf-label { font-family: var(--mono); font-size: 12px; font-weight: 600; margin-bottom: 2px; }
+.tf-meta { font-size: 11px; color: var(--text-muted); font-family: var(--mono); }
+.tf-meta.good { color: var(--pnl-up); }
 
-/* Bybit grid (Symbol row → 3 category blocks → 6 interval cells each) */
-.bybit-grid { display: flex; flex-direction: column; gap: 10px; }
-.bybit-cat {
-  display: grid;
-  grid-template-columns: 80px 1fr;
-  align-items: center;
-  gap: 12px;
+/* Chip legend row (self-documents the state vocabulary on the Data page). */
+.chip-legend { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 8px; }
+
+/* Data-page filter controls */
+.data-filter { align-items: flex-end; gap: 12px; margin-bottom: 12px; }
+.data-filter .field { flex: 1; }
+.data-filter form.row { gap: 8px; flex: 1; }
+.data-note { margin: 0 0 10px; }
+
+/* Backtest live plan-preview sub-box */
+.plan-row { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; padding: 6px 0; border-bottom: 1px solid var(--border-soft); }
+.plan-row .plan-desc { flex-basis: 100%; }
+.plan-note { margin-top: 10px; }
+.plan-label { margin: 2px 0 8px; }
+/* Plan-preview signal chart (Chart.js line + long/short/exit markers) */
+.plan-chart-wrap { position: relative; height: 260px; background: var(--bg-950); border: 1px solid var(--border); border-radius: 6px; padding: 4px; margin-top: 6px; }
+.plan-chart-pane { height: 90px; }
+.plan-chart-legend { font-size: 10px; color: var(--text-muted); margin-top: 5px; font-family: var(--mono); display: flex; gap: 12px; flex-wrap: wrap; }
+.plan-chart-legend .lg-long { color: var(--pnl-up); }
+.plan-chart-legend .lg-short { color: var(--pnl-down); }
+.plan-chart-legend .lg-exit { color: var(--amber); }
+/* Side-by-side layout: conditions left, signal chart right. minmax(0,..) so
+   the chart never forces the panel (and the page) wider. Stacks on narrow. */
+.plan-split { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; align-items: start; }
+@media (max-width: 900px) { .plan-split { grid-template-columns: 1fr; } }
+.plan-split-col { min-width: 0; }
+/* Entry/exit condition legend under the chart (what fires where). */
+.plan-cond-list { display: flex; flex-direction: column; gap: 4px; margin-top: 8px; }
+.plan-cond { display: flex; gap: 6px; align-items: baseline; font-size: 11px; }
+.plan-cond .pc-dot { flex: 0 0 auto; font-size: 12px; line-height: 1; }
+.plan-cond .pc-long { color: var(--pnl-up); }
+.plan-cond .pc-short { color: var(--pnl-down); }
+.plan-cond .pc-exit { color: var(--amber); }
+
+/* Multi-turn "AI ile iyileştir" sohbet balonları (chat_thread.html) */
+.chat-thread-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 340px;
+  overflow-y: auto;
+  padding: 4px 2px;
 }
-.bybit-cat-label {
-  font-family: var(--mono);
-  font-size: 11px;
-  color: var(--text-secondary);
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
+.chat-bubble {
+  padding: 10px 12px;
+  border-radius: 12px;
+  max-width: 85%;
+  line-height: 1.5;
+  font-size: 13px;
+  white-space: normal;
+  word-break: break-word;
 }
-.bybit-cells {
-  display: grid;
-  grid-template-columns: repeat(6, minmax(90px, 1fr));
-  gap: 6px;
+.chat-user {
+  align-self: flex-end;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
 }
-.bybit-cell { margin: 0; }
-.cell-btn {
-  width: 100%;
-  padding: 8px 6px;
-  border: 1px solid var(--bg-700);
-  border-radius: 6px;
-  background: var(--bg-850);
-  color: var(--text-primary);
-  font-family: var(--sans);
-  cursor: pointer;
-  text-align: left;
-  transition: background 0.12s, border-color 0.12s;
+.chat-assistant {
+  align-self: flex-start;
+  background: rgba(129, 140, 248, 0.08);
+  border: 1px solid rgba(129, 140, 248, 0.3);
 }
-.cell-btn:hover:not(:disabled) { background: var(--bg-800); border-color: var(--accent); }
-.cell-btn:disabled { opacity: 0.35; cursor: not-allowed; }
-.bybit-cell.state-ingested .cell-btn {
-  background: rgba(74,222,128,0.06);
-  border-color: rgba(74,222,128,0.35);
-}
-.bybit-cell.unsupported .cell-btn {
-  background: transparent;
-  border-style: dashed;
-}
-.cell-label { font-size: 12px; font-weight: 600; margin-bottom: 4px; }
-.cell-state { font-size: 11px; }
-.cell-state.good { color: var(--pnl-up); }
-.cell-last { margin-top: 2px; }
 
 .link { color: var(--accent); text-decoration: none; }
 .link:hover { text-decoration: underline; }
@@ -768,8 +877,9 @@ pre.diagram {
 
 /* Narrative box */
 .narrative-box {
-  background: rgba(255, 255, 255, 0.04);
-  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: linear-gradient(180deg, var(--accent-soft), rgba(74,158,255,0.03));
+  border: 1px solid rgba(74,158,255,0.22);
+  border-left: 2px solid var(--accent);
   border-radius: 8px;
   padding: 12px 16px;
   font-size: 13px;
@@ -807,6 +917,32 @@ pre.diagram {
 }
 .lab-phases-compact { gap: 4px; }
 
+/* Backtest progress: title row + raw log below the phase flow */
+.bt-progress-title { display: flex; align-items: center; gap: 10px; }
+.bt-progress-log { margin-top: 14px; padding-left: 28px; }
+
+/* Backtest page compact overrides — shrink form chrome so everything fits one viewport */
+.bt-compact label.field { font-size: 9px; gap: 4px; }
+.bt-compact input[type="text"],
+.bt-compact input[type="number"],
+.bt-compact input[type="date"],
+.bt-compact select { font-size: 11px; padding: 6px 9px; }
+.bt-compact .panel-body { padding: 12px 14px; }
+.bt-compact .btn { font-size: 11px; padding: 7px 14px; }
+.bt-compact .chip { font-size: 9px; padding: 2px 6px; }
+.bt-compact .row { gap: 8px; }
+.bt-compact .stack { gap: 10px; }
+
+/* Plan preview pins to the top of the right column so the AI suggestion stays
+   in view while the (taller) results/robustness/history stack scrolls past it.
+   top offset clears the 58px sticky top-bar. Only sticks when non-empty — an
+   empty #plan-preview has no height, so nothing floats over the results. */
+#plan-preview:not(:empty) {
+  position: sticky;
+  top: 70px;
+  z-index: 2;
+}
+
 .lab-phase {
   display: grid;
   grid-template-columns: 22px 1fr auto;
@@ -819,8 +955,9 @@ pre.diagram {
   transition: border-color 0.2s;
 }
 .lab-phase.phase-running {
-  border-color: rgba(255,255,255,0.35);
-  background: rgba(255,255,255,0.05);
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  box-shadow: 0 0 0 1px var(--accent-soft), 0 0 18px var(--accent-glow);
 }
 .lab-phase.phase-done {
   border-color: rgba(74,222,128,0.25);
@@ -863,18 +1000,18 @@ pre.diagram {
   padding-top: 2px;
 }
 
-/* ─── Agent progress — eksik sınıflar (bonus fix) ─────────────── */
+/* ─── Agent progress — missing classes (bonus fix) ─────────────── */
 .phase-row { font-family: var(--sans); }
 .spinner-dot {
   color: var(--accent);
   display: inline-block;
-  animation: blink 1s ease-in-out infinite; /* @keyframes blink yukarıda */
+  animation: blink 1s ease-in-out infinite; /* @keyframes blink above */
 }
 
-/* ─── Pipeline zaman çizelgesi (Gantt) ────────────────────────── */
-/* Status paleti dataviz-validated: kontrast 4/4 ≥3:1 (koyu inset yüzey);
-   kırmızı↔yeşil CVD taban bandında → ikincil kodlama zorunlu ve mevcut:
-   <title> içinde durum glifi + tıkla-detay + running için pulse animasyonu. */
+/* ─── Pipeline timeline (Gantt) ────────────────────────── */
+/* Status palette dataviz-validated: contrast 4/4 ≥3:1 (dark inset surface);
+   red↔green on the CVD base band → secondary encoding required and present:
+   status glyph in <title> + click-detail + pulse animation for running. */
 .tl-wrap { display: flex; flex-direction: column; gap: 2px; }
 .tl-lane {
   display: grid;
@@ -928,20 +1065,29 @@ pre.diagram {
   text-align: left;
   padding: 4px 8px;
   color: var(--text-muted);
-  border-bottom: 1px solid #242424;
+  border-bottom: 1px solid var(--border);
   font-weight: 500;
   white-space: nowrap;
 }
 .trade-table td {
   padding: 4px 8px;
-  border-bottom: 1px solid rgba(36,36,36,0.5);
+  border-bottom: 1px solid var(--border-soft);
   white-space: nowrap;
 }
 .trade-row { cursor: pointer; transition: background 0.1s; }
-.trade-row:hover { background: rgba(255,255,255,0.06); }
-.trade-win td:first-child { border-left: 2px solid rgba(74,222,128,0.5); }
-.trade-loss td:first-child { border-left: 2px solid rgba(248,113,113,0.4); }
-.chip-bad { background: rgba(248,113,113,0.15); color: #f87171; }
+.trade-row:hover { background: var(--accent-soft); }
+.trade-win td:first-child { border-left: 2px solid var(--pnl-up); }
+.trade-loss td:first-child { border-left: 2px solid var(--pnl-down); }
+.chip-bad { background: rgba(255,93,108,0.15); color: var(--pnl-down); }
+
+/* ------- Robustness tabs ------- */
+.rob-tab { padding: 6px 14px; font-size: 12px; }
+.rob-tab.active {
+  background: linear-gradient(180deg, var(--accent), var(--accent-dim));
+  color: #04121f;
+  border-color: var(--accent);
+  box-shadow: 0 1px 8px var(--accent-glow), var(--edge-hi);
+}
 
 /* ------- Toast notifications ------- */
 #toast-host {
@@ -994,3 +1140,1231 @@ details > summary:hover { background: #171717; }
   border-color: rgba(232,180,76,0.35);
   background: rgba(232,180,76,0.07);
 }
+
+/* ==========================================================================
+   Backtest — "airy" redesign (ferah). Opposite of .bt-compact: more breathing
+   room, softer cards, one obvious primary action. Scoped under .bt-airy so it
+   never leaks into other pages. Form field NAMES / element IDs are unchanged —
+   this is a presentation layer only (see synthetic-wondering-otter plan).
+   ========================================================================== */
+.bt-airy label.field { font-size: 10px; gap: 6px; }
+.bt-airy input[type="text"],
+.bt-airy input[type="number"],
+.bt-airy input[type="date"],
+.bt-airy select,
+.bt-airy textarea { font-size: 13px; padding: 10px 12px; border-radius: 8px; }
+.bt-airy .panel { border-radius: 14px; }
+.bt-airy .panel-body { padding: 20px 22px; }
+.bt-airy .stack { gap: 18px; }
+.bt-airy .row { gap: 12px; }
+
+/* Numbered step header inside the left form — a light, roomy section divider. */
+.bt-step {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  margin: 0 0 14px;
+}
+.bt-step + .bt-step { margin-top: 26px; }
+.bt-step-no {
+  flex: 0 0 auto;
+  width: 26px; height: 26px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 50%;
+  border: 1px solid var(--border-btn2);
+  background: var(--panel-2);
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+.bt-step-text { display: flex; flex-direction: column; gap: 1px; }
+.bt-step-title {
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--text-primary);
+}
+.bt-step-sub { font-size: 11px; color: var(--text-muted); }
+
+/* Segmented toggle — pill switch backed by hidden radios (asset type, etc.).
+   The <input> stays in the DOM (name/value preserved for the POST); only the
+   <label> chrome is styled. */
+.seg-toggle {
+  display: inline-flex;
+  padding: 3px;
+  gap: 3px;
+  background: var(--inset);
+  border: 1px solid var(--border-input);
+  border-radius: 10px;
+}
+.seg-opt {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 14px;
+  border-radius: 8px;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+  white-space: nowrap;
+}
+.seg-opt input { position: absolute; opacity: 0; pointer-events: none; }
+.seg-opt:hover { color: var(--text-primary); }
+.seg-opt:has(input:checked) {
+  background: linear-gradient(180deg, var(--accent), var(--accent-dim));
+  color: #04121f;
+  font-weight: 600;
+  box-shadow: 0 1px 6px var(--accent-glow), var(--edge-hi);
+}
+
+/* Chip-choice — clickable pill backed by a hidden checkbox (timeframes).
+   Checked = filled/outlined; name (intervals / granularity) is preserved. */
+.chip-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.chip-choice {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  padding: 6px 13px;
+  border-radius: 999px;
+  border: 1px solid var(--border-input);
+  background: var(--inset);
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  -webkit-user-select: none;
+  user-select: none;
+  transition: all 0.13s;
+}
+.chip-choice input { position: absolute; opacity: 0; pointer-events: none; }
+.chip-choice:hover { border-color: var(--accent-dim); color: var(--text-primary); }
+.chip-choice:has(input:checked) {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent-strong);
+  font-weight: 600;
+  box-shadow: 0 0 0 1px var(--accent-soft);
+}
+
+/* Switch — visual on/off backed by a hidden checkbox (allow_short). */
+.switch { display: inline-flex; align-items: center; gap: 10px; cursor: pointer; }
+.switch input { position: absolute; opacity: 0; pointer-events: none; }
+.switch-track {
+  position: relative;
+  width: 38px; height: 21px;
+  border-radius: 999px;
+  background: var(--panel-2);
+  border: 1px solid var(--border-btn2);
+  transition: background 0.15s, border-color 0.15s;
+  flex: 0 0 auto;
+}
+.switch-track::after {
+  content: "";
+  position: absolute;
+  top: 2px; left: 2px;
+  width: 15px; height: 15px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  transition: transform 0.16s, background 0.16s;
+}
+.switch input:checked + .switch-track {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+}
+.switch input:checked + .switch-track::after {
+  transform: translateX(17px);
+  background: var(--accent-strong);
+}
+.switch-label { font-size: 12.5px; color: var(--text-primary); }
+
+/* Ghost button — the secondary "improve with AI" action. Previously undefined
+   (fell back to bare .btn); give it an explicit low-emphasis outline. */
+.btn-ghost {
+  background: transparent;
+  color: var(--text-secondary);
+  border-color: var(--border-btn2);
+}
+.btn-ghost:hover {
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  border-color: var(--accent-dim);
+}
+
+/* Hero primary action — the one obvious "run" button. */
+.btn-hero {
+  padding: 12px 26px;
+  font-size: 14px;
+  border-radius: 10px;
+  box-shadow: 0 4px 18px var(--accent-glow), var(--edge-hi);
+}
+.btn-hero:hover { box-shadow: 0 6px 24px var(--accent-glow), var(--edge-hi); }
+
+/* ==========================================================================
+   Backtest — right-column tabbed shell (Sonuç / Robustness / Geçmiş).
+   Splits the long stacked right column into sticky tabs so the user jumps
+   instead of scrolling. Panel ids inside (#result, #plan-preview,
+   #robustness-section, history) are UNCHANGED — this is layout only.
+   ========================================================================== */
+.bt-tabs {
+  position: sticky;
+  top: 58px;                 /* sits just under the 58px topbar */
+  z-index: 8;
+  display: flex;
+  align-items: stretch;
+  gap: 4px;
+  padding: 8px 8px 0;
+  margin: -4px -4px 14px;     /* bleed to panel edge */
+  background: var(--panel-glass);
+  backdrop-filter: blur(14px) saturate(140%);
+  -webkit-backdrop-filter: blur(14px) saturate(140%);
+  border-bottom: 1px solid var(--border);
+  border-radius: 12px 12px 0 0;
+}
+.bt-tab {
+  appearance: none;
+  border: 1px solid transparent;
+  border-bottom: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-family: var(--sans);
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  padding: 9px 16px;
+  border-radius: 9px 9px 0 0;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  transition: color 0.15s, background 0.15s;
+}
+.bt-tab:hover { color: var(--text-primary); background: var(--accent-soft); }
+.bt-tab.active {
+  color: var(--accent-strong);
+  background: var(--panel);
+  border-color: var(--border);
+  box-shadow: inset 0 2px 0 0 var(--accent);
+}
+/* Count / status badge inside a tab */
+.bt-tab-badge {
+  min-width: 18px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 600;
+  background: var(--panel-2);
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+}
+.bt-tab.active .bt-tab-badge {
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  border-color: var(--accent-dim);
+}
+.bt-tab-badge.running { color: var(--accent-strong); }
+.bt-tab-badge.running::before {
+  content: "⟳";
+  display: inline-block;
+  animation: spin 0.9s linear infinite;
+}
+.bt-tabpanel { display: none; }
+.bt-tabpanel.active { display: block; }
+
+/* ── Top-level Studio tabs (Compose | Backtest | Analyze). SEPARATE namespace
+   from .bt-tab so the inner right-column tabs are never toggled by the outer
+   switcher. Larger, page-level bar that sits directly under the topbar. ── */
+.lab-tabs {
+  position: sticky;
+  top: 0;
+  z-index: 9;
+  display: flex;
+  align-items: stretch;
+  gap: 6px;
+  padding: 6px 6px 0;
+  margin: 0 0 18px;
+  background: var(--panel-glass);
+  backdrop-filter: blur(14px) saturate(140%);
+  -webkit-backdrop-filter: blur(14px) saturate(140%);
+  border-bottom: 1px solid var(--border);
+  border-radius: 12px 12px 0 0;
+}
+.lab-tab {
+  appearance: none;
+  border: 1px solid transparent;
+  border-bottom: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-family: var(--sans);
+  font-size: 13.5px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  padding: 11px 22px;
+  border-radius: 10px 10px 0 0;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  transition: color 0.15s, background 0.15s;
+}
+.lab-tab:hover { color: var(--text-primary); background: var(--accent-soft); }
+.lab-tab.active {
+  color: var(--accent-strong);
+  background: var(--panel);
+  border-color: var(--border);
+  box-shadow: inset 0 3px 0 0 var(--accent);
+}
+.lab-tabpanel { display: none; }
+.lab-tabpanel.active { display: block; }
+
+
+/* ── Verdict / summary card — the "iyi mi kötü mü" at-a-glance line that sits
+   above the hero. Derived entirely from existing metric fields. ── */
+.verdict-card {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+  padding: 12px 16px;
+  margin-bottom: 14px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--text-muted);
+  background:
+    radial-gradient(120% 160% at 0% 0%, rgba(255,255,255,0.02), transparent 60%),
+    var(--panel);
+  box-shadow: var(--shadow-sm), var(--edge-hi);
+}
+.verdict-card.up   { border-left-color: var(--pnl-up); }
+.verdict-card.down { border-left-color: var(--pnl-down); }
+.verdict-badge {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 5px 12px;
+  border-radius: 999px;
+  white-space: nowrap;
+  background: var(--panel-2);
+  border: 1px solid var(--border-btn2);
+  color: var(--text-secondary);
+}
+.verdict-card.up .verdict-badge {
+  background: rgba(61,220,151,0.14); color: var(--pnl-up); border-color: rgba(61,220,151,0.4);
+}
+.verdict-card.down .verdict-badge {
+  background: rgba(255,93,108,0.14); color: var(--pnl-down); border-color: rgba(255,93,108,0.4);
+}
+.verdict-metrics {
+  display: flex;
+  gap: 22px;
+  flex-wrap: wrap;
+  margin-left: auto;
+}
+.verdict-metric { display: flex; flex-direction: column; gap: 1px; }
+.verdict-metric .vm-label {
+  font-size: 9px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--text-muted);
+}
+.verdict-metric .vm-value {
+  font-family: var(--mono); font-size: 15px; font-weight: 600; font-variant-numeric: tabular-nums;
+  color: var(--text-primary);
+}
+.verdict-metric .vm-value.up { color: var(--pnl-up); }
+.verdict-metric .vm-value.down { color: var(--pnl-down); }
+
+/* ── History list — clickable rows that reload a stored result ── */
+.bt-hist-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border-soft);
+  background: var(--inset);
+  cursor: pointer;
+  transition: border-color 0.13s, background 0.13s;
+}
+.bt-hist-row + .bt-hist-row { margin-top: 6px; }
+.bt-hist-row:hover { border-color: var(--accent); background: var(--accent-soft); }
+.bt-hist-time { font-family: var(--mono); font-size: 11px; color: var(--text-muted); flex: 0 0 auto; }
+.bt-hist-name { font-size: 13px; color: var(--text-primary); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bt-hist-pnl { font-family: var(--mono); font-size: 13px; font-weight: 600; flex: 0 0 auto; }
+.bt-hist-pnl.up { color: var(--pnl-up); }
+.bt-hist-pnl.down { color: var(--pnl-down); }
+.bt-hist-arrow { color: var(--text-muted); flex: 0 0 auto; opacity: 0; transition: opacity 0.13s; }
+.bt-hist-row:hover .bt-hist-arrow { opacity: 1; color: var(--accent-strong); }
+
+/* ── Robustness form: gruplu + inline açıklama + presetler ─────────────────── */
+.rob-form-intro {
+  font-size: 11px;
+  line-height: 1.7;
+  color: var(--text-muted);
+  background: var(--panel-2);
+  border: 1px solid var(--border-soft);
+  border-radius: 6px;
+  padding: 10px 13px;
+  margin-bottom: 12px;
+}
+.rob-form-intro b { color: #c3cad3; font-weight: 600; }
+
+.rob-presets {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+}
+.rob-presets-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-muted);
+  font-weight: 600;
+}
+.btn-sm {
+  padding: 4px 11px;
+  font-size: 11px;
+  line-height: 1.4;
+}
+.rob-presets .btn.active {
+  background: linear-gradient(90deg, var(--accent-soft), transparent 90%);
+  border-color: var(--accent);
+  color: var(--accent-strong);
+}
+
+.rob-form { display: flex; flex-direction: column; gap: 14px; }
+
+.rob-group {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px 14px 14px;
+  margin: 0;
+  min-width: 0;
+}
+.rob-group > legend {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.09em;
+  color: var(--accent-strong);
+  font-weight: 700;
+  padding: 0 7px;
+}
+.rob-group-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 14px 16px;
+  align-items: start;
+}
+
+/* Alan altı yardım metni — .field uppercase label'ının aksine normal-case */
+.field-hint {
+  font-size: 10px;
+  line-height: 1.55;
+  letter-spacing: 0;
+  text-transform: none;
+  font-weight: 400;
+  color: var(--text-muted);
+  margin-top: 1px;
+}
+.field-hint b { color: #aeb6c0; font-weight: 600; }
+
+.rob-form-actions {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+  margin-top: 2px;
+}
+.rob-form-note { font-size: 10px; }
+
+/* ==========================================================================
+   STUDIO — Bloomberg-terminal skin (scoped to body.page-studio only)
+   Classic amber/black: pure-black surfaces, amber primary, green/red data,
+   monospace everywhere, sharp corners, no shadows/gradients/glass/rounding.
+   Every other page keeps the cold-blue graphite look untouched. Most of the
+   transform comes free by re-mapping the CSS variables the components already
+   read; the rest is a short list of "flatten it" overrides.
+   ========================================================================== */
+body.page-studio {
+  /* Surfaces — true black, faint grey elevation steps */
+  --bg-950: #000000;
+  --bg-900: #000000;
+  --panel:  #050505;
+  --panel-2:#0d0d0d;
+  --inset:  #030303;
+  --panel-glass: rgba(0,0,0,0.92);
+  --bg-850: #0a0a0a;
+  --bg-800: #0d0d0d;
+  --bg-700: #1a1a1a;
+  /* Borders — dim grey hairlines, amber only on active */
+  --border:       #1c1c1c;
+  --border-soft:  #141414;
+  --border-input: #262626;
+  --border-btn2:  #333333;
+  /* Accent — Bloomberg amber */
+  --accent:        #ff9e18;
+  --accent-strong: #ffb84d;
+  --accent-dim:    #b36f0f;
+  --accent-deep:   #7a4b09;
+  --accent-soft:   rgba(255,158,24,0.12);
+  --accent-glow:   rgba(255,158,24,0.30);
+  --accent-grad-top:#ffb84d;
+  /* PnL / status — terminal green & red */
+  --pnl-up:        #33ff88;
+  --pnl-down:      #ff3b3b;
+  --pnl-down-soft: #ff6b6b;
+  --amber:         #ffcf40;
+  /* Text — warm grey ramp on black */
+  --text-primary:   #e8e8e8;
+  --text-secondary: #b0b0b0;
+  --text-muted:     #6b6b6b;
+  --code:           #e8e8e8;
+  --text: #e8e8e8;
+  /* Depth — kill it. Sharp, flat, dense. */
+  --shadow-sm: none;
+  --shadow-md: none;
+  --shadow-lg: none;
+  --edge-hi: none;
+  --ring: 0 0 0 1px var(--accent);
+  /* Monospace-first: a terminal reads as data, not prose */
+  font-family: var(--mono);
+}
+
+/* Monospace the whole studio surface (nav, buttons, labels included). */
+body.page-studio,
+body.page-studio .btn,
+body.page-studio label.field,
+body.page-studio input,
+body.page-studio select,
+body.page-studio textarea,
+body.page-studio .nav a {
+  font-family: var(--mono);
+}
+
+/* Sharp corners everywhere — no rounded cards on a terminal. */
+body.page-studio .panel,
+body.page-studio .kpi,
+body.page-studio .hero-main,
+body.page-studio .hero-side-cell,
+body.page-studio .metric-grid,
+body.page-studio .btn,
+body.page-studio input,
+body.page-studio select,
+body.page-studio textarea,
+body.page-studio .badge,
+body.page-studio .chip,
+body.page-studio .verdict-card,
+body.page-studio .lab-tab,
+body.page-studio .bt-tab,
+body.page-studio .lab-tabs,
+body.page-studio .bt-tabs,
+body.page-studio .brand-logo,
+body.page-studio .nav a,
+body.page-studio .narrative-box,
+body.page-studio .lab-phase,
+body.page-studio .bt-hist-row,
+body.page-studio .rob-group,
+body.page-studio .seg-toggle,
+body.page-studio .seg-opt,
+body.page-studio .chip-choice,
+body.page-studio .chat-bubble {
+  border-radius: 0 !important;
+}
+
+/* Flatten: strip gradients, glass blur and glows from panels/hero/buttons. */
+body.page-studio .panel,
+body.page-studio .hero-main,
+body.page-studio .verdict-card {
+  background: var(--panel);
+  box-shadow: none;
+}
+body.page-studio .topbar,
+body.page-studio .lab-tabs,
+body.page-studio .bt-tabs {
+  background: #000000;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  box-shadow: none;
+}
+body.page-studio .hero-main::before,
+body.page-studio .hero-main.up::before,
+body.page-studio .hero-main.down::before { width: 2px; }
+
+/* Buttons — flat amber fill, no gradient/shadow. Primary = solid amber on black. */
+body.page-studio .btn-primary {
+  background: var(--accent);
+  color: #000000;
+  border-color: var(--accent);
+  box-shadow: none;
+  font-weight: 700;
+}
+body.page-studio .btn-primary:hover {
+  background: var(--accent-strong);
+  box-shadow: none;
+}
+body.page-studio .btn-hero { box-shadow: none; }
+body.page-studio .btn-hero:hover { box-shadow: none; }
+body.page-studio .brand-logo { box-shadow: none; background: var(--accent); }
+
+/* Active nav / tabs — sharp amber left-bar, no soft gradient wash. */
+body.page-studio .nav a.active {
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  box-shadow: inset 2px 0 0 0 var(--accent);
+}
+body.page-studio .lab-tab.active { box-shadow: inset 0 2px 0 0 var(--accent); }
+body.page-studio .bt-tab.active { box-shadow: inset 0 2px 0 0 var(--accent); }
+
+/* Denser tables — the core Bloomberg feel is rows of tight monospace data. */
+body.page-studio table.data th,
+body.page-studio table.data td { padding: 6px 12px; }
+body.page-studio table.data td { font-family: var(--mono); }
+
+/* Uppercase amber section titles read as terminal field headers. */
+body.page-studio .panel-title,
+body.page-studio .section-title { color: var(--accent-strong); }
+
+/* Kill decorative animation — a terminal doesn't pulse its borders. */
+body.page-studio .pulse-border { animation: none; border-color: var(--accent-dim); }
+
+/* Chat bubbles — the base rule hard-codes indigo (rgba(129,140,248,…)) which
+   isn't a theme variable, so it leaks into the black terminal. Re-skin the
+   assistant bubble to amber; the user bubble already uses --panel-2/--border. */
+body.page-studio .chat-assistant {
+  background: var(--accent-soft);
+  border-color: var(--accent-dim);
+}
+
+/* Strategy Preview cards carry inline border-radius (7/8px) that a stylesheet
+   rule can't beat — override with !important, scoped to studio so the flow
+   diagram reads as sharp terminal cells. Standalone /strategy keeps its rounding. */
+body.page-studio #strategy-preview div,
+body.page-studio #strategy-preview svg { border-radius: 0 !important; }
+
+/* ============================================================================
+   STUDIO — compact & readable pass (scoped to body.page-studio only)
+   Goal: reclaim chrome/whitespace so more data fits per screen, while lifting
+   the tiny/low-contrast text to a legible floor. No other page is affected.
+   ========================================================================== */
+
+/* --- Density: shrink the biggest whitespace consumers ------------------- */
+
+/* Page frame: 24px on all sides is generous for a terminal. */
+body.page-studio .content { padding: 10px; }
+
+/* Every panel body — the single most repeated padding on the page. */
+body.page-studio .panel-body { padding: 8px 10px; }
+body.page-studio .panel-body.tight { padding: 6px 8px; }
+body.page-studio .panel-header { padding: 6px 10px; }
+
+/* App-wide vertical/column rhythm. */
+body.page-studio .stack { gap: 7px; }
+body.page-studio .grid-2,
+body.page-studio .grid-3 { gap: 9px; }
+body.page-studio .row { gap: 8px; }
+
+/* KPI + hero blocks. */
+body.page-studio .kpi { padding: 8px 10px; }
+body.page-studio .kpi-grid { gap: 7px; }
+body.page-studio .hero-main { padding: 11px 13px; }
+body.page-studio .result-hero { margin-bottom: 9px; }
+
+/* Empty states waste a lot of vertical space at 40px. */
+body.page-studio .empty-state { padding: 16px 14px; }
+
+/* Sidebar header. */
+body.page-studio .brand { padding: 11px 16px 9px; }
+
+/* Backtest stepper — 26px between steps is airy; the run step also has an
+   inline margin-top:26px, so use !important to win that specificity. */
+body.page-studio .bt-step + .bt-step { margin-top: 10px !important; }
+
+/* Chrome: shrink the fixed topbar and the tab bar, and keep the sticky inner
+   backtest tab-bar offset in lockstep with the new topbar height. */
+body.page-studio .topbar { height: 38px; }
+body.page-studio .bt-tabs { top: 38px; }
+body.page-studio .lab-tabs { margin-bottom: 7px; }
+body.page-studio .lab-tab { padding: 6px 14px; }
+
+/* Denser data tables — one more notch tighter than the 6px base studio rule. */
+body.page-studio table.data th,
+body.page-studio table.data td { padding: 4px 10px; }
+
+/* --- Readability: lift tiny + low-contrast text ------------------------- */
+
+/* Studio muted color failed WCAG AA (~3.9:1 on #050505). Lift toward ~5.5:1.
+   Single variable → fixes every muted label/hint/table-header at once. */
+body.page-studio { --text-muted: #909090; }
+
+/* Bump the sub-11px label tier to an 11px legible floor. These are field
+   labels, table headers, badges and stat captions read constantly. */
+body.page-studio .engine-label,
+body.page-studio .engine-sub,
+body.page-studio .topbar-stat .label,
+body.page-studio .verdict-metric .vm-label,
+body.page-studio .metric .label,
+body.page-studio .metric-section-title,
+body.page-studio .badge,
+body.page-studio .brand-sub,
+body.page-studio .tl-lane-label,
+body.page-studio table.data th,
+body.page-studio .kpi .label,
+body.page-studio .hero-label,
+body.page-studio .hero-side-cell .label,
+body.page-studio label.field,
+body.page-studio .field-hint,
+body.page-studio .rob-presets-label { font-size: 11px; }
+
+/* Denser tables get an explicit line-height so 6px-padded rows don't feel
+   cramped once the font floor is raised. */
+body.page-studio table.data { line-height: 1.45; }
+
+/* ============================================================================
+   STUDIO — Claude Code (CLI) skin (scoped to body.page-studio only)
+   The Claude Code terminal aesthetic applied to a Bloomberg-style backtest tool:
+   a deep warm-charcoal canvas (NOT pure black — Claude Code's dark surface has a
+   faint brown warmth), the Anthropic coral/clay accent, monospace-forward data,
+   and soft-but-tight rounded cards. Denser than the amber terminal, warmer than
+   pure black, unmistakably "Claude in a terminal." Appended AFTER both prior
+   studio blocks so it wins by source order; it restates the variables and undoes
+   the amber block's pure-black + border-radius:0 overrides. Density from the
+   compact pass is kept. Other pages keep the cold-blue graphite look untouched.
+   ========================================================================== */
+body.page-studio {
+  /* Surfaces — warm charcoal ramp (Claude Code dark: faint brown, never blue-black) */
+  --bg-950: #1a1815;   /* page canvas */
+  --bg-900: #211e1a;   /* sidebar / topbar */
+  --panel:  #262320;   /* panel surface */
+  --panel-2:#302c28;   /* elevated inner surface / secondary btn */
+  --inset:  #1d1a17;   /* input & inner-card ground */
+  --panel-glass: rgba(26,24,21,0.82);
+  --bg-850: #2b2723;
+  --bg-800: #302c28;
+  --bg-700: #3a352f;
+  /* Borders — warm taupe hairlines */
+  --border:       #38332d;
+  --border-soft:  #2c2823;
+  --border-input: #443e37;
+  --border-btn2:  #524b42;
+  /* Accent — Anthropic coral / clay */
+  --accent:        #d97757;
+  --accent-strong: #e8916f;   /* hover / focus brighten */
+  --accent-dim:    #a85a3f;
+  --accent-deep:   #7a3f2b;
+  --accent-soft:   rgba(217,119,87,0.14);
+  --accent-glow:   rgba(217,119,87,0.30);
+  --accent-grad-top:#e8916f;
+  /* PnL / status — legible on warm charcoal */
+  --pnl-up:        #4ec99a;
+  --pnl-down:      #f0645a;
+  --pnl-down-soft: #f5897f;
+  --amber:         #e0a72e;
+  /* Text — warm off-white ramp */
+  --text-primary:   #f2ede6;
+  --text-secondary: #c8c0b6;
+  --text-muted:     #948b7f;   /* ~5.2:1 on --panel */
+  --code:           #e6ddd2;
+  --text: #f2ede6;
+  /* Depth — subtle, warm, tight. A CLI has structure but no drama. */
+  --shadow-sm: 0 1px 2px rgba(0,0,0,0.30);
+  --shadow-md: 0 2px 10px rgba(0,0,0,0.35);
+  --shadow-lg: 0 10px 30px rgba(0,0,0,0.45);
+  --edge-hi: inset 0 1px 0 rgba(255,255,255,0.03);
+  --ring: 0 0 0 2px var(--accent-glow);
+  /* Monospace-forward — this is a terminal. Sans only for long prose. */
+  font-family: var(--mono);
+}
+
+/* Monospace the surface (nav, buttons, labels, inputs) — CLI feel. */
+body.page-studio,
+body.page-studio .btn,
+body.page-studio label.field,
+body.page-studio input,
+body.page-studio select,
+body.page-studio textarea,
+body.page-studio .nav a,
+body.page-studio .panel-title,
+body.page-studio .section-title { font-family: var(--mono); }
+
+/* Long-form reading stays humanist sans (wiki/prose) for comfort. */
+body.page-studio .prose,
+body.page-studio .narrative-box,
+body.page-studio .prose p,
+body.page-studio .prose li { font-family: var(--sans); }
+
+/* Section titles — coral, uppercase micro-tracking like a CLI prompt label. */
+body.page-studio .panel-title,
+body.page-studio .section-title {
+  color: var(--accent-strong);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+/* Soft-but-tight corners — the amber block forced 0 !important, so we need
+   !important to win at equal specificity. Claude Code = gently rounded, not sharp. */
+body.page-studio .panel,
+body.page-studio .kpi,
+body.page-studio .hero-main,
+body.page-studio .hero-side-cell,
+body.page-studio .metric-grid,
+body.page-studio .verdict-card,
+body.page-studio .narrative-box,
+body.page-studio .lab-phase,
+body.page-studio .bt-hist-row,
+body.page-studio .rob-group { border-radius: 8px !important; }
+body.page-studio .btn,
+body.page-studio input,
+body.page-studio select,
+body.page-studio textarea,
+body.page-studio .badge,
+body.page-studio .chip,
+body.page-studio .lab-tab,
+body.page-studio .bt-tab,
+body.page-studio .seg-toggle,
+body.page-studio .seg-opt,
+body.page-studio .chip-choice,
+body.page-studio .chat-bubble,
+body.page-studio .brand-logo { border-radius: 6px !important; }
+body.page-studio #strategy-preview div,
+body.page-studio #strategy-preview svg { border-radius: 6px !important; }
+
+/* Panels — warm charcoal cards with a hairline border + faint top bevel. */
+body.page-studio .panel,
+body.page-studio .hero-main,
+body.page-studio .verdict-card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-sm), var(--edge-hi);
+}
+body.page-studio .panel-header { border-bottom: 1px solid var(--border); }
+
+/* Topbar / sidebar / tab bars — one step darker than the panels. */
+body.page-studio .topbar,
+body.page-studio .lab-tabs,
+body.page-studio .bt-tabs {
+  background: var(--bg-900);
+  border-color: var(--border);
+  box-shadow: none;
+}
+body.page-studio .sidebar { background: var(--bg-900); border-color: var(--border); }
+
+/* Primary button — solid coral, dark warm text, subtle lift. */
+body.page-studio .btn-primary {
+  background: var(--accent);
+  color: #1a1815;
+  border-color: var(--accent);
+  box-shadow: var(--shadow-sm);
+  font-weight: 700;
+}
+body.page-studio .btn-primary:hover {
+  background: var(--accent-strong);
+  border-color: var(--accent-strong);
+  box-shadow: var(--shadow-md);
+}
+body.page-studio .btn {
+  background: var(--panel-2);
+  color: var(--text-primary);
+  border: 1px solid var(--border-input);
+}
+body.page-studio .btn:hover { background: var(--bg-700); }
+body.page-studio .brand-logo { background: var(--accent); color: #1a1815; box-shadow: var(--shadow-sm); }
+
+/* Active nav / tabs — coral accent, soft coral wash. */
+body.page-studio .nav a { color: var(--text-secondary); }
+body.page-studio .nav a.active {
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  box-shadow: inset 2px 0 0 0 var(--accent);
+}
+body.page-studio .lab-tab { color: var(--text-secondary); }
+body.page-studio .lab-tab.active { color: var(--accent-strong); box-shadow: inset 0 -2px 0 0 var(--accent); }
+body.page-studio .bt-tab.active { color: var(--accent-strong); box-shadow: inset 0 -2px 0 0 var(--accent); }
+
+/* Tables — tight monospace rows, warm header, coral hover. */
+body.page-studio table.data th {
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-900);
+}
+body.page-studio table.data td { border-bottom: 1px solid var(--border-soft); color: var(--text-secondary); font-family: var(--mono); }
+body.page-studio table.data tr:hover td { background: var(--accent-soft); }
+
+/* Inputs — dark inset ground, coral focus ring. */
+body.page-studio input,
+body.page-studio select,
+body.page-studio textarea {
+  background: var(--inset);
+  color: var(--text-primary);
+  border: 1px solid var(--border-input);
+}
+body.page-studio input:focus,
+body.page-studio select:focus,
+body.page-studio textarea:focus {
+  border-color: var(--accent);
+  box-shadow: var(--ring);
+  outline: none;
+}
+
+/* Badges / chips — warm neutral, coral/green/red for status. */
+body.page-studio .badge { background: var(--panel-2); color: var(--text-secondary); border: 1px solid var(--border); }
+body.page-studio .badge.running,
+body.page-studio .badge.entry { background: color-mix(in srgb, var(--pnl-up) 16%, transparent); color: var(--pnl-up); border-color: color-mix(in srgb, var(--pnl-up) 40%, transparent); }
+body.page-studio .badge.exit { background: color-mix(in srgb, var(--pnl-down) 15%, transparent); color: var(--pnl-down); border-color: color-mix(in srgb, var(--pnl-down) 38%, transparent); }
+body.page-studio .badge.beta { background: var(--accent-soft); color: var(--accent-strong); border-color: color-mix(in srgb, var(--accent) 40%, transparent); }
+
+/* Chat bubbles — assistant coral-tinted, user neutral (Claude Code convo feel). */
+body.page-studio .chat-assistant { background: var(--accent-soft); border-color: color-mix(in srgb, var(--accent) 32%, transparent); color: var(--text-primary); }
+body.page-studio .chat-user { background: var(--panel-2); border-color: var(--border); color: var(--text-primary); }
+
+/* Pulse promo — steady coral hairline, no animation. */
+body.page-studio .pulse-border { animation: none; border-color: color-mix(in srgb, var(--accent) 42%, transparent); }
+
+/* Prose / wiki — comfortable reading with coral links + warm code chips. */
+body.page-studio .prose a { color: var(--accent-strong); }
+body.page-studio .prose code,
+body.page-studio pre.diagram { background: var(--inset); color: var(--code); border-color: var(--border); }
+
+/* ============================================================================
+   STUDIO — "özet" pass: quieter, tighter, less visual noise (scoped)
+   Final tuning on top of the Claude Code skin: strip the remaining shadows/bevel
+   so panels read as flat cards separated by hairlines, drop borders down to a
+   single quiet weight, and squeeze one more notch of density. The goal is a
+   calm, summary-like surface — signal over chrome.
+   ========================================================================== */
+
+/* Flatten depth — hairline borders do the separating, not shadows. */
+body.page-studio .panel,
+body.page-studio .hero-main,
+body.page-studio .verdict-card { box-shadow: none; }
+body.page-studio .btn-primary,
+body.page-studio .btn-primary:hover,
+body.page-studio .brand-logo { box-shadow: none; }
+
+/* One quieter corner radius everywhere — softer, more uniform. */
+body.page-studio .panel,
+body.page-studio .kpi,
+body.page-studio .hero-main,
+body.page-studio .hero-side-cell,
+body.page-studio .metric-grid,
+body.page-studio .verdict-card,
+body.page-studio .narrative-box,
+body.page-studio .lab-phase,
+body.page-studio .bt-hist-row,
+body.page-studio .rob-group { border-radius: 6px !important; }
+
+/* One more density notch — summary-tight. */
+body.page-studio .content { padding: 8px; }
+body.page-studio .panel-body { padding: 7px 9px; }
+body.page-studio .panel-header { padding: 5px 9px; }
+body.page-studio .stack { gap: 6px; }
+
+/* Metric groups (Risk / Trades / P&L-Cost) — maximum density: small cells,
+   narrow columns, minimal section gaps. */
+body.page-studio .metric-section { margin-bottom: 7px; }
+body.page-studio .metric-section-title {
+  margin-bottom: 3px;
+  padding-bottom: 2px;
+  font-size: 9px;
+}
+body.page-studio .metric-grid {
+  grid-template-columns: repeat(auto-fit, minmax(92px, 1fr));
+}
+body.page-studio .metric { padding: 4px 8px; }
+body.page-studio .metric .label { font-size: 9px; }
+body.page-studio .metric .value { font-size: 13px; }
+body.page-studio .verdict-card {
+  padding: 6px 10px;
+  gap: 10px;
+  margin-bottom: 7px;
+}
+body.page-studio .verdict-metrics { gap: 12px; }
+body.page-studio .verdict-metric .vm-value { font-size: 13px; }
+body.page-studio .result-hero { gap: 7px; }
+body.page-studio .hero-main { padding: 10px 12px; }
+body.page-studio .hero-side-cell { padding: 7px 10px; }
+body.page-studio .grid-2,
+body.page-studio .grid-3 { gap: 8px; }
+
+/* Section titles calmer — normal weight, muted-forward, no coral shout unless
+   it's a real heading. Keeps the surface reading as a quiet summary. */
+body.page-studio .panel-title { color: var(--text-primary); font-weight: 500; letter-spacing: 0.01em; }
+body.page-studio .section-title { color: var(--text-secondary); font-weight: 500; }
+
+/* Empty states + hero even tighter. */
+body.page-studio .empty-state { padding: 12px 12px; }
+body.page-studio .hero-main { padding: 9px 11px; }
+
+/* ============================================================================
+   STUDIO — width containment (scoped)
+   Everything felt "too wide" because .content has no max-width and flexes to
+   the full viewport, so on a wide monitor every panel stretches edge-to-edge
+   and lines get uncomfortably long. Cap the content column and center it, and
+   pull in the widest inner grids so forms/tables don't sprawl.
+   ========================================================================== */
+
+/* Cap the working column at a comfortable width and center it. */
+body.page-studio .content {
+  max-width: 1160px;
+  margin-inline: auto;
+  width: 100%;
+}
+
+/* The Compose grid was 3fr:2fr (very wide right column). Bias toward the
+   author column and keep the side column a fixed, calmer width. */
+body.page-studio .grid-3 { grid-template-columns: minmax(0, 1fr) minmax(280px, 380px); }
+
+/* Two-up form rows shouldn't stretch full width — keep inputs readable. */
+body.page-studio .grid-2 { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+
+/* Narrow single screens collapse both grids to one column. */
+@media (max-width: 900px) {
+  body.page-studio .grid-3,
+  body.page-studio .grid-2 { grid-template-columns: 1fr; }
+}
+
+/* ============================================================================
+   STUDIO — OTONOM ↔ MANUEL mode switch + autonomous cockpit (scoped)
+   The mode switch sits above the tabs; it toggles between the live autonomous
+   cockpit and the hand-driven Compose/Backtest/Analyze surface. Presentation
+   only (labMode() toggles .active); the panels below control visibility.
+   ========================================================================== */
+
+/* Mode panels: only the .active one shows (mirrors .lab-tabpanel). */
+body.page-studio .lab-modepanel { display: none; }
+body.page-studio .lab-modepanel.active { display: block; }
+
+/* The switch — two big segmented buttons, coral when active. */
+body.page-studio .mode-switch {
+  display: inline-flex;
+  gap: 0;
+  margin-bottom: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--bg-900);
+}
+body.page-studio .mode-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 18px;
+  background: transparent;
+  color: var(--text-muted);
+  border: 0;
+  border-right: 1px solid var(--border);
+  font-family: var(--mono);
+  font-size: 12.5px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+body.page-studio .mode-btn:last-child { border-right: 0; }
+body.page-studio .mode-btn:hover { color: var(--text-secondary); background: var(--panel-2); }
+body.page-studio .mode-btn.active { color: #1a1815; background: var(--accent); }
+body.page-studio .mode-btn.active .mode-sub { color: rgba(26,24,21,0.72); }
+body.page-studio .mode-sub {
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: 0;
+  color: var(--text-muted);
+  text-transform: none;
+}
+
+/* The pulsing "otonom" dot on the OTONOM button. */
+body.page-studio .mode-dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--pnl-up);
+  box-shadow: 0 0 0 0 color-mix(in srgb, var(--pnl-up) 70%, transparent);
+  animation: modeDotPulse 1.8s ease-out infinite;
+}
+body.page-studio .mode-btn.active .mode-dot { background: #1a1815; box-shadow: none; animation: none; }
+@keyframes modeDotPulse {
+  0%   { box-shadow: 0 0 0 0 color-mix(in srgb, var(--pnl-up) 60%, transparent); }
+  70%  { box-shadow: 0 0 0 6px transparent; }
+  100% { box-shadow: 0 0 0 0 transparent; }
+}
+
+/* Cockpit hero — the autonomous control strip. */
+body.page-studio .cockpit-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 12px;
+}
+body.page-studio .cockpit-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+}
+body.page-studio .cockpit-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 10px 14px;
+}
+body.page-studio .cockpit-hint { flex: 1; min-width: 220px; }
+body.page-studio .cockpit-check {
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+  padding-bottom: 6px;
+  font-size: 12px;
+}
+
+/* Idle state — calm, centered, coral diamond. */
+body.page-studio .cockpit-idle .empty-state { text-align: center; }
+body.page-studio .cockpit-idle-mark {
+  font-size: 30px;
+  color: var(--accent);
+  margin-bottom: 6px;
+  line-height: 1;
+}
+
+/* ══ Simple-mode wizard (studio_simple.html) ═══════════════════════════════ */
+
+/* Step rail — 1→5 with done/current states. */
+.sw-rail {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-bottom: 18px;
+}
+.sw-rail-step {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 14px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--panel);
+  color: var(--text-muted);
+  font-size: 12px;
+  cursor: pointer;
+  transition: border-color .15s, color .15s;
+}
+.sw-rail-step:hover { border-color: var(--accent-dim); color: var(--text-primary); }
+.sw-rail-step.active {
+  border-color: var(--accent);
+  color: var(--text-primary);
+  background: var(--accent-soft);
+}
+.sw-rail-step.done { color: var(--pnl-up); border-color: var(--border); }
+/* Locked steps (mandatory backtest not completed yet) */
+.sw-rail-step:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.sw-rail-step:disabled:hover { border-color: var(--border); color: var(--text-muted); }
+.sw-rail-no {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--border-soft);
+  font-size: 10px;
+  font-weight: 700;
+}
+.sw-rail-step.active .sw-rail-no { background: var(--accent); color: #fff; }
+.sw-rail-step.done .sw-rail-no { background: rgba(61,220,151,0.2); color: var(--pnl-up); }
+.sw-rail-sep { width: 14px; height: 1px; background: var(--border); flex-shrink: 0; }
+
+/* Step panels — only the active one is visible. */
+.sw-step { display: none; }
+.sw-step.active { display: block; }
+.sw-step-head { margin-bottom: 16px; }
+.sw-step-title { font-size: 17px; font-weight: 700; margin-bottom: 4px; }
+.sw-step-sub { font-size: 12px; color: var(--text-muted); line-height: 1.6; max-width: 640px; }
+.sw-summary { color: var(--text-secondary); font-weight: 600; }
+
+/* Template cards. */
+.sw-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+  gap: 12px;
+}
+.sw-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel);
+  color: var(--text-primary);
+  text-align: left;
+  cursor: pointer;
+  transition: border-color .15s, transform .1s, background .15s;
+}
+.sw-card:hover { border-color: var(--accent-dim); transform: translateY(-1px); }
+.sw-card.active {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+.sw-card-icon { font-size: 20px; line-height: 1; }
+.sw-card-title { font-size: 13px; font-weight: 700; }
+.sw-card-blurb { font-size: 11px; color: var(--text-muted); line-height: 1.55; }
+
+/* Quick-pick rows (coin / timeframe). */
+.sw-field-label {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  margin-bottom: 8px;
+}
+.sw-quick-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.sw-quick {
+  padding: 8px 18px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--text-secondary);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: border-color .15s, background .15s, color .15s;
+}
+.sw-quick:hover { border-color: var(--accent-dim); color: var(--text-primary); }
+.sw-quick.active {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--text-primary);
+}
+.sw-symbol-input { max-width: 200px; }
+
+/* Collapsibles + slots + nav. */
+.sw-saved summary, .sw-advanced summary {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .05em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  cursor: pointer;
+  -webkit-user-select: none;
+  user-select: none;
+}
+.sw-slot { margin-top: 16px; }
+.sw-slot:empty { display: none; }
+.sw-nav {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 22px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border-soft);
+}
+.sw-light { white-space: nowrap; }
+.sw-finish-actions { margin-top: 4px; }

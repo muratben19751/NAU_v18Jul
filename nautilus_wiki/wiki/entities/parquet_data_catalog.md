@@ -7,8 +7,8 @@ sources:
   - sources/05_latest_docs_research.md
   - https://nautilustrader.io/docs/latest/concepts/data
   - https://nautilustrader.io/docs/latest/concepts/backtesting
-last_updated: 2026-07-09
-summary: Tick/quote/bar ve instrument tanımlarını nanosaniye hassasiyetiyle Parquet olarak kalıcılaştıran; Rust + PyArrow dual-backend; BacktestNode ve LiveNode ortak veri deposu.
+last_updated: 2026-07-20
+summary: Tick/quote/bar ve instrument tanımlarını nanosaniye hassasiyetiyle Parquet'e kalıcılaştıran Rust + PyArrow dual-backend; cache bounds row-group metadata ile keşfedilir.
 related:
   - wiki/tutorials/tutorial_loading_external_data.md
   - wiki/tutorials/tutorial_data_catalog_databento.md
@@ -88,6 +88,34 @@ ts_ns = idx.astype("datetime64[ns]").astype("int64").to_numpy()
 ```
 
 Eğer ms değerler kullanılırsa BacktestNode veriyi `1970-01-01` zamanında çalıştırır ve hiç emir üretmez.
+
+## Parquet Cache Bounds Keşfi: Row-Group Metadata (v1.x, webapp)
+
+Webapp'in backtest run worker'ı (`web/routes/backtest.py`), kullanıcı tarih girmediğinde parquet cache'in başlangıç/bitiş sınırlarını (`cache_start`/`cache_end`) bulmak için **tüm dosyayı okumaz** — bu 3M+ satırlık bir Bybit 1m cache'inde gereksiz tam decode olurdu. Bunun yerine PyArrow'un row-group METADATA istatistikleri (min/max timestamp) okunur:
+
+```python
+import pyarrow.parquet as pq
+
+pf = pq.ParquetFile(cache_path)
+meta = pf.metadata
+rg0 = meta.row_group(0)
+rgN = meta.row_group(meta.num_row_groups - 1)
+# İndeks kolonu: şemada path_in_schema içinde "index" geçen kolon (ör. "__index_level_0__")
+idx_col = next(
+    (i for i in range(rg0.num_columns)
+     if "index" in rg0.column(i).path_in_schema.lower()),
+    None,
+)
+col0, colN = rg0.column(idx_col), rgN.column(idx_col)
+ts0 = col0.statistics.min if (col0.statistics and col0.statistics.has_min_max) else None
+tsN = colN.statistics.max if (colN.statistics and colN.statistics.has_min_max) else None
+# İstatistik yoksa hafif fallback (yalnızca index okunur, kolon yok):
+# _df = pd.read_parquet(cache_path, columns=[])
+```
+
+Aynı desen `/data` sayfa yükleyicisinde de kullanılır (`data._read_parquet_stats` — footer'dan yalnız ~4 KB metadata okur, tüm dosyayı decode etmez; bkz. [[webapp_module_map]] `data.py` satırı). Fark: `/data` tarafı timestamp kolonunu **logical-type** (`pa.types.is_timestamp`) ile bulur; backtest run worker `path_in_schema` içinde `"index"` string arar.
+
+**Varsayılan pencere cap'i (v1.x, webapp)**: Bybit dalında tarih girilmediğinde başlangıç, `max(cache_start, cache_end − 365 gün)` ile **365 güne** cap'lenir (önceden 7 gündü) — hem her run'ın aynı deterministik pencereyi kullanmasını sağlar hem de Bar construction loop'unun 3M+ satır churn etmesini önler.
 
 ## BacktestNode ile Kullanım Örüntüsü
 

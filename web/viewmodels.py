@@ -26,7 +26,7 @@ def fmt_num(v: float | None, digits: int = 2) -> str:
     if v is None or (isinstance(v, float) and math.isnan(v)):
         return "—"
     if isinstance(v, float) and math.isinf(v):
-        # profit_factor kayıpsız stratejide inf olur; "inf" yerine sembol
+        # profit_factor is inf in a lossless strategy; symbol instead of "inf"
         return "∞" if v > 0 else "-∞"
     return f"{v:,.{digits}f}"
 
@@ -76,7 +76,7 @@ def iteration_row(r: IterationResult) -> dict:
         # Drawdown
         "max_dd": m.get("max_dd"),
         "max_dd_fmt": fmt_pct(m.get("max_dd"), 2),
-        # Trade counts (None gelirse 0'a düş — #24)
+        # Trade counts (fall back to 0 if None comes in — #24)
         "n_trades": m.get("n_trades") or 0,
         "n_wins": m.get("n_wins") or 0,
         "n_losses": m.get("n_losses") or 0,
@@ -97,8 +97,8 @@ def iteration_row(r: IterationResult) -> dict:
         "bars_info": r.bars_info,
         # Which engine produced this (#17)
         "runner": m.get("runner", "BacktestEngine"),
-        # L19: bar-çözünürlüklü MTM eğrisi [(iso_ts, eq)] — raporlanan
-        # max_dd bu seriden gelir; UI varsa bunu çizer (realized fallback).
+        # L19: bar-resolution MTM curve [(iso_ts, eq)] — reported
+        # max_dd comes from this series; UI draws it if present (realized fallback).
         "equity_curve_mtm": m.get("equity_curve_mtm") or [],
     }
 
@@ -113,18 +113,18 @@ def best_card(r: IterationResult | None) -> dict | None:
     return row
 
 
-# ── Zaman çizelgesi (Gantt) render modeli ────────────────────────────────────
-# Agent pipeline span'larını (bkz. agent_backtest._tl_begin) SVG bar'larına
-# çevirir. Saf fonksiyonlar — template ve sessions replay ikisi de kullanır.
+# ── Timeline (Gantt) render model ────────────────────────────────────
+# Converts agent pipeline spans (see agent_backtest._tl_begin) into SVG bars.
+# Pure functions — used by both template and sessions replay.
 
 _TL_LANE_ORDER = [
-    ("data", "VERİ"),
+    ("data", "DATA"),
     ("llm", "LLM"),
     ("backtest", "BACKTEST"),
     ("robustness", "ROBUSTNESS"),
 ]
-_TL_MIN_W_PCT = 0.35  # anlık işlemler tıklanabilir kalsın
-# "Nice" tick aralığı merdiveni (saniye) — 4-8 tick hedefi.
+_TL_MIN_W_PCT = 0.35  # keep instant trades clickable
+# "Nice" tick interval ladder (seconds) — targets 4-8 ticks.
 _TL_TICK_LADDER = [10, 30, 60, 300, 900, 1800, 3600, 10800]
 _TL_STATUS_GLYPH = {"ok": "✓", "fail": "✗", "warn": "⚠", "running": "●"}
 
@@ -144,12 +144,12 @@ def timeline_view(
     now: float | None = None,
     round_num: int | None = None,
 ) -> dict | None:
-    """Span listesi → SVG render modeli. Eşleşen span yoksa None.
+    """Span list → SVG render model. None if no matching span.
 
-    ``round_num`` verilirse yalnız o turun span'ları (continuous mod).
-    Açık span'lar (t1 None) ``now``'a kadar uzatılır; ``now`` None ise
-    (tamamlanmış run) kapalı span'ların maksimumu kullanılır ve now-imleci
-    çizilmez.
+    If ``round_num`` is given, only that round's spans (continuous mode).
+    Open spans (t1 None) are extended to ``now``; if ``now`` is None
+    (completed run) the maximum of closed spans is used and the now-cursor
+    is not drawn.
     """
     from datetime import UTC, datetime
 
@@ -170,7 +170,7 @@ def timeline_view(
     def x_pct(t: float) -> float:
         return round(max(0.0, min(1.0, (t - t0) / dur)) * 100, 3)
 
-    # Tick'ler
+    # Ticks
     tick_step = next((s for s in _TL_TICK_LADDER if dur / s <= 8), _TL_TICK_LADDER[-1])
     ticks = []
     tick_t = t0 - (t0 % tick_step) + tick_step
@@ -188,7 +188,7 @@ def timeline_view(
         lane_spans = [sp for sp in sel if sp.get("lane") == lane_key]
         if not lane_spans:
             continue
-        # Robustness: ana span'lar satır 0, sub'lar satır 1.
+        # Robustness: main spans row 0, subs row 1.
         rows: list[list[dict]] = [[], []] if lane_key == "robustness" else [[]]
         for sp in sorted(lane_spans, key=lambda s: s["t0"]):
             end = sp["t1"] if sp.get("t1") is not None else (now_clamped or t1)
@@ -232,11 +232,12 @@ def associate_steps(
     *,
     round_num: int | None = None,
 ) -> dict[str, list[dict]]:
-    """span.key → span'ın [t0,t1] penceresine düşen adımlar.
+    """span.key → steps that fall within the span's [t0,t1] window.
 
-    Adım ts'leri "HH:MM:SS" — span epoch'larının gününe bağlanır; gece-yarısı
-    sarması için 12 saatten büyük negatif fark +86400 ile düzeltilir. Bir adım
-    birden çok span penceresine düşerse en içteki (sub) / en geç başlayan kazanır.
+    Step ts values are "HH:MM:SS" — bound to the day of the span epochs; for
+    midnight wraparound a negative diff larger than 12 hours is corrected with
+    +86400. If a step falls within multiple span windows the innermost (sub) /
+    latest-starting one wins.
     """
     from datetime import UTC, datetime
 
@@ -256,10 +257,10 @@ def associate_steps(
             return None
         t = day0_ts + h * 3600 + m * 60 + s
         if t < min(sp["t0"] for sp in sel) - 43200:
-            t += 86400  # gece-yarısı sarması
+            t += 86400  # midnight wraparound
         return t
 
-    # En içteki span kazansın: sub'lar önce, sonra geç başlayanlar.
+    # Innermost span wins: subs first, then later-starting ones.
     ordered = sorted(sel, key=lambda sp: (not sp.get("sub", False), -sp["t0"]))
     out: dict[str, list[dict]] = {}
     for st in steps:
@@ -268,7 +269,7 @@ def associate_steps(
             continue
         for sp in ordered:
             end = sp["t1"] if sp.get("t1") is not None else float("inf")
-            # 1s tolerans: step ts saniye çözünürlüklü.
+            # 1s tolerance: step ts has second resolution.
             if sp["t0"] - 1.0 <= t <= end + 1.0:
                 out.setdefault(sp["key"], []).append(st)
                 break

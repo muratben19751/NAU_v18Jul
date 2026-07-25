@@ -131,5 +131,6 @@ BacktestDataConfig(
 - [[tutorial_hurst_vpin_kraken]]
 - [[tutorial_loading_external_data]]
 - [[visualization]]
+- [[vol_targeted_trend]]
 - [[webapp_module_map]]
 <!-- BACKLINKS:END -->

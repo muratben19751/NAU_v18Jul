@@ -1,14 +1,14 @@
-"""Regresyon çapaları (kalan HIGH boşluklar) — suite analizinin top_gaps #13-16'sı.
-Pür-birim + hafif-stub çapalar; parquet/gerçek-motor fixture'ları için bkz.
+"""Regression anchors (remaining HIGH gaps) — top_gaps #13-16 of the suite analysis.
+Pure-unit + light-stub anchors; for parquet/real-engine fixtures see
 test_regression_anchors_e2e.py.
 
-Kapsanan:
-- #14a  wfo_aggregate skorer (oos_sharpe_penalized = mean-0.5·std, efficiency,
-        param_cv kararsızlık dalı, boş → {})  [current-output pin]
-- #14b  optimize_window fold-kabul kapısı (M462: geçerli-fold oranı >= 0.6)
+Covered:
+- #14a  wfo_aggregate scorer (oos_sharpe_penalized = mean-0.5·std, efficiency,
+        param_cv instability branch, empty → {})  [current-output pin]
+- #14b  optimize_window fold-acceptance gate (M462: valid-fold ratio >= 0.6)
 - #13   agent_backtest _robustness_passed + _ms_score_factor (winner gate)
-- #16   parallel_exec BacktestPool.run_units timeout dalı (M300 done-future toplama)
-- #15   strategies STRATEGY_REGISTRY (H7) + indicators.py sayısal değerler [pin]
+- #16   parallel_exec BacktestPool.run_units timeout branch (M300 done-future collection)
+- #15   strategies STRATEGY_REGISTRY (H7) + indicators.py numeric values [pin]
 """
 
 from __future__ import annotations
@@ -32,9 +32,9 @@ from composer import ComposedStrategySpec, SignalBlock
 # ===========================================================================
 class TestWfoAggregateScorer:
     def _windows(self):
-        # İki pencere: test sharpe [1.0, 3.0] → mean=2.0, popülasyon std=1.0 →
+        # Two windows: test sharpe [1.0, 3.0] → mean=2.0, population std=1.0 →
         # penalized = 2.0 - 0.5·1.0 = 1.5. param 'fast'[10,12]→cv=1/11=0.091
-        # (kararlı), 'slow'[10,40]→cv=15/25=0.6 (>0.5, kararsız). train_obj mean
+        # (stable), 'slow'[10,40]→cv=15/25=0.6 (>0.5, unstable). train_obj mean
         # 2.0 → efficiency = 2/2 = 1.0.
         return [
             {
@@ -53,11 +53,11 @@ class TestWfoAggregateScorer:
         from backtest_robustness import wfo_aggregate
 
         r = wfo_aggregate(self._windows())
-        assert r["oos_sharpe_penalized"] == 1.5  # mean - 0.5·std (M28 dağılım cezası)
-        assert r["wfo_efficiency"] == 1.0  # OOS/IS verimliliği
+        assert r["oos_sharpe_penalized"] == 1.5  # mean - 0.5·std (M28 dispersion penalty)
+        assert r["wfo_efficiency"] == 1.0  # OOS/IS efficiency
         assert r["param_cv"] == {"fast": 0.091, "slow": 0.6}  # std/|mean|
-        assert r["unstable_params"] == ["slow"]  # cv>0.5 dalı
-        assert r["stability_label"] == "kararsız (overfit riski)"
+        assert r["unstable_params"] == ["slow"]  # cv>0.5 branch
+        assert r["stability_label"] == "unstable (overfit risk)"
 
     def test_empty_returns_empty_dict(self):
         from backtest_robustness import wfo_aggregate
@@ -66,7 +66,7 @@ class TestWfoAggregateScorer:
 
 
 # ===========================================================================
-# #14b (high, M462) — optimize_window fold-kabul kapısı (>= WF_MIN_VALID_FOLDS_FRAC)
+# #14b (high, M462) — optimize_window fold-acceptance gate (>= WF_MIN_VALID_FOLDS_FRAC)
 # ===========================================================================
 def _fg_spec():
     return ComposedStrategySpec(
@@ -92,8 +92,8 @@ def _fg_bars():
 
 
 def _fg_stub(n_invalid):
-    # Fold sırasına göre ilk n_invalid fold'u -inf (n_trades=0 → eşik altı),
-    # kalanları geçerli (sharpe=1.0, n_trades=10) yapan stub run_fn.
+    # A stub run_fn that makes the first n_invalid folds -inf (n_trades=0 → below
+    # threshold) by fold order, and the rest valid (sharpe=1.0, n_trades=10).
     calls = {"i": 0}
 
     def stub(cand, bars, **kw):
@@ -110,28 +110,28 @@ def _fg_stub(n_invalid):
 
 
 class TestSharpePerTradeAlignment:
-    """NAU paritesi: composite/objektif 0.3 terimi PER-TRADE sharpe kullanır
-    (annualized 252-gün 'sharpe' DEĞİL). Annualized'a dönüş bu testleri kırar."""
+    """NAU parity: composite/objective 0.3 term uses PER-TRADE sharpe
+    (NOT the annualized 252-day 'sharpe'). Reverting to annualized breaks these tests."""
 
     def test_objective_value_uses_per_trade_sharpe(self):
         from wfo_optimizer import WFO_TRADE_CONF_K, objective_value
 
-        # sharpe (annualized)=8.0 ≠ sharpe_per_trade=2.0 → per-trade seçilmeli.
+        # sharpe (annualized)=8.0 ≠ sharpe_per_trade=2.0 → per-trade must be chosen.
         res = SimpleNamespace(
             error=None,
             metrics={"sharpe": 8.0, "sharpe_per_trade": 2.0, "n_trades": 100},
         )
         v = objective_value(res, "sharpe")
         conf = 100 / (100 + WFO_TRADE_CONF_K)
-        assert v == pytest.approx(2.0 * conf)  # 8.0*conf olsaydı annualized'dı
+        assert v == pytest.approx(2.0 * conf)  # if it were 8.0*conf it would be annualized
 
     def test_score_uses_per_trade_sharpe(self):
         import math
 
         import web.routes.agent_backtest as ab
 
-        # pnl_pct=0 → calmar=0 → base = 0.3*clamp(sharpe_term). sharpe_per_trade=2.0
-        # kullanılırsa base=0.6; annualized sharpe=8.0 kullanılsa base=2.4 olurdu.
+        # pnl_pct=0 → calmar=0 → base = 0.3*clamp(sharpe_term). if sharpe_per_trade=2.0
+        # is used base=0.6; if annualized sharpe=8.0 were used base would be 2.4.
         res = SimpleNamespace(
             error=None,
             metrics={
@@ -145,23 +145,23 @@ class TestSharpePerTradeAlignment:
         score = ab._score(res)
         conf = 100 / (100 + 20)
         assert score == pytest.approx(0.3 * 2.0 * conf)
-        assert not math.isclose(score, 0.3 * 8.0 * conf)  # annualized DEĞİL
+        assert not math.isclose(score, 0.3 * 8.0 * conf)  # NOT annualized
 
 
 class TestFoldAcceptanceGate:
     def test_two_of_three_valid_survives(self):
-        # 2/3 = 0.667 >= 0.6 → aday SKORLANIR (yaşar). space=[] → tek aday, 3 fold.
+        # 2/3 = 0.667 >= 0.6 → candidate is SCORED (survives). space=[] → single candidate, 3 folds.
         bars = _fg_bars()
-        assert len(W.build_fold_bounds(bars)) == 3  # 3-fold önkoşulu
+        assert len(W.build_fold_bounds(bars)) == 3  # 3-fold precondition
         best = W.optimize_window(
             _fg_spec(), bars, [], None, None, None, run_fn=_fg_stub(1)
         )
-        # İki geçerli fold: obj = 1.0 × 10/(10+20) = 1/3; penalized = mean-0.5·std = 1/3.
+        # Two valid folds: obj = 1.0 × 10/(10+20) = 1/3; penalized = mean-0.5·std = 1/3.
         assert best["objective"] != float("-inf")
         assert best["objective"] == pytest.approx(1.0 * 10 / 30)
 
     def test_one_of_three_valid_rejected(self):
-        # 1/3 = 0.333 < 0.6 → aday -inf (reddedilir); best naive fallback'e düşer.
+        # 1/3 = 0.333 < 0.6 → candidate -inf (rejected); best falls back to naive fallback.
         bars = _fg_bars()
         assert len(W.build_fold_bounds(bars)) == 3
         best = W.optimize_window(
@@ -174,12 +174,12 @@ class TestFoldAcceptanceGate:
 # #13 (high) — agent_backtest winner gate: _robustness_passed + _ms_score_factor
 # ===========================================================================
 class TestRobustnessPassed:
-    """run_id=None ile çağrılır → _add_step (I/O) tetiklenmez, saf mantık test edilir."""
+    """Called with run_id=None → _add_step (I/O) is not triggered, pure logic is tested."""
 
     def _clean(self):
-        # 3 kriter GERÇEKTEN değerlendirilir (IS/OOS, WFO, MC), hiçbiri failed değil.
+        # 3 criteria are ACTUALLY evaluated (IS/OOS, WFO, MC), none of them failed.
         return {
-            "split": {"overfitting_label": "✓ Sağlam"},
+            "split": {"overfitting_label": "✓ Robust"},
             "wfo_windows": [{"test_n_trades": 5}],
             "oos_sharpe_penalized": 1.0,
             "mc": {"max_dd_p50": -10.0},
@@ -193,15 +193,15 @@ class TestRobustnessPassed:
     def test_two_eval_strict_fails_relaxed_passes(self):
         import web.routes.agent_backtest as ab
 
-        rob = {"split": {"overfitting_label": "✓ Sağlam"}, "mc": {"max_dd_p50": -10.0}}
-        assert ab._robustness_passed(rob, strict=True) is False  # gereken ≥3
-        assert ab._robustness_passed(rob, strict=False) is True  # gereken ≥2
+        rob = {"split": {"overfitting_label": "✓ Robust"}, "mc": {"max_dd_p50": -10.0}}
+        assert ab._robustness_passed(rob, strict=True) is False  # requires ≥3
+        assert ab._robustness_passed(rob, strict=False) is True  # requires ≥2
 
     def test_failed_is_oos_label_fails(self):
         import web.routes.agent_backtest as ab
 
         rob = self._clean()
-        rob["split"] = {"overfitting_label": "✗ aşırı-uyum"}
+        rob["split"] = {"overfitting_label": "✗ overfit"}
         assert ab._robustness_passed(rob, strict=True) is False
 
     def test_monte_carlo_median_dd_below_limit_fails(self):
@@ -216,7 +216,7 @@ class TestRobustnessPassed:
         import web.routes.agent_backtest as ab
 
         rob = self._clean()
-        rob["mc"] = {"max_dd_p50": -20.0}  # > -25.0 → geçer
+        rob["mc"] = {"max_dd_p50": -20.0}  # > -25.0 → passes
         assert ab._robustness_passed(rob, strict=True) is True
 
     def test_penalized_sharpe_non_positive_fails(self):
@@ -234,7 +234,7 @@ class TestRobustnessPassed:
 
 
 class TestMsScoreFactor:
-    """multi-symbol pass_rate → çarpan ∈ [0.15, 1.0] (current-output pin)."""
+    """multi-symbol pass_rate → multiplier ∈ [0.15, 1.0] (current-output pin)."""
 
     def test_pass_rate_one_gives_ceiling(self):
         import web.routes.agent_backtest as ab
@@ -254,7 +254,7 @@ class TestMsScoreFactor:
         rob = {
             "multi_symbol": {
                 "pass_rate": 0.0,
-                "generalization_label": "✗ sembol-spesifik",
+                "generalization_label": "✗ symbol-specific",
                 "n_valid": 5,
             }
         }
@@ -263,7 +263,7 @@ class TestMsScoreFactor:
     def test_insufficient_data_is_neutral(self):
         import web.routes.agent_backtest as ab
 
-        # M653: pass_rate=0.0 ama 'yetersiz veri' → DEĞERLENDİRİLEMEDİ → nötr 0.575.
+        # M653: pass_rate=0.0 but 'insufficient data' → COULD NOT BE EVALUATED → neutral 0.575.
         rob = {
             "multi_symbol": {
                 "pass_rate": 0.0,
@@ -281,9 +281,9 @@ class TestMsScoreFactor:
 
 
 # ===========================================================================
-# #16 (high, M300/M23) — BacktestPool.run_units timeout dalı: done-but-unyielded
-# future'lar toplanır (düşürülmez), süresi dolan unit in-band 'unit timeout' olur,
-# havuz yeniden kurulup sonraki batch'i kabul eder.
+# #16 (high, M300/M23) — BacktestPool.run_units timeout branch: done-but-unyielded
+# futures are collected (not dropped), the timed-out unit becomes an in-band 'unit timeout',
+# the pool is rebuilt and accepts the next batch.
 # ===========================================================================
 _PROBE_HELPER_SRC = """
 def probe_run_unit(unit):
@@ -297,24 +297,24 @@ def probe_run_unit(unit):
 
 class TestRunUnitsTimeout:
     def test_timeout_collects_done_and_rebuilds_pool(self, pool, monkeypatch):  # noqa: F811
-        # spawn worker'ları repo kökünden import edebilsin diye yardımcı modülü
-        # diske yaz (probe_run_unit tek başına importlanabilir, ağır import yok).
+        # Write the helper module to disk so spawn workers can import it from the
+        # repo root (probe_run_unit is importable on its own, no heavy import).
         repo = Path(__file__).resolve().parents[1]
         helper = repo / "_probe_unit_tmp.py"
         helper.write_text(_PROBE_HELPER_SRC, encoding="utf-8")
         try:
-            import _probe_unit_tmp  # repo kökünden importlanabilir
+            import _probe_unit_tmp  # importable from the repo root
 
             monkeypatch.setattr(PE, "_run_unit", _probe_unit_tmp.probe_run_unit)
 
-            # PARENT tarafını timeout bütçesinin ÜSTÜNE kadar durdur: ilk hızlı
-            # future yield edildikten sonra progress_cb burada uyurken kalan hızlı
-            # future'lar "done ama yield edilmemiş" durumuna düşer → M300 dalı.
+            # Stall the PARENT side PAST the timeout budget: after the first fast
+            # future is yielded, progress_cb sleeps here while the remaining fast
+            # futures fall into "done but not yielded" state → M300 branch.
             def _stall_cb(done, total, key):
                 time.sleep(3.5)
 
             units = [
-                {"key": "slow", "_probe_sleep": 7.0},  # timeout'u aşar
+                {"key": "slow", "_probe_sleep": 7.0},  # exceeds the timeout
                 {"key": "f1"},
                 {"key": "f2"},
                 {"key": "f3"},
@@ -322,16 +322,16 @@ class TestRunUnitsTimeout:
             ]
             out = pool.run_units(units, progress_cb=_stall_cb, timeout_s=2.0)
 
-            # (1) hiçbir tamamlanmış anahtar düşmedi
+            # (1) no completed key was dropped
             assert set(out) == {"slow", "f1", "f2", "f3", "f4"}
-            # (2) hızlı unit'ler GERÇEK payload taşıyor (M300 revert → timeout payload → patlar)
+            # (2) fast units carry the REAL payload (M300 revert → timeout payload → blows up)
             for k in ("f1", "f2", "f3", "f4"):
                 assert out[k]["metrics"] == {"ret": 1.0}, k
                 assert not out[k].get("error"), k
-            # (3) yavaş unit in-band timeout
+            # (3) slow unit in-band timeout
             assert "unit timeout" in out["slow"]["error"]
             assert out["slow"]["metrics"] is None
-            # (4) havuz yeniden kuruldu → sonraki batch kabul ediliyor
+            # (4) pool was rebuilt → next batch is accepted
             out2 = pool.run_units([{"key": "g1"}, {"key": "g2"}], timeout_s=30.0)
             assert set(out2) == {"g1", "g2"}
             assert out2["g1"]["metrics"] == {"ret": 1.0}
@@ -341,10 +341,10 @@ class TestRunUnitsTimeout:
 
 
 # ===========================================================================
-# #15 (high) — strategies STRATEGY_REGISTRY (H7 RSI 0-100) + indicators sayısal
-# değerler. Harici referans yok → CURRENT-OUTPUT pin (şekil/ölçek sessizce
-# değişirse kırılır). sharpe rel=1e-6 (platform mikro-farkına toleranslı, ama
-# H7 ölçek bozulması mertebe değiştirir → yine yakalanır).
+# #15 (high) — strategies STRATEGY_REGISTRY (H7 RSI 0-100) + indicators numeric
+# values. No external reference → CURRENT-OUTPUT pin (breaks if shape/scale
+# silently changes). sharpe rel=1e-6 (tolerant of platform micro-differences, but
+# an H7 scale corruption changes the order of magnitude → still caught).
 # ===========================================================================
 def _si_bars(n: int = 400) -> pd.DataFrame:
     idx = pd.date_range("2024-01-01", periods=n, freq="1min", tz="UTC")
@@ -371,7 +371,7 @@ class TestStrategyRegistryPins:
         )
         assert res.error is None, res.error
         m = res.metrics
-        assert m["n_trades"] == 11  # H7: RSI*100 rescale — ölçek bozulursa değişir
+        assert m["n_trades"] == 11  # H7: RSI*100 rescale — changes if scale is corrupted
         assert m["pnl"] == pytest.approx(-0.13661076, rel=1e-6)
         assert m["sharpe"] == pytest.approx(-2.0041147573630287, rel=1e-6)
 

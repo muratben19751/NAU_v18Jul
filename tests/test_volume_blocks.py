@@ -1,15 +1,15 @@
-"""Hacim desteği regresyon testleri.
+"""Volume support regression tests.
 
-Kullanıcı bug'ı: "Hacim odaklı stratejiler ..." hint'i hacim bazlı strateji
-üretemiyordu — bloklar yalnız `closes` görüyordu, codegen sözleşmesi hacmi
-açıkça yasaklıyordu.
+User bug: the "Volume-focused strategies ..." hint could not produce
+volume-based strategies — blocks only saw `closes`, the codegen contract
+explicitly forbade volume.
 
-1. `_eval_volume_spike` birim davranışı (kenar tetikleme, dry-up, exit rolü).
-2. volume_spike builtin bloğu sentetik hacim patlamalarında gerçek backtest'te
-   trade açar (uçtan uca: bar.volume → _volumes → eval → emir).
-3. Custom blok adaptörü `indicators["volumes"]` enjekte eder.
-4. Codegen smoke-exec'i hacim serisi sağlar — hacim okuyan üretilmiş kod
-   smoke'u geçer.
+1. `_eval_volume_spike` unit behavior (edge triggering, dry-up, exit role).
+2. volume_spike builtin block opens trades in a real backtest on synthetic
+   volume bursts (end-to-end: bar.volume → _volumes → eval → order).
+3. Custom block adapter injects `indicators["volumes"]`.
+4. Codegen smoke-exec provides a volume series — generated code that reads
+   volume passes the smoke test.
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ _RECIPE = {"symbol": "BTCUSDT", "interval": "60", "category": "linear"}
 
 
 def _fake_strategy(vols: list[float]) -> SimpleNamespace:
-    # _volumes gerçek stratejide düz list buffer (perf: deque→list geçişi)
+    # _volumes is a flat list buffer in the real strategy (perf: deque→list transition)
     return SimpleNamespace(
         _volumes=list(vols),
         _prev_state={},
@@ -53,10 +53,10 @@ class TestEvalVolumeSpike:
         assert out == "short"
 
     def test_edge_trigger_no_refire_while_sustained(self):
-        """Koşul sürerken ikinci bar'da yeniden ateşlememeli."""
+        """Should not re-fire on the second bar while the condition persists."""
         strat = _fake_strategy([100.0] * 10 + [500.0])
         assert _eval_volume_spike(strat, 0, _block(), [100.0, 101.0]) == "long"
-        strat._volumes.append(600.0)  # spike sürüyor
+        strat._volumes.append(600.0)  # spike continues
         assert _eval_volume_spike(strat, 0, _block(), [101.0, 102.0]) is None
 
     def test_dry_up_direction_below(self):
@@ -79,13 +79,13 @@ class TestEvalVolumeSpike:
 
 
 def _volume_spike_bars(n: int = 400) -> pd.DataFrame:
-    """Trend + sinüs fiyat, her 40 barda bir 10× hacim patlaması."""
+    """Trend + sine price, a 10x volume burst every 40 bars."""
     idx = pd.date_range("2024-01-01", periods=n, freq="1h", tz="UTC")
     t = np.arange(n)
     close = 30_000 + 2_000 * np.sin(t / 30.0) + t * 2.0
     open_ = np.concatenate([[close[0]], close[:-1]])
     volume = np.full(n, 100.0)
-    volume[::40] = 1_000.0  # periyodik spike
+    volume[::40] = 1_000.0  # periodic spike
     return pd.DataFrame(
         {
             "open": open_,
@@ -121,7 +121,7 @@ def _volume_spec() -> ComposedStrategySpec:
 
 class TestVolumeSpikeBacktest:
     def test_volume_spike_opens_trades(self):
-        """bar.volume → _volumes → eval → emir zinciri uçtan uca çalışır."""
+        """bar.volume → _volumes → eval → order chain runs end-to-end."""
         from backtest import run_composed_backtest
         from sandbox import _build_instrument_bar_type
 
@@ -130,15 +130,15 @@ class TestVolumeSpikeBacktest:
             _volume_spec(),
             _volume_spike_bars(),
             iteration_id=1,
-            rationale="hacim regresyon",
+            rationale="volume regression",
             instrument=instrument,
             bar_type=bar_type,
             venue=instrument.id.venue,
         )
-        assert r.error is None, f"volume_spike backtest hata üretti: {r.error}"
+        assert r.error is None, f"volume_spike backtest raised an error: {r.error}"
         m = r.metrics or {}
         assert (m.get("n_trades") or 0) > 0, (
-            "hiç trade açılmadı — hacim spike'ları sinyal üretmedi"
+            "no trades were opened — volume spikes did not produce a signal"
         )
 
 
@@ -152,7 +152,7 @@ class TestCustomAdapterVolumes:
     )
 
     def test_adapter_injects_volumes(self, tmp_path, monkeypatch):
-        """register_custom_from_disk sarmalayıcısı hacim serisini geçirmeli."""
+        """The register_custom_from_disk wrapper should pass the volume series."""
         import custom_block_store as cbs
         from composer import BLOCK_REGISTRY, register_custom_from_disk
 
@@ -166,7 +166,7 @@ class TestCustomAdapterVolumes:
             strat = _fake_strategy([100.0, 300.0])
             block = SimpleNamespace(params={}, role="entry", type=name)
             assert entry["eval"](strat, 0, block, [100.0, 101.0]) == "long"
-            # Hacim artışı yoksa None
+            # None when there is no volume increase
             strat2 = _fake_strategy([100.0, 100.0])
             assert entry["eval"](strat2, 0, block, [100.0, 101.0]) is None
         finally:
@@ -175,7 +175,7 @@ class TestCustomAdapterVolumes:
 
 class TestSmokeExecVolumes:
     def test_generated_volume_code_passes_smoke(self):
-        """Hacim okuyan üretilmiş kod smoke-exec'te gerçek seriyle koşar."""
+        """Generated code that reads volume runs on a real series in smoke-exec."""
         from agent import _test_execute_generated
 
         src = (
@@ -193,5 +193,5 @@ class TestSmokeExecVolumes:
             "label": "Vol Smoke",
             "params": {"period": {"type": "int", "default": 20}},
         }
-        # Fırlatmıyorsa geçti (GeneratedCodeError beklemiyoruz)
+        # Passes if it does not raise (we do not expect GeneratedCodeError)
         _test_execute_generated(src, meta)

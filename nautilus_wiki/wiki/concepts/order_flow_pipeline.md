@@ -54,5 +54,6 @@ Adapter → Venue
 - [[tutorial_gold_book_imbalance_ax]]
 - [[tutorial_grid_market_maker_dydx]]
 - [[v1_to_v2_migration_lessons]]
+- [[vol_targeted_trend]]
 - [[webapp_module_map]]
 <!-- BACKLINKS:END -->

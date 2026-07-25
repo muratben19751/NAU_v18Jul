@@ -23,7 +23,7 @@ async def chart_data(
     bars: int = Query(default=500, ge=50, le=10080),
     start_ts: int = Query(default=0),  # unix seconds — if set, overrides bars
     end_ts: int = Query(default=0),
-    spec_id: str = Query(default=""),  # strateji spec — indikatörleri buradan çıkar
+    spec_id: str = Query(default=""),  # strategy spec — extract indicators from here
 ):
     """Return OHLCV bars + strategy indicators. Window by ts range or last N bars."""
     from datetime import datetime, timedelta
@@ -34,26 +34,29 @@ async def chart_data(
         "1": 60,
         "5": 300,
         "15": 900,
+        "30": 1800,
         "60": 3600,
         "240": 14400,
+        "720": 43200,
         "D": 86400,
     }
-    _MAX_WINDOW_CANDLES = 60_000  # tarayıcı + fetch koruması
+    _MAX_WINDOW_CANDLES = 60_000  # browser + fetch protection
 
     try:
         if start_ts and end_ts:
-            # Fizibilite: pencere/TF kombinasyonu makul mum sayısı üretmeli —
-            # 6 yıllık pencere × 1m = ~3.1M mum (tarayıcıyı ve Bybit
-            # backfill'ini öldürür). Veri YÜKLEMEDEN reddet.
-            # L9: tahmine %10+%10 marj DAHİL (est × 1.2) — eski hâli marjı
-            # saymadığından backstop isteğin İLK barlarını kırpabiliyordu.
+            # Feasibility: window/TF combination must produce a reasonable
+            # candle count — 6-year window × 1m = ~3.1M candles (kills the
+            # browser and Bybit backfill). Reject WITHOUT loading data.
+            # L9: estimate INCLUDES 10%+10% margin (est × 1.2) — the old
+            # version didn't count the margin, so the backstop could clip the
+            # FIRST bars of the request.
             est = (end_ts - start_ts) * 1.2 / _SEC_PER_BAR.get(interval, 60)
             if est > _MAX_WINDOW_CANDLES:
                 return JSONResponse(
                     {
                         "error": (
-                            f"Bu aralık için {interval} çok ince "
-                            f"(~{est / 1000:.0f}k mum) — daha büyük TF seçin."
+                            f"{interval} is too fine for this range "
+                            f"(~{est / 1000:.0f}k candles) — select a larger TF."
                         ),
                         "candles": [],
                         "trades": [],
@@ -70,25 +73,42 @@ async def chart_data(
                 "1": 60,
                 "5": 300,
                 "15": 900,
+                "30": 1800,
                 "60": 3600,
                 "240": 14400,
+                "720": 43200,
                 "D": 86400,
             }.get(interval, 60)
             end = datetime.now(UTC)
             start = end - timedelta(seconds=bars * ms_per_bar * 1.2)
 
-        # M9: veri yükleme + mum inşası + indikatör hesabı TEK senkron
-        # closure'da, asyncio.to_thread ile — eski hâli event loop'u parquet
-        # okuma + iterrows + (cache dışına taşan pencerede) 0.15s uykulu
-        # Bybit backfill'i boyunca kilitleyip TÜM istekleri bekletiyordu.
+        # M9: data loading + candle construction + indicator computation in a
+        # SINGLE synchronous closure, via asyncio.to_thread — the old version
+        # locked the event loop throughout parquet reads + iterrows + (on a
+        # window spilling out of cache) the 0.15s-sleepy Bybit backfill, making
+        # ALL requests wait.
         def _build_payload():
-            df = load_bybit_bars(
-                symbol=symbol,
-                interval=interval,
-                category=category,
-                start=start,
-                end=end,
-            )
+            try:
+                df = load_bybit_bars(
+                    symbol=symbol,
+                    interval=interval,
+                    category=category,
+                    start=start,
+                    end=end,
+                )
+            except Exception:
+                # Offline / Bybit unreachable: the tail-extend fetch inside
+                # load_bybit_bars died on the network call. The chart must
+                # still render — serve whatever the parquet cache holds for
+                # the requested window instead of erroring the whole panel.
+                import pandas as pd
+
+                from data import _bybit_cache_path
+
+                cache_path = _bybit_cache_path(category, symbol, interval)
+                if not cache_path.exists():
+                    raise
+                df = pd.read_parquet(cache_path).loc[start:end]
             if df.empty:
                 return {
                     "candles": [],
@@ -99,10 +119,10 @@ async def chart_data(
             if not (start_ts and end_ts):
                 df2 = df.iloc[-bars:]
             elif len(df) > _MAX_WINDOW_CANDLES:
-                # L9: backstop çekirdek pencereyi KORUR — önce istenen
-                # [start_ts, end_ts] dilimi garanti edilir, kalan bütçe
-                # marjlara pay edilir (eski iloc[-N:] en eski istek
-                # barlarını sessizce atıyordu).
+                # L9: the backstop PRESERVES the core window — the requested
+                # [start_ts, end_ts] slice is guaranteed first, and the
+                # remaining budget is allocated to the margins (the old
+                # iloc[-N:] silently dropped the oldest request bars).
                 _core = df.loc[
                     datetime.fromtimestamp(start_ts, tz=UTC) : datetime.fromtimestamp(
                         end_ts, tz=UTC
@@ -118,7 +138,7 @@ async def chart_data(
 
             times = [int(ts.timestamp()) for ts in df2.index]
             closes = [float(x) for x in df2["close"]]
-            # M9: iterrows() yerine kolon-bazlı erişim (~10× hızlı inşa).
+            # M9: column-based access instead of iterrows() (~10× faster build).
             opens = df2["open"].to_list()
             highs = df2["high"].to_list()
             lows = df2["low"].to_list()
@@ -135,7 +155,7 @@ async def chart_data(
                 for i in range(len(times))
             ]
 
-            # Stratejinin gerçek indikatörlerini bu pencere üzerinde hesapla
+            # Compute the strategy's actual indicators over this window
             indicators = {"overlays": [], "panes": []}
             if spec_id:
                 try:
@@ -146,7 +166,7 @@ async def chart_data(
                     if spec is not None:
                         indicators = indicators_for_spec(spec, times, closes)
                 except Exception:
-                    pass  # indikatör hesabı grafiği bloke etmesin
+                    pass  # indicator computation must not block the chart
 
             return {"candles": candles, "trades": [], "indicators": indicators}
 

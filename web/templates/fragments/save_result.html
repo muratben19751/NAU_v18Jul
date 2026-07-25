@@ -1,0 +1,38 @@
+{# Save result — HTMX response for POST /strategy/save (was a full-page redirect
+   to /strategy?saved=…, which reloaded the page and wiped the studio mode / open
+   chat / backtest panel). Renders an in-place banner into #save-result and, on
+   success, OOB-refreshes the catalog + resets the composer form. #}
+{% if ok %}
+<div class="panel" style="border-color: var(--pnl-up);">
+  <div class="panel-body">
+    <span class="badge running">✓ {{ "UPDATED" if overwrote else "SAVED" }}</span>
+    <span class="mono" style="margin-left:8px;">{{ spec.name }}</span>
+    <span class="text-muted mono" style="margin-left:8px;font-size:11px;">id={{ spec.id }}</span>
+  </div>
+</div>
+
+{# OOB: refresh the saved-strategies catalog so the new/updated row appears. #}
+<div id="catalog" class="panel-body tight" hx-swap-oob="outerHTML:#catalog">
+  {% include "fragments/catalog_list.html" %}
+</div>
+
+{# OOB: clear the drafts list (server emptied _DRAFTS). drafts_list carries the
+   Strategy Preview OOB, so the preview resets to empty too. #}
+<div id="drafts" class="panel-body tight" hx-swap-oob="outerHTML:#drafts">
+{% include "fragments/drafts_list.html" %}
+</div>
+
+{# OOB: reset the form inputs — blank the name back to default and clear the
+   edit-spec-id so the next Save is a fresh append (not an overwrite). #}
+<input id="name-input" name="name" type="text" value="My Strategy" required
+       form="save-form" hx-swap-oob="outerHTML">
+<input id="edit-spec-id" name="edit_spec_id" type="hidden" value=""
+       form="save-form" hx-swap-oob="outerHTML">
+{% else %}
+<div class="panel" style="border-color: var(--pnl-down);">
+  <div class="panel-body">
+    <span class="badge exit">✗ INVALID</span>
+    <span class="text-muted" style="margin-left:8px;">{{ error }}</span>
+  </div>
+</div>
+{% endif %}

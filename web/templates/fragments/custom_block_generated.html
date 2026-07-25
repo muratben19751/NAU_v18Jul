@@ -2,14 +2,14 @@
 {% if error %}
   <div class="panel" style="border-color: rgba(239,68,68,0.5); margin-top:8px;">
     <div class="panel-body">
-      <span class="badge exit">✗ HATA</span>
+      <span class="badge exit">✗ ERROR</span>
       <span class="text-muted" style="margin-left:8px;">{{ error }}</span>
     </div>
   </div>
 {% elif proposal %}
   <div class="panel" style="border-color: rgba(34,197,94,0.35); margin-top:8px;">
     <div class="panel-header">
-      <div class="panel-title">ÖNİZLEME · <span class="mono">{{ proposal.name }}</span></div>
+      <div class="panel-title">PREVIEW · <span class="mono">{{ proposal.name }}</span></div>
     </div>
     <div class="panel-body stack" style="gap:12px;">
 
@@ -34,7 +34,7 @@
             {% endfor %}
           </ul>
         {% else %}
-          <div class="text-muted" style="font-size:11px;">(parametre yok)</div>
+          <div class="text-muted" style="font-size:11px;">(no parameters)</div>
         {% endif %}
       </div>
 
@@ -43,7 +43,7 @@
 
         {# Code panel #}
         <div>
-          <div class="section-title" style="margin:0 0 4px;">KOD</div>
+          <div class="section-title" style="margin:0 0 4px;">CODE</div>
           <pre class="mono" style="background:rgba(0,0,0,0.3); padding:10px 12px; border-radius:6px;
                overflow-x:auto; font-size:10.5px; margin:0; max-height:320px;
                border:1px solid var(--border); line-height:1.55;">{{ proposal.code }}</pre>
@@ -51,7 +51,7 @@
 
         {# Signal chart #}
         <div>
-          <div class="section-title" style="margin:0 0 4px;">SİNYAL ÖNİZLEMESİ · BTC 1m (son 150 bar)</div>
+          <div class="section-title" style="margin:0 0 4px;">SIGNAL PREVIEW · BTC 1m (last 150 bars)</div>
           {% if chart_data and chart_data.closes %}
             <div style="position:relative; height:280px; background:var(--bg-950);
                         border:1px solid var(--border); border-radius:6px; padding:4px;">
@@ -149,7 +149,7 @@
             <div style="height:100px; display:flex; align-items:center; justify-content:center;
                         color:var(--text-muted); font-size:12px; border:1px solid var(--border);
                         border-radius:6px; background:var(--bg-950);">
-              BTC 1m verisi bulunamadı (önce Data ekranından fetch edin)
+              BTC 1m data not found (fetch it first from the Data screen)
             </div>
           {% endif %}
         </div>
@@ -162,9 +162,9 @@
         <textarea name="meta_json" hidden>{{ proposal.meta|tojson }}</textarea>
         <textarea name="code" hidden>{{ proposal.code }}</textarea>
         <textarea name="prompt" hidden>{{ description }}</textarea>
-        <button class="btn btn-primary" type="submit">💾 Kaydet ve Kullan</button>
+        <button class="btn btn-primary" type="submit">💾 Save and Use</button>
         <button class="btn" type="button"
-                onclick="document.getElementById('custom-generated').innerHTML=''">İptal</button>
+                onclick="document.getElementById('custom-generated').innerHTML=''">Cancel</button>
       </form>
 
     </div>

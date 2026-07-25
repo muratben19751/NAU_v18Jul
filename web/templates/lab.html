@@ -5,7 +5,7 @@
   <div class="panel-header">
     <div class="panel-title">⚗ Strategy Lab</div>
     <div class="panel-meta small">
-      Claude bir strateji fikri üretir · custom bloklar yazar · backtest çalıştırır
+      Claude generates a strategy idea · writes custom blocks · runs a backtest
     </div>
   </div>
   <div class="panel-body">
@@ -16,9 +16,9 @@
 
       <div class="row" style="align-items:flex-end;flex-wrap:wrap;gap:12px;margin-bottom:12px;">
         <label class="field" style="flex:2;min-width:220px;">
-          Strateji fikri <span class="text-muted" style="font-weight:400;">(opsiyonel — boş bırak = tamamen otonom)</span>
+          Strategy idea <span class="text-muted" style="font-weight:400;">(optional — leave empty = fully autonomous)</span>
           <input type="text" name="hint"
-                 placeholder="Örn: wavetrend with cross, momentum + rsi, supertrend…"
+                 placeholder="E.g.: wavetrend with cross, momentum + rsi, supertrend…"
                  style="font-size:13px;">
         </label>
         <label class="field">Symbol
@@ -44,21 +44,21 @@
             <option value="D">1d</option>
           </select>
         </label>
-        <label class="field">Başlangıç
+        <label class="field">Start
           <input type="date" name="start_date">
         </label>
-        <label class="field">Bitiş
+        <label class="field">End
           <input type="date" name="end_date">
         </label>
-        <button class="btn btn-primary" type="submit">⚗ Çalıştır</button>
+        <button class="btn btn-primary" type="submit">⚗ Run</button>
         <span class="htmx-indicator text-muted mono" id="lab-spinner" style="font-size:11px;">
-          pipeline başlatılıyor…
+          starting pipeline…
         </span>
       </div>
 
       <p class="small text-muted" style="margin:0;">
-        Her çalıştırma yeni custom bloklar üretir ve /strategy ekranına kaydeder.
-        Üretilen strateji /backtest seçicisinde görünür.
+        Each run generates new custom blocks and saves them to the /strategy screen.
+        The generated strategy appears in the /backtest selector.
       </p>
     </form>
   </div>
@@ -67,7 +67,7 @@
 <div id="lab-result">
   <div class="panel">
     <div class="panel-body empty-state">
-      ⚗ Çalıştır'a basarak otonom pipeline'ı başlat.
+      ⚗ Press Run to start the autonomous pipeline.
     </div>
   </div>
 </div>

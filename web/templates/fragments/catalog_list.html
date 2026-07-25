@@ -6,7 +6,7 @@
       <th class="num">Blocks</th>
       <th>Trade size</th>
       <th>Created</th>
-      <th style="width:44px;"></th>
+      <th style="width:120px;"></th>
     </tr>
   </thead>
   <tbody>
@@ -19,7 +19,26 @@
       <td class="num">{{ s.blocks|length }}</td>
       <td class="mono" style="font-size:12px;">{{ s.trade_size }} BTC</td>
       <td class="text-muted mono" style="font-size:11px;">{{ s.created_at[:16] }}</td>
-      <td>
+      <td style="white-space:nowrap;">
+        {# Composer→Backtest handoff: studioBacktestSpec() is defined only on
+           /studio (it selects the spec in the Backtest tab and switches tabs).
+           On the standalone page the guard makes this a no-op. #}
+        <button class="btn btn-icon" type="button"
+                onclick="if(window.studioBacktestSpec)studioBacktestSpec('{{ s.id }}')"
+                title="Bu stratejiyle Backtest sekmesine geç">▶</button>
+        {# Edit: load this strategy back into the composer. ✎ overwrites the same
+           record on Save; ⎘ saves as a NEW strategy (original preserved). Both
+           switch to the Compose tab on /studio (no-op on the standalone page). #}
+        <button class="btn btn-icon" type="button"
+                hx-post="/strategy/{{ s.id }}/edit?mode=overwrite"
+                hx-target="#drafts" hx-swap="outerHTML"
+                onclick="if(window.labTab)labTab('compose')"
+                title="Düzenle (Save üzerine yazar)">✎</button>
+        <button class="btn btn-icon" type="button"
+                hx-post="/strategy/{{ s.id }}/edit?mode=copy"
+                hx-target="#drafts" hx-swap="outerHTML"
+                onclick="if(window.labTab)labTab('compose')"
+                title="Kopyala (Save yeni strateji oluşturur)">⎘</button>
         <button class="btn btn-icon" hx-delete="/strategy/{{ s.id }}" hx-target="#catalog" hx-swap="innerHTML"
                 hx-confirm="Delete '{{ s.name }}'?">🗑</button>
       </td>

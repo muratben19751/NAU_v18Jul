@@ -10,40 +10,40 @@
        hx-swap="innerHTML">
 {% endif %}
 
-  {# ── Koşu kontrolü — çalışan agent'ı durdur ──
-     Düğme yalnız agent_result'ta ve {% raw %}{% if is_continuous %}{% endraw %} altındaydı; koşu
-     sırasında polling edilen fragment BU olduğundan çalışan bir agent hiç
-     durdurulamıyordu (route + stop_requested kontrolleri zaten vardı).
-     stop_requested'a duyarlı: sinyalden sonra 1sn'lik poll düğmeyi geri
-     getirmesin, "durduruluyor" rozeti kalsın. #}
+  {# ── Run control — stop the running agent ──
+     The button was only in agent_result and under {% raw %}{% if is_continuous %}{% endraw %}; since THIS is
+     the fragment polled during a run, a running agent could never be
+     stopped (route + stop_requested checks already existed).
+     Sensitive to stop_requested: after the signal, the 1s poll should not
+     bring the button back, the "stopping" badge should remain. #}
   {% if not done %}
   <div class="panel" style="margin-bottom:12px;">
     <div class="panel-body row" style="gap:10px;align-items:center;">
-      <span class="badge running">● KOŞUYOR</span>
+      <span class="badge running">● RUNNING</span>
       <div class="spacer"></div>
       {% if state.stop_requested %}
       <span class="badge" style="background:rgba(251,146,60,0.2);color:#fb923c;">
-        ⏹ Durdurma sinyali gönderildi — mevcut adım bitince duracak
+        ⏹ Stop signal sent — will stop when the current step finishes
       </span>
       {% else %}
       <button class="btn"
               style="font-size:11px;padding:2px 10px;color:#f87171;border-color:rgba(248,113,113,0.3);"
               hx-post="/agent/stop/{{ run_id }}"
               hx-target="this"
-              hx-swap="outerHTML">⏹ Durdur</button>
+              hx-swap="outerHTML">⏹ Stop</button>
       {% endif %}
     </div>
   </div>
   {% endif %}
 
-  {# ── Zaman Çizelgesi (Gantt) ── #}
+  {# ── Timeline (Gantt) ── #}
   {% if tl is defined and tl %}
   <div class="panel" style="margin-bottom:12px;">
     <div class="panel-header">
-      <div class="panel-title">⏱ Zaman Çizelgesi</div>
+      <div class="panel-title">⏱ Timeline</div>
       <div class="spacer"></div>
       <span class="text-muted mono" style="font-size:10px;">
-        {{ tl.dur_label }} · çubuğa tıkla → adım detayı
+        {{ tl.dur_label }} · click a bar → step detail
       </span>
     </div>
     <div class="panel-body tight">
@@ -52,20 +52,20 @@
   </div>
   {% endif %}
 
-  {# ── Canlı Backtest Sonuçları Tablosu ── #}
+  {# ── Live Backtest Results Table ── #}
   {% set bts = state.backtest_results if state.backtest_results is defined else [] %}
   {% if bts %}
   <div class="panel" style="margin-bottom:12px;">
     <div class="panel-header">
-      <div class="panel-title">Backtest Sonuçları</div>
+      <div class="panel-title">Backtest Results</div>
       <div class="spacer"></div>
-      <span class="text-muted mono" style="font-size:10px;">{{ bts|length }} koşum · skor = (0.7·Calmar + 0.3·Sharpe) × T/(T+20)</span>
+      <span class="text-muted mono" style="font-size:10px;">{{ bts|length }} run · score = (0.7·Calmar + 0.3·Sharpe) × T/(T+20)</span>
     </div>
     <div style="overflow-x:auto;">
     <table style="width:100%;border-collapse:collapse;font-size:11.5px;font-family:var(--mono);">
       <thead>
         <tr style="border-bottom:1.5px solid var(--border);background:var(--panel-2);">
-          <th style="text-align:left;padding:7px 10px;font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--text-muted);white-space:nowrap;">Strateji</th>
+          <th style="text-align:left;padding:7px 10px;font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--text-muted);white-space:nowrap;">Strategy</th>
           <th style="text-align:center;padding:7px 8px;font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--text-muted);">TF</th>
           <th style="text-align:right;padding:7px 8px;font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--text-muted);">PnL</th>
           <th style="text-align:right;padding:7px 8px;font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--text-muted);">PnL %</th>
@@ -73,13 +73,13 @@
           <th style="text-align:right;padding:7px 8px;font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--text-muted);">Max DD</th>
           <th style="text-align:right;padding:7px 8px;font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--text-muted);">W.Rate</th>
           <th style="text-align:right;padding:7px 8px;font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--text-muted);">Trades</th>
-          <th style="text-align:right;padding:7px 8px;font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--text-muted);">Skor</th>
-          <th style="text-align:left;padding:7px 8px;font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--text-muted);">Durum</th>
+          <th style="text-align:right;padding:7px 8px;font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--text-muted);">Score</th>
+          <th style="text-align:left;padding:7px 8px;font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--text-muted);">Status</th>
         </tr>
       </thead>
       <tbody>
-      {# score=None satırları (hata / yetersiz trade) sort'ta None<float TypeError verir —
-         skorlu satırlar önce (azalan), skorsuzlar sona. #}
+      {# score=None rows (error / insufficient trade) give None<float TypeError in sort —
+         scored rows first (descending), unscored ones last. #}
       {% set bts_sorted = (bts | rejectattr('score', 'none') | sort(attribute='score', reverse=True) | list)
                         + (bts | selectattr('score', 'none') | list) %}
       {% for bt in bts_sorted %}
@@ -111,7 +111,7 @@
           {% if bt.score is not none %}{{ "%.4f"|format(bt.score) }}{% else %}—{% endif %}
         </td>
         <td style="padding:6px 8px;">
-          {% if bt.error %}<span class="badge exit" title="{{ bt.error[:80] }}">✗ hata</span>
+          {% if bt.error %}<span class="badge exit" title="{{ bt.error[:80] }}">✗ error</span>
           {% elif bt.n_trades == 0 %}<span class="text-muted" style="font-size:10px;">0 trade</span>
           {% else %}<span class="badge running">✓</span>{% endif %}
         </td>
@@ -127,7 +127,7 @@
   {% if error %}
   <div class="panel" style="border-color:rgba(248,113,113,0.4);">
     <div class="panel-body">
-      <span class="badge exit">✗ HATA</span>
+      <span class="badge exit">✗ ERROR</span>
       <span class="text-muted" style="margin-left:8px;">{{ error }}</span>
     </div>
   </div>
@@ -136,13 +136,13 @@
   {# Robustness scan summary (shown after phase 4 completes with no winner) #}
   {% if rob_scan_log %}
   <div class="panel">
-    <div class="panel-header"><div class="panel-title">Robustness Tarama Sonuçları</div></div>
+    <div class="panel-header"><div class="panel-title">Robustness Scan Results</div></div>
     <div class="panel-body tight">
       <table class="table mono" style="font-size:12px;">
         <thead>
           <tr>
-            <th>#</th><th>Strateji</th><th class="num">Skor</th>
-            <th>IS/OOS</th><th class="num">MC DD p50</th><th class="num">WFO Pass</th><th>Durum</th>
+            <th>#</th><th>Strategy</th><th class="num">Score</th>
+            <th>IS/OOS</th><th class="num">MC DD p50</th><th class="num">WFO Pass</th><th>Status</th>
           </tr>
         </thead>
         <tbody>
@@ -166,9 +166,9 @@
             <td class="num">{{ row.wf_pass }}</td>
             <td>
               {% if row.passed %}
-                <span class="badge running">✓ Geçti</span>
+                <span class="badge running">✓ Passed</span>
               {% else %}
-                <span class="badge exit">✗ Geçmedi</span>
+                <span class="badge exit">✗ Failed</span>
               {% endif %}
             </td>
           </tr>
@@ -182,23 +182,23 @@
   {# Phase timeline #}
   <div class="panel">
     <div class="panel-header">
-      <div class="panel-title">🤖 Otonom Pipeline</div>
+      <div class="panel-title">🤖 Autonomous Pipeline</div>
       {% if not done %}
       <div class="spacer"></div>
       {% if state.stop_requested %}
-        <span class="badge" style="background:rgba(251,146,60,0.2);color:#fb923c;margin-right:8px;">⏹ Durduruluyor…</span>
+        <span class="badge" style="background:rgba(251,146,60,0.2);color:#fb923c;margin-right:8px;">⏹ Stopping…</span>
       {% else %}
         <span class="text-muted mono" style="font-size:11px;margin-right:8px;">
           {% if state.rob_scan_total > 0 %}
             Robustness: {{ state.rob_scan_current }}/{{ state.rob_scan_total }}
           {% else %}
-            çalışıyor…
+            running…
           {% endif %}
         </span>
         <button class="btn" style="font-size:11px;padding:2px 8px;color:#f87171;border-color:rgba(248,113,113,0.3);"
                 hx-post="/agent/stop/{{ run_id }}"
                 hx-target="this"
-                hx-swap="outerHTML">⏹ Durdur</button>
+                hx-swap="outerHTML">⏹ Stop</button>
       {% endif %}
       {% endif %}
     </div>
@@ -224,10 +224,10 @@
       {% endfor %}
     </div>
 
-    {# Sub-steps — katlanabilir ham günlük (görsel takip artık zaman çizelgesinde) #}
+    {# Sub-steps — collapsible raw log (visual tracking is now in the timeline) #}
     {% if state.steps %}
     <details class="steps-details" id="agent-steps-details" style="margin:0 16px 12px;">
-      <summary class="steps-summary mono">Adım günlüğü ({{ state.steps|length }})</summary>
+      <summary class="steps-summary mono">Step log ({{ state.steps|length }})</summary>
       <div style="max-height:280px;overflow-y:auto;" id="agent-steps">
         {% for step in state.steps[-40:] %}
         <div style="display:flex;gap:8px;padding:2px 0;font-size:11px;">
@@ -240,21 +240,21 @@
     {% endif %}
   </div>
 
-  {# Token kullanımı + maliyet #}
+  {# Token usage + cost #}
   {% if token_info is defined and token_info and token_info.total > 0 %}
   <div class="panel" style="margin-top:10px;">
     <div class="panel-header">
-      <div class="panel-title">Token Kullanımı</div>
+      <div class="panel-title">Token Usage</div>
       <div class="spacer"></div>
-      {# L38: abonelik CLI'da cost None → format(None) TypeError her poll'da
-         500 üretip canlı izlemeyi kırıyordu; None'da satır gizli, doluyken
-         '≈ tahmini'. #}
+      {# L38: on subscription CLI cost None → format(None) TypeError produced
+         500 on every poll and broke live monitoring; on None the line is hidden, when filled
+         '≈ estimated'. #}
       {% if token_info.cost_eur is not none %}
       <span class="mono" style="font-size:12px;font-weight:600;color:var(--pnl-up);">
         ≈ €{{ "%.4f"|format(token_info.cost_eur) }}
       </span>
       <span class="text-muted mono" style="font-size:11px;margin-left:6px;">
-        (${{ "%.4f"|format(token_info.cost_usd) }} · tahmini)
+        (${{ "%.4f"|format(token_info.cost_usd) }} · estimated)
       </span>
       {% endif %}
     </div>
@@ -285,7 +285,7 @@
 
 {% if not done %}
 <script>
-  // Auto-scroll sub-steps to bottom (yalnız günlük açıkken)
+  // Auto-scroll sub-steps to bottom (only when the log is open)
   (function() {
     var det = document.getElementById('agent-steps-details');
     var el = document.getElementById('agent-steps');

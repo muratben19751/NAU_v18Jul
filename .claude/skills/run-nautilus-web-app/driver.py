@@ -120,22 +120,22 @@ def run_backtest(base: str, spec_id: str, timeout_s: int = 420) -> tuple[bool, s
     run_id = m.group(1)
     print(f"[driver] backtest run_id={run_id}")
 
-    # Kullanıcı koşuları cache'deki TAM aralığı kullanır (ee3a25b) — 1m
-    # BTCUSDT cache'i 1M+ bara ulaştı ve komisyonlu tam koşu dakikalar
-    # sürebilir; eski 60sn sınırı cache büyüyünce sahte FAIL üretiyordu.
+    # User runs use the FULL range in the cache (ee3a25b) — the 1m BTCUSDT
+    # cache has grown past 1M bars and a full run with commissions can take
+    # minutes; the old 60s limit produced false FAILs as the cache grew.
     for _ in range(timeout_s):
         _, html = _http(base + f"/backtest/progress/{run_id}")
-        done = ("Tamamlandı" in html or "Realized PnL" in html) and (
-            "çalışıyor" not in html
+        done = ("Completed" in html or "Realized PnL" in html) and (
+            "Backtest running" not in html
         )
-        if "error" in html.lower() or "hata" in html.lower():
+        if "error" in html.lower():
             # errors still render a result panel; treat as completion, report text
             done = done or "Realized PnL" not in html
         if done:
             text = re.sub(r"<[^>]+>", " ", html)
             text = re.sub(r"\s+", " ", text)
             metric = re.search(
-                r"(BacktestEngine[^\n]*?bar)|(Tamamland[^·]*win_rate=[\d.]+%)", text
+                r"(BacktestEngine[^\n]*?bar)|(Completed[^·]*win_rate=[\d.]+%)", text
             )
             summary = " | ".join(
                 s.strip()
@@ -161,8 +161,8 @@ def main() -> int:
         "--backtest-timeout",
         type=int,
         default=420,
-        help="backtest tamamlanma beklemesi (sn) — tam-aralık 1m koşuları "
-        "cache büyüdükçe uzar (1.05M bar ≈ 80-90sn)",
+        help="backtest completion wait (s) — full-range 1m runs grow as the "
+        "cache grows (1.05M bars ≈ 80-90s)",
     )
     args = ap.parse_args()
     base = f"http://127.0.0.1:{args.port}"

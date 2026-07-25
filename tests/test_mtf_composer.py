@@ -1,17 +1,17 @@
-"""Composer'da 2-TF trend filtresi (MTF, A parçası): manuel stratejiye
-trend_filter/trend_interval/trend_ema_period alanları set edilebilmeli.
+"""2-TF trend filter in Composer (MTF, part A): the trend_filter/trend_interval/
+trend_ema_period fields must be settable on a manual strategy.
 
-Motor spec.trend_filter'ı ZATEN okuyor (run_composed_backtest ikincil bar
-feed'ini yükler); eksik olan tek şey bu alanların /strategy/save'den spec'e
-geçmesiydi. Look-ahead güvenli (Nautilus event-driven).
+The engine ALREADY reads spec.trend_filter (run_composed_backtest loads the
+secondary bar feed); the only thing missing was these fields flowing from
+/strategy/save into the spec. Look-ahead safe (Nautilus event-driven).
 """
 
 from __future__ import annotations
 
 
 def _seed_and_save(monkeypatch, form: dict):
-    """Taze client, bir draft blok çifti seed'le, /strategy/save POST et,
-    kataloğa yazılan spec'i döndür."""
+    """Fresh client, seed a draft block pair, POST /strategy/save,
+    return the spec written to the catalog."""
     from fastapi.testclient import TestClient
 
     import composer
@@ -22,7 +22,7 @@ def _seed_and_save(monkeypatch, form: dict):
     monkeypatch.setattr(composer, "append_to_catalog", appended.append)
 
     c = TestClient(app)
-    c.get("/strategy")  # cookie/sid oluştur
+    c.get("/strategy")  # create cookie/sid
     sid = c.cookies.get(st.COOKIE)
     st._DRAFTS[sid] = [
         composer.SignalBlock(
@@ -31,8 +31,11 @@ def _seed_and_save(monkeypatch, form: dict):
         composer.SignalBlock(type="atr_stop", role="exit", params={"period": 14}),
     ]
     r = c.post("/strategy/save", data={"name": "T", **form}, follow_redirects=False)
-    assert r.status_code == 303, r.text[:200]
-    assert appended, "spec kataloğa yazılmadı"
+    # Save returns an in-place HTMX fragment (200), not a full-page redirect —
+    # this keeps the studio mode / open chat / backtest panel intact on save.
+    assert r.status_code == 200, r.text[:200]
+    assert "✓ SAVED" in r.text or "✓ UPDATED" in r.text, r.text[:200]
+    assert appended, "spec was not written to catalog"
     return appended[0]
 
 
@@ -47,7 +50,7 @@ class TestMTFComposer:
         assert spec.trend_ema_period == 100
 
     def test_no_trend_filter_defaults_off(self, monkeypatch):
-        spec = _seed_and_save(monkeypatch, {})  # checkbox yok → boş string → False
+        spec = _seed_and_save(monkeypatch, {})  # no checkbox → empty string → False
         assert spec.trend_filter is False
 
     def test_composer_page_renders_trend_controls(self):
@@ -62,7 +65,7 @@ class TestMTFComposer:
 
 
 class TestMTFEngineReadsSpec:
-    """Kanıt: motor yolu spec.trend_filter'ı okuyor (UI değişmeden çalışırdı)."""
+    """Proof: the engine path reads spec.trend_filter (it worked without UI changes)."""
 
     def test_run_composed_backtest_reads_trend_filter(self):
         import inspect
@@ -70,6 +73,6 @@ class TestMTFEngineReadsSpec:
         import backtest
 
         src = inspect.getsource(backtest.run_composed_backtest)
-        # İkincil bar feed'i yalnız trend_filter iken kurulur.
+        # The secondary bar feed is set up only when trend_filter is on.
         assert "trend_filter" in src
         assert "secondary_bar_type" in src

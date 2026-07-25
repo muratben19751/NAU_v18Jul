@@ -3,16 +3,16 @@
 
 <div class="panel" style="margin-bottom:14px;">
   <div class="panel-header">
-    <div class="panel-title">Agent Session Logları</div>
-    <div class="panel-meta small">{{ sessions|length }} session · tüm otonom koşumlar</div>
+    <div class="panel-title">Agent Session Logs</div>
+    <div class="panel-meta small">{{ sessions|length }} session · all autonomous runs</div>
   </div>
 </div>
 
 {% if not sessions %}
 <div class="panel">
   <div class="panel-body empty-state">
-    Henüz kaydedilmiş session yok.<br>
-    <span class="text-muted">Agent koşumu başlatıldığında burada görünür.</span>
+    No saved sessions yet.<br>
+    <span class="text-muted">It appears here when an agent run is started.</span>
   </div>
 </div>
 {% else %}
@@ -20,13 +20,13 @@
 <div class="stack">
 {% for s in sessions %}
 {% set outcome_color = '#4ade80' if s.outcome == 'winner_found' else ('#f87171' if s.outcome in ('error','stopped') else '#8a8a8a') %}
-{% set outcome_label = '🏆 Kazanan bulundu' if s.outcome == 'winner_found' else ('⏹ Durduruldu' if s.outcome == 'stopped' else ('✗ Hata' if s.outcome == 'error' else ('▶ Çalışıyor' if s.outcome == 'running' else '— Bitmedi'))) %}
+{% set outcome_label = '🏆 Winner found' if s.outcome == 'winner_found' else ('⏹ Stopped' if s.outcome == 'stopped' else ('✗ Error' if s.outcome == 'error' else ('▶ Running' if s.outcome == 'running' else '— Not finished'))) %}
 
 <a href="/sessions/{{ s.run_id }}" style="text-decoration:none;display:block;">
 <div class="panel" style="cursor:pointer;transition:background 0.12s;" onmouseover="this.style.background='var(--panel-2)'" onmouseout="this.style.background=''">
   <div class="panel-body" style="padding:14px 18px;">
 
-    {# Üst satır: run_id + zaman + outcome #}
+    {# Top row: run_id + time + outcome #}
     <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:10px;">
       <span class="mono" style="font-size:13px;font-weight:600;color:var(--text-primary);">{{ s.run_id }}</span>
       <span class="text-muted mono" style="font-size:11px;">{{ s.ts_start }}</span>
@@ -39,19 +39,19 @@
       <span class="mono text-muted" style="font-size:10px;">{{ s.size_mb }} MB</span>
     </div>
 
-    {# Orta satır: parametreler + kazanan #}
+    {# Middle row: parameters + winner #}
     <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start;margin-bottom:10px;">
       <div>
-        <div class="label" style="font-size:9px;letter-spacing:.12em;text-transform:uppercase;color:var(--text-muted);margin-bottom:4px;">Sembol / TF</div>
+        <div class="label" style="font-size:9px;letter-spacing:.12em;text-transform:uppercase;color:var(--text-muted);margin-bottom:4px;">Symbol / TF</div>
         <span class="mono" style="font-size:12px;">{{ s.symbol }}</span>
         {% for iv in s.intervals %}
           <span class="badge" style="font-size:10px;padding:1px 6px;margin-left:2px;">{{ iv }}{% if iv != 'D' %}m{% endif %}</span>
         {% endfor %}
       </div>
       <div>
-        <div class="label" style="font-size:9px;letter-spacing:.12em;text-transform:uppercase;color:var(--text-muted);margin-bottom:4px;">İterasyon / Tur</div>
-        <span class="mono" style="font-size:12px;">{{ s.n_iterations }} iter · {{ s.total_rounds }} tur</span>
-        {% if s.continuous %}<span class="badge running" style="font-size:10px;margin-left:4px;">∞ Sürekli</span>{% endif %}
+        <div class="label" style="font-size:9px;letter-spacing:.12em;text-transform:uppercase;color:var(--text-muted);margin-bottom:4px;">Iteration / Round</div>
+        <span class="mono" style="font-size:12px;">{{ s.n_iterations }} iter · {{ s.total_rounds }} round</span>
+        {% if s.continuous %}<span class="badge running" style="font-size:10px;margin-left:4px;">∞ Continuous</span>{% endif %}
       </div>
       {% if s.hint %}
       <div style="flex:1;min-width:180px;">
@@ -63,26 +63,26 @@
 
     {% if s.winner_spec %}
     <div style="background:rgba(74,222,128,0.07);border:1px solid rgba(74,222,128,0.25);border-radius:6px;padding:8px 12px;margin-bottom:10px;">
-      <span style="font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--pnl-up);font-weight:600;">KAZANAN: </span>
+      <span style="font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--pnl-up);font-weight:600;">WINNER: </span>
       <span class="mono" style="font-size:12px;color:var(--pnl-up);font-weight:600;">{{ s.winner_spec }}</span>
-      {% if s.winner_score %}<span class="text-muted mono" style="font-size:11px;margin-left:8px;">skor={{ "%.3f"|format(s.winner_score) }}</span>{% endif %}
+      {% if s.winner_score %}<span class="text-muted mono" style="font-size:11px;margin-left:8px;">score={{ "%.3f"|format(s.winner_score) }}</span>{% endif %}
     </div>
     {% endif %}
 
-    {# Alt satır: istatistikler + maliyet #}
+    {# Bottom row: statistics + cost #}
     <div style="display:flex;gap:20px;flex-wrap:wrap;align-items:center;">
       <span class="text-muted mono" style="font-size:11px;">📊 {{ s.n_backtest }} backtest</span>
       <span class="text-muted mono" style="font-size:11px;">🔬 {{ s.n_rob }} robustness</span>
-      <span class="text-muted mono" style="font-size:11px;">🐍 {{ s.n_custom }} custom blok</span>
-      <span class="text-muted mono" style="font-size:11px;">📝 {{ s.n_step }} adım</span>
+      <span class="text-muted mono" style="font-size:11px;">🐍 {{ s.n_custom }} custom block</span>
+      <span class="text-muted mono" style="font-size:11px;">📝 {{ s.n_step }} step</span>
       {% if s.has_blocks %}
-      <span class="badge" style="font-size:10px;background:rgba(94,160,246,0.1);color:#5ea0f6;border-color:rgba(94,160,246,0.3);">Python dosyaları var</span>
+      <span class="badge" style="font-size:10px;background:rgba(94,160,246,0.1);color:#5ea0f6;border-color:rgba(94,160,246,0.3);">Python files present</span>
       {% endif %}
       {% if s.cost_eur is not none %}
-      {# L38: model-bazlı TAHMİNİ maliyet; abonelik CLI koşularında alan None → gizli #}
+      {# L38: model-based ESTIMATED cost; field is None on subscription CLI runs → hidden #}
       <span class="mono" style="font-size:11px;font-weight:600;color:var(--amber);margin-left:auto;">
         ≈ €{{ "%.4f"|format(s.cost_eur) }}
-        <span class="text-muted" style="font-weight:400;"> (${{ "%.4f"|format(s.cost_usd) }} · tahmini)</span>
+        <span class="text-muted" style="font-weight:400;"> (${{ "%.4f"|format(s.cost_usd) }} · estimated)</span>
       </span>
       {% endif %}
     </div>

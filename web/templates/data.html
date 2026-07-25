@@ -1,20 +1,22 @@
 {% extends "base.html" %}
 {% block content %}
 
-<div class="panel">
-  <div class="panel-header">
-    <div class="panel-title">Instrument Catalog</div>
-    <div class="panel-meta">
-      <span class="small">Nautilus veri modeli · <a href="/wiki/slug/parquet_data_catalog" class="link">📖 parquet_data_catalog</a> · <a href="/wiki/slug/bar_aggregation_and_type_syntax" class="link">📖 bar_type DSL</a></span>
-    </div>
-  </div>
-  <div class="panel-body">
-    <p class="small" style="margin:0 0 6px 0;">
-      Bu ekran <code>data.py</code>'nin ürettiği veri kaynaklarını Nautilus enstrüman modeliyle listeler:
-      <code>InstrumentId</code>, precision (<a href="/wiki/slug/precision_modes" class="link">📖 precision_modes</a>),
-      <code>BarType</code> DSL string'i (5 alan), ve wiki'nin işaretlediği tuzaklar
-      (<a href="/wiki/slug/index_backtest_via_equity_proxy" class="link">📖 size_precision=0 Equity trap</a>).
-    </p>
+{# ─── Compact page header (replaces the old text-only panel) ─── #}
+<div class="mb-3">
+  <div class="section-title">Instrument Catalog</div>
+  <p class="small text-muted data-note">
+    Nautilus data model — <code>InstrumentId</code>, precision, <code>BarType</code> DSL, wiki pitfalls.
+    <a href="/wiki/slug/parquet_data_catalog" class="link">📖 parquet_data_catalog</a> ·
+    <a href="/wiki/slug/bar_aggregation_and_type_syntax" class="link">📖 bar_type DSL</a> ·
+    <a href="/wiki/slug/index_backtest_via_equity_proxy" class="link">📖 Equity trap</a>
+  </p>
+  {# State legend — the unified cell badges self-document the vocabulary. #}
+  <div class="chip-legend">
+    <span class="chip chip-good">cached</span>
+    <span class="chip chip-good">✓ catalog</span>
+    <span class="chip">fetch</span>
+    <span class="chip">unsupported</span>
+    <span class="chip">read-only</span>
   </div>
 </div>
 
@@ -26,8 +28,10 @@
     <div class="panel-meta"><span class="small mono">load_bybit_bars(symbol, category, interval)</span></div>
   </div>
   <div class="panel-body">
-    <p class="small text-muted" style="margin:0 0 10px 0;">
-      Sembol × kategori × zaman aralığı ızgarası. Yalnızca <span class="mono">1m</span>/<span class="mono">5m</span>/<span class="mono">15m</span>/<span class="mono">1h</span>/<span class="mono">4h</span>/<span class="mono">1d</span> Bybit v5 <code>_BYBIT_MS</code>'de tanımlı; diğer hücreler gri.
+    <p class="small text-muted data-note">
+      Per symbol: a category (spot/linear/inverse) × timeframe grid.
+      Only <span class="mono">1m</span>/<span class="mono">5m</span>/<span class="mono">15m</span>/<span class="mono">1h</span>/<span class="mono">4h</span>/<span class="mono">1d</span>
+      are defined in Bybit v5 <code>_BYBIT_MS</code>; the symbol set is fixed, so there is no filter.
     </p>
 
     {% for row in catalog.bybit %}
@@ -41,9 +45,9 @@
 <div class="panel">
   <div class="panel-header">
     <div class="panel-title">
-      US Indices (Polygon-style ticks)
+      US Indices (Polygon)
       {% if catalog.index_total is not none %}
-        <span class="badge">{{ "{:,}".format(catalog.index_total) }} ticker discovered</span>
+        <span class="badge">{{ "{:,}".format(catalog.index_total) }} tickers</span>
       {% else %}
         <span class="badge">registry missing</span>
       {% endif %}
@@ -54,19 +58,20 @@
   </div>
   <div class="panel-body">
 
-    <div class="row" style="align-items:flex-end; gap:12px; margin-bottom:12px;">
-      <form method="get" action="/data" class="row" style="gap:8px; flex:1;">
-        <label class="field" style="flex:1;">
+    <div class="row data-filter">
+      <form method="get" action="/data" class="row">
+        <input type="hidden" name="xq" value="{{ external_query }}">
+        <label class="field">
           Ticker filter
           <input type="text" name="q" value="{{ index_query }}"
-                 placeholder="e.g. AAVE, BSC, SPX"
-                 class="mono" />
+                 placeholder="e.g. AAVE, BSC, SPX" class="mono" />
         </label>
         <button type="submit" class="btn btn-secondary">Filter</button>
       </form>
       <form hx-post="/data/index/discover"
             hx-target="#discover-result"
-            hx-swap="innerHTML">
+            hx-swap="innerHTML"
+            hx-disabled-elt="find button">
         <button type="submit" class="btn btn-secondary" title="Rebuild _tickers.json from INDEX_ROOT (slow)">
           🔍 Discover tickers
         </button>
@@ -84,8 +89,8 @@
         {% if index_query %}No tickers match “<span class="mono">{{ index_query }}</span>”.{% else %}No tickers.{% endif %}
       </div>
     {% else %}
-      <p class="small text-muted" style="margin:0 0 8px 0;">
-        {{ catalog.index|length }} / {{ "{:,}".format(catalog.index_total) }} ticker gösteriliyor.
+      <p class="small text-muted data-note">
+        Showing {{ catalog.index|length }} / {{ "{:,}".format(catalog.index_total) }} tickers.
         Wiki: <a href="/wiki/slug/index_backtest_via_equity_proxy" class="link">📖 index_backtest_via_equity_proxy</a>.
       </p>
       {% for row in catalog.index %}
@@ -101,27 +106,26 @@
 <div class="panel">
   <div class="panel-header">
     <div class="panel-title">
-      Harici Nautilus Catalog (NAU_ev)
+      External Nautilus Catalog (NAU_ev)
       {% if catalog.external_total %}
-        <span class="badge">{{ "{:,}".format(catalog.external_total) }} enstrüman</span>
+        <span class="badge">{{ "{:,}".format(catalog.external_total) }} instruments</span>
       {% else %}
-        <span class="badge">catalog bulunamadı</span>
+        <span class="badge">catalog not found</span>
       {% endif %}
     </div>
     <div class="panel-meta">
-      <span class="small mono">salt-okunur · yol ile referans · NAUTILUS_EXTERNAL_CATALOGS</span>
+      <span class="small mono">read-only · referenced by path · NAUTILUS_EXTERNAL_CATALOGS</span>
     </div>
   </div>
   <div class="panel-body">
 
-    <div class="row" style="align-items:flex-end; gap:12px; margin-bottom:12px;">
-      <form method="get" action="/data" class="row" style="gap:8px; flex:1;">
+    <div class="row data-filter">
+      <form method="get" action="/data" class="row">
         <input type="hidden" name="q" value="{{ index_query }}">
-        <label class="field" style="flex:1;">
-          Enstrüman filtresi
+        <label class="field">
+          Instrument filter
           <input type="text" name="xq" value="{{ external_query }}"
-                 placeholder="örn. AAPL, NVDA, .NASDAQ"
-                 class="mono" />
+                 placeholder="e.g. AAPL, NVDA, .NASDAQ" class="mono" />
         </label>
         <button type="submit" class="btn btn-secondary">Filter</button>
       </form>
@@ -129,19 +133,18 @@
 
     {% if not catalog.external_total %}
       <div class="empty-state">
-        Harici catalog bulunamadı. <code>NAUTILUS_EXTERNAL_CATALOGS</code> ortam
-        değişkeni ile bir veya daha fazla ParquetDataCatalog kökü belirtin
-        (varsayılan: NAU_ev backtest desk catalog'u).
+        No external catalog found. Point <code>NAUTILUS_EXTERNAL_CATALOGS</code> at one or more
+        ParquetDataCatalog roots (default: the NAU_ev backtest desk catalog).
       </div>
     {% elif not catalog.external %}
       <div class="empty-state">
-        {% if external_query %}“<span class="mono">{{ external_query }}</span>” ile eşleşen enstrüman yok.{% else %}Enstrüman yok.{% endif %}
+        {% if external_query %}No instruments match “<span class="mono">{{ external_query }}</span>”.{% else %}No instruments.{% endif %}
       </div>
     {% else %}
-      <p class="small text-muted" style="margin:0 0 8px 0;">
-        {{ catalog.external|length }} / {{ "{:,}".format(catalog.external_matched) }} eşleşen enstrüman gösteriliyor
-        (toplam {{ "{:,}".format(catalog.external_total) }}). Salt-okunur —
-        bu barlar yerinde okunur, kopyalanmaz.
+      <p class="small text-muted data-note">
+        Showing {{ catalog.external|length }} / {{ "{:,}".format(catalog.external_matched) }} matching instruments
+        (of {{ "{:,}".format(catalog.external_total) }} total). Read-only —
+        these bars are read in place, not copied.
       </p>
       {% for row in catalog.external %}
         {% include "fragments/data/instrument_row.html" %}

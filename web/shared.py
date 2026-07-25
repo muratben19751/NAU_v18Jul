@@ -17,8 +17,50 @@ from __future__ import annotations
 import json
 import math
 import threading
+import time
+import uuid
 from datetime import UTC, datetime
 from pathlib import Path
+
+try:
+    import markdown as _md
+
+    def render_md(txt: str, extensions: tuple[str, ...] = ("fenced_code", "tables")) -> str:
+        """Render markdown → HTML. Was hand-copied into strategy/backtest/wiki
+        routes; lives here now (leaf module). ``extensions`` lets the wiki route
+        keep its ``toc`` variant without a second copy."""
+        return _md.markdown(txt, extensions=list(extensions))
+except Exception:  # pragma: no cover
+
+    def render_md(txt: str, extensions: tuple[str, ...] = ("fenced_code", "tables")) -> str:
+        return f"<pre>{txt}</pre>"
+
+
+# ---------------------------------------------------------------------------
+# Anonymous session id — a cookie-scoped id used to partition per-user state
+# (draft blocks in the composer, last backtest result). Lived only in
+# strategy.py; moved here so backtest.py can share the SAME session dimension
+# (its _LAST_RESULT was a process-global single slot — last-writer-wins across
+# users). Leaf module: takes duck-typed request/response (``.cookies`` /
+# ``.set_cookie``) so it need not import FastAPI.
+# ---------------------------------------------------------------------------
+SESSION_COOKIE = "nautlab_sid"
+_SESSION_COOKIE_MAX_AGE = 3600
+
+
+def session_id(request, response=None) -> str:
+    """Return the caller's ``nautlab_sid`` (minting one if absent). When
+    ``response`` is given, (re)set the cookie for sliding expiry — refreshed on
+    EVERY response so a draft doesn't expire mid-composition."""
+    sid = request.cookies.get(SESSION_COOKIE)
+    if not sid:
+        sid = uuid.uuid4().hex
+    if response is not None:
+        response.set_cookie(
+            SESSION_COOKIE, sid, httponly=True, samesite="lax",
+            max_age=_SESSION_COOKIE_MAX_AGE,
+        )
+    return sid
 
 
 # ---------------------------------------------------------------------------
@@ -96,6 +138,81 @@ class ProgressStore:
 
 
 # ---------------------------------------------------------------------------
+# Chat store — server-side multi-turn conversation registry. Distinct from
+# ProgressStore: a chat has no "done" flag, so eviction is TTL + oldest-first
+# (not done-first). Generalizes the hand-rolled _CHAT_STORE/_CHAT_LOCK/
+# _chat_evict_locked block that "AI ile iyileştir" grew in web/routes/backtest.py
+# (:137-157); the new block-edit / draft-edit chats reuse it instead of copying.
+#
+# The LLM call MUST NOT run under the lock. Use the read-copy / commit pattern:
+#   conv = store.get(cid)                 # read a copy (short lock)
+#   reply = await asyncio.to_thread(...)  # LLM call, no lock held
+#   store.commit(cid, lambda c: ...)      # re-fetch under lock, mutate, stamp ts
+# ---------------------------------------------------------------------------
+class ChatStore:
+    """Bounded conv-id → conversation-dict registry with TTL + oldest-first eviction.
+
+    Each conversation dict is caller-defined but must carry a ``ts`` key
+    (``time.monotonic()``) which this store maintains. ``ttl_sec`` drops idle
+    conversations; ``max_entries`` caps concurrent conversations (oldest first).
+    """
+
+    def __init__(self, ttl_sec: int = 30 * 60, max_entries: int = 100) -> None:
+        self._d: dict[str, dict] = {}
+        self._lock = threading.Lock()
+        self.ttl_sec = ttl_sec
+        self.max_entries = max_entries
+
+    def _evict_locked(self) -> None:
+        """Drop TTL-expired conversations, then the oldest while over capacity.
+
+        Caller holds ``self._lock``.
+        """
+        now = time.monotonic()
+        for cid in [
+            c for c, v in self._d.items() if now - v.get("ts", now) > self.ttl_sec
+        ]:
+            self._d.pop(cid, None)
+        while len(self._d) > self.max_entries:
+            oldest = min(self._d, key=lambda k: self._d[k].get("ts", 0.0))
+            self._d.pop(oldest, None)
+
+    def new(self, conv: dict) -> str:
+        """Register ``conv`` under a fresh conv_id, stamp ts, evict, return the id."""
+        conv_id = uuid.uuid4().hex[:8]
+        conv["ts"] = time.monotonic()
+        with self._lock:
+            self._d[conv_id] = conv
+            self._evict_locked()
+        return conv_id
+
+    def get(self, conv_id: str) -> dict | None:
+        """Return a shallow copy of the conversation (or None), under the lock.
+
+        A copy so the caller can read/iterate without holding the lock while the
+        LLM call runs; writes must go through ``commit``.
+        """
+        with self._lock:
+            conv = self._d.get(conv_id)
+            return dict(conv) if conv is not None else None
+
+    def commit(self, conv_id: str, mutate):
+        """Re-fetch the live conversation under the lock, apply ``mutate(conv)``,
+        refresh its ts, and evict. Returns the mutated conv, or None if it was
+        evicted while the LLM call ran (caller renders an "expired" fragment).
+        """
+        with self._lock:
+            conv = self._d.get(conv_id)
+            if conv is None:
+                return None
+            mutate(conv)
+            conv["ts"] = time.monotonic()
+            self._evict_locked()
+            # _evict_locked may have dropped it (TTL) — return only if still live.
+            return self._d.get(conv_id)
+
+
+# ---------------------------------------------------------------------------
 # Append-only JSONL logs (single source of truth for the paths, which used to
 # be duplicated across the writer modules and reports.py).
 # ---------------------------------------------------------------------------
@@ -103,9 +220,10 @@ _CACHE_DIR = Path.home() / ".cache" / "nautilus_web_app"
 BACKTEST_LOG = _CACHE_DIR / "backtest_log.jsonl"
 ROBUSTNESS_LOG = _CACHE_DIR / "robustness_log.jsonl"
 
-# Append-only JSONL loglar sınırsız büyüyordu (backtest_log ~10MB, robustness
-# ~5MB). Eşik aşımında tek nesil arşive devir: aktif dosya temiz başlar,
-# okuyucular (tail-read / tam okuma) yalnız aktif dosyayı görür.
+# Append-only JSONL logs were growing without bound (backtest_log ~10MB,
+# robustness ~5MB). On threshold exceed, roll over to a single-generation
+# archive: the active file starts clean, and readers (tail-read / full read)
+# see only the active file.
 LOG_ROTATE_BYTES = 20 * 1024 * 1024
 
 _BACKTEST_LOG_LOCK = threading.Lock()
@@ -113,9 +231,9 @@ _ROBUSTNESS_LOG_LOCK = threading.Lock()
 
 
 def rotate_if_large(path: Path, max_bytes: int | None = None) -> None:
-    """Dosya eşiği aştıysa `<ad>.jsonl.1`'e devir (mevcut arşivi ezerek).
+    """Roll the file over to `<name>.jsonl.1` if it exceeds the threshold (overwriting the existing archive).
 
-    Eşik çağrı anında çözülür (test'te monkeypatch edilebilir olsun diye)."""
+    The threshold is resolved at call time (so it can be monkeypatched in tests)."""
     limit = max_bytes if max_bytes is not None else LOG_ROTATE_BYTES
     try:
         if path.exists() and path.stat().st_size >= limit:
@@ -124,7 +242,7 @@ def rotate_if_large(path: Path, max_bytes: int | None = None) -> None:
                 archive.unlink()
             path.rename(archive)
     except OSError:
-        pass  # rotation başarısızlığı log yazımını engellememeli
+        pass  # a rotation failure must not block log writing
 
 
 def sanitize_floats(obj):
@@ -145,7 +263,7 @@ def chart_url(bi: dict, spec_id: str = "") -> str:
 
     Interval → chart TF mapping picks a resolution that keeps bar count sane
     while covering the full backtest range so trade markers land on-screen.
-    spec_id → chart, stratejinin gerçek indikatörlerini çizer.
+    spec_id → chart, draws the strategy's actual indicators.
     """
     sym = bi.get("symbol")
     if not sym:
@@ -153,7 +271,7 @@ def chart_url(bi: dict, spec_id: str = "") -> str:
     cat = bi.get("category", "linear")
     interval = bi.get("interval", "60")
     sid = f"&spec_id={spec_id}" if spec_id else ""
-    # Backtest zaman aralığını timestamp'e çevir
+    # Convert the backtest time range to a timestamp
     start_ts = end_ts = None
     try:
         from pandas import Timestamp
@@ -165,7 +283,7 @@ def chart_url(bi: dict, spec_id: str = "") -> str:
     except Exception:
         pass
     if start_ts and end_ts:
-        # Aralık uzunsa daha büyük TF seç (bar sayısını ~2000 altında tut)
+        # For a long range pick a larger TF (keep bar count under ~2000)
         span_days = (end_ts - start_ts) / 86400
         tf = interval
         if span_days > 400:
@@ -186,10 +304,12 @@ def log_backtest(
     instrument_kind: str,
     bars_info: dict,
     elapsed_sec: float | None = None,
+    run_id: str | None = None,
 ) -> None:
     BACKTEST_LOG.parent.mkdir(parents=True, exist_ok=True)
     record = {
         "ts": datetime.now(UTC).isoformat(),
+        "run_id": run_id,
         "elapsed_sec": round(elapsed_sec, 3) if elapsed_sec is not None else None,
         "spec": {
             "id": spec.id,
@@ -210,8 +330,8 @@ def log_backtest(
             "tp_value": spec.tp_value,
             "allow_short": spec.allow_short,
             "emulate": spec.emulate,
-            # Deterministik yeniden-koşum (reports/detail) için kalan spec
-            # alanları — getattr: testlerdeki duck-typed sahte spec kırılmasın.
+            # Remaining spec fields for deterministic re-run (reports/detail)
+            # — getattr: don't break duck-typed fake specs in tests.
             "limit_offset_bps": getattr(spec, "limit_offset_bps", 0.0),
             "atr_period": getattr(spec, "atr_period", 14),
             "trade_size_percent": getattr(spec, "trade_size_percent", 5.0),
@@ -235,6 +355,49 @@ def log_backtest(
             f.write(json.dumps(record, default=str) + "\n")
 
 
+# ── Full-result snapshot store ────────────────────────────────────────────
+# The jsonl log keeps only scalar metrics (no equity curve / trade list), so a
+# history row can't rebuild the full result screen from it. We additionally
+# persist the complete result view-model per run to bt_results/<run_id>.json and
+# reload it verbatim from GET /backtest/result/<run_id>.
+_RESULTS_DIR = _CACHE_DIR / "bt_results"
+_RESULTS_KEEP = 20  # cap: newest N snapshots kept, older ones pruned
+
+
+def save_result_snapshot(run_id: str, viewmodel: dict) -> None:
+    """Persist a full backtest result view-model; prune to the newest N."""
+    if not run_id:
+        return
+    try:
+        _RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+        path = _RESULTS_DIR / f"{run_id}.json"
+        with open(path, "w") as f:
+            f.write(json.dumps(sanitize_floats(viewmodel), default=str))
+        # Prune oldest beyond the cap (by mtime).
+        snaps = sorted(
+            _RESULTS_DIR.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True
+        )
+        for stale in snaps[_RESULTS_KEEP:]:
+            try:
+                stale.unlink()
+            except OSError:
+                pass
+    except OSError:
+        pass  # a snapshot failure must never break the backtest
+
+
+def load_result_snapshot(run_id: str) -> dict | None:
+    """Read back a stored result view-model; None if missing/unreadable."""
+    try:
+        path = _RESULTS_DIR / f"{run_id}.json"
+        if not path.exists():
+            return None
+        with open(path) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return None
+
+
 def log_robustness(
     spec_id: str,
     spec_name: str,
@@ -245,16 +408,17 @@ def log_robustness(
     interval: str | None = None,
     venue: str | None = None,
 ) -> None:
-    """Skalar robustness özetini diske yaz (equity curve'leri hariç tut).
+    """Write the scalar robustness summary to disk (excluding equity curves).
 
-    Kimlik alanları (symbol/category/interval/venue) kayda eklenir; verilmezse
-    ``result`` içinden okunur. Bunlar olmadan aynı spec'in farklı sembol/TF
-    koşuları raporda son-yazan-kazanır şeklinde ezişiyordu.
+    Identity fields (symbol/category/interval/venue) are added to the record; if
+    not provided they are read from ``result``. Without them, different
+    symbol/TF runs of the same spec were overwriting each other in a
+    last-writer-wins fashion in the report.
     """
     try:
         ROBUSTNESS_LOG.parent.mkdir(parents=True, exist_ok=True)
 
-        # Walk-forward: equity curve'siz
+        # Walk-forward: without equity curve
         wf_clean = []
         for w in result.get("wfo_windows") or []:
             wf_clean.append(
@@ -275,7 +439,7 @@ def log_robustness(
                 }
             )
 
-        # Monte Carlo: büyük listeler hariç
+        # Monte Carlo: excluding large lists
         mc_raw = result.get("mc") or {}
         mc_clean = {
             k: mc_raw[k]
@@ -301,7 +465,7 @@ def log_robustness(
         if "error" in mc_raw:
             mc_clean["error"] = mc_raw["error"]
 
-        # In/Out-of-Sample: equity curve'siz
+        # In/Out-of-Sample: without equity curve
         sp_raw = result.get("split") or {}
         sp_clean = {
             k: sp_raw[k]

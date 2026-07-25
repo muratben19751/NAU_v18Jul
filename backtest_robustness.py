@@ -1,11 +1,11 @@
-"""Robustness analiz modülü — Walk-Forward, Monte Carlo, In/Out-of-Sample, Multi-Symbol.
+"""Robustness analysis module — Walk-Forward, Monte Carlo, In/Out-of-Sample, Multi-Symbol.
 
-Tüm fonksiyonlar `run_composed_backtest` üzerine inşa edilmiştir; ayrı bir
-Nautilus API gerektirmez.
+All functions are built on top of `run_composed_backtest`; they do not require a
+separate Nautilus API.
 
 Wiki References
 ---------------
-Bkz: [[backtesting_guide]], [[backtest_node]]
+See: [[backtesting_guide]], [[backtest_node]]
 """
 
 from __future__ import annotations
@@ -25,21 +25,22 @@ def _env_float(name: str, default: float) -> float:
         return default
 
 
-# Train ile test arasına (ve wfo_optimizer'daki fold'lar arasına) konan embargo
-# (purge) boşluğu, gün cinsinden (M28): train sonunda açık kalan pozisyonun /
-# lookback sızıntısının test penceresine taşmasını engeller. NAU deseni.
+# Embargo (purge) gap, in days (M28), placed between train and test (and between
+# folds in wfo_optimizer): prevents an open position at the end of train /
+# lookback leakage from spilling into the test window. NAU pattern.
 WF_EMBARGO_DAYS = max(0.0, _env_float("NAUTILUS_WF_EMBARGO_DAYS", 2))
 
-# M268/M431: robustness'taki paralel batch'ler için unit-timeout — asılı bir
-# custom-block unit'i tüm suite'i sandbox'ın 900s global timeout'una (tüm işin
-# toptan kaybına) rehin almasın. Batch bütçesi < global timeout. run_units
-# timeout'ta havuzu yeniden kurup eksik unit'i 'unit timeout'a çevirir.
+# M268/M431: unit-timeout for the parallel batches in robustness — so a hung
+# custom-block unit does not hold the whole suite hostage to the sandbox's 900s
+# global timeout (wholesale loss of all the work). Batch budget < global timeout.
+# On run_units timeout it rebuilds the pool and turns the missing unit into a
+# 'unit timeout'.
 WFO_BATCH_TIMEOUT_S = _env_float("NAUTILUS_WFO_BATCH_TIMEOUT_S", 600.0)
 
 
 def _run_many_kw(run_many):
-    """run_many timeout_s'i destekliyorsa (parallel_exec.run_units) geçir; eski
-    imzalı çağrılabilirlerde (testler) sessizce atla."""
+    """Pass timeout_s if run_many supports it (parallel_exec.run_units); silently
+    skip for old-signature callables (tests)."""
     import inspect
 
     try:
@@ -52,7 +53,7 @@ def _run_many_kw(run_many):
 
 
 def _isnan_num(x) -> bool:
-    """None/parse edilemeyen/NaN → True (skaler metrik guard'ı)."""
+    """None/unparseable/NaN → True (scalar metric guard)."""
     try:
         return np.isnan(float(x))
     except (TypeError, ValueError):
@@ -67,18 +68,18 @@ def _isnan_num(x) -> bool:
 def _wfo_window_bounds(
     total_start, total_end, train_months: int, test_months: int, step_months: int
 ) -> list[tuple]:
-    """Precompute WFO window date bounds — sıralı ve paralel yolun ortak matematiği.
+    """Precompute WFO window date bounds — the shared math for the sequential and parallel paths.
 
-    - Aylar GERÇEK takvim ayıdır (``pd.DateOffset(months=n)``), 30 gün
-      yaklaşıklığı değil (L22): 6 aylık train gerçekten 6 ay sürer.
-    - ``test_start = train_end + WF_EMBARGO_DAYS`` (M28): embargo boşluğu.
+    - Months are REAL calendar months (``pd.DateOffset(months=n)``), not a 30-day
+      approximation (L22): a 6-month train really lasts 6 months.
+    - ``test_start = train_end + WF_EMBARGO_DAYS`` (M28): embargo gap.
 
     Returns [(window_n, train_start, train_end, test_start, test_end), ...]
-    (tz-aware ``pd.Timestamp`` değerleri).
+    (tz-aware ``pd.Timestamp`` values).
     """
-    # M62: step_months<=0 cursor'u hiç ilerletmez → sonsuz döngü + sınırsız
-    # bounds (bellek), sandbox child timeout'a dek CPU yakar. train/test<=0 de
-    # anlamsız. Doğrudan-POST clamp'lemiyordu (yalnız split_pct clamp'liydi).
+    # M62: step_months<=0 never advances the cursor → infinite loop + unbounded
+    # bounds (memory), burns CPU until the sandbox child timeout. train/test<=0 is
+    # also meaningless. The direct-POST path did not clamp (only split_pct was clamped).
     if step_months <= 0 or train_months <= 0 or test_months <= 0:
         return []
     bounds = []
@@ -113,22 +114,21 @@ def run_walk_forward(
     min_trades: int = 5,
     run_many=None,
 ) -> list[dict]:
-    """Kayan pencere Walk-Forward *Optimization*.
+    """Sliding-window Walk-Forward *Optimization*.
 
-    Her window: TRAIN döneminde parametreleri optimize et (hafif GA — elitizm +
-    turnuva + crossover + mutasyon, k-fold embargo'lu skor; yalnız sayısal
-    knob'lar; bkz. ``wfo_optimizer``), seçilen parametreleri TEST döneminde
-    uygula. Ayrıca değişmemiş (naive) spec de aynı test penceresinde
-    çalıştırılır — böylece "optimizasyon OOS'ta yardım etti mi?" dürüstçe
-    karşılaştırılabilir. Train ile test arasında ``WF_EMBARGO_DAYS`` günlük
-    embargo boşluğu vardır (M28).
+    Each window: optimize parameters over the TRAIN period (lightweight GA — elitism +
+    tournament + crossover + mutation, k-fold embargoed score; numeric knobs only;
+    see ``wfo_optimizer``), apply the selected parameters over the TEST period.
+    The unchanged (naive) spec is also run over the same test window — so
+    "did optimization help OOS?" can be compared honestly. Between train and test
+    there is a ``WF_EMBARGO_DAYS``-day embargo gap (M28).
 
-    ``run_many`` (opsiyonel): ``parallel_exec.BacktestPool.run_units`` imzalı bir
-    callable. Verildiğinde train backtest'leri GA jenerasyonu başına batch'lenip
-    süreç havuzuna dağıtılır (jenerasyon N+1'in popülasyonu N'in skorlarına
-    bağlı olduğundan aday üretimi parent'ta kalır); ardından OOS test
-    backtest'leri batch'lenir. Tohumlar ve seçim kuralları sıralı yolla birebir
-    aynıdır → kazananlar deterministik olarak özdeştir.
+    ``run_many`` (optional): a callable with the ``parallel_exec.BacktestPool.run_units``
+    signature. When provided, the train backtests are batched per GA generation and
+    distributed to a process pool (candidate generation stays in the parent since
+    generation N+1's population depends on N's scores); then the OOS test backtests
+    are batched. Seeds and selection rules are identical to the sequential path →
+    the winners are deterministically identical.
 
     Returns: list of {
         window, train_start, train_end, test_start, test_end,
@@ -153,8 +153,8 @@ def run_walk_forward(
     space = build_param_space(spec)
     if not space:
         _p(
-            "WFO: optimize edilebilir sayısal parametre yok — "
-            "naive rolling OOS değerlendirmesi çalışacak."
+            "WFO: no optimizable numeric parameters — "
+            "a naive rolling OOS evaluation will run."
         )
 
     idx = bars_df.index
@@ -184,7 +184,7 @@ def run_walk_forward(
         _p(
             f"WFO window {window_n}: train {train_start.date()} → {train_end.date()}, "
             f"test {test_start.date()} → {test_end.date()} · "
-            f"{len(space)} param · GA bütçe {n_optimize}"
+            f"{len(space)} param · GA budget {n_optimize}"
         )
 
         train_bars = bars_df.loc[
@@ -216,7 +216,7 @@ def run_walk_forward(
                 iteration_id=window_n * 100,
             )
             opt_spec = best["spec"]
-            _p(f"  window {window_n} seçilen: {best['params']}")
+            _p(f"  window {window_n} selected: {best['params']}")
 
         # Optimized spec on OOS test window.
         test_result = None
@@ -270,16 +270,17 @@ def run_walk_forward(
             )
         )
 
-    _p(f"WFO tamamlandı · {len(windows)} window")
+    _p(f"WFO completed · {len(windows)} window")
     return windows
 
 
 def _derive_test_objective(metrics: dict, objective: str):
-    """Test metriklerinden, train'de kullanılan ``objective`` ile AYNI metriği
-    türet (M7): sharpe→sharpe, sortino→sortino, calmar/return_dd→pnl/abs(max_dd).
+    """From the test metrics, derive the SAME metric used in train's ``objective``
+    (M7): sharpe→sharpe, sortino→sortino, calmar/return_dd→pnl/abs(max_dd).
 
-    max_dd bu repoda NEGATİF kesirdir — abs() zorunlu. Payda 0/None/NaN ise
-    (ya da metrik yoksa) None döner; efficiency o pencereyi atlar.
+    max_dd is a NEGATIVE fraction in this repo — abs() is mandatory. If the
+    denominator is 0/None/NaN (or the metric is missing), returns None; efficiency
+    skips that window.
     """
     if not metrics:
         return None
@@ -326,8 +327,9 @@ def _wfo_window_entry(
             if best is None or best["objective"] == float("-inf")
             else round(best["objective"], 4)
         ),
-        # M7: efficiency pay/paydası aynı metrik olsun diye OOS objective da
-        # pencere kaydına yazılır; kullanılan metrik adı objective_metric'te.
+        # M7: OOS objective is also written to the window record so efficiency's
+        # numerator/denominator use the same metric; the metric name used is in
+        # objective_metric.
         "test_objective": (round(test_obj, 4) if test_obj is not None else None),
         "objective_metric": objective,
         "train_metrics": best["metrics"] if best else {},
@@ -352,20 +354,20 @@ def _run_walk_forward_parallel(
     objective: str,
     min_trades: int,
 ) -> list[dict]:
-    """Parallel WFO: GA jenerasyonlarını pencereler arasında kilit-adımlı
-    (lockstep) koşturur — jenerasyon g'nin tüm (pencere × aday × fold)
-    birimleri TEK pool batch'idir; skorlar parent'ta indirgenir ve bir sonraki
-    jenerasyon parent'ta evrilir (H10 + L35).
+    """Parallel WFO: runs GA generations in lockstep across windows — all
+    (window × candidate × fold) units of generation g are ONE pool batch;
+    scores are reduced in the parent and the next generation evolves in the
+    parent (H10 + L35).
 
-    Sıralı ``optimize_window`` ile parite sözleşmesi:
-      - pencere-başına ``rng = default_rng(window_n)`` ve AYNI
-        ``ga_initial_population``/``ga_next_population`` çağrı sırası,
-      - fold sınırları parent'ta ``build_fold_bounds`` ile (worker'a
-        rastgelelik sızmaz),
-      - geçersiz adaylar koşturulmaz (skor -inf), herhangi bir fold -inf ise
-        aday reddedilir; skor = ``penalized_score`` (mean − 0.5·std),
-      - kesin-büyük kuralı + jenerasyon/aday sırası → birebir aynı kazanan,
-      - window dict'leri ortak ``_wfo_window_entry`` ile kurulur.
+    Parity contract with the sequential ``optimize_window``:
+      - per-window ``rng = default_rng(window_n)`` and the SAME
+        ``ga_initial_population``/``ga_next_population`` call order,
+      - fold bounds via ``build_fold_bounds`` in the parent (no randomness
+        leaks to the worker),
+      - invalid candidates are not run (score -inf), and if any fold is -inf the
+        candidate is rejected; score = ``penalized_score`` (mean − 0.5·std),
+      - strictly-greater rule + generation/candidate order → the exact same winner,
+      - window dicts are assembled via the shared ``_wfo_window_entry``.
     """
     from types import SimpleNamespace
 
@@ -385,11 +387,11 @@ def _run_walk_forward_parallel(
     def _heartbeat(label):
         def cb(done, total, _key):
             if done % 10 == 0 or done == total:
-                _p(f"  {label}: {done}/{total} tamamlandı")
+                _p(f"  {label}: {done}/{total} completed")
 
         return cb
 
-    # ── Faz A: GA jenerasyonları — pencereler kilit-adımlı (lockstep) ────────
+    # ── Phase A: GA generations — windows in lockstep ────────────────────────
     pop_size, n_gen = ga_plan(space, n_optimize)
     meta: dict[int, dict] = {}
     for window_n, train_start, train_end, test_start, test_end in bounds:
@@ -438,7 +440,7 @@ def _run_walk_forward_parallel(
             for ci, values in enumerate(m["population"]):
                 cand = mutate_spec(spec, space, values)
                 if cand.validate() is not None:
-                    # Geçersiz aday koşturulmaz — skor -inf (sıralı yol paritesi).
+                    # Invalid candidate is not run — score -inf (sequential-path parity).
                     cands.append((ci, values, None))
                     continue
                 cands.append((ci, values, cand))
@@ -477,13 +479,13 @@ def _run_walk_forward_parallel(
                 fold_objs: list[float] = []
                 last_metrics: dict = {}
                 _n_folds = len(m["fold_bounds"])
-                # M462 paritesi: TÜM fold'lar değerlendirilir; geçerli-fold oranı
-                # >=0.6 ise aday yaşar (sıralı optimize_window ile aynı kural).
+                # M462 parity: ALL folds are evaluated; if the valid-fold ratio
+                # >=0.6 the candidate survives (same rule as sequential optimize_window).
                 for fi in range(_n_folds):
                     payload = train_payloads.get(f"w{window_n}g{gen}c{ci}f{fi}")
                     m["evaluated"] += 1
                     if payload is None:
-                        continue  # -inf fold (koşturulmamış geçersiz aday)
+                        continue  # -inf fold (invalid candidate that was not run)
                     res = SimpleNamespace(
                         error=payload.get("error"),
                         metrics=payload.get("metrics") or {},
@@ -514,14 +516,14 @@ def _run_walk_forward_parallel(
                     m["rng"], space, m["population"], scores, pop_size
                 )
 
-    # ── Reduce: fallback + n_evaluated + test unit'leri ──────────────────────
+    # ── Reduce: fallback + n_evaluated + test units ─────────────────────────
     units_b: list[dict] = []
     for window_n, _ts, _te, _s, _e in bounds:
         m = meta[window_n]
         best = m["best"]
         if not m["train_empty"]:
             if best is None:
-                # Hiçbir aday geçerli skor üretemedi — optimize_window fallback'i.
+                # No candidate produced a valid score — optimize_window fallback.
                 cur = _current_values(spec, space)
                 best = {
                     "values": cur,
@@ -531,7 +533,7 @@ def _run_walk_forward_parallel(
                     "metrics": {},
                 }
             best["n_evaluated"] = m["evaluated"]
-            _p(f"  window {window_n} seçilen: {best['params']}")
+            _p(f"  window {window_n} selected: {best['params']}")
         m["best"] = best
 
         opt_spec = best["spec"] if best else spec
@@ -598,7 +600,7 @@ def _run_walk_forward_parallel(
             )
         )
 
-    _p(f"WFO tamamlandı · {len(windows)} window")
+    _p(f"WFO completed · {len(windows)} window")
     return windows
 
 
@@ -631,9 +633,9 @@ def wfo_aggregate(windows: list[dict]) -> dict:
     oos_pnl_opt = _mean(("test_metrics", "pnl"))
     oos_pnl_naive = _mean(("test_metrics_naive", "pnl"))
 
-    # M28: NAU dağılım cezası — mean − 0.5·std (pencereler-arası varyans
-    # cezalandırılır; tek şanslı pencereyle 'sağlam' görünen aday düşer).
-    # Tüketici: agent _robustness_passed .get ile okur (geriye uyumlu).
+    # M28: NAU dispersion penalty — mean − 0.5·std (variance across windows is
+    # penalized; a candidate that looks 'robust' from a single lucky window falls).
+    # Consumer: agent _robustness_passed reads it via .get (backward compatible).
     def _penalized(key_path):
         vals = []
         for w in windows:
@@ -676,7 +678,7 @@ def wfo_aggregate(windows: list[dict]) -> dict:
             param_cv[k] = round(float(std / abs(mean)), 3) if mean else None
 
     unstable = [k for k, cv in param_cv.items() if cv is not None and cv > 0.5]
-    stability_label = "kararsız (overfit riski)" if unstable else "kararlı"
+    stability_label = "unstable (overfit risk)" if unstable else "stable"
 
     return {
         "n_windows": len(windows),
@@ -696,7 +698,7 @@ def wfo_aggregate(windows: list[dict]) -> dict:
             round(is_obj_mean, 3) if is_obj_mean is not None else None
         ),
         "wfo_efficiency": efficiency,
-        # M28: mean − 0.5·std (NAU dağılım cezası) — kapılar bunu tercih eder.
+        # M28: mean − 0.5·std (NAU dispersion penalty) — the gates prefer this.
         "oos_sharpe_penalized": (
             round(oos_sharpe_penalized, 3) if oos_sharpe_penalized is not None else None
         ),
@@ -743,8 +745,8 @@ def run_monte_carlo(
         original_final,
         max_dd_p50, max_dd_p95,
         win_rate_mean, win_rate_std,
-        curves_sample: list[list[float]]  — 50 örnek eğri (grafik için)
-        percentile_curves: {p5, p25, p50, p75, p95}  — her noktada yüzdelik
+        curves_sample: list[list[float]]  — 50 sample curves (for the chart)
+        percentile_curves: {p5, p25, p50, p75, p95}  — percentiles at each point
     }
     """
 
@@ -756,15 +758,15 @@ def run_monte_carlo(
                 pass
 
     if not trades:
-        return {"error": "Trade verisi yok — önce backtest çalıştırın."}
+        return {"error": "No trade data — run a backtest first."}
 
     pnls = [t.get("pnl", 0.0) for t in trades]
     n_trades = len(pnls)
-    _p(f"Monte Carlo başlıyor · {n_sims} simülasyon · {n_trades} trade · {method}")
+    _p(f"Monte Carlo starting · {n_sims} simulations · {n_trades} trades · {method}")
 
-    # Numpy ile vektörize — n_sims × n_trades resample matrisi.
-    # Permütasyon DEĞİL, yerine-koymalı örnekleme: her sim farklı bir çoklu-küme
-    # olduğu için final PnL ve win-rate gerçekten değişir.
+    # Vectorized with numpy — n_sims × n_trades resample matrix.
+    # NOT a permutation, but sampling WITH REPLACEMENT: since each sim is a
+    # different multiset, final PnL and win-rate genuinely vary.
     rng = np.random.default_rng(seed=42)
     pnls_arr = np.asarray(pnls, dtype=float)
     if method == "block_bootstrap" and n_trades > 1:
@@ -779,27 +781,27 @@ def run_monte_carlo(
         idx = rng.integers(0, n_trades, size=(n_sims, n_trades))
     shuffled = pnls_arr[idx]
 
-    # Kümülatif equity
+    # Cumulative equity
     cumulative = starting_cash + np.cumsum(shuffled, axis=1)
-    # Başlangıç noktasını ekle
+    # Add the starting point
     start_col = np.full((n_sims, 1), starting_cash)
     all_curves = np.hstack([start_col, cumulative])  # n_sims × (n_trades+1)
 
-    # Yüzdelik bantlar (her nokta için)
+    # Percentile bands (for each point)
     p5 = np.percentile(all_curves, 5, axis=0).tolist()
     p25 = np.percentile(all_curves, 25, axis=0).tolist()
     p50 = np.percentile(all_curves, 50, axis=0).tolist()
     p75 = np.percentile(all_curves, 75, axis=0).tolist()
     p95 = np.percentile(all_curves, 95, axis=0).tolist()
 
-    # Final değer dağılımı
+    # Final value distribution
     finals = all_curves[:, -1]
     original_final = starting_cash + sum(pnls)
 
-    # Gerçek (shuffle edilmemiş) trade sırasına göre equity path — overlay için (#32)
+    # Equity path by the real (un-shuffled) trade order — for the overlay (#32)
     real_curve = [starting_cash] + (starting_cash + np.cumsum(pnls)).tolist()
 
-    # Max drawdown her simülasyon için
+    # Max drawdown for each simulation
     max_dds = []
     for curve in all_curves:
         peak = np.maximum.accumulate(curve)
@@ -808,14 +810,14 @@ def run_monte_carlo(
 
     max_dds_arr = np.array(max_dds)
 
-    # Win rate dağılımı
+    # Win rate distribution
     win_rates = [(sim > 0).sum() / n_trades for sim in shuffled]
 
-    # 50 örnek eğri (grafik için çok fazla veri gönderme)
+    # 50 sample curves (do not send too much data to the chart)
     sample_idx = rng.choice(n_sims, size=min(50, n_sims), replace=False)
     curves_sample = all_curves[sample_idx].tolist()
 
-    _p(f"Monte Carlo tamamlandı · median final: ${float(np.median(finals)):,.0f}")
+    _p(f"Monte Carlo completed · median final: ${float(np.median(finals)):,.0f}")
 
     return {
         "n_sims": n_sims,
@@ -855,10 +857,10 @@ def run_insample_oos_split(
     progress_fn=None,
     run_many=None,
 ) -> dict:
-    """Verinin ilk %70'inde in-sample, kalan %30'unda out-of-sample test.
+    """In-sample on the first 70% of the data, out-of-sample test on the remaining 30%.
 
-    ``run_many`` verilirse IS/OOS çifti süreç havuzunda eş zamanlı koşar
-    (pozisyonel iloc split'i worker'a ``irange`` olarak taşınır — birebir dilim).
+    If ``run_many`` is given, the IS/OOS pair runs concurrently in the process pool
+    (the positional iloc split is carried to the worker as ``irange`` — an identical slice).
 
     Returns: {
         split_pct, split_date,
@@ -876,14 +878,15 @@ def run_insample_oos_split(
             except Exception:
                 pass
 
-    # L6/kenar: len==1'de split_idx=1 → bars_df.index[1] IndexError ile TÜM
-    # suite'i tek error'a çeviriyordu; en az 2 bar (her tarafa >=1) şart.
+    # L6/edge: at len==1, split_idx=1 → bars_df.index[1] raised IndexError and
+    # turned the WHOLE suite into a single error; at least 2 bars (>=1 per side)
+    # required.
     if len(bars_df) < 2:
-        return {"error": "Yetersiz veri (en az 2 bar gerekli)."}
+        return {"error": "Insufficient data (at least 2 bars required)."}
 
-    # L6: split_pct=1.0'da index[split_idx] taşıp IndexError ile TÜM suite'i
-    # (tamamlanmış WFO dahil) tek error'a çeviriyordu — iki taraf da en az
-    # 1 bar alacak şekilde clamp.
+    # L6: at split_pct=1.0, index[split_idx] overflowed and turned the WHOLE suite
+    # (including a completed WFO) into a single error via IndexError — clamp so both
+    # sides get at least 1 bar.
     split_idx = max(1, min(int(len(bars_df) * split_pct), len(bars_df) - 1))
     in_bars = bars_df.iloc[:split_idx]
     oos_bars = bars_df.iloc[split_idx:]
@@ -915,8 +918,8 @@ def run_insample_oos_split(
             ],
             **_run_many_kw(run_many),
         )
-        p_in = payloads.get("is") or {"metrics": {}, "error": "sonuç yok"}
-        p_oos = payloads.get("oos") or {"metrics": {}, "error": "sonuç yok"}
+        p_in = payloads.get("is") or {"metrics": {}, "error": "no result"}
+        p_oos = payloads.get("oos") or {"metrics": {}, "error": "no result"}
         in_m = (p_in.get("metrics") or {}) if not p_in.get("error") else {}
         oos_m = (p_oos.get("metrics") or {}) if not p_oos.get("error") else {}
         in_equity = (p_in.get("equity_curve") or []) if not p_in.get("error") else []
@@ -952,7 +955,7 @@ def run_insample_oos_split(
     import math as _math
 
     def _num(x):
-        """None/NaN'ı None'a normalize et (NaN truthy tuzağını temizle) — #12."""
+        """Normalize None/NaN to None (clears the NaN-truthy trap) — #12."""
         if x is None:
             return None
         try:
@@ -961,8 +964,9 @@ def run_insample_oos_split(
         except (TypeError, ValueError):
             return None
 
-    # Overfitting skoru: OOS / In-sample. Sharpe NaN olursa (v2 multi-currency
-    # quirk) Sortino'ya düş — Sortino downside-only, bu bug'dan etkilenmiyor.
+    # Overfitting score: OOS / In-sample. If Sharpe is NaN (v2 multi-currency
+    # quirk) fall back to Sortino — Sortino is downside-only and not affected by
+    # this bug.
     in_sharpe = _num(in_m.get("sharpe"))
     oos_sharpe = _num(oos_m.get("sharpe"))
     metric_used = "Sharpe"
@@ -976,14 +980,14 @@ def run_insample_oos_split(
         label = "— (yetersiz veri)"
     else:
         score = round(oos_sharpe / in_sharpe, 2)
-        if score >= 0.5:  # 0.7→0.5: farklı piyasa rejimleri için daha gerçekçi eşik
-            label = "✓ Sağlam"
+        if score >= 0.5:  # 0.7→0.5: more realistic threshold for different market regimes
+            label = "✓ Robust"
         elif score >= 0.25:  # 0.4→0.25
-            label = "⚠ Dikkat"
+            label = "⚠ Caution"
         else:
-            label = "✗ Overfitting şüphesi"
+            label = "✗ Overfitting suspected"
 
-    _p(f"Split tamamlandı · overfitting skoru ({metric_used}): {score} ({label})")
+    _p(f"Split completed · overfitting score ({metric_used}): {score} ({label})")
 
     return {
         "split_pct": split_pct,
@@ -1017,20 +1021,20 @@ def run_multi_symbol(
     run_many=None,
     source: str = "bybit",
 ) -> dict:
-    """Stratejiyi birden fazla sembolde test ederek genellenebilirliği ölçer.
+    """Measures generalizability by testing the strategy on multiple symbols.
 
-    Her sembol için aynı spec'i aynı zaman aralığında backteste sokar.
-    Sonuçlar: kaç sembolde pozitif PnL, ortalama Sharpe, sembol başına detay.
+    Runs the same spec over the same time range in a backtest for each symbol.
+    Results: how many symbols had positive PnL, average Sharpe, per-symbol detail.
 
-    ``source="external"``: semboller harici katalog instrument id'leridir
-    (örn. "SPY.ARCA"), ``interval`` katalog DSL'idir (örn. "1-DAY") ve pencere
-    verinin kendi sonuna göre kesilir (katalog "şimdi"ye kadar gitmez).
+    ``source="external"``: symbols are external-catalog instrument ids
+    (e.g. "SPY.ARCA"), ``interval`` is the catalog DSL (e.g. "1-DAY"), and the
+    window is cut relative to the data's own end (the catalog does not run up to "now").
 
     Returns: {
         symbols_tested: int,
-        symbols_positive: int,          # PnL > 0 olanlar
-        pass_rate: float,               # pozitif / toplam
-        generalization_label: str,      # "✓ Genellenebilir" / "⚠ Kısıtlı" / "✗ Sembol spesifik"
+        symbols_positive: int,          # those with PnL > 0
+        pass_rate: float,               # positive / total
+        generalization_label: str,      # "✓ Generalizable" / "⚠ Limited" / "✗ Symbol specific"
         primary_symbol: str,
         results: [
             {symbol, pnl, sharpe, n_trades, error}
@@ -1060,8 +1064,8 @@ def run_multi_symbol(
 
     results = []
     _p(
-        f"Multi-symbol testi başlıyor · {len(symbols)} sembol · "
-        f"son {days} gün · interval={interval}"
+        f"Multi-symbol test starting · {len(symbols)} symbols · "
+        f"last {days} days · interval={interval}"
     )
 
     if run_many is not None:
@@ -1077,15 +1081,15 @@ def run_multi_symbol(
                 "interval": interval,
                 "category": category,
                 "days": days,
-                # Pencere PARENT'ta bir kez sabitlenir; her worker kendi now()'ına
-                # ankrajlarsa bir batch'teki semboller (ve sıralı↔paralel yollar)
-                # HAFİFÇE farklı zaman pencerelerinde test edilir. start/end_ms ile
-                # tüm semboller AYNI pencerede koşar.
+                # The window is fixed ONCE in the PARENT; if each worker anchored
+                # to its own now(), the symbols in one batch (and the sequential↔parallel
+                # paths) would be tested over SLIGHTLY different time windows. With
+                # start/end_ms all symbols run over the SAME window.
                 "start_ms": int(start_dt.timestamp() * 1000),
                 "end_ms": int(end_dt.timestamp() * 1000),
                 "source": source,
-                # Kararlı iteration_id: hash(sym) PYTHONHASHSEED ile süreç-başına
-                # rasgeledir (kayıt kimlikleri restart'ta değişir). sha1 deterministik.
+                # Stable iteration_id: hash(sym) is per-process random with PYTHONHASHSEED
+                # (record ids change on restart). sha1 is deterministic.
                 "iteration_id": int(hashlib.sha1(sym.encode()).hexdigest(), 16) % 10000,
                 "rationale": f"multi-symbol · {sym}",
             }
@@ -1094,21 +1098,21 @@ def run_multi_symbol(
         payloads = run_many(units, **_run_many_kw(run_many))
         for sym in symbols:
             p = payloads.get(f"ms:{sym}")
-            err = p.get("error") if p else "sonuç yok"
-            if err == "veri yok":
-                _p(f"  [{sym}] ⚠ Veri yok — atlanıyor")
+            err = p.get("error") if p else "no result"
+            if err == "no data":
+                _p(f"  [{sym}] ⚠ No data — skipping")
                 results.append(
                     {
                         "symbol": sym,
                         "pnl": None,
                         "sharpe": None,
                         "n_trades": 0,
-                        "error": "veri yok",
+                        "error": "no data",
                     }
                 )
                 continue
             if err:
-                _p(f"  [{sym}] ✗ Hata: {err}")
+                _p(f"  [{sym}] ✗ Error: {err}")
                 results.append(
                     {
                         "symbol": sym,
@@ -1142,7 +1146,7 @@ def run_multi_symbol(
             )
     else:
         for sym in symbols:
-            _p(f"  [{sym}] Veri yükleniyor…")
+            _p(f"  [{sym}] Loading data…")
             try:
                 if source == "external":
                     from backtest import _make_external_bar_type
@@ -1150,8 +1154,8 @@ def run_multi_symbol(
 
                     df = load_external_bars(sym, interval)
                     if not df.empty:
-                        # Pencereyi verinin kendi sonuna göre kes — katalog
-                        # "şimdi"ye kadar gitmez, now() bazlı dilim boş kalırdı.
+                        # Cut the window relative to the data's own end — the catalog
+                        # does not run up to "now", so a now()-based slice would be empty.
                         df = df[df.index >= df.index[-1] - timedelta(days=days)]
                 else:
                     df = load_bybit_bars(
@@ -1162,19 +1166,19 @@ def run_multi_symbol(
                         end=end_dt,
                     )
                 if df.empty:
-                    _p(f"  [{sym}] ⚠ Veri yok — atlanıyor")
+                    _p(f"  [{sym}] ⚠ No data — skipping")
                     results.append(
                         {
                             "symbol": sym,
                             "pnl": None,
                             "sharpe": None,
                             "n_trades": 0,
-                            "error": "veri yok",
+                            "error": "no data",
                         }
                     )
                     continue
 
-                _p(f"  [{sym}] {len(df):,} bar · backtest çalışıyor…")
+                _p(f"  [{sym}] {len(df):,} bar · backtest running…")
                 if source == "external":
                     instr = external_instrument_object(sym)
                     if instr is None:
@@ -1196,10 +1200,11 @@ def run_multi_symbol(
                     venue=instr.id.venue,
                 )
                 if r.error:
-                    # Parite/dürüstlük: paralel dal in-band hatada '✗ Hata' satırı
-                    # + pnl=None üretir; sıralı dal da aynı biçimi izlesin (yanıltıcı
-                    # '✗ PnL=+0.00 · 0 trade' başarı-satırı yerine).
-                    _p(f"  [{sym}] ✗ Hata: {r.error}")
+                    # Parity/honesty: the parallel branch produces a '✗ Error' line
+                    # + pnl=None on an in-band error; the sequential branch should
+                    # follow the same format too (instead of the misleading
+                    # '✗ PnL=+0.00 · 0 trade' success line).
+                    _p(f"  [{sym}] ✗ Error: {r.error}")
                     results.append(
                         {
                             "symbol": sym,
@@ -1233,7 +1238,7 @@ def run_multi_symbol(
                     }
                 )
             except Exception as e:
-                _p(f"  [{sym}] ✗ Hata: {e}")
+                _p(f"  [{sym}] ✗ Error: {e}")
                 results.append(
                     {
                         "symbol": sym,
@@ -1244,7 +1249,7 @@ def run_multi_symbol(
                     }
                 )
 
-    # Yeterli trade olan sonuçlar
+    # Results with enough trades
     valid = [
         r for r in results if not r.get("error") and (r.get("n_trades") or 0) >= 5
     ]  # 3→5
@@ -1256,17 +1261,17 @@ def run_multi_symbol(
     if n_valid == 0:
         label = "— (yetersiz veri)"
     elif pass_rate >= 0.7:
-        label = "✓ Genellenebilir"
+        label = "✓ Generalizable"
     elif pass_rate >= 0.4:
-        label = "⚠ Kısıtlı"
+        label = "⚠ Limited"
     else:
-        label = "✗ Sembol spesifik"
+        label = "✗ Symbol specific"
 
     sharpes = [r["sharpe"] for r in valid if r.get("sharpe") is not None]
     avg_sharpe = round(sum(sharpes) / len(sharpes), 2) if sharpes else None
 
     _p(
-        f"Multi-symbol tamamlandı · {n_positive}/{n_valid} sembolde pozitif · "
+        f"Multi-symbol completed · {n_positive}/{n_valid} symbols positive · "
         f"pass_rate={pass_rate:.0%} · {label}"
     )
 

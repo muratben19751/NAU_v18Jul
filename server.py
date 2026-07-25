@@ -1,11 +1,28 @@
 """FastAPI entrypoint for Nautilus Lab web UI.
 
-Run:
-    uvicorn server:app --host 127.0.0.1 --port 8000 --reload
+Run (dev — auto-reload):
+    uvicorn server:app --host 127.0.0.1 --port 8000 --reload \
+        --reload-exclude "$PWD/nautilus_wiki" --reload-exclude "$PWD/.claude" \
+        --reload-exclude "$PWD/tests"
+
+    `--reload` izlenen ağaçtaki her `*.py` değişiminde sunucuyu yeniden başlatır.
+    Strateji ÜRETİMİ (`POST /backtest/describe`) ~15-20 sn süren bir worker
+    thread'de çalışır ve ilerleme durumu BELLEKTE tutulur (`_GEN_PROGRESS`);
+    bu sırada izlenen bir `.py` değişirse sunucu yeniden başlar, worker + durum
+    uçar ve sağ-üstteki üretim paneli aniden kaybolur. `--reload-exclude`'a
+    MUTLAK (absolute) DİZİN YOLU verilmeli: uvicorn dışlamayı yalnızca yol
+    var olan bir dizinse `path.parents` ile recursive uygular ve watchfiles
+    filtreye MUTLAK yol geçirir — göreli `nautilus_wiki` ya da `nautilus_wiki/*`
+    glob'u eşleşmez (deneysel olarak doğrulandı). Bu sayede üretimle alakasız
+    ağaçlar (wiki, skill'ler, testler) watch dışına alınır ve kesintiler azalır.
+    Kesinti yine olursa panel artık sessizce kaybolmaz — "üretim yarıda kesildi,
+    sunucu yeniden başladı" mesajı gösterir ([[webapp_module_map]]).
+
+    Prod / kesintisiz üretim için `--reload` OLMADAN çalıştırın.
 
 Wiki References
 ---------------
-Bkz: [[nautilus_kernel]], [[event_driven_architecture]]
+See: [[nautilus_kernel]], [[event_driven_architecture]]
 
 Loose analog of Nautilus [[nautilus_kernel]] for the WEB app: bootstraps subsystems in `lifespan()`, then routers dispatch requests. Same "compose, then run" shape.
 """
@@ -46,7 +63,7 @@ STATIC_DIR = BASE_DIR / "web" / "static"
 
 
 def _static_version() -> str:
-    """chart.js + app.css + app.js içeriğine göre cache-busting hash."""
+    """Cache-busting hash based on chart.js + app.css + app.js content."""
     try:
         h = _hashlib.md5()
         for name in ("chart.js", "app.css", "app.js"):
@@ -63,7 +80,7 @@ templates.env.globals["static_version"] = _static_version()
 
 
 def _loop_running() -> bool:
-    """Sidebar Engine kartı + Dashboard nav noktası için canlı döngü durumu."""
+    """Live loop status for the sidebar Engine card + Dashboard nav dot."""
     try:
         from state import get_state
 
@@ -121,10 +138,11 @@ async def lifespan(app: FastAPI):
     start = end - timedelta(days=7)
     # Run blocking I/O (Bybit HTTP + parquet) in a thread so the event loop is
     # not blocked during startup.
-    # M124: çevrimdışı/Bybit-erişilemez başlangıçta ConnectionError load_bybit_bars'ı
-    # → lifespan'i → FastAPI startup'ı komple düşürüyordu (diskte tam cache olsa
-    # bile kuyruk-fetch bağlantı hatasıyla patlıyor). İstisnayı yut, boş df ile
-    # devam et — sunucu ayağa kalksın, loop runner veri gelince çalışsın.
+    # M124: On an offline/Bybit-unreachable start, a ConnectionError from
+    # load_bybit_bars → lifespan → FastAPI startup would take the whole thing
+    # down (even with a full cache on disk, the tail-fetch blows up with a
+    # connection error). Swallow the exception, continue with an empty df —
+    # let the server come up, and let the loop runner run once data arrives.
     try:
         bars = await loop.run_in_executor(
             None,
@@ -148,14 +166,14 @@ async def lifespan(app: FastAPI):
         import warnings
 
         _why = (
-            f"başlangıç fetch hatası ({type(_startup_err).__name__})"
+            f"startup fetch error ({type(_startup_err).__name__})"
             if _startup_err is not None
-            else "Bybit erişilemez veya cache boş"
+            else "Bybit unreachable or cache empty"
         )
         warnings.warn(
-            f"Startup: {_DEFAULT_SYMBOL}/{_DEFAULT_INTERVAL} için bar yüklenemedi — "
-            f"{_why}. Sunucu yine de başlatılıyor; loop runner veri gelene dek "
-            "hata raporlar.",
+            f"Startup: could not load bars for {_DEFAULT_SYMBOL}/{_DEFAULT_INTERVAL} — "
+            f"{_why}. Server is starting anyway; the loop runner will report "
+            "errors until data arrives.",
             RuntimeWarning,
             stacklevel=2,
         )
@@ -166,7 +184,7 @@ async def lifespan(app: FastAPI):
         "start": str(bars.index[0].date()) if not bars.empty else "—",
         "end": str(bars.index[-1].date()) if not bars.empty else "—",
         "last_price": float(bars["close"].iloc[-1]) if not bars.empty else 0.0,
-        # Topbar sparkline: son ~48 kapanış (indikatif)
+        # Topbar sparkline: last ~48 closes (indicative)
         "spark": [round(float(x), 2) for x in bars["close"].iloc[-48:]]
         if not bars.empty
         else [],
@@ -181,7 +199,7 @@ app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 from web.routes import (
     agent_backtest as agent_route,
 )
-from web.routes import (  # noqa: E402  (geç import: router'lar server'dan import ediyor, circular)
+from web.routes import (  # noqa: E402  (late import: routers import from server, circular)
     backtest,
     dashboard,
     fragments,
@@ -189,6 +207,7 @@ from web.routes import (  # noqa: E402  (geç import: router'lar server'dan impo
     loop,
     reports,
     strategy,
+    studio,
     wiki,
 )
 from web.routes import (
@@ -205,6 +224,7 @@ from web.routes import (
 )
 
 app.include_router(dashboard.router)
+app.include_router(studio.router)
 app.include_router(strategy.router)
 app.include_router(backtest.router)
 app.include_router(loop.router)

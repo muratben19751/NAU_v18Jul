@@ -1,6 +1,6 @@
-{# Çoklu-TF taraması — aynı strateji, birden çok bar aralığı yan yana.
-   Bittiğinde her sütunun EN İYİsi vurgulanır (yeşil). Poll ana panele değil
-   kendi div'ine yazar; /run gibi #result'ı ele geçirmez. #}
+{# Multi-TF sweep — same strategy, multiple bar intervals side by side.
+   When finished, each column's BEST is highlighted (green). Poll writes to its
+   own div, not the main panel; it does not hijack #result like /run. #}
 {% if not done %}
 <div id="sweep-progress"
      hx-get="/backtest/sweep/progress/{{ sweep_id }}"
@@ -11,25 +11,52 @@
 <div id="sweep-progress">
 {% endif %}
 
-  {# ── En iyi hücreleri hesapla (yalnız tamamlanan satırlar) ── #}
+  {# ── Compute best cells (only completed rows) ── #}
   {% set done_rows = state.rows | selectattr('status', 'equalto', 'done') | list %}
   {% set pnls = done_rows | map(attribute='metrics') | map(attribute='pnl_pct') | reject('none') | list %}
   {% set shs  = done_rows | map(attribute='metrics') | map(attribute='sharpe_per_trade') | reject('none') | list %}
   {% set best_pnl = pnls | max if pnls else None %}
   {% set best_sh  = shs  | max if shs  else None %}
-  {# max_dd_pct negatif (sağlıklı = 0'a yakın) → en yüksek (en az negatif) en iyi #}
+  {# max_dd_pct is positive percentage; lower is better → min is best #}
   {% set dds = done_rows | map(attribute='metrics') | map(attribute='max_dd_pct') | reject('none') | list %}
-  {% set best_dd = dds | max if dds else None %}
+  {% set best_dd = dds | min if dds else None %}
 
-  <div class="panel" style="border-color:rgba(96,165,250,0.35);">
+  {# ── Which timeframe is running right now + overall progress ── #}
+  {% set running_rows = state.rows | selectattr('status', 'equalto', 'running') | list %}
+  {% set n_done = done_rows | length %}
+  {% set n_total = state.rows | length %}
+
+  <div class="panel" style="border-color:rgba(96,165,250,0.35);"
+    {% if done %}
+    data-rob-spec-id="{{ state.spec_id }}"
+    data-rob-symbol="{{ state.symbol }}"
+    data-rob-category="{{ state.category }}"
+    data-rob-interval="{{ state.rows[0].interval if state.rows else '' }}"
+    data-rob-start=""
+    data-rob-end=""
+    {% set best_rows = state.rows | selectattr('status', 'equalto', 'done') | list %}
+    {% set best_row = best_rows | sort(attribute='metrics.pnl_pct', reverse=true) | first if best_rows else none %}
+    {% if best_row %}
+    data-bt-pnl-pct="{{ '%+.2f'|format(best_row.metrics.pnl_pct * 100) if best_row.metrics.pnl_pct is not none else '' }}"
+    data-bt-sharpe="{{ '%.2f'|format(best_row.metrics.sharpe_per_trade) if best_row.metrics.sharpe_per_trade is not none else '' }}"
+    data-bt-max-dd="{{ '%.2f'|format(best_row.metrics.max_dd_pct) if best_row.metrics.max_dd_pct is not none else '' }}"
+    data-bt-n-trades="{{ best_row.metrics.n_trades if best_row.metrics.n_trades is not none else '' }}"
+    data-bt-win-rate="{{ '%.1f'|format(best_row.metrics.win_rate * 100) if best_row.metrics.win_rate is not none else '' }}"
+    data-bt-spec-name="{{ state.spec_name }}"
+    data-bt-best-tf="{{ best_row.label }}"
+    {% endif %}
+    {% endif %}>
     <div class="panel-header">
       <div class="panel-title">⏱ Zaman Dilimi Taraması · {{ state.spec_name }}</div>
       <div class="spacer"></div>
       <span class="text-muted mono" style="font-size:11px;">{{ state.symbol }} / {{ state.category }}</span>
       {% if not done %}
-      <span class="badge running" style="margin-left:8px;">● koşuyor</span>
+      <span class="badge running" style="margin-left:8px;">
+        {% if running_rows %}<span class="spin">⟳</span> {{ running_rows[0].label }} çalışıyor{% else %}● hazırlanıyor{% endif %}
+        · {{ n_done }}/{{ n_total }}
+      </span>
       {% else %}
-      <span class="badge" style="background:rgba(74,222,128,0.2);color:#4ade80;margin-left:8px;">✓ bitti</span>
+      <span class="badge" style="background:rgba(74,222,128,0.2);color:#4ade80;margin-left:8px;">✓ bitti · {{ n_done }}/{{ n_total }}</span>
       {% endif %}
     </div>
     <div class="panel-body" style="overflow-x:auto;">
@@ -37,11 +64,13 @@
         <thead>
           <tr style="text-align:right;color:rgba(255,255,255,0.55);border-bottom:1px solid rgba(255,255,255,0.1);">
             <th style="text-align:left;padding:4px 8px;">TF</th>
+            <th style="text-align:left;padding:4px 8px;font-size:10px;">Tarih aralığı</th>
             <th style="padding:4px 8px;">PnL %</th>
-            <th style="padding:4px 8px;">Sharpe (per-trade)</th>
+            <th style="padding:4px 8px;color:rgba(255,255,255,0.35);">B&amp;H %</th>
+            <th style="padding:4px 8px;">Sharpe (işlem-başı)</th>
             <th style="padding:4px 8px;">Max DD %</th>
             <th style="padding:4px 8px;">İşlem</th>
-            <th style="padding:4px 8px;">Win %</th>
+            <th style="padding:4px 8px;">Kazanç %</th>
             <th style="padding:4px 8px;">PF</th>
           </tr>
         </thead>
@@ -56,28 +85,69 @@
               {% else %}<span style="color:rgba(255,255,255,0.3);">○</span>{% endif %}
               {{ r.label }}
             </td>
+            {# date range column — yıl aralığı olarak #}
+            <td style="text-align:left;padding:4px 8px;font-size:10px;color:rgba(255,255,255,0.45);">
+              {% if r.date_from and r.date_to %}
+                {%- set y_from = r.date_from[:4] %}{% set y_to = r.date_to[:4] %}
+                {{ y_from if y_from == y_to else y_from ~ '–' ~ y_to }}
+              {%- elif r.status == 'done' %}tüm cache
+              {%- else %}—{% endif %}
+            </td>
             {% if r.status == 'error' %}
-            <td colspan="6" style="padding:4px 8px;color:#f87171;font-size:11px;">{{ r.error }}</td>
+            <td colspan="7" style="padding:4px 8px;color:#f87171;font-size:11px;">{{ r.error }}</td>
             {% elif r.status != 'done' %}
-            <td colspan="6" style="padding:4px 8px;color:rgba(255,255,255,0.35);font-size:11px;">
-              {{ 'koşuyor…' if r.status == 'running' else 'sırada' }}
+            <td colspan="7" style="padding:4px 8px;color:rgba(255,255,255,0.35);font-size:11px;">
+              {{ 'çalışıyor…' if r.status == 'running' else 'sırada' }}
             </td>
             {% else %}
-            <td style="text-align:right;padding:4px 8px;{% if best_pnl is not none and m.pnl_pct == best_pnl %}color:#4ade80;font-weight:700;{% endif %}">
-              {{ '%+.2f'|format(m.pnl_pct * 100) if m.pnl_pct is not none else '—' }}
+            {# PnL % — green if positive, red if negative; bold if best #}
+            {% set pnl_val = m.pnl_pct * 100 if m.pnl_pct is not none else none %}
+            <td style="text-align:right;padding:4px 8px;
+              {%- if best_pnl is not none and m.pnl_pct == best_pnl %}font-weight:700;{% endif %}
+              {%- if pnl_val is not none and pnl_val >= 0 %}color:#4ade80;{% elif pnl_val is not none %}color:#f87171;{% endif %}">
+              {{ '%+.2f'|format(pnl_val) if pnl_val is not none else '—' }}
             </td>
-            <td style="text-align:right;padding:4px 8px;{% if best_sh is not none and m.sharpe_per_trade == best_sh %}color:#4ade80;font-weight:700;{% endif %}">
-              {{ '%.2f'|format(m.sharpe_per_trade) if m.sharpe_per_trade is not none else '—' }}
+            {# Buy & Hold % — muted reference column #}
+            {% set bh = m.buy_hold_pct %}
+            <td style="text-align:right;padding:4px 8px;color:{% if bh is not none and bh >= 0 %}rgba(74,222,128,0.55){% elif bh is not none %}rgba(248,113,113,0.55){% else %}rgba(255,255,255,0.3){% endif %};">
+              {{ '%+.2f'|format(bh) if bh is not none else '—' }}
             </td>
-            <td style="text-align:right;padding:4px 8px;{% if best_dd is not none and m.max_dd_pct == best_dd %}color:#4ade80;font-weight:700;{% endif %}">
-              {{ '%.2f'|format(m.max_dd_pct) if m.max_dd_pct is not none else '—' }}
+            {# Sharpe (per-trade) — <0 kırmızı · 0-1 sarı · ≥1 yeşil; en iyi kalın #}
+            {% set sh = m.sharpe_per_trade %}
+            <td style="text-align:right;padding:4px 8px;
+              {%- if best_sh is not none and sh == best_sh %}font-weight:700;{% endif %}
+              {%- if sh is not none and sh == sh %}
+                {%- if sh >= 1 %}color:#4ade80;{% elif sh >= 0 %}color:#fbbf24;{% else %}color:#f87171;{% endif %}
+              {%- endif %}">
+              {% if sh is not none %}
+                {% if sh != sh %}{# NaN check #}
+                  <span style="color:rgba(255,255,255,0.35);" title="0 trades — no signal fired">nan</span>
+                {% else %}
+                  {{ '%.2f'|format(sh) }}
+                {% endif %}
+              {% else %}—{% endif %}
+            </td>
+            {# Max DD % — green if low (<10%), yellow if moderate (10-30%), red if high (>30%) #}
+            {% set dd = m.max_dd_pct %}
+            <td style="text-align:right;padding:4px 8px;
+              {%- if best_dd is not none and dd == best_dd %}font-weight:700;{% endif %}
+              {%- if dd is not none and dd < 10 %}color:#4ade80;
+              {%- elif dd is not none and dd < 30 %}color:#fbbf24;
+              {%- elif dd is not none %}color:#f87171;{% endif %}">
+              {{ '%.2f'|format(dd) if dd is not none else '—' }}
             </td>
             <td style="text-align:right;padding:4px 8px;">{{ m.n_trades if m.n_trades is not none else '—' }}</td>
-            <td style="text-align:right;padding:4px 8px;">
-              {{ '%.1f'|format(m.win_rate * 100) if m.win_rate is not none else '—' }}
+            {# Win % — <40 kırmızı · 40-55 sarı · ≥55 yeşil #}
+            {% set wr = (m.win_rate * 100) if m.win_rate is not none else none %}
+            <td style="text-align:right;padding:4px 8px;
+              {%- if wr is not none %}{% if wr >= 55 %}color:#4ade80;{% elif wr >= 40 %}color:#fbbf24;{% else %}color:#f87171;{% endif %}{% endif %}">
+              {{ '%.1f'|format(wr) if wr is not none else '—' }}
             </td>
-            <td style="text-align:right;padding:4px 8px;">
-              {{ '%.2f'|format(m.profit_factor) if m.profit_factor is not none else '—' }}
+            {# PF (profit factor) — <1 kırmızı · 1-1.5 sarı · ≥1.5 yeşil #}
+            {% set pf = m.profit_factor %}
+            <td style="text-align:right;padding:4px 8px;
+              {%- if pf is not none and pf == pf %}{% if pf >= 1.5 %}color:#4ade80;{% elif pf >= 1 %}color:#fbbf24;{% else %}color:#f87171;{% endif %}{% endif %}">
+              {{ '%.2f'|format(pf) if pf is not none else '—' }}
             </td>
             {% endif %}
           </tr>
@@ -89,9 +159,12 @@
       <div class="empty-state" style="margin-top:8px;color:#f87171;">{{ state.error }}</div>
       {% endif %}
       {% if done %}
-      <div class="text-muted" style="margin-top:8px;font-size:11px;">
-        Yeşil = o sütunun en iyisi. Sharpe = NAU per-trade ((mean/std)×√n).
-        Aynı tarih aralığı, aynı strateji — yalnız bar çözünürlüğü değişir.
+      <div class="text-muted" style="margin-top:8px;font-size:11px;line-height:1.6;">
+        Yeşil = sütundaki en iyi. B&amp;H = aynı dönemdeki al-tut getirisi.<br>
+        Renk eşikleri (genel kabul): <b>DD</b> &lt;10% yeşil · &lt;30% sarı · ≥30% kırmızı ·
+        <b>Sharpe</b> ≥1 yeşil · ≥0 sarı · &lt;0 kırmızı ·
+        <b>Win%</b> ≥55 yeşil · ≥40 sarı · &lt;40 kırmızı ·
+        <b>PF</b> ≥1.5 yeşil · ≥1 sarı · &lt;1 kırmızı.
       </div>
       {% endif %}
     </div>

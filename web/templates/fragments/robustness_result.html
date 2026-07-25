@@ -1,44 +1,121 @@
 {% set r = r %}
-<div class="panel" style="margin-top:14px;">
+{# Robustness özeti → AI Plan'a taşınacak veriler. sp/ws null-güvenli okunur. #}
+{% set _sp = r.split if r.split is mapping else {} %}
+{% set _ws = r.wfo_summary if r.wfo_summary is mapping else {} %}
+{% set _om = _sp.oos_metrics if _sp.oos_metrics is mapping else {} %}
+<div class="panel" style="margin-top:14px;"
+     data-rob-summary="1"
+     data-rob-overfitting="{{ '%.2f'|format(_sp.get('overfitting_score')) if _sp.get('overfitting_score') is not none else '' }}"
+     data-rob-verdict="{{ _sp.get('overfitting_label') or '' }}"
+     data-rob-wfo-eff="{{ '%.2f'|format(_ws.get('wfo_efficiency')) if _ws.get('wfo_efficiency') is not none else '' }}"
+     data-rob-oos-sharpe="{{ '%.2f'|format(_om.get('sharpe')) if _om.get('sharpe') is not none else '' }}"
+     data-rob-stability="{{ _ws.get('stability_label') or '' }}">
   <div class="panel-header">
-    <div class="panel-title">Robustness Analizi · {{ r.spec_name }}</div>
+    <div class="panel-title">Robustness Analysis · {{ r.spec_name }}</div>
     <div class="panel-meta mono small">{{ r.symbol }}/{{ r.category }} {{ r.interval }}m · {{ r.start_date }} → {{ r.end_date }} · {{ "{:,}".format(r.n_bars) }} bar</div>
   </div>
   <div class="panel-body">
 
-    {# ── Sekme navigasyonu ── #}
-    <div style="display:flex;gap:8px;margin-bottom:14px;border-bottom:1px solid #1a2332;padding-bottom:8px;">
+    {# ── Hero Karar Kartı ── #}
+    <div id="rob-hero" style="
+      border-left:4px solid #7d848f;
+      background:rgba(125,132,143,0.06);
+      border-radius:6px;
+      padding:14px 16px;
+      margin-bottom:16px;
+      display:flex;
+      align-items:center;
+      gap:20px;
+    ">
+      <div style="flex:0 0 auto;">
+        <div id="rob-hero-icon" style="font-size:28px;line-height:1;">—</div>
+        <div id="rob-hero-verdict" style="font-size:13px;font-weight:700;margin-top:4px;color:#7d848f;">Calculating…</div>
+      </div>
+      <div style="flex:1;min-width:0;">
+        <div id="rob-hero-metrics" class="mono" style="font-size:11px;color:#7d848f;margin-bottom:4px;">—</div>
+        <div id="rob-hero-desc" style="font-size:10px;color:#7d848f;">—</div>
+      </div>
+      <div style="flex:0 0 auto;text-align:right;">
+        <div style="font-size:9px;color:#7d848f;text-transform:uppercase;letter-spacing:.5px;margin-bottom:2px;">Overall Verdict</div>
+        <div id="rob-hero-badge" style="
+          display:inline-block;
+          padding:3px 10px;
+          border-radius:3px;
+          font-size:10px;
+          font-weight:700;
+          background:rgba(125,132,143,0.15);
+          color:#7d848f;
+        ">—</div>
+      </div>
+    </div>
+
+    {# ── Tab navigation ── #}
+    <div style="display:flex;gap:8px;margin-bottom:14px;border-bottom:1px solid var(--border);padding-bottom:8px;">
       <button class="btn btn-secondary rob-tab active" data-tab="wfo" onclick="robTab(this,'wfo')">Walk-Forward</button>
       <button class="btn btn-secondary rob-tab" data-tab="split" onclick="robTab(this,'split')">In/Out-of-Sample</button>
       <button class="btn btn-secondary rob-tab" data-tab="mc" onclick="robTab(this,'mc')">Monte Carlo</button>
     </div>
 
     {# ══════════════════════════════════════════════════
-       SEKME 1: Walk-Forward
+       TAB 1: Walk-Forward
     ══════════════════════════════════════════════════ #}
     <div id="rob-tab-wfo" class="rob-tab-content">
+
+      {# Açıklama kutusu #}
+      <div style="background:rgba(255,255,255,0.03);border:1px solid var(--border);border-radius:4px;padding:8px 12px;font-size:10px;color:#7d848f;margin-bottom:12px;line-height:1.6;">
+        <strong style="color:#9ca3af;">Walk-Forward Optimization</strong> —
+        The time series is split into train/test windows; in each window the parameters are optimized on the train period, then real performance is measured on the test period with those parameters.
+        The <strong style="color:#9ca3af;">Optimized vs. Naive</strong> comparison shows how much overfitting there is.
+        <strong style="color:#9ca3af;">WFO Efficiency</strong> = OOS / IS objective ratio; close to 1.0 is ideal.
+      </div>
+
       <div class="section-title" style="margin-bottom:8px;">
-        Walk-Forward Optimization · {{ r.train_months }}ay train / {{ r.test_months }}ay test
-        · {{ r.wfo_windows|length }} window · train'de {{ r.n_optimize }} deneme ({{ r.objective }})
+        Walk-Forward Optimization · {{ r.train_months }}month train / {{ r.test_months }}month test
+        · {{ r.wfo_windows|length }} window · {{ r.n_optimize }} trials on train ({{ r.objective }})
       </div>
       {% if not r.wfo_windows %}
-        <div class="empty-state">Yeterli veri yok (en az {{ r.train_months + r.test_months }} ay gerekli).</div>
+        <div class="empty-state">Not enough data (at least {{ r.train_months + r.test_months }} months required).</div>
       {% else %}
 
-      {# ── WFO özet: optimize vs naive OOS + parametre kararlılığı ── #}
+      {# ── WFO summary: optimize vs naive OOS + parameter stability ── #}
       {% set ws = r.wfo_summary %}
       {% if ws and ws.n_windows %}
       <div class="kpi-grid" style="grid-template-columns:repeat(4,1fr);margin-bottom:12px;">
-        <div class="kpi"><div class="label">OOS Sharpe (optimize)</div>
-          <div class="value">{{ "%.2f"|format(ws.oos_sharpe_optimized) if ws.oos_sharpe_optimized is not none else '—' }}</div></div>
-        <div class="kpi"><div class="label">OOS Sharpe (naive)</div>
-          <div class="value">{{ "%.2f"|format(ws.oos_sharpe_naive) if ws.oos_sharpe_naive is not none else '—' }}</div></div>
-        <div class="kpi"><div class="label">WFO Efficiency</div>
-          <div class="value">{{ "%.2f"|format(ws.wfo_efficiency) if ws.wfo_efficiency is not none else '—' }}</div>
-          <div class="kpi-sub">OOS / in-sample objective</div></div>
-        <div class="kpi"><div class="label">Parametre Kararlılığı</div>
+
+        {# OOS Sharpe (optimize) — > 0 yeşil, < 0 kırmızı #}
+        <div class="kpi">
+          <div class="label">OOS Sharpe (optimize)</div>
+          <div class="value" style="color:{% if ws.oos_sharpe_optimized is not none %}{% if ws.oos_sharpe_optimized > 0 %}#22c55e{% else %}#ef4444{% endif %}{% else %}#7d848f{% endif %}">
+            {{ "%.2f"|format(ws.oos_sharpe_optimized) if ws.oos_sharpe_optimized is not none else '—' }}
+          </div>
+          <div class="kpi-sub">Out-of-sample average</div>
+        </div>
+
+        {# OOS Sharpe (naive) — > 0 yeşil, < 0 kırmızı #}
+        <div class="kpi">
+          <div class="label">OOS Sharpe (naive)</div>
+          <div class="value" style="color:{% if ws.oos_sharpe_naive is not none %}{% if ws.oos_sharpe_naive > 0 %}#22c55e{% else %}#ef4444{% endif %}{% else %}#7d848f{% endif %}">
+            {{ "%.2f"|format(ws.oos_sharpe_naive) if ws.oos_sharpe_naive is not none else '—' }}
+          </div>
+          <div class="kpi-sub">Baseline without optimization</div>
+        </div>
+
+        {# WFO Efficiency — >= 0.5 yeşil, 0.2-0.5 sarı, < 0.2 kırmızı #}
+        <div class="kpi">
+          <div class="label">WFO Efficiency</div>
+          <div class="value" style="color:{% if ws.wfo_efficiency is not none %}{% if ws.wfo_efficiency >= 0.5 %}#22c55e{% elif ws.wfo_efficiency >= 0.2 %}#f59e0b{% else %}#ef4444{% endif %}{% else %}#7d848f{% endif %}">
+            {{ "%.2f"|format(ws.wfo_efficiency) if ws.wfo_efficiency is not none else '—' }}
+          </div>
+          <div class="kpi-sub">OOS / in-sample objective</div>
+        </div>
+
+        {# Parameter Stability — zaten renkli #}
+        <div class="kpi">
+          <div class="label">Parameter Stability</div>
           <div class="value" style="font-size:13px;color:{% if ws.unstable_params %}#f59e0b{% else %}#22c55e{% endif %}">{{ ws.stability_label }}</div>
-          {% if ws.unstable_params %}<div class="kpi-sub">{{ ws.unstable_params|join(', ') }}</div>{% endif %}</div>
+          {% if ws.unstable_params %}<div class="kpi-sub">{{ ws.unstable_params|join(', ') }}</div>{% endif %}
+        </div>
+
       </div>
       {% endif %}
 
@@ -47,9 +124,9 @@
           <thead>
             <tr>
               <th>#</th>
-              <th>Train Aralığı</th>
-              <th>Test Aralığı</th>
-              <th>Seçilen Parametreler</th>
+              <th>Train Range</th>
+              <th>Test Range</th>
+              <th>Selected Parameters</th>
               <th>Train Obj.</th>
               <th>Test PnL (opt)</th>
               <th>Test PnL (naive)</th>
@@ -100,49 +177,84 @@
     </div>
 
     {# ══════════════════════════════════════════════════
-       SEKME 2: In/Out-of-Sample
+       TAB 2: In/Out-of-Sample
     ══════════════════════════════════════════════════ #}
     <div id="rob-tab-split" class="rob-tab-content" style="display:none;">
       {% set sp = r.split %}
       {% if sp.error is defined and sp.error %}
         <div class="empty-state">{{ sp.error }}</div>
       {% else %}
-      {# Overfitting skoru #}
-      <div style="display:flex;align-items:center;gap:16px;margin-bottom:14px;padding:10px 14px;background:rgba(26,35,50,0.5);border-radius:6px;">
+
+      {# Açıklama kutusu #}
+      <div style="background:rgba(255,255,255,0.03);border:1px solid var(--border);border-radius:4px;padding:8px 12px;font-size:10px;color:#7d848f;margin-bottom:12px;line-height:1.6;">
+        <strong style="color:#9ca3af;">In/Out-of-Sample Split</strong> —
+        Parameters optimized on the first {{ (sp.split_pct * 100)|int if sp.split_pct is defined else 70 }}% of the data (in-sample) are tested on the remaining part (out-of-sample).
+        <strong style="color:#9ca3af;">Overfitting Score</strong> = OOS Sharpe / In-sample Sharpe.
+        Close to 1.0 → the strategy generalizes to real data.
+        Below 0.5 → the parameters may have fit noise.
+      </div>
+
+      {# Overfitting score banner — eşikler 0.5 / 0.25 #}
+      <div style="display:flex;align-items:center;gap:16px;margin-bottom:14px;padding:10px 14px;
+        background:{% if sp.overfitting_score is not none and sp.overfitting_score >= 0.5 %}rgba(34,197,94,0.08){% elif sp.overfitting_score is not none and sp.overfitting_score >= 0.25 %}rgba(245,158,11,0.08){% else %}rgba(239,68,68,0.08){% endif %};
+        border:1px solid {% if sp.overfitting_score is not none and sp.overfitting_score >= 0.5 %}rgba(34,197,94,0.25){% elif sp.overfitting_score is not none and sp.overfitting_score >= 0.25 %}rgba(245,158,11,0.25){% else %}rgba(239,68,68,0.25){% endif %};
+        border-radius:6px;">
         <div>
-          <div class="label" style="font-size:10px;">Overfitting Skoru</div>
+          <div class="label" style="font-size:10px;">Overfitting Score</div>
           <div class="value" style="font-size:22px;font-weight:700;
-            color:{% if sp.overfitting_score is not none and sp.overfitting_score >= 0.7 %}#22c55e{% elif sp.overfitting_score is not none and sp.overfitting_score >= 0.4 %}#f59e0b{% else %}#ef4444{% endif %}">
+            color:{% if sp.overfitting_score is not none and sp.overfitting_score >= 0.5 %}#22c55e{% elif sp.overfitting_score is not none and sp.overfitting_score >= 0.25 %}#f59e0b{% else %}#ef4444{% endif %}">
             {% if sp.overfitting_score is not none %}{{ "%.2f"|format(sp.overfitting_score) }}{% else %}—{% endif %}
           </div>
         </div>
         <div>
-          <div class="label" style="font-size:10px;">Karar</div>
-          <div class="value" style="font-size:14px;">{{ sp.overfitting_label }}</div>
+          <div class="label" style="font-size:10px;">Verdict</div>
+          <div class="value" style="font-size:14px;font-weight:600;
+            color:{% if sp.overfitting_score is not none and sp.overfitting_score >= 0.5 %}#22c55e{% elif sp.overfitting_score is not none and sp.overfitting_score >= 0.25 %}#f59e0b{% else %}#ef4444{% endif %}">
+            {{ sp.overfitting_label }}
+          </div>
         </div>
-        <div class="text-muted mono" style="font-size:10px;margin-left:auto;">
+        <div class="text-muted mono" style="font-size:10px;margin-left:auto;text-align:right;">
           OOS Sharpe / In-sample Sharpe<br>
-          ≥0.7 sağlam · 0.4-0.7 dikkat · &lt;0.4 overfitting şüphesi
+          <span style="color:#22c55e;">≥0.5 robust</span> ·
+          <span style="color:#f59e0b;">0.25–0.5 caution</span> ·
+          <span style="color:#ef4444;">&lt;0.25 overfitting suspected</span>
         </div>
       </div>
 
       <div class="kpi-grid" style="grid-template-columns:repeat(4,1fr);margin-bottom:12px;">
         {% set im = sp.in_sample_metrics %}
         {% set om = sp.oos_metrics %}
-        <div class="kpi"><div class="label">In-Sample PnL</div>
+
+        <div class="kpi">
+          <div class="label">In-Sample PnL</div>
           <div class="value {% if im.get('pnl',0) >= 0 %}up{% else %}down{% endif %}">
             {{ "%+.2f"|format(im.get('pnl',0)) if im else '—' }} USDT</div>
-          <div class="kpi-sub">{{ sp.in_sample_n_bars|default(0) }} bar · {{ sp.split_date }}e kadar</div>
+          <div class="kpi-sub">{{ sp.in_sample_n_bars|default(0) }} bar · until {{ sp.split_date }}</div>
         </div>
-        <div class="kpi"><div class="label">OOS PnL</div>
+
+        <div class="kpi">
+          <div class="label">OOS PnL</div>
           <div class="value {% if om.get('pnl',0) >= 0 %}up{% else %}down{% endif %}">
             {{ "%+.2f"|format(om.get('pnl',0)) if om else '—' }} USDT</div>
-          <div class="kpi-sub">{{ sp.oos_n_bars|default(0) }} bar · {{ sp.split_date }} sonrası</div>
+          <div class="kpi-sub">{{ sp.oos_n_bars|default(0) }} bar · after {{ sp.split_date }}</div>
         </div>
-        <div class="kpi"><div class="label">In-Sample Sharpe</div>
-          <div class="value">{{ "%.2f"|format(im.get('sharpe',0)) if im else '—' }}</div></div>
-        <div class="kpi"><div class="label">OOS Sharpe</div>
-          <div class="value">{{ "%.2f"|format(om.get('sharpe',0)) if om else '—' }}</div></div>
+
+        {# In-Sample Sharpe — > 0 yeşil, < 0 kırmızı #}
+        <div class="kpi">
+          <div class="label">In-Sample Sharpe</div>
+          <div class="value" style="color:{% if im and im.get('sharpe',0) > 0 %}#22c55e{% elif im and im.get('sharpe',0) < 0 %}#ef4444{% else %}#7d848f{% endif %}">
+            {{ "%.2f"|format(im.get('sharpe',0)) if im else '—' }}
+          </div>
+        </div>
+
+        {# OOS Sharpe — > 0 yeşil, < 0 kırmızı #}
+        <div class="kpi">
+          <div class="label">OOS Sharpe</div>
+          <div class="value" style="color:{% if om and om.get('sharpe',0) > 0 %}#22c55e{% elif om and om.get('sharpe',0) < 0 %}#ef4444{% else %}#7d848f{% endif %}">
+            {{ "%.2f"|format(om.get('sharpe',0)) if om else '—' }}
+          </div>
+        </div>
+
       </div>
 
       <div style="height:220px;"><canvas id="split-chart"></canvas></div>
@@ -150,30 +262,75 @@
     </div>
 
     {# ══════════════════════════════════════════════════
-       SEKME 3: Monte Carlo
+       TAB 3: Monte Carlo
     ══════════════════════════════════════════════════ #}
     <div id="rob-tab-mc" class="rob-tab-content" style="display:none;">
       {% set mc = r.mc %}
       {% if mc.error is defined and mc.error %}
         <div class="empty-state">{{ mc.error }}</div>
       {% else %}
+
+      {# Açıklama kutusu #}
+      <div style="background:rgba(255,255,255,0.03);border:1px solid var(--border);border-radius:4px;padding:8px 12px;font-size:10px;color:#7d848f;margin-bottom:12px;line-height:1.6;">
+        <strong style="color:#9ca3af;">Monte Carlo Simulation</strong> —
+        The trade order is randomly shuffled across {{ mc.n_sims }} simulations ({{ mc.method|default('bootstrap') }}).
+        <strong style="color:#9ca3af;">P5</strong> = worst 5% scenario,
+        <strong style="color:#9ca3af;">P95</strong> = best 5% scenario.
+        A wide P5–P95 range → a strategy with a large luck component.
+        <strong style="color:#9ca3af;">Max DD p95</strong> represents the worst-case drawdown; above 40% is risky.
+      </div>
+
       <div class="kpi-grid" style="grid-template-columns:repeat(5,1fr);margin-bottom:12px;">
-        <div class="kpi"><div class="label">P5 Final</div>
-          <div class="value {% if mc.p5_final >= mc.starting_cash %}up{% else %}down{% endif %}">
-            ${{ "{:,.0f}".format(mc.p5_final) }}</div></div>
-        <div class="kpi"><div class="label">Median Final</div>
-          <div class="value {% if mc.median_final >= mc.starting_cash %}up{% else %}down{% endif %}">
-            ${{ "{:,.0f}".format(mc.median_final) }}</div></div>
-        <div class="kpi"><div class="label">P95 Final</div>
-          <div class="value up">${{ "{:,.0f}".format(mc.p95_final) }}</div></div>
-        <div class="kpi"><div class="label">Max DD p50</div>
-          <div class="value down">{{ "%.1f%%"|format(mc.max_dd_p50|abs) }}</div></div>
-        <div class="kpi"><div class="label">Max DD p95</div>
-          <div class="value down">{{ "%.1f%%"|format(mc.max_dd_p95|abs) }}</div></div>
+
+        {# P5 Final — starting_cash altı kırmızı, üstü yeşil #}
+        <div class="kpi">
+          <div class="label">P5 Final</div>
+          <div class="value" style="color:{% if mc.p5_final >= mc.starting_cash %}#22c55e{% else %}#ef4444{% endif %}">
+            ${{ "{:,.0f}".format(mc.p5_final) }}
+          </div>
+          <div class="kpi-sub">Worst 5% scenario</div>
+        </div>
+
+        {# Median Final #}
+        <div class="kpi">
+          <div class="label">Median Final</div>
+          <div class="value" style="color:{% if mc.median_final >= mc.starting_cash %}#22c55e{% else %}#ef4444{% endif %}">
+            ${{ "{:,.0f}".format(mc.median_final) }}
+          </div>
+          <div class="kpi-sub">Median scenario</div>
+        </div>
+
+        {# P95 Final — her zaman en iyi senaryo → yeşil #}
+        <div class="kpi">
+          <div class="label">P95 Final</div>
+          <div class="value up">${{ "{:,.0f}".format(mc.p95_final) }}</div>
+          <div class="kpi-sub">Best 5% scenario</div>
+        </div>
+
+        {# Max DD p50 — abs değer: < %15 yeşil, %15-25 sarı, > %25 kırmızı #}
+        {% set dd50 = mc.max_dd_p50|abs %}
+        <div class="kpi">
+          <div class="label">Max DD p50</div>
+          <div class="value" style="color:{% if dd50 < 15 %}#22c55e{% elif dd50 < 25 %}#f59e0b{% else %}#ef4444{% endif %}">
+            {{ "%.1f%%"|format(dd50) }}
+          </div>
+          <div class="kpi-sub">Median max drawdown</div>
+        </div>
+
+        {# Max DD p95 — abs değer: < %25 yeşil, %25-40 sarı, > %40 kırmızı #}
+        {% set dd95 = mc.max_dd_p95|abs %}
+        <div class="kpi">
+          <div class="label">Max DD p95</div>
+          <div class="value" style="color:{% if dd95 < 25 %}#22c55e{% elif dd95 < 40 %}#f59e0b{% else %}#ef4444{% endif %}">
+            {{ "%.1f%%"|format(dd95) }}
+          </div>
+          <div class="kpi-sub">Worst-case drawdown</div>
+        </div>
+
       </div>
       <div class="text-muted mono" style="font-size:10px;margin-bottom:8px;">
-        {{ mc.n_sims }} simülasyon · {{ mc.n_trades }} trade · {{ mc.method|default('bootstrap') }} ·
-        Gerçek: ${{ "{:,.0f}".format(mc.original_final) }} ·
+        {{ mc.n_sims }} simulations · {{ mc.n_trades }} trade · {{ mc.method|default('bootstrap') }} ·
+        Actual: ${{ "{:,.0f}".format(mc.original_final) }} ·
         Win rate: {{ "%.1f%%"|format(mc.win_rate_mean) }} ± {{ "%.1f%%"|format(mc.win_rate_std) }}
       </div>
       <div style="height:280px;"><canvas id="mc-chart"></canvas></div>
@@ -184,7 +341,7 @@
 </div>
 
 <script>
-// ── Sekme yönetimi ──────────────────────────────────────────────────────────
+// ── Tab management ──────────────────────────────────────────────────────────
 function robTab(btn, tab) {
   document.querySelectorAll(".rob-tab").forEach(b => b.classList.remove("active"));
   document.querySelectorAll(".rob-tab-content").forEach(c => c.style.display = "none");
@@ -195,13 +352,78 @@ function robTab(btn, tab) {
   if (tab === "mc")    buildMCChart();
 }
 
-// ── Chart.js ortak config ───────────────────────────────────────────────────
+// ── Hero Banner ──────────────────────────────────────────────────────────────
+(function buildHero() {
+  var box = document.querySelector("[data-rob-summary]");
+  if (!box) return;
+  var score  = parseFloat(box.dataset.robOverfitting);
+  var verdict = box.dataset.robVerdict || "";
+  var wfoEff  = parseFloat(box.dataset.robWfoEff);
+  var oosSharpe = parseFloat(box.dataset.robOosSharpe);
+  var stability = box.dataset.robStability || "";
+
+  var color, icon, badgeText, desc;
+  if (!isNaN(score) && score >= 0.5) {
+    color = "#22c55e";
+    icon  = "✓";
+    badgeText = "ROBUST";
+    desc  = "The strategy held up on data it had never seen. Its parameters look like they generalize to real data.";
+  } else if (!isNaN(score) && score >= 0.25) {
+    color = "#f59e0b";
+    icon  = "⚠";
+    badgeText = "CAUTION";
+    desc  = "Mixed result — some overfitting risk. Consider fewer parameters or a longer test window.";
+  } else {
+    color = "#ef4444";
+    icon  = "✗";
+    badgeText = "OVERFIT";
+    desc  = "Strong overfitting signal: the strategy likely fit noise, not signal. Simplify its parameters before trusting it.";
+  }
+
+  // Hero bileşenlerini güncelle
+  var hero = document.getElementById("rob-hero");
+  if (hero) {
+    hero.style.borderLeftColor = color;
+    hero.style.background = "rgba(" + hexToRgb(color) + ",0.06)";
+  }
+  var elIcon    = document.getElementById("rob-hero-icon");
+  var elVerdict = document.getElementById("rob-hero-verdict");
+  var elMetrics = document.getElementById("rob-hero-metrics");
+  var elDesc    = document.getElementById("rob-hero-desc");
+  var elBadge   = document.getElementById("rob-hero-badge");
+
+  if (elIcon)    { elIcon.textContent = icon; elIcon.style.color = color; }
+  if (elVerdict) { elVerdict.textContent = verdict || badgeText; elVerdict.style.color = color; }
+  if (elMetrics) {
+    var parts = [];
+    if (!isNaN(score))     parts.push("Overfitting Score: " + score.toFixed(2));
+    if (!isNaN(wfoEff))    parts.push("WFO Eff: " + wfoEff.toFixed(2));
+    if (!isNaN(oosSharpe)) parts.push("OOS Sharpe: " + oosSharpe.toFixed(2));
+    if (stability)         parts.push("Params: " + stability);
+    elMetrics.textContent = parts.join("  ·  ");
+  }
+  if (elDesc)  { elDesc.textContent = desc; }
+  if (elBadge) {
+    elBadge.textContent = badgeText;
+    elBadge.style.background = "rgba(" + hexToRgb(color) + ",0.15)";
+    elBadge.style.color = color;
+  }
+
+  function hexToRgb(hex) {
+    var r = parseInt(hex.slice(1,3),16),
+        g = parseInt(hex.slice(3,5),16),
+        b = parseInt(hex.slice(5,7),16);
+    return r + "," + g + "," + b;
+  }
+})();
+
+// ── Chart.js shared config ───────────────────────────────────────────────────
 const _chartDefaults = {
   responsive: true, maintainAspectRatio: false,
-  plugins: { legend: { labels: { color: "#6b7280", font: { family: "JetBrains Mono", size: 10 } } } },
+  plugins: { legend: { labels: { color: "#7d848f", font: { family: "JetBrains Mono", size: 10 } } } },
   scales: {
-    x: { grid: { color: "#1a2332" }, ticks: { color: "#6b7280", font: { family: "JetBrains Mono", size: 9 }, maxTicksLimit: 8 } },
-    y: { grid: { color: "#1a2332" }, ticks: { color: "#6b7280", font: { family: "JetBrains Mono", size: 9 }, callback: v => "$" + (v/1000).toFixed(0) + "k" } },
+    x: { grid: { color: "#1a1d21" }, ticks: { color: "#7d848f", font: { family: "JetBrains Mono", size: 9 }, maxTicksLimit: 8 } },
+    y: { grid: { color: "#1a1d21" }, ticks: { color: "#7d848f", font: { family: "JetBrains Mono", size: 9 }, callback: v => "$" + (v/1000).toFixed(0) + "k" } },
   },
 };
 let _charts = {};
@@ -265,13 +487,28 @@ function buildMCChart() {
       { label: "P50", data: pc.p50, borderColor: "#60a5fa",              backgroundColor: "rgba(96,165,250,0.1)", borderWidth: 2, pointRadius: 0, fill: false, tension: 0.1 },
       { label: "P25", data: pc.p25, borderColor: "rgba(239,68,68,0.5)",  backgroundColor: "rgba(239,68,68,0.08)", borderWidth: 1, pointRadius: 0, fill: "-1", tension: 0.1 },
       { label: "P5",  data: pc.p5,  borderColor: "rgba(239,68,68,0.3)",  backgroundColor: "rgba(239,68,68,0.05)", borderWidth: 1, pointRadius: 0, fill: "-1", tension: 0.1 },
-      { label: "Gerçek", data: mc.real_curve || [],
+      { label: "Actual", data: mc.real_curve || [],
         borderColor: "#f59e0b", borderWidth: 2, borderDash: [4,4], pointRadius: 0, fill: false, tension: 0.1 },
     ]},
     options: { ..._chartDefaults },
   });
 }
 
-// İlk sekme chart'ını başlat
+// Initialize the first tab's chart
 buildWFOChart();
+
+// ── Robustness özetini AI Plan gizli inputlarına yaz ──────────────────────────
+// Bu fragment #robustness-result'a innerHTML ile swap'lenir; htmx:afterSettle
+// #result'a bağlı olduğundan burada doğrudan yazıyoruz. Böylece robustness'tan
+// sonra "✨ AI ile iyileştir"e basınca /backtest/plan bu değerleri de alır.
+(function () {
+  var box = document.querySelector("[data-rob-summary]");
+  if (!box) return;
+  var set = function (id, v) { var el = document.getElementById(id); if (el) el.value = v || ""; };
+  set("rob-overfitting", box.dataset.robOverfitting);
+  set("rob-verdict",     box.dataset.robVerdict);
+  set("rob-wfo-eff",     box.dataset.robWfoEff);
+  set("rob-oos-sharpe",  box.dataset.robOosSharpe);
+  set("rob-stability",   box.dataset.robStability);
+})();
 </script>

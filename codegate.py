@@ -160,8 +160,8 @@ _ALLOWED_ATTRS: set[str] = {
     "harmonic_mean",
     "geometric_mean",
     "quantiles",
-    # indicators.py (NAU parite kütüphanesi — M27/M33). Modül `ind` adıyla
-    # enjekte edilir; `indicators` adı evaluate() parametresiyle çakışırdı.
+    # indicators.py (NAU parity library — M27/M33). The module is injected under
+    # the name `ind`; the name `indicators` would clash with the evaluate() parameter.
     "calc_rsi",
     "calc_rsi_series",
     "sma",
@@ -173,8 +173,8 @@ _ALLOWED_ATTRS: set[str] = {
     "detect_rsi_divergence",
     "calc_nadaraya_watson",
     "calc_wave_trend",
-    # calc_* dönüş dict'lerinin tipik anahtar erişimleri .get ile yapılır
-    # (get zaten listede).
+    # typical key accesses on the dicts returned by calc_* are done via .get
+    # (get is already in the list).
 }
 
 # Names of built-in callables permitted (used as bare `Name` in `Call`).
@@ -204,8 +204,8 @@ _ALLOWED_BUILTINS: set[str] = {
 }
 
 # Names of top-level module references allowed (via `Name` -> `Attribute`).
-# `ind` = repo kökündeki indicators.py (NAU parite kütüphanesi); yükleyici ve
-# smoke ortamı bu adla enjekte eder (M27/M33).
+# `ind` = indicators.py at the repo root (NAU parity library); the loader and
+# smoke environment inject it under this name (M27/M33).
 _ALLOWED_MODULES: set[str] = {"math", "statistics", "ind"}
 
 # Function parameter names required for the `evaluate` signature.
@@ -330,41 +330,41 @@ def validate_generated_code(src: str) -> ast.Module:
 
 
 # ---------------------------------------------------------------------------
-# M25: döngü-bütçesi enjeksiyonu — `while True: pass` sınıfı sonsuz döngüler
-# AST whitelist'ini geçer (While/For bilinçli serbest; katalogdaki mevcut
-# bloklar while kullanıyor). Doğrulama SONRASI koda, her fonksiyon başında
-# sıfırlanan bir adım sayacı enjekte edilir: bütçe aşımında RuntimeError.
-# Enjekte edilen `__loop_budget` adı doğrulamadan GEÇMEZ (underscore yasağı)
-# ama transform doğrulamadan sonra uygulandığı için sorun değil — kullanıcı
-# kodu bu ada erişemez.
+# M25: loop-budget injection — infinite loops of the `while True: pass` class
+# pass the AST whitelist (While/For are deliberately allowed; existing blocks in
+# the catalog use while). AFTER validation, a step counter that resets at the
+# start of every function is injected into the code: on budget overflow, RuntimeError.
+# The injected `__loop_budget` name does NOT pass validation (underscore ban)
+# but that's fine because the transform is applied after validation — user
+# code cannot access this name.
 # ---------------------------------------------------------------------------
 
 LOOP_BUDGET_STEPS = 5_000_000
 
-# Modül-global sayaç (liste → subscript mutasyonu `global` gerektirmez) +
-# tick yardımcısı. While/For guard'ları ve comprehension element sarmaları
-# bunu kullanır. M1084: comprehension/generator'lar YENİ scope açtığından
-# fonksiyon-yerel bir sayaca yazamaz — modül-global + `__budget_tick(elt)`
-# sarması bütçeyi comprehension içinde de uygular. Sayaç her fonksiyon
-# başında (evaluate her barda çağrılır) sıfırlanır. Not: tek-thread'li strateji
-# yürütmesi varsayılır (backtest sıralı; smoke tek-tek).
+# Module-global counter (list -> subscript mutation does not require `global`) +
+# tick helper. While/For guards and comprehension element wrappers use it.
+# M1084: comprehensions/generators open a NEW scope, so they cannot write to a
+# function-local counter — a module-global + `__budget_tick(elt)` wrapper enforces
+# the budget inside comprehensions too. The counter resets at the start of every
+# function (evaluate is called on every bar). Note: single-threaded strategy
+# execution is assumed (backtest is sequential; smoke runs one at a time).
 _BUDGET_PREAMBLE = (
     f"__budget = [{LOOP_BUDGET_STEPS}]\n"
     "def __budget_tick(v):\n"
     f"    __budget[0] -= 1\n"
     "    if __budget[0] < 0:\n"
     "        raise RuntimeError("
-    f"'custom blok işlem bütçesi aşıldı ({LOOP_BUDGET_STEPS:,} adım)')\n"
+    f"'custom block operation budget exceeded ({LOOP_BUDGET_STEPS:,} steps)')\n"
     "    return v\n"
 )
 
 
 class _LoopBudgetInjector(ast.NodeTransformer):
-    """Her While/For gövdesine ve comprehension element'ine bütçe-tick'i,
-    her fonksiyon başına sayaç sıfırlaması ekler."""
+    """Adds a budget tick to every While/For body and comprehension element,
+    and a counter reset at the start of every function."""
 
     def _reset_stmt(self) -> ast.stmt:
-        # __budget[0] = N — subscript ataması (global bildirimi gerekmez).
+        # __budget[0] = N — subscript assignment (no global declaration needed).
         return ast.parse(f"__budget[0] = {LOOP_BUDGET_STEPS}").body[0]
 
     def _guard_stmts(self) -> list[ast.stmt]:
@@ -372,11 +372,11 @@ class _LoopBudgetInjector(ast.NodeTransformer):
             "__budget[0] -= 1\n"
             "if __budget[0] < 0:\n"
             "    raise RuntimeError("
-            f"'custom blok döngü bütçesi aşıldı ({LOOP_BUDGET_STEPS:,} adım)')"
+            f"'custom block loop budget exceeded ({LOOP_BUDGET_STEPS:,} steps)')"
         ).body
 
     def _wrap_tick(self, expr: ast.expr) -> ast.expr:
-        """expr → __budget_tick(expr) (değeri değiştirmez, tek tick sayar)."""
+        """expr → __budget_tick(expr) (does not change the value, counts one tick)."""
         return ast.Call(
             func=ast.Name(id="__budget_tick", ctx=ast.Load()),
             args=[expr],
@@ -385,17 +385,18 @@ class _LoopBudgetInjector(ast.NodeTransformer):
 
     def visit_FunctionDef(self, node: ast.FunctionDef):
         self.generic_visit(node)
-        # Bütçe sıfırlaması YALNIZ top-level evaluate() girişinde (bar başına bir
-        # kez). Eskiden HER fonksiyonun başına konuyordu → sıcak döngü içinden
-        # çağrılan bir helper paylaşılan module-global bütçeyi her iterasyonda
-        # tazeliyor, guard hiç <0 olmuyor ve tek in-process sonsuz-döngü backstop'u
-        # yeniliyordu (kaçak blok server worker'ını asardı). Helper'lar bütçeyi
-        # PAYLAŞIR ama sıfırlamaz.
+        # Budget reset ONLY at the top-level evaluate() entry (once per bar).
+        # It used to be placed at the start of EVERY function → a helper called
+        # from inside a hot loop refreshed the shared module-global budget on
+        # every iteration, the guard never went <0, and the only in-process
+        # infinite-loop backstop was renewed (an escaping block would hang the
+        # server worker). Helpers SHARE the budget but do not reset it.
         if node.name == "evaluate":
             reset = self._reset_stmt()
-            # Enjekte edilen node kendi ast.parse'ından küçük lineno (1-3) taşır;
-            # fix_missing_locations MEVCUT lineno'yu ezmez → bütçe-hata traceback'i
-            # yanlış satır gösterir. Fonksiyon konumunu miras al.
+            # The injected node carries a small lineno (1-3) from its own
+            # ast.parse; fix_missing_locations does NOT override an EXISTING
+            # lineno → the budget-error traceback shows the wrong line. Inherit
+            # the function's location.
             ast.copy_location(reset, node)
             ast.fix_missing_locations(reset)
             node.body.insert(0, reset)
@@ -404,7 +405,7 @@ class _LoopBudgetInjector(ast.NodeTransformer):
     def visit_While(self, node: ast.While):
         self.generic_visit(node)
         guards = self._guard_stmts()
-        for g in guards:  # bütçe-hatası döngünün GERÇEK satırını göstersin
+        for g in guards:  # let the budget error show the REAL line of the loop
             ast.copy_location(g, node)
             ast.fix_missing_locations(g)
         node.body = guards + node.body
@@ -430,18 +431,18 @@ class _LoopBudgetInjector(ast.NodeTransformer):
 
     def visit_DictComp(self, node: ast.DictComp):
         self.generic_visit(node)
-        # key ve value ayrı; tick'i value'ya sar (her eleman bir kez).
+        # key and value are separate; wrap the tick around value (once per element).
         node.value = self._wrap_tick(node.value)
         return node
 
 
 def compile_with_loop_budget(src: str, filename: str = "<custom-block>"):
-    """``validate_generated_code`` SONRASI çağrılır: kaynağı bütçeli AST'ye
-    dönüştürüp derlenmiş kod nesnesi döndürür. Yükleyici, smoke ve önizleme
-    ortamı aynı fonksiyonu kullanır (üretim/çalışma-zamanı paritesi)."""
+    """Called AFTER ``validate_generated_code``: transforms the source into a
+    budgeted AST and returns a compiled code object. The loader, smoke, and
+    preview environment use the same function (generation/runtime parity)."""
     tree = ast.parse(src, mode="exec")
     tree = _LoopBudgetInjector().visit(tree)
-    # Bütçe preamble'ını modül başına ekle (sayaç + tick yardımcısı).
+        # Budget preamble added at the start of the module (counter + tick helper).
     preamble = ast.parse(_BUDGET_PREAMBLE).body
     tree.body = preamble + tree.body
     ast.fix_missing_locations(tree)

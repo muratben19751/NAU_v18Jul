@@ -1,0 +1,66 @@
+{# Loads a saved strategy back into the composer for editing.
+   Renders the drafts list (→ #drafts, which carries the Strategy Preview OOB)
+   and patches name/description/advanced-options/edit-spec-id via HTMX OOB swaps.
+   Sibling of suggestion_result.html — same OOB mechanics, plus the hidden
+   edit_spec_id that tells POST /strategy/save whether to overwrite or append. #}
+<div id="drafts" class="panel-body tight">
+{% include "fragments/drafts_list.html" %}
+</div>
+
+{# Out-of-band swaps replace the form inputs by id. #}
+<input id="name-input" name="name" type="text" value="{{ name }}" required
+       form="save-form" hx-swap-oob="outerHTML">
+<textarea id="description-input" name="description" rows="2" placeholder="Optional note about what this strategy does…"
+          form="save-form" hx-swap-oob="outerHTML">{{ description }}</textarea>
+
+{# Trade size (USDT) lives in compose_body's header, not advanced_options — patch it too. #}
+<input id="trade-size-usdt-input" name="trade_size_usdt" type="number"
+       value="{{ options.trade_size_usdt }}" step="50" min="1" max="10000000"
+       form="save-form" hx-swap-oob="outerHTML">
+
+{# Hidden marker: non-empty → Save updates the same record (overwrite);
+   empty → Save creates a new record (copy / fresh). #}
+<input id="edit-spec-id" name="edit_spec_id" type="hidden" value="{{ edit_spec_id }}"
+       form="save-form" hx-swap-oob="outerHTML">
+
+{# Section 02: Update the Add block form with the first block's type + role (OOB) #}
+{% if drafts %}
+{% set first = drafts[0] %}
+<div id="add-block-form-wrapper" hx-swap-oob="outerHTML:#add-block-form-wrapper">
+  <form id="add-block-form" hx-post="/strategy/drafts" hx-target="#drafts" hx-swap="innerHTML"
+        hx-include="[form='save-form']" class="stack">
+    <div style="display:grid;grid-template-columns:2fr 1fr;gap:12px;">
+      <label class="field">Block type
+        <select name="type"
+                hx-get="/strategy/blocks/form"
+                hx-target="#block-params"
+                hx-trigger="change"
+                hx-include="this"
+                onchange="loadWiki(this.value)">
+          {% for k, meta in block_catalog.items() %}
+            <option value="{{ k }}" {% if k == first.type %}selected{% endif %}>{{ meta.label }} · {{ k }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label class="field">Role
+        <select name="role">
+          <option value="entry" {% if first.role == 'entry' %}selected{% endif %}>entry</option>
+          <option value="exit" {% if first.role == 'exit' %}selected{% endif %}>exit</option>
+        </select>
+      </label>
+    </div>
+    <div id="block-params">
+      {% with btype=first.type, meta=block_catalog[first.type], prefill=first.params %}
+        {% include "fragments/block_form.html" %}
+      {% endwith %}
+    </div>
+    <div class="row">
+      <button class="btn btn-primary" type="submit">＋ Add block</button>
+    </div>
+  </form>
+</div>
+{% endif %}
+
+{# The fragment renders <div id="advanced-options">...</div>; add OOB attribute inline. #}
+{% set _oob = true %}
+{% include "fragments/advanced_options.html" %}

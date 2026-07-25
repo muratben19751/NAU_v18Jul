@@ -1,23 +1,24 @@
-"""Chart indicator serileri — stratejinin GERÇEK bloklarından, GERÇEK parametrelerle.
+"""Chart indicator series — from the strategy's ACTUAL blocks, with ACTUAL parameters.
 
-Grafik artık dekoratif sabit EMA9/RSI(14) yerine, çalıştırılan spec'in
-kullandığı indikatörleri kendi parametreleriyle gösterir. Böylece bir trade'e
-tıklandığında "neden burada girdi?" grafikte görülebilir.
+Instead of a decorative fixed EMA9/RSI(14), the chart now shows the indicators
+used by the run spec with their own parameters. This way, when a trade is
+clicked, "why did it enter here?" can be seen on the chart.
 
-Overlay'ler (fiyatla aynı panelde) ve ayrı panel indikatörleri (RSI, MACD
-histogramı gibi) ayrılır.
+Overlays (on the same panel as price) and separate panel indicators (like RSI,
+MACD histogram) are separated.
 
-DİKKAT — bu seriler GÖRSEL yaklaşıklıklardır, backtest'i etkilemez:
-- RSI: burada Wilder yumuşatması; strateji Nautilus RelativeStrengthIndex'i
-  (EMA tipi, α=2/(period+1)) kullanır — şekil/değer bir miktar farklıdır
-  (M chart_indicators). rsi_threshold ayrıca 0-100 ölçekte fire eder (H6).
-- Bollinger: burada yalnız close; Nautilus tipik fiyat (H+L+C)/3 kullanır —
-  bant seviyesi ~20bps'e kadar sapabilir.
-- KAPSAM: adx_threshold / stoch_rsi_cross / wave_trend_cross / donchian_channel /
-  volume_spike ve custom bloklar grafikte HENÜZ temsil edilmez (imza yalnız
-  closes alır; ADX/WaveTrend/Donchian highs/lows, volume_spike volumes ister).
-Bu farklar yalnız "neden burada girdi?" görselini etkiler; emirler stratejinin
-gerçek (Nautilus) indikatör değerlerinden çıkar.
+CAUTION — these series are VISUAL approximations, they do not affect the backtest:
+- RSI: Wilder smoothing here; the strategy uses Nautilus RelativeStrengthIndex
+  (EMA type, α=2/(period+1)) — shape/value differs somewhat
+  (M chart_indicators). rsi_threshold also fires on a 0-100 scale (H6).
+- Bollinger: only close here; Nautilus uses typical price (H+L+C)/3 —
+  the band level can deviate by up to ~20bps.
+- SCOPE: adx_threshold / stoch_rsi_cross / wave_trend_cross / donchian_channel /
+  volume_spike and custom blocks are NOT YET represented on the chart (the
+  signature only takes closes; ADX/WaveTrend/Donchian need highs/lows,
+  volume_spike needs volumes).
+These differences only affect the "why did it enter here?" visual; orders come
+from the strategy's actual (Nautilus) indicator values.
 """
 
 from __future__ import annotations
@@ -44,7 +45,7 @@ def _ema(closes: list[float], period: int) -> list[float | None]:
     if period <= 0 or len(closes) < period:
         return out
     k = 2.0 / (period + 1)
-    # İlk EMA = ilk 'period' barın SMA'sı
+    # First EMA = SMA of the first 'period' bars
     seed = sum(closes[:period]) / period
     out[period - 1] = seed
     prev = seed
@@ -96,21 +97,21 @@ def _bollinger(closes: list[float], period: int, k: float):
 
 
 def _series(times: list[int], vals: list[float | None]) -> list[dict]:
-    # 8 ondalık — düşük fiyatlı enstrümanlarda (SHIB/PEPE ~1e-5..1e-8)
-    # round(v, 4) çizgiyi 0.0'a düzleştiriyordu.
+    # 8 decimals — for low-priced instruments (SHIB/PEPE ~1e-5..1e-8)
+    # round(v, 4) flattened the line to 0.0.
     return [
         {"time": t, "value": round(v, 8)} for t, v in zip(times, vals) if v is not None
     ]
 
 
-# type → chart indikatör tanımı üretici. Her biri:
-#   overlays: fiyat panelinde çizilecek çizgiler [{name, color, data}]
-#   panes: ayrı panel indikatörleri [{label, series:[{name,color,data}], refs:[{value,color}]}]
+# type → chart indicator definition generator. Each one:
+#   overlays: lines to draw on the price panel [{name, color, data}]
+#   panes: separate panel indicators [{label, series:[{name,color,data}], refs:[{value,color}]}]
 def indicators_for_spec(spec, times: list[int], closes: list[float]) -> dict[str, Any]:
-    """Spec bloklarına göre overlay + pane indikatörlerini hesapla."""
+    """Compute overlay + pane indicators based on the spec blocks."""
     overlays: list[dict] = []
     panes: list[dict] = []
-    seen: set[str] = set()  # aynı indikatörü tekrar çizme (fingerprint)
+    seen: set[str] = set()  # don't draw the same indicator twice (fingerprint)
 
     COLORS = [
         "#f59e0b",
@@ -134,8 +135,8 @@ def indicators_for_spec(spec, times: list[int], closes: list[float]) -> dict[str
         p = b.params or {}
 
         if btype in ("ma_cross", "ema_cross", "macd_cross"):
-            # ma_cross varsayılanı 10/30; ema_cross & macd_cross composer
-            # meta'sıyla aynı 12/26 (params boşsa grafik yanlış periyot çizmesin)
+            # ma_cross default is 10/30; ema_cross & macd_cross same 12/26 as
+            # composer meta (if params are empty, the chart shouldn't draw the wrong period)
             _dfast, _dslow = (10, 30) if btype == "ma_cross" else (12, 26)
             fast = int(p.get("fast", _dfast))
             slow = int(p.get("slow", _dslow))
@@ -176,8 +177,8 @@ def indicators_for_spec(spec, times: list[int], closes: list[float]) -> dict[str
                     }
                 )
             else:
-                # Aynı periyotlu ikinci rsi_threshold bloğu (ör. giriş<30 +
-                # çıkış>70): RSI çizgisi zaten var — yalnız eşik referansını ekle.
+                # Second rsi_threshold block with the same period (e.g. entry<30 +
+                # exit>70): the RSI line already exists — just add the threshold reference.
                 for _pane in panes:
                     if any(s["name"] == fp for s in _pane["series"]):
                         _pane["refs"].append(
@@ -195,21 +196,21 @@ def indicators_for_spec(spec, times: list[int], closes: list[float]) -> dict[str
                 c = _next_color()
                 overlays.append(
                     {
-                        "name": f"BB{period} orta",
+                        "name": f"BB{period} mid",
                         "color": c,
                         "data": _series(times, mid),
                     }
                 )
                 overlays.append(
                     {
-                        "name": "BB üst",
+                        "name": "BB upper",
                         "color": "rgba(239,68,68,0.5)",
                         "data": _series(times, up),
                     }
                 )
                 overlays.append(
                     {
-                        "name": "BB alt",
+                        "name": "BB lower",
                         "color": "rgba(34,197,94,0.5)",
                         "data": _series(times, lo),
                     }
@@ -220,7 +221,7 @@ def indicators_for_spec(spec, times: list[int], closes: list[float]) -> dict[str
             fp = f"BRK{n}"
             if fp not in seen:
                 seen.add(fp)
-                # Rolling high/low kanalı
+                # Rolling high/low channel
                 hi: list[float | None] = [None] * len(closes)
                 lo: list[float | None] = [None] * len(closes)
                 for i in range(len(closes)):
@@ -231,20 +232,20 @@ def indicators_for_spec(spec, times: list[int], closes: list[float]) -> dict[str
                     lo[i] = min(w)
                 overlays.append(
                     {
-                        "name": f"{n}-bar tepe",
+                        "name": f"{n}-bar high",
                         "color": "rgba(239,68,68,0.5)",
                         "data": _series(times, hi),
                     }
                 )
                 overlays.append(
                     {
-                        "name": f"{n}-bar dip",
+                        "name": f"{n}-bar low",
                         "color": "rgba(34,197,94,0.5)",
                         "data": _series(times, lo),
                     }
                 )
 
-        # atr_stop / momentum: overlay çizgisi anlamlı değil (trailing/lookback);
-        # şimdilik atlanır — istenirse eklenebilir.
+        # atr_stop / momentum: an overlay line is not meaningful (trailing/lookback);
+        # skipped for now — can be added if desired.
 
     return {"overlays": overlays, "panes": panes}

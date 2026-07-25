@@ -1,8 +1,8 @@
-"""İpucu-sadık keşif: hint belirgin indikatör içerince agent o sette kalmalı.
+"""Hint-faithful exploration: when the hint contains explicit indicators the agent should stay on that set.
 
-Kullanıcı 'RSI+ADX+ATR' verdiğinde idea-prompt'u 'farklı indikatör ailesi seç'
-yerine 'bu sette kal, kombinasyon/parametre varyasyonlarını tara' yönergesi
-kullanmalı — yoksa agent başka indikatörlere kayıyordu.
+When the user provides 'RSI+ADX+ATR', the idea-prompt should use a 'stay on this
+set, scan combination/parameter variations' directive instead of 'pick a different
+indicator family' — otherwise the agent drifted to other indicators.
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ class TestHintIndicators:
 
     def test_english_and_turkish(self):
         assert "Stochastic" in _hint_indicators("use stochastic oscillator")
-        assert "Hacim" in _hint_indicators("hacim patlaması stratejisi")
+        assert "Volume" in _hint_indicators("hacim patlaması stratejisi")
         assert "MACD" in _hint_indicators("MACD histogram cross")
 
     def test_empty_hint_no_indicators(self):
@@ -25,29 +25,29 @@ class TestHintIndicators:
         assert _hint_indicators("kârlı bir şey bul") == []
 
     def test_no_false_positive_substring(self):
-        # 'ma' RSI/ADX içermeyen kelimelerde yanlış eşleşmemeli
+        # 'ma' must not falsely match in words that do not contain RSI/ADX
         assert _hint_indicators("maksimum kar minimum drawdown") == []
-        # 'smart' içindeki 'ma' SMA sanılmamalı
+        # the 'ma' inside 'smart' must not be mistaken for SMA
         assert "SMA/MA" not in _hint_indicators("smart momentum idea")
 
 
 class TestExplorationDirective:
     def test_faithful_when_indicators_present(self):
         d = _exploration_directive("RSI + ADX + ATR")
-        assert "ÇEKİRDEĞİ" in d  # istenen set stratejinin çekirdeği
+        assert "CORE" in d  # requested set is the strategy's core
         assert "RSI" in d and "ADX/DMI" in d and "ATR" in d
-        # Yaratıcı tamamlayıcı ekleme yönergesi
-        assert "YARATICI" in d and "TAMAMLAYICI" in d
-        # Seti FARKLI bir aileyle DEĞİŞTİR yönergesi OLMAMALI
-        assert "FARKLI bir indikatör ailesi seç" not in d
+        # directive to add a creative complementary indicator
+        assert "CREATIVE" in d and "COMPLEMENTARY" in d
+        # there should be NO directive to REPLACE the set with a DIFFERENT family
+        assert "pick a DIFFERENT indicator family" not in d
 
     def test_diverse_when_no_indicators(self):
         d = _exploration_directive("")
-        assert "FARKLI bir indikatör ailesi seç" in d
+        assert "pick a DIFFERENT indicator family" in d
         assert "BU SETTE KAL" not in d
 
     def test_directive_fills_prompt_without_keyerror(self):
-        """_AGENT_IDEA_PROMPT.format çağrısı yeni placeholder'la kırılmamalı."""
+        """The _AGENT_IDEA_PROMPT.format call must not break with the new placeholder."""
         from agent import _AGENT_IDEA_PROMPT
 
         out = _AGENT_IDEA_PROMPT.format(
@@ -58,4 +58,4 @@ class TestExplorationDirective:
             used_concepts="yok",
             hint="RSI ADX ATR",
         )
-        assert "ÇEKİRDEĞİ" in out and "YASAK" in out
+        assert "CORE" in out and "FORBIDDEN" in out

@@ -1,0 +1,130 @@
+{# Live plan preview — swapped into #plan-preview (POST /backtest/plan).
+   Read-only: how the recipe was interpreted, which blocks will be created (built-in-like
+   vs new custom), what will happen on "Generate & Backtest" + estimated warnings. #}
+{% if stage == "prompt" %}
+  <div class="panel">
+    <div class="panel-body empty-state small">
+      Stratejini biraz daha ayrıntılı yaz — yorumlama ve blok planı burada görünecek.
+    </div>
+  </div>
+{% else %}
+  <div class="panel">
+    <div class="panel-header">
+      <div class="panel-title">🔍 Plan önizleme{% if not llm_ok %} · yerel tahmin{% endif %}</div>
+      <div class="panel-meta">
+        <span class="chip">giriş: {{ entry_logic }}</span>
+        <span class="chip">çıkış: {{ exit_logic }}</span>
+      </div>
+      <div class="spacer"></div>
+      <button class="btn btn-ghost" type="button"
+              style="font-size:11px;padding:3px 10px;"
+              onclick="document.getElementById('plan-preview').innerHTML='';var pe=document.getElementById('plan-empty');if(pe)pe.style.display='';if(window.btTab)btTab('result');"
+              title="Plan önizlemeyi kapat">✕ Kapat</button>
+    </div>
+    <div class="panel-body">
+
+      {# ── AI önerisi — düzenlenebilir + kopyala + "Tamam" onayı ── #}
+      {% if llm_ok and refined %}
+        <div class="panel" style="margin-bottom:12px;border-color:rgba(129,140,248,0.4);">
+          <div class="panel-header">
+            <div class="panel-title">✨ AI önerisi — düzenleyebilirsiniz</div>
+            <div class="spacer"></div>
+            <button class="btn btn-ghost" type="button"
+                    style="font-size:11px;padding:3px 10px;"
+                    onclick="btCopyRefined(this);"
+                    title="Önerilen metni panoya kopyala">
+              ⧉ COPY
+            </button>
+          </div>
+          <div class="panel-body">
+            <textarea id="refined-description" rows="4"
+                      class="mono"
+                      aria-label="AI tarafından iyileştirilmiş strateji açıklaması"
+                      placeholder="AI önerisi burada görünür — düzenleyebilirsiniz"
+                      style="width:100%;resize:vertical;">{{ refined }}</textarea>
+            {% if refine_notes %}
+              <div class="small text-muted plan-note" style="margin-top:6px;">
+                <span>ℹ</span> <span>{{ refine_notes }}</span>
+              </div>
+            {% endif %}
+
+            {# İlave öneriler + uyarılar (AI) #}
+            {% if suggestions %}
+              <div class="small text-muted" style="margin-top:10px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;">
+                İlave öneriler &amp; uyarılar
+              </div>
+              <ul style="margin:6px 0 0;padding-left:2px;list-style:none;display:flex;flex-direction:column;gap:5px;">
+                {% for s in suggestions %}
+                  <li class="small" style="display:flex;gap:7px;align-items:flex-start;line-height:1.4;">
+                    <span style="flex:none;">{{ '⚠️' if s.kind == 'uyari' else '💡' }}</span>
+                    <span style="color:{{ '#fbbf24' if s.kind == 'uyari' else 'var(--text)' }};">{{ s.text }}</span>
+                  </li>
+                {% endfor %}
+              </ul>
+            {% endif %}
+
+            <div class="row" style="align-items:center;gap:10px;margin-top:10px;">
+              <button class="btn btn-primary" type="button"
+                      hx-post="/backtest/describe"
+                      hx-include="closest form"
+                      hx-vals='js:{description: document.getElementById("refined-description").value}'
+                      hx-target="#result"
+                      hx-swap="innerHTML"
+                      hx-indicator="#gen-spinner"
+                      style="border-color:rgba(129,140,248,0.5);">
+                <span class="btn-spin spin">⟳</span>
+                ✅ Tamam — Blokları Oluştur
+              </button>
+              <span class="text-muted" style="font-size:11px;">Onayladığınızda Python blokları yazılıp backtest edilir</span>
+            </div>
+          </div>
+        </div>
+      {% endif %}
+
+      {# warnings — en üstte, dikkat çekici #}
+      {% for wn in warnings %}
+        <div class="warning-strip small plan-note">
+          <span>{{ '⚠' if wn.level == 'warn' else 'ℹ' }}</span>
+          <span>{{ wn.text }}</span>
+        </div>
+      {% endfor %}
+
+      <div class="plan-split">
+
+        {# ── LEFT: interpretation + condition→block mapping ── #}
+        <div class="plan-split-col">
+          {# (a) interpretation #}
+          <div class="small text-muted">Yorumlanan strateji</div>
+          <div class="mono plan-label">{{ label }}</div>
+
+          {# (b) condition → block mapping #}
+          <div class="small text-muted">{{ n_entry }} giriş · {{ n_exit }} çıkış koşulu</div>
+          {% for r in rows %}
+            <div class="plan-row">
+              <span class="badge {{ 'entry' if r.role == 'entry' else 'exit' }}">
+                {{ 'GİRİŞ' if r.role == 'entry' else 'ÇIKIŞ' }}
+              </span>
+              <span class="mono">{{ r.label }}</span>
+              {% if r.reuse %}
+                <span class="chip chip-good">↺ {{ r.reuse.label }} bloğuna benziyor</span>
+              {% else %}
+                <span class="chip">✎ yeni özel blok yazılacak</span>
+              {% endif %}
+              <div class="small text-muted plan-desc">{{ r.desc }}</div>
+            </div>
+          {% endfor %}
+        </div>
+
+      </div>
+
+      {# ne olacak — onay butonuyla #}
+      <div class="small text-muted plan-note">
+        <b>✅ Tamam</b>'a bastığınızda her koşul için ayrı bir Python bloğu yazılır,
+        diske kaydedilir, strateji {{ entry_logic }}/{{ exit_logic }} mantığıyla derlenip
+        seçili zaman dilimlerinde backtest edilir. (Bu önizleme salt-okunur — henüz hiçbir
+        şey üretilmedi/kaydedilmedi.)
+      </div>
+
+    </div>
+  </div>
+{% endif %}

@@ -2,9 +2,9 @@
 
 Wiki References
 ---------------
-_(app-spesifik — wiki scope dışı)_
+_(app-specific — outside wiki scope)_
 
-App UI; wiki scope'unun dışında.
+App UI; outside wiki scope.
 """
 
 from __future__ import annotations

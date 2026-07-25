@@ -1,7 +1,7 @@
-"""Strateji Yarat — visual signal-block composer.
+"""Create Strategy — visual signal-block composer.
 
-Kullanıcı sinyal bloklarını seçer, birleştirir, kaydeder. Kaydedilen
-stratejileri hem Backtest sayfası hem otonom Ajan kullanır.
+The user selects, combines, and saves signal blocks. Saved strategies
+are used by both the Backtest page and the autonomous Agent.
 """
 
 from __future__ import annotations
@@ -24,10 +24,10 @@ from composer import (
 from wiki_helper import read_wiki_page, wiki_link_md
 
 
-st.set_page_config(page_title="Strateji Yarat", layout="wide")
-st.title("🧩 Strateji Yarat")
+st.set_page_config(page_title="Create Strategy", layout="wide")
+st.title("🧩 Create Strategy")
 st.caption(
-    "Sinyal bloklarını birleştirerek Nautilus `Strategy` alt sınıfı üretir. Wiki uyumlu."
+    "Combines signal blocks to produce a Nautilus `Strategy` subclass. Wiki-compatible."
 )
 
 
@@ -41,43 +41,43 @@ main, wiki_col = st.columns([3, 2])
 
 
 with main:
-    st.subheader("1. Strateji üst bilgi")
+    st.subheader("1. Strategy header")
     c1, c2 = st.columns(2)
     name = c1.text_input(
-        "Ad", value="Yeni Stratejim", help="Kaydedilen katalogta bu adla görünür."
+        "Name", value="My New Strategy", help="Appears in the saved catalog under this name."
     )
     trade_size = c2.number_input(
-        "İşlem büyüklüğü (BTC)",
+        "Trade size (BTC)",
         min_value=0.001,
         max_value=10.0,
         value=0.1,
         step=0.01,
-        help="Her entry sinyalinde alınacak BTC miktarı.",
+        help="Amount of BTC to buy on each entry signal.",
     )
     description = st.text_area(
-        "Açıklama",
+        "Description",
         value="",
         height=60,
-        help="Bu stratejinin ne yaptığına dair kısa not.",
+        help="A short note on what this strategy does.",
     )
 
     st.divider()
 
-    st.subheader("2. Sinyal bloğu ekle")
+    st.subheader("2. Add signal block")
     st.caption(
-        "**Entry** blokları OR'lanır → herhangi biri tetiklenirse pozisyon açılır. "
-        "**Exit** blokları OR'lanır → herhangi biri tetiklenirse pozisyon kapanır. "
+        "**Entry** blocks are OR'ed → a position opens if any one triggers. "
+        "**Exit** blocks are OR'ed → a position closes if any one triggers. "
         f"{wiki_link_md('wiki/concepts/order_flow_pipeline.md', 'Order Flow')}"
     )
 
     ca, cb = st.columns(2)
     block_type = ca.selectbox(
-        "Blok tipi",
+        "Block type",
         options=list(BLOCK_CATALOG.keys()),
         format_func=lambda k: BLOCK_CATALOG[k]["label"],
         key="new_block_type",
     )
-    block_role = cb.selectbox("Rol", options=["entry", "exit"], key="new_block_role")
+    block_role = cb.selectbox("Role", options=["entry", "exit"], key="new_block_role")
 
     spec_meta = BLOCK_CATALOG[block_type]
     st.info(spec_meta["help"])
@@ -113,7 +113,7 @@ with main:
             )
 
     add_col, wiki_col2 = st.columns([1, 3])
-    if add_col.button("➕ Bloğu ekle", type="primary"):
+    if add_col.button("➕ Add block", type="primary"):
         st.session_state.draft_blocks.append(
             SignalBlock(type=block_type, role=block_role, params=dict(param_inputs))
         )
@@ -125,9 +125,9 @@ with main:
 
     st.divider()
 
-    st.subheader("3. Şu anki blok listesi")
+    st.subheader("3. Current block list")
     if not st.session_state.draft_blocks:
-        st.info("Henüz blok eklenmedi. Yukarıdan ekle.")
+        st.info("No blocks added yet. Add one above.")
     else:
         for i, b in enumerate(st.session_state.draft_blocks):
             row = st.container(border=True)
@@ -144,10 +144,10 @@ with main:
 
     st.divider()
 
-    st.subheader("4. Kaydet")
+    st.subheader("4. Save")
     save_col, clear_col = st.columns([1, 1])
     if save_col.button(
-        "💾 Katalog'a kaydet",
+        "💾 Save to Catalog",
         type="primary",
         disabled=not st.session_state.draft_blocks,
     ):
@@ -160,31 +160,31 @@ with main:
         )
         err = spec.validate()
         if err:
-            st.error(f"Geçersiz: {err}")
+            st.error(f"Invalid: {err}")
         else:
             catalog = load_catalog()
             catalog.append(spec)
             save_catalog(catalog)
-            st.success(f"✅ Kaydedildi: **{spec.name}** (id={spec.id})")
+            st.success(f"✅ Saved: **{spec.name}** (id={spec.id})")
             st.session_state.draft_blocks = []
             st.rerun()
-    if clear_col.button("Sıfırla"):
+    if clear_col.button("Reset"):
         st.session_state.draft_blocks = []
         st.rerun()
 
     st.divider()
-    st.subheader("5. Kayıtlı stratejiler")
+    st.subheader("5. Saved strategies")
     catalog = load_catalog()
     if not catalog:
-        st.info("Henüz kayıtlı strateji yok.")
+        st.info("No saved strategies yet.")
     else:
         for spec in reversed(catalog):
             with st.expander(
-                f"📦 {spec.name}  ·  {len(spec.blocks)} blok  ·  id={spec.id}"
+                f"📦 {spec.name}  ·  {len(spec.blocks)} block  ·  id={spec.id}"
             ):
-                st.write(spec.description or "_(açıklama yok)_")
+                st.write(spec.description or "_(no description)_")
                 st.write(
-                    f"Oluşturulma: `{spec.created_at}`  ·  Trade size: `{spec.trade_size} BTC`"
+                    f"Created: `{spec.created_at}`  ·  Trade size: `{spec.trade_size} BTC`"
                 )
                 for b in spec.blocks:
                     st.markdown(
@@ -192,7 +192,7 @@ with main:
                         f"`{', '.join(f'{k}={v}' for k, v in b.params.items())}`"
                     )
                 cdel, _ = st.columns([1, 5])
-                if cdel.button("🗑 Sil", key=f"del_spec_{spec.id}"):
+                if cdel.button("🗑 Delete", key=f"del_spec_{spec.id}"):
                     catalog2 = [s for s in load_catalog() if s.id != spec.id]
                     save_catalog(catalog2)
                     st.rerun()
@@ -200,7 +200,7 @@ with main:
 
 with wiki_col:
     st.subheader("📖 Wiki")
-    st.caption("Seçilen bloğa göre canlı wiki içeriği.")
+    st.caption("Live wiki content based on the selected block.")
     active = st.session_state.wiki_active
     st.markdown(wiki_link_md(active))
     with st.container(border=True, height=700):

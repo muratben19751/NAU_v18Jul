@@ -3,9 +3,9 @@
 
 <div class="panel">
   <div class="panel-header">
-    <div class="panel-title">🤖 Otonom Backtest Ajanı</div>
+    <div class="panel-title">🤖 Autonomous Backtest Agent</div>
     <div class="panel-meta small">
-      Claude strateji üretir · N kez backtest çalıştırır · en iyisini robustness testine sokar
+      Claude generates strategies · runs backtest N times · puts the best one through a robustness test
     </div>
   </div>
   <div class="panel-body">
@@ -16,14 +16,14 @@
 
       <div class="row" style="align-items:flex-end;flex-wrap:wrap;gap:12px;margin-bottom:14px;">
         <label class="field" style="flex:2;min-width:240px;">
-          Strateji ipucu <span class="text-muted" style="font-weight:400;">(opsiyonel — boş = tamamen otonom)</span>
+          Strategy hint <span class="text-muted" style="font-weight:400;">(optional — empty = fully autonomous)</span>
           <input type="text" name="hint"
-                 placeholder="Örn: momentum + RSI, EMA crossover, supertrend…"
+                 placeholder="e.g.: momentum + RSI, EMA crossover, supertrend…"
                  style="font-size:13px;">
         </label>
-        <label class="field">Kaynak
+        <label class="field">Source
           <select name="source" id="agent-source" onchange="onAgentSourceChange(this)">
-            <option value="bybit" selected>Bybit (Kripto)</option>
+            <option value="bybit" selected>Bybit (Crypto)</option>
             <option value="external">Katalog (US Equity)</option>
           </select>
         </label>
@@ -55,7 +55,7 @@
           <label class="field" style="min-width:180px;">Instrument
             <select name="instrument_id" id="agent-ext-instrument"
                     onchange="onAgentExtInstrumentChange(this)">
-              <option value="">— yükleniyor… —</option>
+              <option value="">— loading… —</option>
             </select>
           </label>
           <label class="field">Timeframe
@@ -72,22 +72,22 @@
         <label class="field" style="flex-direction:row;align-items:center;gap:6px;padding-bottom:6px;">
           <input type="checkbox" name="multi_tf" value="1" id="multi-tf-cb"
                  onchange="document.getElementById('interval-sel').disabled=this.checked;document.getElementById('agent-ext-interval').disabled=this.checked">
-          <span style="font-size:12px;">Multi-TF <span class="text-muted">(1h·4h·1D dene)</span></span>
+          <span style="font-size:12px;">Multi-TF <span class="text-muted">(try 1h·4h·1D)</span></span>
         </label>
       </div>
 
       <div class="row" style="align-items:flex-end;flex-wrap:wrap;gap:12px;margin-bottom:14px;">
         <label class="field" style="min-width:220px;">
-          İterasyon sayısı <span class="text-muted" style="font-weight:400;" id="iter-val">5</span>
+          Iteration count <span class="text-muted" style="font-weight:400;" id="iter-val">5</span>
           <input type="range" name="n_iterations" min="2" max="15" value="5"
                  style="width:100%;margin-top:4px;"
                  oninput="document.getElementById('iter-val').textContent=this.value">
         </label>
         <label class="field">
-          Robustness modu
+          Robustness mode
           <select name="strict_mode">
-            <option value="strict" selected>Strict — ✓ Sağlam zorunlu</option>
-            <option value="relaxed">Relaxed — ⚠ Dikkat de kabul</option>
+            <option value="strict" selected>Strict — ✓ Robust required</option>
+            <option value="relaxed">Relaxed — ⚠ Caution also accepted</option>
           </select>
         </label>
         <label class="field" id="trend-interval-field" style="display:none;">
@@ -113,37 +113,37 @@
         </label>
         <label class="field" style="flex-direction:row;align-items:center;gap:6px;padding-bottom:6px;">
           <input type="checkbox" name="web_research" value="1" id="web-research-cb">
-          <span style="font-size:12px;">Web araştırması <span class="text-muted">(DuckDuckGo'dan strateji fikirleri çek)</span></span>
+          <span style="font-size:12px;">Web research <span class="text-muted">(pull strategy ideas from DuckDuckGo)</span></span>
         </label>
         <label class="field" style="flex-direction:row;align-items:center;gap:6px;padding-bottom:6px;">
           <input type="checkbox" name="continuous" value="1" id="continuous-cb">
-          <span style="font-size:12px;">Sürekli çalış <span class="text-muted">(kazanan bulduktan sonra yeniden başla)</span></span>
+          <span style="font-size:12px;">Run continuously <span class="text-muted">(restart after finding a winner)</span></span>
         </label>
-        {# M22: opsiyonel bütçe tavanları — 0/boş = sınırsız (varsayılan davranış) #}
+        {# M22: optional budget caps — 0/empty = unlimited (default behavior) #}
         <label class="field" style="max-width:110px;">
-          Maks. saat <span class="text-muted" style="font-weight:400;">(0=∞)</span>
+          Max. hours <span class="text-muted" style="font-weight:400;">(0=∞)</span>
           <input type="number" name="max_hours" min="0" step="0.5" value="0"
-                 style="font-size:12px;" title="Sürekli modda toplam süre tavanı; 0 = sınırsız">
+                 style="font-size:12px;" title="Total time cap in continuous mode; 0 = unlimited">
         </label>
         <label class="field" style="max-width:140px;">
-          Maks. token <span class="text-muted" style="font-weight:400;">(0=∞)</span>
+          Max. tokens <span class="text-muted" style="font-weight:400;">(0=∞)</span>
           <input type="number" name="max_total_tokens" min="0" step="100000" value="0"
-                 style="font-size:12px;" title="Toplam LLM token tavanı; 0 = sınırsız">
+                 style="font-size:12px;" title="Total LLM token cap; 0 = unlimited">
         </label>
         <div style="display:flex;gap:8px;align-items:flex-end;padding-bottom:2px;">
-          <button class="btn btn-primary" type="submit">🤖 Çalıştır</button>
+          <button class="btn btn-primary" type="submit">🤖 Run</button>
           <span class="htmx-indicator text-muted mono" id="agent-spinner" style="font-size:11px;">
-            pipeline başlatılıyor…
+            starting pipeline…
           </span>
         </div>
       </div>
 
       <p class="small text-muted" style="margin:0;">
-        Her çalıştırma cache'deki <b>tam tarih aralığını</b> kullanır
-        (son 60 gün mühürlü OOS olarak ayrılır).
-        Kazanan strateji otomatik olarak /backtest seçicisine eklenir.
-        Sıralama (NAU fitness): <code>(0.7×Calmar + 0.3×Sharpe) × T/(T+20)</code> ·
-        Karma mod: çift iterasyon builtin blok, tek iterasyon <b>Claude custom blok</b> üretir.
+        Each run uses the <b>full date range</b> in the cache
+        (the last 60 days are sealed off as OOS).
+        The winning strategy is automatically added to the /backtest selector.
+        Ranking (NAU fitness): <code>(0.7×Calmar + 0.3×Sharpe) × T/(T+20)</code> ·
+        Hybrid mode: even iterations produce a builtin block, odd iterations produce a <b>Claude custom block</b>.
       </p>
     </form>
   </div>
@@ -151,21 +151,21 @@
 
 <div id="agent-result">
   {% if active_run_id %}
-  {# Çalışan koşuya otomatik bağlan (restart/refresh sonrası). load'da hemen
-     progress'i çeker, sonra fragment kendi 1s polling'ini sürdürür. #}
+  {# Auto-connect to the running run (after restart/refresh). On load it
+     immediately pulls progress, then the fragment continues its own 1s polling. #}
   <div id="agent-progress-panel"
        hx-get="/agent/progress/{{ active_run_id }}"
        hx-trigger="load, every 1s"
        hx-target="#agent-result"
        hx-swap="innerHTML">
     <div class="panel">
-      <div class="panel-body empty-state">⏳ Çalışan koşuya bağlanılıyor…</div>
+      <div class="panel-body empty-state">⏳ Connecting to the running run…</div>
     </div>
   </div>
   {% else %}
   <div class="panel">
     <div class="panel-body empty-state">
-      🤖 Çalıştır'a basarak otonom araştırma döngüsünü başlat.
+      🤖 Press Run to start the autonomous research loop.
     </div>
   </div>
   {% endif %}
@@ -202,7 +202,7 @@
   };
 
   function onAgentExtInstrumentChange(sel) {
-    // Timeframe seçeneklerini seçilen enstrümanın katalog dilimlerine daralt.
+    // Narrow the Timeframe options down to the catalog slices of the selected instrument.
     const opt = sel.options[sel.selectedIndex];
     if (!opt || !opt.dataset.grans) return;
     const granSel = document.getElementById('agent-ext-interval');
@@ -221,9 +221,9 @@
     document.getElementById('ext-trend-interval-field').style.display = (on && ext) ? '' : 'none';
   }
 
-  // ── Zaman çizelgesi: <details> açık-durumu HTMX swap'larında korunur ──
-  // Poll her saniye #agent-result'ı yeniden yazar; kullanıcının açtığı
-  // detay panelleri (tl-* ve adım günlüğü) swap sonrası geri açılır.
+  // ── Timeline: <details> open-state is preserved across HTMX swaps ──
+  // The poll rewrites #agent-result every second; detail panels the user opened
+  // (tl-* and the step log) are reopened after the swap.
   (function () {
     var openIds = [];
     document.body.addEventListener('htmx:beforeSwap', function (e) {
@@ -243,7 +243,7 @@
       var det = document.getElementById('agent-steps-details');
       if (det && det.open && el) el.scrollTop = el.scrollHeight;
     });
-    // Bar tıklaması → ilgili detay panelini aç + görünür kıl.
+    // Bar click → open the relevant detail panel + make it visible.
     document.body.addEventListener('click', function (e) {
       var link = e.target.closest ? e.target.closest('a.tl-link') : null;
       if (!link) return;

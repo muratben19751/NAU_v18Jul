@@ -1,8 +1,8 @@
-"""Reports görünüm durumu kalıcılığı (sort + kolon filtreleri + varyant).
+"""Reports view state persistence (sort + column filters + variant).
 
-Kullanıcı isteği: sıralama/filtre durumu kaydedilsin, sonraki açılışta aynen
-gelsin. Durum reports_layout.json'da saklanır; bu testler yaz/oku
-round-trip'ini ve bozuk girdilere dayanıklılığı doğrular.
+User request: sorting/filter state should be saved and come back exactly the
+same on the next open. State is stored in reports_layout.json; these tests
+verify the write/read round-trip and resilience to corrupt input.
 """
 
 from __future__ import annotations
@@ -38,7 +38,7 @@ class TestViewStateRoundtrip:
         assert out["variant"] == "profitable"
 
     def test_legacy_file_without_new_fields(self, tmp_path, monkeypatch):
-        """Eski format (yalnız order/hidden) hâlâ okunur; yeni alanlar yok."""
+        """Legacy format (only order/hidden) is still read; new fields absent."""
         rp, p = _patch_path(monkeypatch, tmp_path)
         p.write_text(json.dumps({"order": ["ts"], "hidden": []}))
         out = rp._load_layout()
@@ -46,16 +46,16 @@ class TestViewStateRoundtrip:
         assert "sort" not in out and "filters" not in out and "variant" not in out
 
     def test_junk_fields_dropped(self, tmp_path, monkeypatch):
-        """Yanlış tipli sort/filters/variant sessizce atılır, sayfa kırılmaz."""
+        """Wrongly-typed sort/filters/variant are silently dropped, page not broken."""
         rp, p = _patch_path(monkeypatch, tmp_path)
         p.write_text(
             json.dumps(
                 {
                     "order": [],
                     "hidden": [],
-                    "sort": "sharpe-desc",  # dict değil
-                    "filters": [1, 2, 3],  # dict değil
-                    "variant": 42,  # str değil
+                    "sort": "sharpe-desc",  # not a dict
+                    "filters": [1, 2, 3],  # not a dict
+                    "variant": 42,  # not a str
                 }
             )
         )
@@ -80,7 +80,7 @@ class TestViewStateRoundtrip:
         rp, _ = _patch_path(monkeypatch, tmp_path)
         rp._save_layout({"order": [], "hidden": [], "pageSize": 500})
         assert rp._load_layout()["pageSize"] == 500
-        # 0 = Tümü geçerli; negatif / bool / str atılır
+        # 0 = All is valid; negative / bool / str is dropped
         rp._save_layout({"order": [], "hidden": [], "pageSize": 0})
         assert rp._load_layout()["pageSize"] == 0
         rp._save_layout({"order": [], "hidden": [], "pageSize": -5})

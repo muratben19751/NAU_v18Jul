@@ -1,7 +1,7 @@
-"""Log-inceleme planının P2/P3 düzeltme testleri.
+"""P2/P3 fix tests for the log-review plan.
 
-P2: robustness_log kimlik alanları + reports bileşik-anahtar join.
-P3: JSONL log rotation (20MB eşik).
+P2: robustness_log identity fields + reports composite-key join.
+P3: JSONL log rotation (20MB threshold).
 """
 
 from __future__ import annotations
@@ -42,7 +42,7 @@ class TestRobustnessLogIdentity:
         assert rec["symbol"] == "SOLUSDT" and rec["interval"] == "240"
 
     def test_reader_composite_key_no_overwrite(self, tmp_path, monkeypatch):
-        """Aynı spec_id iki farklı sembol/TF → iki ayrı indeks girişi."""
+        """Same spec_id with two different symbol/TF -> two separate index entries."""
         import web.routes.reports as rp
 
         log = tmp_path / "robustness_log.jsonl"
@@ -69,19 +69,19 @@ class TestRobustnessLogIdentity:
         eth = idx[("s1", "ETHUSDT", "D")]
         assert btc["in_out_split"]["overfitting_label"] == "BTC"
         assert eth["in_out_split"]["overfitting_label"] == "ETH"
-        # Legacy tekli anahtar hâlâ var (son-yazan-kazanır fallback)
+        # Legacy single key still exists (last-writer-wins fallback)
         assert idx["s1"]["symbol"] == "ETHUSDT"
 
     def test_reader_legacy_records_still_join(self, tmp_path, monkeypatch):
-        """Kimlik alansız eski kayıt tekli anahtarla erişilebilir kalır."""
+        """Old record without identity fields stays accessible via the single key."""
         import web.routes.reports as rp
 
         log = tmp_path / "robustness_log.jsonl"
-        log.write_text(json.dumps({"spec_id": "old1", "spec_name": "Eski"}) + "\n")
+        log.write_text(json.dumps({"spec_id": "old1", "spec_name": "Old"}) + "\n")
         monkeypatch.setattr(rp, "ROBUSTNESS_LOG", log)
         idx = rp._load_robustness_index()
-        assert idx["old1"]["spec_name"] == "Eski"
-        assert ("old1", "", "") not in idx  # boş kimlikle bileşik anahtar üretilmez
+        assert idx["old1"]["spec_name"] == "Old"
+        assert ("old1", "", "") not in idx  # no composite key produced for empty identity
 
 
 class TestLogRotation:
@@ -108,13 +108,13 @@ class TestLogRotation:
 
         log = tmp_path / "x.jsonl"
         archive = tmp_path / "x.jsonl.1"
-        archive.write_text("eski")
+        archive.write_text("old")
         log.write_text("b" * 1000)
         _rotate_if_large(log, max_bytes=500)
         assert archive.read_text() == "b" * 1000
 
     def test_writer_applies_rotation(self, tmp_path, monkeypatch):
-        """_log_backtest eşik aşımında dosyayı devirip temiz başlar."""
+        """_log_backtest rolls over the file when the threshold is exceeded and starts clean."""
         import web.shared as sh
 
         log = tmp_path / "backtest_log.jsonl"
@@ -147,4 +147,4 @@ class TestLogRotation:
         sh.log_backtest(_Spec(), _Res(), "Bybit", {})
         assert (tmp_path / "backtest_log.jsonl.1").exists()
         lines = log.read_text().strip().splitlines()
-        assert len(lines) == 1  # yeni dosya tek taze kayıtla başladı
+        assert len(lines) == 1  # new file started with a single fresh record

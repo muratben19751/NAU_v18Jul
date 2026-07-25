@@ -2,6 +2,25 @@
 
 Append-only. Her ingest, query veya lint operasyonu bir satır bırakır.
 
+## 2026-07-20 (8) — Robustness polling fix + AI Plan sekme sırası + plan cache refactor (kod → wiki)
+
+- **fix** — `robustness_progress.html`: `hx-swap="outerHTML"` → `hx-target="#robustness-result" hx-swap="innerHTML"`. `#robustness-result` DOM'dan kalkınca polling duruyordu.
+- **ux** — `✨ AI Plan` sekmesi `Sonuç`'un önüne alındı (sıra: AI Plan · Sonuç · Robustness · Geçmiş). Sayfa ilk açılışında aktif sekme AI Plan; backtest tamamlanınca `btTab('result')` otomatik Sonuç'a geçer.
+- **fix** — `web/routes/backtest.py` plan cache refactor: `propose_refined_description` artık hiç cache'lenmez — her "✨ Önce AI ile iyileştir" basışında taze AI çağrısı. `bd` (blok planı) `(desc, allow_short)` key ile cache'de kalır. İkinci kez basınca öneri gelmeme sorunu çözüldü.
+- **fix** — `agent.py`: `propose_refined_description` exception'ları `agent.refine` logger'a yazılır.
+- **wiki** — `synthesis/webapp_module_map.md` değişiklik günlüğüne yeni madde eklendi. Backlinks + index yenilendi.
+
+## 2026-07-20 (7) — Robustness "Analizi Çalıştır" polling duruyordu (kod → wiki)
+
+- **bug/fix** — `POST /robustness/run` progress fragment'ı (`robustness_progress.html`) `#robustness-result` div'inin **içine** (`innerHTML`) yazılıyordu. Fragment kendi kendini `hx-target="this" hx-swap="outerHTML"` ile replace edince `#robustness-result` elementi DOM'dan kalkıyor, sonraki polling isteği hedefi bulamıyor, analiz görünmez şekilde duruyordu. **Düzeltme**: `hx-target="this" hx-swap="outerHTML"` → `hx-target="#robustness-result" hx-swap="innerHTML"`. `web/templates/fragments/robustness_progress.html`.
+- **wiki** — `log.md` güncellendi. Mekanik sync (backlinks+index) çalıştırılacak.
+
+## 2026-07-19 — Fix: strateji üretim paneli --reload kesintisi + zarif düşüş (kod → wiki)
+
+- **root-cause (deneysel)** — Kullanıcı raporu: `/backtest` doğal-dil üretiminde sağ-üstteki "✨ Generating strategy from description" paneli üretim ORTASINDA ("Writing blocks" fazında) aniden kayboluyor. İki kontrollü koşumla kanıtlandı: **`--reload` AÇIK** → 8. sn'de poll "Generation record not found" (panel silindi), log'da `WatchFiles detected changes in 'composer.py'. Reloading... → Shutting down → Started server process`; **`--reload` KAPALI** → 20. sn'de üretim tamamlandı, panel sağ kaldı → backtest'e zincirlendi. Kök neden: `uvicorn --reload` proje kökündeki HER `*.py` değişiminde sunucuyu yeniden başlatır; üretim ~15-20 sn süren worker thread'de çalışıp durumu BELLEKTE tutar (`_GEN_PROGRESS`), o sırada izlenen bir `.py` değişince (eşzamanlı editör kaydı / ruff format) worker + durum uçar, poll `state=None` alır, panel eskiden sessizce kaybolurdu. Üretimin kendi disk yazımları (`save_custom`/`append_to_catalog`) `~/.cache/`'e (proje dışı) gider — reload'ı tetiklemez (in-process probe ile doğrulandı).
+- **fix** — (1) **Zarif düşüş**: `describe_progress` route + `fragments/describe_progress.html` `state=None` durumunu artık boş div ile paneli yok etmek yerine aynı `.bt-gen-float` overlay'de "⚠ Kesildi — üretim yarıda kesildi, sunucu yeniden başladı" mesajıyla gösterir; `hx-trigger` üretmez → polling durur. (2) **Reload watch daraltma**: `server.py` docstring + `README.md` çalıştırma komutu `--reload-exclude "$PWD/nautilus_wiki" "$PWD/.claude" "$PWD/tests"` (MUTLAK yol — uvicorn göreli adı/glob'u eşleştirmez, yalnız var olan dizini `path.parents` ile recursive dışlar; deneysel olarak `FileFilter` ile doğrulandı) + uzun üretim için `--reload`'sız çalıştırma önerisi.
+- **verify** — 3 durum Jinja render testi (state=None → Kesildi + polling yok; running → `every 1s`; done → backtest chain). End-to-end: `--reload-exclude "$PWD/..."` ile `nautilus_wiki/`+`tests/` altındaki `.py` değişimi reload TETİKLEMEDİ, üretim tamamlandı, panel sağ kaldı; regresyon: `web/` altındaki `.py` değişimi reload'ı HÂLÂ tetikliyor. Ruff temiz. **NautilusTrader kütüphanesine dokunulmadı** — yalnız web katmanı + dev çalıştırma komutu. (Not: 3 golden + 1 parallel test fail'i BENDEN bağımsız — golden'lar `composer.py`'daki önceden var olan uncommitted `vol_target` çalışmasından, parallel test macOS'ta `ctypes.windll` Windows-API'sinden; dosyalarım stash'liyken de aynı fail'ler.)
+
 ## 2026-07-18 — Sync: birleşik backtest UI + çoklu-TF + MTF trend filtresi (kod → wiki)
 
 - **update** — `wiki/synthesis/webapp_module_map.md`: bu oturumun UI/akış değişiklikleri işlendi. `last_updated: 2026-07-18`.
@@ -190,3 +209,160 @@ Append-only. Her ingest, query veya lint operasyonu bir satır bırakır.
 - **gap** — [[events]] sayfası upstream `positions.md`'nin tanımladığı `PositionAdjusted` event'ini kapsamıyor; [[adapters]] sayfasında `MarginAccount.apply()` replace-not-merge konvansiyonuna atıf yok; [[crash_only_design]] event-store recovery (boot sweep) ile güncellenebilir; [[rust_python_hybrid]]'e `nautilus-plugin` crate cross-ref'i eklenebilir.
 - **gap** — Gelecek ingest adayı: `how_to/configure_live_trading.md` (adım adım TradingNodeConfig kurulumu, çoklu-venue kablolama).
 - **fix** — `tools/wiki_tools.py:_parse_yaml_lite` blok-skaler (`summary: >-`) desteklemiyordu; `backlinks` yeniden yazarken çok satırlı özet içeriği **sessizce siliniyordu** (CLAUDE.md şablonu tam bu formu öneriyor!). Parser'a `>`/`>-`/`|`/`|-` devam-satırı katlama desteği eklendi; bu batch'te silinen 22 özet tek satır formda yeniden yazıldı. Kural: özetler tek satır tutulabilir, ama `>-` artık güvenli.
+
+## 2026-07-19 — Performans düzeltme turu senkronu
+
+- **sync** — 10-maddelik perf turunun adversarial review'ı sonrası correctness/behavior düzeltmeleri koda uygulandı; wiki kod ile hizalandı. [[vol_targeted_trend]]: boyutlandırma bölümü artımsal EWMA (seed'li, `calc_ewma_vol` ile birebir) + O(1) MA koşan-toplam + 4096-bar drift reset olarak yeniden yazıldı; "Bilinen boşluklar"daki MTM şüphesi kaldırılıp throttled snapshot (`_MTM_SAMPLE=5`) bölümüyle değiştirildi. [[webapp_module_map]]: `parallel_exec` worker RAM guard (psutil→sysconf fallback), `data` footer-stats logical-type guard + `run_vtt` çift-decode giderme, `backtest` plan cache in-flight dedup + `allow_short` açık parse, `wfo_optimizer` FOLDS=3 satırları güncellendi; regresyon bölümüne perf-düzeltme turu + 321 test eklendi.
+- **fix (kod, wiki-dışı)** — Turun kaçırdığı gerçek test regresyonu: thread-local `_get_bybit_session()` değişikliği `test_bybit_timestamps`'in `data.requests.get` monkeypatch'ini etkisiz bıraktı (kod artık `Session.get` çağırıyor); test session'ın `get`'ini patch'leyecek şekilde düzeltildi.
+- **gap** — 3 golden-parity testi (test_perf_equivalence) + 1 orphan-reaping (Windows-only `ctypes.windll`) hatası perf turundan ÖNCE de kırık; bu senkronun kapsamı dışında, golden hash yenilenmesi ayrı iş olarak bekliyor.
+
+## 2026-07-19 — Backtest panel yerleşimi + missing-day gzip sözleşmesi senkronu
+
+- **sync (UI)** — Backtest ekranı yeniden yerleşti: plan preview (`#plan-preview`) sol formdan **sağ sütunun tepesine** taşındı; strateji üretim ilerleme kutusu (`fragments/describe_progress.html`) artık kökündeki `.bt-gen-float` class'ıyla `position:fixed` — **ekranın sağ-üst köşesinde yüzen overlay** (topbar altı `top:74px/right:24px`, `z-index:40`, `app.css`). `#result`'a swap + `every 1s` self-poll + chain akışı DEĞİŞMEDİ; sadece görsel konum. [[webapp_module_map]] Layout cümlesi güncellendi.
+- **sync (data)** — `data.py:_stream_ticker_rows` boş/bozuk gzip'te `pd.errors.EmptyDataError` yakalayıp **boş tipli frame** döndürüyor (missing-day sözleşmesi: bozuk gün tüm yüklemeyi çökertmez); regresyon `tests/test_index_stream_empty.py`. [[webapp_module_map]] `data.py` satırına eklendi; docstring Wiki References zaten [[index_backtest_via_equity_proxy]] (tick→bar) linkli.
+- Lint: broken_links 0, orphans 0, stubs 0, missing_summary 0. Katalog 67 sayfa.
+
+## 2026-07-19 — Backtest plan-önerisi tetiği (düğme) + sticky + layout bug fix
+
+- **sync (UI)** — Plan önizleme artık otomatik değil: describe textarea'sındaki `hx-trigger="keyup changed delay:800ms"` (ve `allow_short` checkbox otomatik yenileme) kaldırıldı → **"✨ AI önerisi al" düğmesi**. Kullanıcı denetimli; boş/yarım tarifle gereksiz LLM çağrısı önlenir. [[webapp_module_map]] "Canlı plan önizleme" cümlesi + agent.py notu güncellendi.
+- **sync (CSS)** — `#plan-preview:not(:empty)` artık `position:sticky; top:70px` — dolu olunca sağ sütunun tepesinde sabit kalır, boşken sonuçların üstüne binmez (`app.css`).
+- **fix (şablon, wiki-dışı bug)** — `backtest.html` sol `.stack` eksik `</div>` yüzünden kapanmıyordu → sağ `.stack` içine nested, `grid-2 equal`'ın 2. hücresi hiç oluşmuyor, sağ yarı boş kalıp plan-preview form altına düşüyordu (HEAD'den beri gizli). Eksik `</div>` eklendi; div dengesi net 0, served-HTML'de iki `.stack` de grid'in doğrudan çocuğu (depth 2) doğrulandı.
+- Lint: broken_links 0, orphans 0, stubs 0, missing_summary 0, stale 0. Katalog 67 sayfa.
+
+## 2026-07-19 — Vol-targeted trend → composer vol_target sizing modu
+
+- **refactor** — Bağımsız `VolTargetedTrendStrategy` (strategies.py sınıfı + `STRATEGY_REGISTRY`/`STRATEGY_PARAM_SPEC` kaydı + `/backtest/run_vtt` route + `backtest.html` radio & `vtt-section`) tamamen kaldırıldı. Kullanıcı gerekçesi: "her şeye ayrı ekran istemiyorum". EWMA vol-hedefli boyutlandırma artık composer motorunun bir sizing modu: `TradeSizeMode` literaline `"vol_target"` eklendi; `ComposedStrategy._compute_qty`'de `size = (vol_target/ewma_vol)*capital/price` dalı (üst clamp `0.95*capital/price`, warmup'ta `trade_size` fallback). `calc_ewma_vol(self._closes, span)` yeniden kullanıldı (artımsal state değil — `_compute_qty` yalnız giriş sinyalinde çağrılıyor + eski artımsal yol ~%13 warmup sapması çıkarmıştı). `_buf_cap`'e `vol_span+5` tabanı.
+- **spec** — `ComposedStrategySpec`'e `trade_size_vol_target`(0.02)/`trade_size_vol_span`(10)/`trade_size_capital`(10000) alanları + `from_dict`/`validate`. **capital SABİT** (canlı equity değil), Describe formundaki Initial Capital'dan. Round-trip (katalog + subprocess JSON) birim testle pinlendi.
+- **UI** — `backtest.html` strateji-mode radyosu ve `vtt-section` silindi; Broker Settings altına "Pozisyon boyutu" dropdown'ı (Sabit/%Equity/ATR-hedef/Vol-hedef) + `btToggleSizeMode` JS. `/backtest/describe` sizing parametrelerini spec'e aktarır.
+- **temizlik** — `agent.py` `_fallback_proposal` vol_targeted_trend dalı, `indicators.py`/`backtest.py` yorumları güncellendi. `calc_ewma_vol` kalıcı (artık composer kullanıyor).
+- **test** — `TestComputeQty`'ye vol_target case'leri (warmup fallback, formül parite, üst clamp) + `TestVolTargetSpecRoundTrip`. E2E smoke: fixed vs vol_target aynı sinyal setinde (106 trade) farklı PnL → sizing gerçekten volatiliteye tepki veriyor. **NautilusTrader kütüphanesine dokunulmadı.**
+
+## 2026-07-20 — Progress-bar "Reading data · parquet cache" takılması + Bybit cache metadata-only + fee-baking senkronu
+
+- **fix** — Index/Equity backtest dalında `_progress("Reading data · …")` çağrısı parquet full-read'den SONRA geliyordu; blank tarih aralığında cache bounds keşfi için tüm parquet okunurken UI "read" fazında (`Reading data · parquet cache` label'ı) donuk kalıyordu (kullanıcı "Reading data · parquet cache takıldı" bildirdi, ekran görüntüsüyle doğrulandı). Çağrı parquet okuma ÖNCESİNE taşındı; Bybit dalına da metadata okumadan önce bir `_progress` eklendi → faz UI'da anında ilerliyor.
+- **perf** — Bybit cache bounds keşfi FULL `pd.read_parquet` yerine pyarrow `ParquetFile` row-group METADATA istatistikleriyle (min/max timestamp) yapılıyor; 3M+ satır taranmıyor. Index kolonu `path_in_schema`'da `"index"` geçen kolon, stats yoksa `columns=[]` hafif fallback read. Blank tarihte varsayılan pencere 7 gün → `max(cache_start, cache_end−365d)` **365 gün cap** (Bar construction 3M+ satır churn etmesin diye).
+- **refactor** — Komisyon override artık `_make_bybit_instrument(fee_bps_override=…)` ile instrument'a baked; `run_composed_backtest` ayrı `MakerTakerFeeModel` kurmaz (`_fee = _fee_model_for(instrument)`). `_bars_from_df` satır-satır append yerine vektörize `ts_close` + list-comprehension (davranış birebir).
+- **frontend** — `base.html` `htmx.config.allowScriptTags=true`; `describe_progress.html` chain-tetiği `hx-trigger="load"`+hx-post yerine data-attr'lı `#bt-chain-trigger` (`data-bt-chain-url`/`data-bt-chain-vals`, JS ile tetiklenir); `plan_preview.html`'e `✕ Kapat` butonu (`#plan-preview` boşaltıp `#result`'ı `display=''` geri gösterir).
+- **wiki** — `synthesis/webapp_module_map.md` (backtest.py fee-baking satırı + web/routes/backtest.py Bybit metadata/365g/progress-sıralaması + Sağlamlaştırma maddesi) ve `entities/parquet_data_catalog.md` (yeni "Parquet Cache Bounds Keşfi: Row-Group Metadata" bölümü + frontmatter tazeleme) güncellendi. `web/routes/backtest.py` docstring'ine `[[parquet_data_catalog]]` referansı + güncel chain-tetiği (data-attr) notu eklendi. Lint temiz (0 broken/orphan/stub). **NautilusTrader kütüphanesine dokunulmadı.**
+
+## 2026-07-20 (6) — "Önce AI ile iyileştir" backtest sonuçlarını kullanıyor
+
+- **feature** — `propose_refined_description` artık `backtest_metrics` alıyor; backtest PnL/Sharpe/DD/işlem/win-rate değerlerine bakarak stratejiyi hedefli iyileştiriyor. `agent.py`.
+- **feature** — `backtest_result.html` + `sweep_progress.html`'e `data-bt-pnl-pct/sharpe/max-dd/n-trades/win-rate/spec-name/best-tf` attribute'ları eklendi. `backtest.html` `htmx:afterSettle`'da bunları okuyup `#bt-*` hidden input'lara yazıyor. `POST /backtest/plan` bu değerleri `bt_pnl_pct/bt_sharpe/...` form alanları olarak alıp `propose_refined_description`'a geçiriyor. `web/routes/backtest.py` + `web/templates/backtest.html`.
+- **fix** — Plan cache key'e `bt_pnl_pct + bt_n_trades` eklendi — aynı tarif farklı backtest sonuçlarıyla farklı öneri üretir.
+
+## 2026-07-20 (5) — Robustness "Analizi Çalıştır" HTMX process fix
+
+- **bug/fix** — `#robustness-section` başta `display:none` render edilip JS ile `display:""` yapılıyordu. HTMX, DOM yüklenirken gizli olan elementlerin `hx-*` attribute'larını process etmez. `htmx.process(sec)` çağrısı eklendi — panel görünür hale gelince HTMX bindings aktif olur, "▶ Analizi Çalıştır" butonu artık `POST /robustness/run` tetikler. `web/templates/backtest.html`.
+
+## 2026-07-20 (4) — Sweep sonrası robustness paneli açılmıyor bug fix
+
+- **bug/fix** — 4 TF sweep tamamlanınca `#robustness-section` görünmüyordu. Kök neden: `htmx:afterSettle` listener'ı `#result` içinde `[data-rob-spec-id]` arar; `backtest_result.html`'de bu attribute vardı ama `sweep_progress.html`'de yoktu. Ayrıca `_sweep_state_view` / sweep store'da `spec_id` alanı hiç tutulmuyordu. **Düzeltme**: (1) sweep store create'e `spec_id` eklendi, (2) `_sweep_state_view` return dict'e `spec_id` eklendi, (3) `sweep_progress.html` `done` olunca `data-rob-spec-id/symbol/category/interval/start/end` attribute'larını panel div'ine yazar → mevcut `htmx:afterSettle` listener otomatik tetiklenir. `web/routes/backtest.py` + `web/templates/fragments/sweep_progress.html`.
+- **wiki** — `synthesis/webapp_module_map.md` sweep state satırına `spec_id` notu eklendi.
+
+## 2026-07-20 (3) — Backtest ④ Robustness Testi adımı
+
+- **ui/feature** — `backtest.html` sağ sütunundaki Robustness paneli başlığına `.bt-step-no` badge'i (daire içinde "4") eklendi; panel adı "Robustness Analysis" → "Robustness Testi" olarak güncellendi. Backtest tamamlanınca `htmx:afterSettle` ile panel `display:""` yapılır — görsel akış artık ① Enstrüman · ② Strateji · ③ Çalıştır · **④ Robustness Testi**. `web/templates/backtest.html`.
+- **wiki** — `synthesis/webapp_module_map.md` Layout satırı 4 adımlı akışı yansıtacak şekilde güncellendi.
+
+## 2026-07-20 (2) — Bybit row-group index-kolonu bug + Index NFS-mount takılması senkronu
+
+- **bug/fix** — Bybit cache bounds metadata-only optimizasyonu YANLIŞ kolonu okuyordu: `_rg0.column(0)` = `open` (fiyat), timestamp değil. `_ts0 = 5850.0` → `pd.Timestamp(5850.0)` = **1970-01-01** olarak yorumlanıyor, `cache_start` hatalı hesaplanıyordu (verify oturumunda Playwright + doğrudan pyarrow ile kanıtlandı). Fix: kolon `path_in_schema`'da `"index"` geçen kolonu (`__index_level_0__`, col[5]) ara → doğru aralık `2020-03-25 → 2026-07-20`. `web/routes/backtest.py`.
+- **env/fix** — Index/Equity backtest "Reading data · <ticker>/<gran>…" adımında sonsuza takılıyordu. Kök neden: `INDEX_ROOT` (`/Users/…/Z` NFS mount) **erişilemez/asılı**; `load_index_bars` her `missing_day` (QQQ/15m ~3900 gün) için NFS'e stat/gzip stream deniyor, süresiz bloke. Kod bug'ı değil, ortam. Baypas: `NAUTILUS_INDEX_ROOT` var-olmayan yerel yola (`~/.cache/nautilus_web_app/_no_index_source`) → `src.exists()` anında False, backtest cache'teki bar'larla çalışır (247k bar, 180s+ → 0.59s). Kalıcılık: `.claude/settings.local.json` env + `~/.zshrc` export.
+- **wiki** — `synthesis/webapp_module_map.md` `data.py` satırına "Index kaynağı NFS-bağımlı + baypas (2026-07-20)" maddesi eklendi (`load_index_bars`/`INDEX_ROOT`/`missing_days` davranışı + takılma kök nedeni + baypas reçetesi). Lint temiz. **NautilusTrader kütüphanesine dokunulmadı.**
+- **wiki** — `synthesis/webapp_module_map.md`'ye "Backtest UX yeniden tasarımı: sekmeli sağ sütun + verdict kartı + geçmiş geri-yükleme (2026-07-20)" değişiklik günlüğü maddesi + `backtest.py` satırının **Layout** açıklaması güncellendi (grid-2 iki-`.stack` → sekmeli tek panel: Sonuç/Robustness/Geçmiş, `btTab`, `.verdict-card` otomatik-odak, `bt_results/<run_id>.json` snapshot store + `GET /backtest/result/{run_id}` birebir geri-yükleme, `_recent_runs` run_id + büyük-satır tail penceresi). backlinks (67 sayfa) + index yeniden üretildi; lint temiz (0/0/0/0/0/0). **NautilusTrader kütüphanesine dokunulmadı.**
+- **wiki** — `synthesis/webapp_module_map.md`'ye "AI Plan ayrı sekme + robustness ilk-yükleme fix (2026-07-20)" maddesi + `backtest.py` Layout açıklaması 4 sekmeye (Sonuç · ✨ AI Plan · Robustness · Geçmiş) güncellendi. AI iyileştirme kendi sekmesine taşındı; robustness "Analizi Çalıştır" ilk-yükleme regresyonu `btFillPanels()` (afterSettle + DOMContentLoaded) ile düzeltildi (CDP doğrulaması). Lint temiz. **NautilusTrader kütüphanesine dokunulmadı.**
+
+- 2026-07-21 `fragments/robustness_result.html` — Robustness sonuç ekranı görsel yenileme: hero karar kartı (renk kodlu ROBUST/DİKKAT/OVERFITTING banner), tüm KPI kartlarında eşik-renkli değerler, IS/OOS overfitting eşik düzeltmesi (0.7/0.4 → 0.5/0.25), her sekmeye açıklama kutucuğu. [[webapp_module_map]] güncellendi.
+- 2026-07-21 **wiki** — `synthesis/webapp_module_map.md` `backtest.py` satırına "Robustness-farkındalık (2026-07-21)" + "Cache düzeltmesi" maddeleri eklendi. Kök neden: robustness sonrası "✨ AI ile iyileştir" önerisi değişmiyordu çünkü robustness verisi `/backtest/plan` endpoint'ine hiçbir kanaldan gitmiyordu. Çözüm `data-bt-*`/`btFillPanels` desenini izler: `robustness_result.html` kök `<div data-rob-summary>`'ye `data-rob-*` özet (overfitting_score/verdict/wfo_efficiency/OOS Sharpe/stability) + inline writeback script → `backtest.html` 5 yeni hidden input → `plan_preview` `rob_*` Form alanları → `propose_refined_description(desc, backtest_metrics, robustness)` overfitting-farkındalıklı öneri (skor<0.4 sadeleştir, ≥0.7 güçlendir). `refined_result` artık hiç cache'lenmez (her basış taze); yeni backtest'te `btFillPanels` eski `rob_*` inputlarını temizler. backlinks (67 sayfa) + index yeniden üretildi; lint temiz (0/0/0/0/0/0). **NautilusTrader kütüphanesine dokunulmadı.**
+
+- 2026-07-21 **wiki** — `synthesis/webapp_module_map.md` iki değişiklik günlüğü maddesi + `agent.py` notu: (1) **Robustness giriş formu yeniden tasarımı** — Robustness sekmesindeki tek-satır ızgara üç `<fieldset>` gruba (Walk-Forward / In-Out-of-Sample / Monte Carlo) ayrıldı; her alanın altında `.field-hint` (ne olduğu + önerilen aralık, `robustness.py run()` clamp'leriyle birebir) + `.rob-form-intro` + `robPreset()` ile 3 preset (⚡Hızlı/⚖Dengeli/🔬Titiz); yeni CSS `app.css`. (2) **"AI ile iyileştir" butonu AI Plan sekmesine taşındı** — "✨ Önce AI ile iyileştir" sol formdan (③ Çalıştır) AI Plan boş-durum kartına taşındı, adı "✨ AI ile iyileştir" oldu; `hx-include="closest form"` → `#gen-form` (buton artık form dışında), `#plan-spinner` de taşındı. (3) **refine prompt** — `_REFINE_SYSTEM_PROMPT` artık "her zaman ≥2 somut öneri" der (eski "netse aynen döndür" kaldırıldı). Backend/endpoint/veri sözleşmesi değişmedi; salt sunum + istemci JS + prompt metni. backlinks (67 sayfa) + index yeniden üretildi; lint temiz (0/0/0/0/0/0). **NautilusTrader kütüphanesine dokunulmadı.**
+
+## [2026-07-21] query | Runtime-performans denetimi sentezlendi
+nautilus_web_app'in çok-ajanlı (64 ajan, çekişmeli-doğrulama) runtime-performans denetimi sentez
+sayfasına doslandı: [[nau_performans_denetimi]]. 50 ham → 31 doğrulanmış darboğaz. 4 HIGH: LLM
+prompt-caching yok (en yüksek ROI, S efor), state.py iterations sınırsız, sandbox subprocess
+cold-boot, composer NAU-indikatör per-bar full-recompute. En sert kısıt: NAU_WINDOW=260 sabit-pencere
+paritesi incremental indikatörleri bit-parite (<1e-9) testine bağlar. Doğrulama birkaç cazip fix'i
+reddetti (elle min/max %15 daha yavaş, equity örnekleme metrik bozar, thread-executor killability
+kaybı). [[webapp_module_map]] "Sağlamlaştırma" bölümüne özet + karşılıklı köprü eklendi. Bu tur kod
+değiştirmedi — anlık görüntü. NautilusTrader kütüphanesine dokunulmadı.
+
+- 2026-07-21 **code-review** — 5c264ca commit'i (robustness form yeniden tasarımı + "AI ile iyileştir" sekme taşıması) xhigh-effort çok-açılı review'dan geçirildi. 12 bulgu kesinleşti. **Kritik (CONFIRMED):** (1) `plan_preview.html:69` `hx-include="closest form"` kırık — fragment `#gen-form` kapandıktan sonra DOM'a inject ediliyor, "Tamam — Blokları Oluştur" POST'u form verisi olmadan gidiyor; düzeltme `hx-include="#gen-form"`. (2) `backtest.py:1797` `bd` exception → `raise bd` → outer except refined_result'ı sıfırlıyor, bd hata alsa bile başarıyla dönen AI önerisi kayboluyor. (3) `backtest.py:1819` `raise bd` yolu `fut.set_result`'u atlıyor → in-flight future asılı kalıyor, eşzamanlı requestler cevap alamıyor. (4) `backtest.py:1771` in-flight dedup ikinci isteğe birinci isteğin metrics'iyle hesaplanmış refined_result'ı paylaşıyor ("refined hiç cache'lenmez" yorumu yalnız _PLAN_CACHE'i kastediyor). (5) `backtest.html:395` robustness form `hx-indicator` eksik, 30-60s analiz sırasında double-submit mümkün. (6) `backtest.html:562` `btFillPanels` spec_id/bybit_start/bybit_end querySelector null-guard eksik. **PLAUSIBLE:** (7) `plan_preview.html:70` hx-vals js: expression, refined-description DOM'dan giderse sessiz TypeError/POST iptali. (8) `backtest.html:641` querySelector unquoted attribute selector kırılgan. (9) `backtest.py:1736` rob_stability guard listesinden dışarda. **Cleanup:** (10–12) robPreset idx haritası pozisyon bağımlı, double querySelectorAll, Kapat her zaman btTab('result'). Kod değişmedi — bulgular raporlandı.
+
+## [2026-07-21] query | Mimari denetim sentezlendi
+nautilus_web_app'in çok-ajanlı (58 ajan, 0 hata, çekişmeli-doğrulama) mimari/yapısal denetimi
+sentez sayfasına doslandı: [[nau_mimari_denetimi]]. 45 ham → 41 doğrulanmış yapısal defekt.
+**Kritik yok.** Baskın sorun: niyet düzeyinde kalan katmanlama (her sınır sızıyor) + 4 tanrı-modül
+(agent_backtest 2923 / composer 2246 / backtest 2286+1978 / data 1996) + fonksiyon-içi import
+döngüleri (server↔routes 43 late-import, backtest↔data, sandbox→web.routes). En yüksek 3+1: (H1)
+engine sandbox.py web'e yukarı uzanır — _IPC_Q global mutasyonu + private _run_full_robustness
+çağrısı, ~250 satır orkestrasyon route dosyasında; (H2) WFO batch timeout 900s dış kill altında
+kümülatifi sınırlamaz (n_gen=5 → ~3600s), tamamlanmış suite çöpe; (H7) codegen doğrulaması
+agent.py private'larından — `from agent import _has_builtin` (strategy.py:440) ZATEN canlı
+ImportError; (H9) global tek-instance AppState, session izolasyonu yok. Diğer HIGH: H3 servis-dikişi
+yok (dispatch 5+ yerde sapmış), H8 sıralı/paralel WFO GA sadece parity-yorumuna bağlı, H10 built-in
+block 4-site shotgun. Doğrulama data.py load_index_bars hacim-sıfırlamayı KASITLI olarak REFUTED etti.
+[[webapp_module_map]] "Sağlamlaştırma" bölümüne özet + karşılıklı köprü eklendi. Bu tur kod DEĞİŞTİRMEDİ
+— denetim anlık görüntüsü. NautilusTrader kütüphanesine dokunulmadı.
+
+## 2026-07-21 — "AI ile iyileştir" → çok-turlu sohbet senkronu
+
+Backtest ✨ AI Plan sekmesindeki tek-atışlık "AI ile iyileştir" çok-turlu sohbete dönüştürüldü (single-shot korundu, sohbet yanına eklendi). `webapp_module_map` güncellendi: `agent.py` satırına `chat_refine`/`_CHAT_SYSTEM_PROMPT`/`_format_metrics_block`/claude-cli multi-turn join (len==1 guard), `web/routes/backtest.py` satırına `_CHAT_STORE`+`/backtest/chat*` endpoint, ve değişiklik günlüğüne 2026-07-21 girdisi. Lint: 1 broken_link (cross-vault `single_shot_to_chat_donusum` → düz metne çevrildi) → 0. Canlı LLM doğrulaması + 315 test yeşil (12 baseline-kırık golden-parity/describe git stash ile izole edildi).
+
+## 2026-07-21 — Composer + Backtest → birleşik /studio sayfası (senkron)
+
+A-UI + C-backend birleştirmesi 5 fazda uygulandı, webapp_module_map güncellendi. Yeni web/routes/studio.py + studio.html sekmeli [Compose][Backtest][Analyze] (.lab-tab namespace, backtest iç .bt-tab'e dokunmaz); /strategy+/backtest kök → 307 /studio redirect. Faz 0 render_md→web/shared (3 kopya sil); Faz 1 composer.build_spec() spec-upsert servisi + sizing drift bug fix (vol_target artık round-trip); Faz 2 backtest _CHAT_STORE→ortak ChatStore; Faz 3 _sid→web.shared.session_id + _LAST_RESULT session-scoped; Faz 4 studio template + partial'ler (compose_body/backtest_body/backtest_scripts) + catalog spec-picker (ölü preferred_spec_id devri canlandı). _preview_signals bilinçli birleştirilmedi. 105 ilgili test yeşil, driver+TestClient doğrulama OK, ruff temiz, lint temiz. Modül tablosuna studio.py satırı + strategy/backtest/composer/shared notları eklendi.
+
+## 2026-07-22 — Blokları AI ile düzenleme (çok-turlu sohbet) senkronu
+
+`chat_refine` deseni bloklara taşındı: (A) custom block KODU + (B) strateji draft LİSTESİ, ikisi de çok-turlu sohbetle düzenlenebilir. `webapp_module_map` güncellendi: `agent.py` satırına `chat_edit_block`/`chat_edit_blocks` + `_BLOCK_EDIT_SYSTEM_PROMPT`/`_BLOCKS_EDIT_SYSTEM_PROMPT`/`_coerce_catalog_blocks` ([NET_KOD]/[NET_BLOKLAR] protokolleri, codegate defense-in-depth, halüsinasyon-tip önleme); `web/routes/strategy.py` satırına A/B chat endpoint'leri (`/blocks/{name}/chat/new|chat|chat/save` — 409-bypass + unregister/register; `/drafts/chat/new|chat|chat/apply`), `_BLOCK_CHAT`/`_DRAFTS_CHAT = ChatStore()` ayrı örnekler, `_preview_signals` ortak yardımcı; değişiklik günlüğüne 2026-07-22 girdisi. Doğrulama (HTTP surface, verify skill): tüm sunucu-tarafı yol + guard'lar (404/400/409/expired) PASS; save yolu codegate+smoke+register+HX-Redirect canlı çalıştı. Canlı LLM happy-path gözlenemedi — sağlayıcı ısrarlı 429 PROVIDER_RATE_LIMIT_EXCEEDED (ortam kaynaklı); feature 429'u nazik fallback + çökme-yok ile karşıladı. NautilusTrader kütüphanesine dokunulmadı.
+
+## 2026-07-23 — Studio hata düzeltme turu senkronu (6 bug + Simple wizard geriye dönük)
+
+Kullanıcının önceliklendirilmiş 6-maddelik Studio hata raporu (duplicate-submit yarışı,
+result-panel JS SyntaxError, SIMPLE wizard gating yok, tarih validasyonu eksik, uzun-koşu
+UI koruması zayıf, Result rozeti kararsız) tek turda kapatıldı; `webapp_module_map` senkron
+edildi. (1) `web/routes/backtest.py` satırına: `_ACTIVE_RUNS` session-başına tek-aktif-koşu
+guard'ı (409 + HX-Toast, self-clearing + 500-eşik prune, lock-nesting'siz) + `_invalid_date_range`
+sunucu validasyonu (worker başlamadan 400). (2) `web/routes/studio.py` satırına **geriye dönük**:
+2026-07-22 SIMPLE ↔ PRO ↔ AUTO mod anahtarı + `studio_simple.html` 5-adımlı sihirbaz (singleton
+reparenting `swMoveNodes`) — önceki oturumda commit'lenmiş ama wiki'ye hiç senkron edilmemişti —
++ 2026-07-23 adım gating (`btDone/robDone`, backtest zorunlu, reliability açıkça opsiyonel).
+(3) Değişiklik günlüğüne 2026-07-23 girdisi: 6 bug'ın kök neden + düzeltme + test özeti
+(yeni `tests/test_studio_ui_fixes.py` 11 test; describe'daki 7 kırık git-stash ile baseline'da
+da kırık diye izole edildi; code-review'un tek 🟡 bulgusu — registry sınırsız büyüme — prune
+ile kapatıldı). Frontmatter last_updated 2026-07-23 + summary tazelendi. NautilusTrader
+kütüphanesine dokunulmadı — salt route + şablon/JS/CSS.
+
+## [2026-07-23] update | Bybit TF seti + wizard katalog sembolleri
+- Interval seti 1/5/15/60/240/D → 1/5/15/30/60/240/720/D (30m + 12h; 45m Bybit API'de yok).
+- Kapalı-set kopyaları senkron: data.py (_BYBIT_MS/Literal/ALL_INTERVALS), backtest.py
+  (_make_bybit_bar_type/_BYBIT_TO_DSL), chart.py (saniye map ×2), price_chart.html TF şeridi.
+- Simple wizard Market adımı: coin butonları bybit_symbols (katalog) + 8 TF butonu.
+- webapp_module_map.md data.py + studio.py satırları güncellendi; test_fixes.py
+  unsupported-örneği "30"→"45" taşındı (45 gerçekten desteklenmiyor).
+
+## 2026-07-23 — Ops araçları senkronu (wiki-sync skill kurulum script'i)
+
+Son senkron (1e148b4) sonrası iki chore commit tarandı: (1) `scripts/
+install-wiki-sync-skill.ps1` (38e2f5b) — wiki-sync skill dosyalarını gist'ten
+`~/.claude/skills/wiki-sync`'e kuran Windows kurulum script'i → `webapp_module_map`
+Ops tablosuna satır eklendi (wiki iş akışının kendi kurulum aracı olduğu için
+kapsam-içi). (2) `.claude/hooks` ikinci-beyin vault yolu makine-bağımsızlaştırma
+(642c955) — dev-ortam konfigürasyonu, wiki kapsamı DIŞI (app modülü değil) →
+bilinçli atlandı, yalnız bu notla kayda geçti. App kodu farkı sıfır
+(`git diff 1e148b4..HEAD -- '*.py' web/` boş); lint öncesi/sonrası 0/0/0/0/0/0.
+
+## 2026-07-24 — Kalıcı per-model token ledger (kod + wiki senkronu)
+
+Kullanıcı "hangi modelde ne kadar token tüketildi listele" istedi; mevcut izleme
+bunu veremiyordu (bkz. ikinci-beyin nau_token_tuketim_izleme: AUTO-only, bellekte,
+tek-model, kalıcı değil). Yeni `token_ledger.py` eklendi: `agent._create_message`
+merkezî çıkış-noktasına `_ledger_record` hook'u — her başarılı LLM çağrısını
+token_usage.jsonl'e yazar, model=resp.model (fallback doğru atfedilir). 4 doğrudan
+narrative/summary çağrısı (_create_message'ı baypas eden backtest/lab×2/agent_backtest)
+wrapper'a yönlendirildi. Rapor: summary/format_table + CLI + GET /agent/tokens.
+webapp_module_map: agent.py satırına ledger-hook notu, Ops tablosuna token_ledger.py
+satırı, değişiklik günlüğüne 2026-07-24 girdisi. Testler test_token_ledger.py 7/7 +
+regression 68/68, ruff temiz. NautilusTrader'a dokunulmadı.

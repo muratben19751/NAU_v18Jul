@@ -1,18 +1,18 @@
-{# Zaman çizelgesi (Gantt) macro'su — agent canlı görünümü + sessions replay.
-   tl           : web/viewmodels.timeline_view() çıktısı
-   steps_by_key : web/viewmodels.associate_steps() çıktısı (key → [step])
-   uid          : DOM id ön eki (canlıda run_id, replay'de "s{round}")
-   live         : canlı mod (now imleci + kapasite notunda session linki)
+{# Timeline (Gantt) macro — agent live view + sessions replay.
+   tl           : web/viewmodels.timeline_view() output
+   steps_by_key : web/viewmodels.associate_steps() output (key → [step])
+   uid          : DOM id prefix (run_id when live, "s{round}" in replay)
+   live         : live mode (now cursor + session link in capacity note)
 
-   dataviz notları: status paleti (ok/fail/warn/running) renk-tek-başına değil —
-   her bar <title> içinde durum glifi (✓ ✗ ⚠ ●) taşır, tıklanınca adım detayına
-   açılır; "running" ayrıca pulse animasyonuyla ayrışır. Bar h=12/rx=2 (ince
-   mark), tick/grid recessive, etiketler text token'larında. #}
+   dataviz notes: status palette (ok/fail/warn/running) is not color-alone —
+   each bar carries a status glyph (✓ ✗ ⚠ ●) in its <title>, opening step
+   detail on click; "running" is also distinguished by a pulse animation. Bar
+   h=12/rx=2 (thin mark), tick/grid recessive, labels in text tokens. #}
 {% macro timeline(tl, steps_by_key, uid, live=False) -%}
 {% if tl %}
 <div class="tl-wrap" id="tl-wrap-{{ uid }}">
 
-  {# Eksen: tick etiketleri (recessive) #}
+  {# Axis: tick labels (recessive) #}
   <div class="tl-lane">
     <div class="tl-lane-label"></div>
     <svg width="100%" height="14" class="tl-axis" aria-hidden="true">
@@ -28,8 +28,8 @@
   <div class="tl-lane">
     <div class="tl-lane-label">{{ lane.label }}</div>
     <svg width="100%" height="{{ rows * 18 + 4 }}" role="img"
-         aria-label="{{ lane.label }} zaman çizelgesi">
-      {# Recessive dikey tick çizgileri #}
+         aria-label="{{ lane.label }} timeline">
+      {# Recessive vertical tick lines #}
       {% for tick in tl.ticks %}
         <line class="tl-tick" x1="{{ tick.x_pct }}%" x2="{{ tick.x_pct }}%"
               y1="0" y2="{{ rows * 18 + 4 }}"/>
@@ -47,7 +47,7 @@
           </a>
         {% endfor %}
       {% endfor %}
-      {# Canlı "şimdi" imleci #}
+      {# Live "now" cursor #}
       {% if tl.now_pct is not none %}
         <line class="tl-now" x1="{{ tl.now_pct }}%" x2="{{ tl.now_pct }}%"
               y1="0" y2="{{ rows * 18 + 4 }}"/>
@@ -56,7 +56,7 @@
   </div>
   {% endfor %}
 
-  {# Bar → adım detayları (tıkla-aç) #}
+  {# Bar → step details (click-to-open) #}
   <div class="tl-details">
     {% for lane in tl.lanes %}{% for row in lane.rows %}{% for bar in row %}
     <details id="tl-{{ uid }}-{{ bar.key }}" class="steps-details tl-detail">
@@ -75,8 +75,8 @@
       {% else %}
         <div class="step-row">
           <span class="step-msg mono text-muted">
-            (adımlar kapasite dışı — tam kayıt
-            {% if live %}<a class="link" href="/sessions/{{ uid }}">Session Log</a>{% else %}Session Log{% endif %}'da)
+            (steps out of capacity — full record
+            {% if live %}<a class="link" href="/sessions/{{ uid }}">Session Log</a>{% else %}Session Log{% endif %})
           </span>
         </div>
       {% endif %}

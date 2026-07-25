@@ -1,8 +1,8 @@
-"""Agent Session Logs — tüm otonom session loglarını görüntüle.
+"""Agent Session Logs — view all autonomous session logs.
 
 Endpoints:
-    GET /sessions          Session listesi
-    GET /sessions/{run_id} Tek session detayı
+    GET /sessions          Session list
+    GET /sessions/{run_id} Single session detail
 """
 
 from __future__ import annotations
@@ -26,10 +26,10 @@ except ImportError:
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 
-# H7: yapısal olaylar HER ZAMAN tutulur — cap yalnız 'step'lere uygulanır.
-# Eski satır-sayısı cap'i continuous oturumlarda sonraki turların
-# backtest_result/winner/token_snapshot olaylarını (binlerce step'ten SONRA
-# gelirler) sessizce düşürüyordu: sayfa 10 turluk oturumu 2 tur gösterirdi.
+# H7: structural events are ALWAYS kept — the cap applies only to 'step's.
+# The old line-count cap silently dropped later rounds'
+# backtest_result/winner/token_snapshot events (which arrive AFTER thousands
+# of steps) in continuous sessions: the page would show a 10-round session as 2 rounds.
 _STRUCTURAL_EVENTS = frozenset(
     {
         "session_start",
@@ -49,12 +49,12 @@ _STRUCTURAL_EVENTS = frozenset(
 
 
 def _read_events(run_id: str, max_lines: int | None = None) -> tuple[list[dict], bool]:
-    """JSONL olaylarını oku → (events, truncated).
+    """Read JSONL events → (events, truncated).
 
-    H7: ``max_lines`` yalnız step-benzeri olayları sınırlar (deque ile en
-    YENİ step'ler tutulur); yapısal olaylar dosya sonuna dek toplanır.
-    M13: yalnız ``'event'`` anahtarlı dict satırlar kabul edilir — şemasız
-    ama geçerli-JSON tek satır bütün sayfayı 500'e düşürüyordu.
+    H7: ``max_lines`` limits only step-like events (the NEWEST steps are kept
+    via deque); structural events are collected all the way to end of file.
+    M13: only dict lines with an ``'event'`` key are accepted — a schemaless
+    but valid-JSON single line was dropping the whole page to 500.
     """
     path = SESSION_LOG_DIR / f"{run_id}.jsonl"
     if not path.exists():
@@ -87,12 +87,12 @@ def _read_events(run_id: str, max_lines: int | None = None) -> tuple[list[dict],
 
 
 def _build_timeline_spans(events: list[dict]) -> list[dict]:
-    """JSONL olaylarından zaman çizelgesi span'larını yeniden kur (replay).
+    """Rebuild timeline spans from JSONL events (replay).
 
-    Birincil kaynak: ``timeline`` olayları (op=begin/end — epoch'lar payload'da).
-    EOF'ta hâlâ açık span'lar (çökme/kill) son olayın ISO ts'iyle ``warn``
-    kapatılır. Eski oturumlar için fallback: ``phase_change`` çiftlerinden
-    kaba faz span'ları sentezlenir.
+    Primary source: ``timeline`` events (op=begin/end — epochs in payload).
+    Spans still open at EOF (crash/kill) are closed as ``warn`` with the last
+    event's ISO ts. Fallback for old sessions: coarse phase spans are
+    synthesized from ``phase_change`` pairs.
     """
     spans: list[dict] = []
     open_by_key: dict[str, dict] = {}
@@ -122,7 +122,7 @@ def _build_timeline_spans(events: list[dict]) -> list[dict]:
 
     if spans:
         if open_by_key:
-            # Oturum yarıda kesilmiş — açıkları son olayın zamanıyla kapat.
+            # Session interrupted midway — close open ones with the last event's time.
             last_t = max(
                 (sp["t1"] for sp in spans if sp["t1"] is not None),
                 default=None,
@@ -139,7 +139,7 @@ def _build_timeline_spans(events: list[dict]) -> list[dict]:
                 sp["status"] = "warn"
         return spans
 
-    # ── Fallback: timeline olayları yok (eski oturum) → phase_change'ten ──
+    # ── Fallback: no timeline events (old session) → from phase_change ──
     _lane = {
         0: "data",
         1: "llm",
@@ -152,7 +152,7 @@ def _build_timeline_spans(events: list[dict]) -> list[dict]:
     rnd = 1
     for e in events:
         ev = e.get("event")
-        if ev == "step" and "Sürekli mod: tur" in str(e.get("msg", "")):
+        if ev == "step" and "Continuous mode: round" in str(e.get("msg", "")):
             rnd += 1
             continue
         if ev != "phase_change":
@@ -166,7 +166,7 @@ def _build_timeline_spans(events: list[dict]) -> list[dict]:
             sp = {
                 "key": f"phase-{idx}-r{rnd}-{len(spans)}",
                 "lane": _lane.get(idx, "data"),
-                "label": e.get("phase_label", f"Faz {idx}"),
+                "label": e.get("phase_label", f"Phase {idx}"),
                 "t0": t,
                 "t1": None,
                 "status": "running",
@@ -187,15 +187,15 @@ def _build_timeline_spans(events: list[dict]) -> list[dict]:
     return spans
 
 
-# M24: (mtime_ns, size) anahtarlı özet cache'i — /sessions her ziyarette TÜM
-# korpusu (yüzlerce MB olabilen jsonl'ler) yeniden parse ediyordu. Kapalı
-# oturumların dosyası değişmez → özetleri bir kez hesaplanır; yalnız aktif
-# (büyüyen) dosya yeniden okunur. Invalidation anahtarın kendisinde.
+# M24: summary cache keyed by (mtime_ns, size) — /sessions was re-parsing the
+# ENTIRE corpus (jsonl's that can be hundreds of MB) on every visit. Closed
+# sessions' files don't change → their summaries are computed once; only the
+# active (growing) file is re-read. Invalidation is in the key itself.
 _SUMMARY_CACHE: dict[str, tuple[tuple, dict]] = {}
 
 
 def _session_summary(run_id: str) -> dict:
-    """Session listesi için hızlı özet — sadece anahtar event'leri oku."""
+    """Fast summary for the session list — read only key events."""
     path = SESSION_LOG_DIR / f"{run_id}.jsonl"
     try:
         st = path.stat()
@@ -249,10 +249,10 @@ def _session_summary(run_id: str) -> dict:
                 continue
             ev = e.get("event", "")
             _ts = e.get("ts", "")
-            # M251: step olaylarının ts'i 'HH:MM:SS' (tarihsiz — _add_step ISO'yu
-            # ezer); son satır step ise ts_end saat-olarak görünüp elapsed'i
-            # bozuyordu. last_ts'i yalnız TAM ISO ts'lerden (tarih içeren)
-            # güncelle — step'lerin kısa ts'ini yok say.
+            # M251: step events' ts is 'HH:MM:SS' (dateless — _add_step overwrites
+            # ISO); if the last line was a step, ts_end appeared as a clock value and
+            # broke elapsed. Update last_ts only from FULL ISO ts's (containing a date)
+            # — ignore steps' short ts.
             if _ts and ("T" in _ts or _ts[:4].isdigit()):
                 last_ts = _ts
             if ev == "session_start":
@@ -350,7 +350,7 @@ async def sessions_list(request: Request):
         "sessions.html",
         {
             "active": "sessions",
-            "page_title": "Session Logları",
+            "page_title": "Session Logs",
             "market": get_market_info(),
             "sessions": sessions,
         },
@@ -363,31 +363,31 @@ async def session_detail(request: Request, run_id: str):
 
     from server import get_market_info, templates
 
-    # Güvenlik: sadece hex run_id'lere izin ver
+    # Security: only allow hex run_id's
     if not all(c in "0123456789abcdef" for c in run_id) or len(run_id) != 8:
-        return HTMLResponse("Geçersiz run_id", status_code=400)
+        return HTMLResponse("Invalid run_id", status_code=400)
 
     path = SESSION_LOG_DIR / f"{run_id}.jsonl"
     if not path.exists():
-        return HTMLResponse("Session bulunamadı", status_code=404)
+        return HTMLResponse("Session not found", status_code=404)
 
-    # H7: RAM koruması step'lere uygulanır (en yeni 20k step, deque);
-    # yapısal olaylar (backtest_result/winner/token_snapshot…) HER ZAMAN
-    # dosya sonuna dek okunur — continuous oturumların sonraki turları
-    # artık kaybolmaz. truncated bayrağı şablonda uyarı basar.
+    # H7: RAM protection applies to steps (newest 20k steps, deque);
+    # structural events (backtest_result/winner/token_snapshot…) are ALWAYS
+    # read to end of file — later rounds of continuous sessions
+    # are no longer lost. The truncated flag prints a warning in the template.
     events, steps_truncated = await asyncio.to_thread(_read_events, run_id, 20_000)
 
-    # Event tipine göre grupla — step'leri round'a göre grupla
-    # (M13: filtreler .get ile — 'event'siz satır zaten parse guard'ında elendi)
+    # Group by event type — group steps by round
+    # (M13: filters use .get — a line without 'event' was already dropped by the parse guard)
     session_start = next((e for e in events if e.get("event") == "session_start"), {})
     session_end = next((e for e in events if e.get("event") == "session_end"), None)
     token_snaps = [e for e in events if e.get("event") == "token_snapshot"]
     winners = [e for e in events if e.get("event") == "winner"]
     backtests = [e for e in events if e.get("event") == "backtest_result"]
-    # Audit-91 öncesi log dosyalarında backtest_result olaylarında 'score'
-    # alanı olmayabilir; template'in sort(attribute='score') çağrısı Undefined
-    # karşılaştırmasında sayfayı 500'e düşürürdü. Eksik/None skoru sıralanabilir
-    # -inf ile doldur (mevcut kayıtlarda no-op).
+    # In log files before Audit-91, backtest_result events may lack the 'score'
+    # field; the template's sort(attribute='score') call would drop the page to
+    # 500 on an Undefined comparison. Fill missing/None score with a sortable
+    # -inf (no-op on existing records).
     for _bt in backtests:
         if _bt.get("score") is None:
             _bt["score"] = float("-inf")
@@ -396,7 +396,7 @@ async def session_detail(request: Request, run_id: str):
     custom_blocks = [e for e in events if e.get("event") == "custom_block_generated"]
     steps = [e for e in events if e.get("event") == "step"]
 
-    # Round bazında backtest özetleri
+    # Per-round backtest summaries
     rounds: dict[int, dict] = {}
     for bt in backtests:
         r = bt.get("round") or 1
@@ -439,7 +439,7 @@ async def session_detail(request: Request, run_id: str):
             }
         rounds[r]["custom_blocks"].append(cb)
 
-    # Blocks dizini
+    # Blocks directory
     blocks_dir = SESSION_LOG_DIR / f"{run_id}_blocks"
     block_files = sorted(blocks_dir.glob("*.py")) if blocks_dir.exists() else []
     block_codes = []
@@ -447,9 +447,9 @@ async def session_detail(request: Request, run_id: str):
         try:
             block_codes.append({"name": bf.stem, "code": bf.read_text()})
         except Exception:
-            block_codes.append({"name": bf.stem, "code": "(okunamadı)"})
+            block_codes.append({"name": bf.stem, "code": "(could not read)"})
 
-    # Son token snapshot
+    # Last token snapshot
     last_tok = token_snaps[-1] if token_snaps else {}
 
     # Elapsed
@@ -465,10 +465,10 @@ async def session_detail(request: Request, run_id: str):
     except Exception:
         pass
 
-    # Adım timeline (son 200 — büyük dosyalarda hepsini gösterme)
+    # Step timeline (last 200 — don't show all on large files)
     step_timeline = steps[-200:]
 
-    # Zaman çizelgesi replay — tur başına render modeli
+    # Timeline replay — per-round render model
     from web.viewmodels import associate_steps, timeline_view
 
     spans = _build_timeline_spans(events)
@@ -482,7 +482,7 @@ async def session_detail(request: Request, run_id: str):
             }
     for r, rd in rounds.items():
         rd["timeline"] = tl_by_round.get(r)
-    # Span'lı ama backtest'siz turlar (ör. erken hata) da görünsün
+    # Rounds with spans but no backtests (e.g. early error) should also show
     for r, tlr in tl_by_round.items():
         if r not in rounds:
             rounds[r] = {
@@ -519,12 +519,12 @@ async def session_detail(request: Request, run_id: str):
 
 @router.get("/{run_id}/block/{block_name}", response_class=Response)
 async def get_block_code(run_id: str, block_name: str):
-    """Tek blok Python kodunu döndür."""
+    """Return a single block's Python code."""
     if not all(c in "0123456789abcdef" for c in run_id) or len(run_id) != 8:
-        return Response("Geçersiz run_id", status_code=400)
-    # block_name sanitize
+        return Response("Invalid run_id", status_code=400)
+    # sanitize block_name
     safe = "".join(c for c in block_name if c.isalnum() or c == "_")
     path = SESSION_LOG_DIR / f"{run_id}_blocks" / f"{safe}.py"
     if not path.exists():
-        return Response("Bulunamadı", status_code=404)
+        return Response("Not found", status_code=404)
     return Response(path.read_text(), media_type="text/plain")
