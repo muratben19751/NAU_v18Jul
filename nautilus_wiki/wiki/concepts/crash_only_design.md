@@ -33,6 +33,7 @@ Aşağıdaki durumlar panic veya error döner:
 - [[event_sourcing]]
 - [[live_node]]
 - [[message_bus]]
+- [[nau_guvenlik_dayaniklilik_duzeltmeleri]]
 - [[order_emulator]]
 - [[single_threaded_core]]
 - [[webapp_module_map]]

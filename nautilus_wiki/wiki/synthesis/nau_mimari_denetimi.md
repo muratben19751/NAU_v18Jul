@@ -124,5 +124,6 @@ turlarında da kullanıldı — tekrarlanabilir kalite kalıbı.
 <!-- BACKLINKS:BEGIN -->
 ## Referenced by
 
+- [[nau_guvenlik_dayaniklilik_duzeltmeleri]]
 - [[webapp_module_map]]
 <!-- BACKLINKS:END -->

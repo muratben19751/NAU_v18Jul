@@ -497,3 +497,31 @@ uygulanmıyor; paper runner sandbox dolumlarını/PnL'ini panele raporlamıyor.
 **Not:** Delta tek commit'ti (e427aa8); açık boşluklar bir önceki girdideki
 gibi duruyor (node'lar süreç-içi, kill switch uygulanmıyor, sandbox dolumları
 panele raporlanmıyor).
+
+## 2026-07-25 — Güvenlik & dayanıklılık düzeltme geçişi
+
+Beş paralel incelemenin (kod/mimari/performans/test/E2E) kritik ve yüksek
+bulguları kapatıldı; yeni sayfa: [[nau_guvenlik_dayaniklilik_duzeltmeleri]].
+
+- **Kritik:** codegate sandbox kaçışı (attribute Store/Del reddi + salt-okunur
+  modül proxy'si; 233 diskteki blok yeniden doğrulandı, 0 regresyon).
+- **Yüksek:** custom_block_store registry kaybı (I/O hatası artık fırlatılır,
+  yalnız parse hatası karantina) + `load_catalog` budamayı durdurur;
+  index/ticker path traversal; Studio motorunun web sürecini dondurması
+  (artık `run_backtest_guarded(force_subprocess=True)`); deploy geçidinin
+  taslak koşusuyla atlatılması (`studio_runs.defn_hash` içerik hash'i).
+- **Orta:** robustness eviction KeyError, optimize grid'inin max'ı aşması,
+  `kill_switch` 500→422, `store.save()` versiyon yarışı (BEGIN IMMEDIATE),
+  SQLite bağlantılarının kapanmaması, hızlı yolun sermaye/komisyon düşürmesi,
+  BacktestPool zombie süreçleri, AI döngüsünün kullanıcı düzenlemesini ezmesi.
+- **Windows:** index veri hattı `bash|gunzip|awk` yerine saf Python (gzip+csv)
+  — bu hat Windows'ta hiç çalışmıyordu.
+- **Test:** 518 geçen/12 hatalı → **539 geçen / 0 hatalı** (12 hata giderildi,
+  9 yeni regresyon testi). Eskimiş 7 describe testi yeni chain sözleşmesine
+  taşındı; 3 golden hash yalnız ekonomik alanlara daraltıldı (pnl/n_trades
+  değişmediği doğrulandıktan sonra yeniden üretildi).
+- E2E: driver ile 525.600 barlık gerçek backtest PASS; tüm ana sayfalar 200.
+- Backlinks 70 sayfada tazelendi; index yeniden üretildi.
+
+**Not:** `defn_hash` migrasyonu geriye dönük NULL'dur — geçit *açık* bir deploy,
+o strateji için bir kez yeni backtest ister (hata güvenli yönde).
