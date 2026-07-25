@@ -102,6 +102,17 @@ class OptResult:
     def to_dict(self) -> dict:
         return asdict(self)
 
+    @property
+    def walk_forward(self) -> bool:
+        """False for a run stored before the walk-forward optimizer landed.
+
+        Those rows rehydrate with `score`/`folds_valid`/`trials` at zero, and
+        rendering them in the walk-forward layout reads as a broken panel
+        ("DSR 0.000 · 0 folds · 0 trials") rather than as an old result. The
+        panel branches on this and labels them instead.
+        """
+        return self.trials > 0
+
 
 def _axis_values(r: OptimizeRange) -> list[float]:
     out, v = [], r.min

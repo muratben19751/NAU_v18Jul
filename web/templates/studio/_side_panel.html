@@ -109,13 +109,27 @@
 
     <div class="pane" id="pane-results">
       {% if opt_results %}
+        {# A run stored before the walk-forward optimizer has no score/folds/
+           trials. Showing zeros for them would read as a broken panel, so the
+           legacy layout (DSR at the head) is kept for those rows. #}
+        {% set wf_run = opt_results[0].walk_forward %}
+        {% if wf_run %}
         <p class="opt-note">Top {{ opt_results | length }} by walk-forward
           {{ defn.walkforward.objective | upper }} (mean − ½·std over out-of-sample
           folds) · run {{ opt_run.run_id[:6] }}. Apply writes params into the draft.</p>
+        {% else %}
+        <p class="opt-note">Run {{ opt_run.run_id[:6] }} predates walk-forward
+          scoring — these are <b>in-sample</b> results over the full sample, with
+          no out-of-sample folds and no deflation. Params still apply; re-run the
+          sweep for walk-forward numbers.</p>
+        {% endif %}
         {% for r in opt_results %}
         <div class="iter">
           <div class="iter-head"><span class="n">#{{ r.rank }}</span>
-            {{ defn.walkforward.objective | upper }} {{ "%.3f" | format(r.score) }}
+            {% if r.walk_forward %}{{ defn.walkforward.objective | upper }}
+              {{ "%.3f" | format(r.score) }}
+            {% else %}DSR {{ "%.2f" | format(r.dsr) }} <span class="opt-note"
+              style="font-size:.62rem">in-sample</span>{% endif %}
             <span class="st accepted" style="cursor:pointer"
                   hx-post="/studio/{{ defn.id }}/optimize/apply"
                   hx-vals='{"rank": {{ r.rank }}}'
@@ -127,12 +141,14 @@
             <span class="{{ 'up' if r.net_pnl_pct > 0 else 'dn' }}">P&L {{ "%+.1f%%" | format(r.net_pnl_pct) }}</span>
             <span class="dn">DD {{ "%.1f%%" | format(r.max_dd_pct) }}</span>
             <span class="eq">{{ r.trades }} trades</span></div>
+          {% if r.walk_forward %}
           <div class="delta"><span class="eq" title="Deflated Sharpe Ratio — PSR of the
             stitched out-of-sample curve against the best Sharpe {{ r.trials }} trials
             would produce by luck alone. Not comparable to the single-run DSR, which is
             undeflated.">DSR* {{ "%.2f" | format(r.dsr) }}</span>
             <span class="eq">{{ r.folds_valid }} folds</span>
             <span class="eq">{{ r.trials }} trials</span></div>
+          {% endif %}
         </div>
         {% endfor %}
         <div style="height:10px"></div>

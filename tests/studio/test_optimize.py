@@ -102,6 +102,29 @@ def test_panel_shows_what_the_ranking_and_the_dsr_actually_mean(client):
     assert "out-of-sample" in panel.lower()
 
 
+def test_a_pre_walkforward_run_is_labelled_not_rendered_as_zeros(client):
+    """Rehydrating an old row is not the same as displaying it.
+
+    Runs stored before the walk-forward optimizer have no score/folds/trials;
+    the walk-forward layout would show them as `DSR 0.000 · 0 folds · 0 trials`,
+    which reads as a broken panel rather than as an old result.
+    """
+    _tiny_sweep(client)
+    client.post(f"/studio/{SID}/optimize")
+    opt = client.store.latest_opt(SID)
+    legacy = [
+        {k: v for k, v in r.items() if k not in ("score", "folds_valid", "trials")}
+        for r in json.loads(opt["results"])
+    ]
+    client.store.finish_opt(opt["run_id"], json.dumps(legacy))
+
+    panel = client.get(f"/studio/{SID}/optimize/panel").text
+
+    assert "predates walk-forward" in panel
+    assert "0 folds" not in panel and "0 trials" not in panel
+    assert "APPLY" in panel                      # the params still apply
+
+
 def test_optimize_no_params_422(client):
     d = _tiny_sweep(client)
     for _b, _rid, _n, p in d.optimized_params():
