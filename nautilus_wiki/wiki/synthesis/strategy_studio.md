@@ -110,6 +110,23 @@ Bu serinin pozisyon açıkken çökmesine yol açan `Portfolio.equity()` tuzağ�
 sleeve kendi sermayesiyle koşar, rebalance yoktur — ortak sermayeli portföy
 koşusu **değildir**.
 
+## HTTP semantiği: 404 kaynak, 422 girdi
+
+HTMX yüzeyinde durum kodu bir UX kararıdır — 2xx dışını HTMX swap etmez, yani
+yanlış kod kullanıcıya "buton hiçbir şey yapmadı" olarak görünür.
+
+- **404** — kaynak yok. Olmayan bir `rule_id` dört uçta da aynı yanıtı verir:
+  `PATCH /rules/{id}`, `DELETE /rules/{id}`, `PATCH /opt/toggle`,
+  `PATCH /opt/range`. Bunu tek noktadan sağlayan `RuleNotFound`,
+  `MutationError`'ın alt sınıfıdır — mevcut `except MutationError` işleyicileri
+  bozulmadan route'lar ayırt edebilir.
+- **422** — girdi geçersiz: sınır dışı parametre, sayısal olmayan değer,
+  bilinmeyen indikatör, parametresiz sweep, kapıya takılan deploy.
+- **422 + okunabilir mesaj** — beklenmedik motor hatası. `_trial_baseline`
+  bilinmeyen hataları bilerek yukarı bırakır (sessizce guardrail kapatmamak
+  için), ama `route_ai_suggest` bunu yakalar: 500 dönmek HTMX'te hiçbir şeyi
+  swap etmez ve hata görünmez olurdu.
+
 ## AI guardrail baseline'ı
 
 `evaluate_trial` denemeyi baseline ile karşılaştırır. İki motor anahtarı farklı

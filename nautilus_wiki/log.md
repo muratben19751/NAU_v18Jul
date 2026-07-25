@@ -390,3 +390,22 @@ regression 68/68, ruff temiz. NautilusTrader'a dokunulmadı.
 **Açık boşluk:** `dsr` gerçek DSR'a deflate edilmiyor (deneme sayısı optimizer
 entegrasyonundan gelecek); `walkforward.scheme`/`in_sample_months`/`oos_months`
 UI'da ayarlanabiliyor ama fold dilimlemesi yalnız `folds` + `embargo_bars` kullanıyor.
+
+## 2026-07-25 (2) — Studio HTTP semantiği
+
+- **`wiki/synthesis/strategy_studio.md`** — yeni bölüm "HTTP semantiği: 404 kaynak,
+  422 girdi". HTMX yüzeyinde durum kodu bir UX kararı: 2xx dışını HTMX swap etmez,
+  yanlış kod kullanıcıya "buton hiçbir şey yapmadı" olarak görünür. Kaynak-yok
+  artık dört uçta da 404 (`RuleNotFound`, `MutationError` alt sınıfı — mevcut
+  `except MutationError` işleyicileri bozulmadan ayırt edilebiliyor); geçersiz
+  girdi 422; beklenmedik motor hatası 422 + okunabilir mesaj (`_trial_baseline`
+  hatayı bilerek yukarı bırakıyor, route yakalıyor).
+- **`wiki/synthesis/webapp_module_map.md`** — `web/routes/strategy_studio.py`
+  satırına aynı semantik notu işlendi.
+- **Kod → doküman köprüsü**: route modülünün `Wiki References` bloğu artık
+  `[[strategy_studio]]` + `[[portfolio]]`'ya işaret ediyor (detay sayfası bir
+  önceki senkronda oluşmuştu).
+- Lint öncesi/sonrası temiz (0/0); backlinks 70 sayfada tazelendi; index yeniden üretildi.
+
+**Not:** Bu senkronun deltası küçüktü — son senkrondan (025b527) beri tek kod
+commit'i vardı (b834d86). Açık boşluklar bir önceki girdideki gibi duruyor.

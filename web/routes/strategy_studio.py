@@ -2,7 +2,7 @@
 
 Wiki References
 ---------------
-See: [[strategy_and_actor]], [[backtesting_guide]], [[webapp_module_map]]
+See: [[strategy_studio]], [[strategy_and_actor]], [[backtesting_guide]], [[portfolio]]
 
 Mounted on the main app in ``server.py``. Owns ``/studio/{strategy_id}`` and
 its HTMX action endpoints; the plain ``/studio`` entry point belongs to the
