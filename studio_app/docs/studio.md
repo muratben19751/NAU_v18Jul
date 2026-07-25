@@ -27,7 +27,7 @@ validate → save draft → re-render block partial + OOB side panel.
 | POST `…/save`, `…/discard` | Promote draft / drop it |
 | POST `…/backtest` · GET `…/runs/latest[,/folds]` | Run + 2s poll + folds |
 | PATCH `…/opt/toggle`, `…/opt/range` | Sweep membership / min-step-max |
-| POST `…/optimize` · GET `…/optimize/panel` | Grid run (capped) + poll |
+| POST `…/optimize` · GET `…/optimize/panel` | Walk-forward sweep (capped) + poll |
 | POST `…/optimize/apply` | Write ranked params into draft |
 | POST `…/ai/suggest` | One suggestion → trial → ghost |
 | POST `…/ai/suggestions/{sid}/accept·dismiss` | Human decision |
@@ -51,6 +51,33 @@ Guardrails (server-side, `evaluate_trial`): invalid diff / compile error,
 `trades < min_trades`, OOS objective worse than baseline → reject, even in
 auto mode. Auto-accept additionally requires strict OOS improvement.
 
+## Walk-forward contract
+
+`WalkForwardOptimizer.run(defn) -> list[OptResult]`, param addressing
+`"<rule_id>.<param>"` / `"risk.<field>"` (Apply depends on that spelling).
+
+Two stages per candidate, both on windows the adapter cuts out of its own
+sample (`run(compiled, window=Window(start, end, embargo_bars))`):
+
+1. **anchored in-sample screen** — leading `in_sample_months` share; below
+   `min_trades` (5) or `-inf` objective ⇒ the candidate never reaches the folds.
+2. **purged walk-forward folds** — `folds` consecutive out-of-sample windows of
+   `oos_months` each, every one purged by `embargo_bars` at its front. Ranking
+   key is `mean − 0.5·std` of the per-fold objective (host `wfo_optimizer`
+   convention); `dsr`/`sharpe` folds are trade-count damped (`n/(n+20)`),
+   `max_dd` is not (damping a negative number rewards a thin history).
+   A candidate needs 60% of its folds valid.
+
+The months are a **ratio**, not calendar lengths: they split whatever sample
+the adapter loaded (`lookback_days`, 180 by default) into 1 + `folds` windows.
+Raise the lookback to make them literal.
+
+`OptResult.dsr` is **deflated**: PSR of the stitched out-of-sample return series
+against `expected_max_sharpe(σ_trials, N)` — the best Sharpe N combinations
+produce by luck alone. It is therefore *not* comparable to the single-run
+`dsr`, which is undeflated PSR (one trial). Nothing survives ⇒
+`NoViableCandidates` with the rejection tally, surfaced as a failed run.
+
 ## Notes & limitations
 
 - Regime ELSE supports an inline substrategy (entry/exit share the main
@@ -59,4 +86,10 @@ auto mode. Auto-accept additionally requires strict OOS improvement.
 - Allocation covers ranked-universe sort/top-N/weighting; Composer-style
   per-position filter chains stay deferred to M-QLAB.
 - Stub metrics are deterministic per config hash — good for UI/tests,
-  meaningless for trading decisions.
+  meaningless for trading decisions. A window is part of that hash, so the
+  stub's folds differ from each other instead of being identical.
+- Deflation needs a spread across trials to measure; a sweep that scores a
+  single candidate has none, and its `dsr` falls back to undeflated PSR.
+- The single-run fold table is a *different* split — purged k-fold over the
+  run's own sample, `folds` + `embargo_bars` only. The IS/OOS months belong to
+  the optimizer.

@@ -44,9 +44,15 @@
       {% endif %}
       <div class="wf">
         <div class="t">Walk-forward validation</div>
+        {# The months set the IS:OOS ratio of whatever sample the adapter loads,
+           not calendar lengths — show the split they actually produce. #}
+        {% set wf_unit = defn.walkforward.in_sample_months
+                         + defn.walkforward.folds * defn.walkforward.oos_months %}
         <div class="wf-row"><span>Scheme</span><span>{{ defn.walkforward.scheme | replace("_", " ") }}</span></div>
-        <div class="wf-row"><span>In-sample</span><span>{{ defn.walkforward.in_sample_months }} months</span></div>
-        <div class="wf-row"><span>Out-of-sample</span><span>{{ defn.walkforward.oos_months }} months</span></div>
+        <div class="wf-row"><span>In-sample</span><span>{{ defn.walkforward.in_sample_months }} months
+          · {{ "%.0f%%" | format(100 * defn.walkforward.in_sample_months / wf_unit) }} of sample</span></div>
+        <div class="wf-row"><span>Out-of-sample</span><span>{{ defn.walkforward.oos_months }} months
+          · {{ "%.0f%%" | format(100 * defn.walkforward.oos_months / wf_unit) }} each</span></div>
         <div class="wf-row"><span>Folds</span><span>{{ defn.walkforward.folds }}</span></div>
         <div class="wf-row"><span>Objective</span><span>{{ defn.walkforward.objective | upper }}</span></div>
         <div class="wf-row"><span>Embargo</span><span>{{ defn.walkforward.embargo_bars }} bars</span></div>
@@ -103,12 +109,13 @@
 
     <div class="pane" id="pane-results">
       {% if opt_results %}
-        <p class="opt-note">Top {{ opt_results | length }} by {{ defn.walkforward.objective | upper }}
-          · run {{ opt_run.run_id[:6] }}. Apply writes params into the draft.</p>
+        <p class="opt-note">Top {{ opt_results | length }} by walk-forward
+          {{ defn.walkforward.objective | upper }} (mean − ½·std over out-of-sample
+          folds) · run {{ opt_run.run_id[:6] }}. Apply writes params into the draft.</p>
         {% for r in opt_results %}
         <div class="iter">
           <div class="iter-head"><span class="n">#{{ r.rank }}</span>
-            DSR {{ "%.2f" | format(r.dsr) }}
+            {{ defn.walkforward.objective | upper }} {{ "%.3f" | format(r.score) }}
             <span class="st accepted" style="cursor:pointer"
                   hx-post="/studio/{{ defn.id }}/optimize/apply"
                   hx-vals='{"rank": {{ r.rank }}}'
@@ -120,6 +127,12 @@
             <span class="{{ 'up' if r.net_pnl_pct > 0 else 'dn' }}">P&L {{ "%+.1f%%" | format(r.net_pnl_pct) }}</span>
             <span class="dn">DD {{ "%.1f%%" | format(r.max_dd_pct) }}</span>
             <span class="eq">{{ r.trades }} trades</span></div>
+          <div class="delta"><span class="eq" title="Deflated Sharpe Ratio — PSR of the
+            stitched out-of-sample curve against the best Sharpe {{ r.trials }} trials
+            would produce by luck alone. Not comparable to the single-run DSR, which is
+            undeflated.">DSR* {{ "%.2f" | format(r.dsr) }}</span>
+            <span class="eq">{{ r.folds_valid }} folds</span>
+            <span class="eq">{{ r.trials }} trials</span></div>
         </div>
         {% endfor %}
         <div style="height:10px"></div>

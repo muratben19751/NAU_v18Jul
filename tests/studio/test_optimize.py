@@ -79,10 +79,27 @@ def test_optimize_end_to_end_and_sorted(client):
     assert opt["status"] == "done"
     results = json.loads(opt["results"])
     assert 0 < len(results) <= 10
-    dsrs = [x["dsr"] for x in results]
-    assert dsrs == sorted(dsrs, reverse=True)      # objective = DSR desc
+    # Ranked by the walk-forward score (penalized fold objective), which is the
+    # number the panel shows next to the rank. The reported `dsr` is a
+    # different statistic — deflated, over the stitched OOS curve — so it is
+    # deliberately NOT the sort key.
+    scores = [x["score"] for x in results]
+    assert scores == sorted(scores, reverse=True)
     panel = client.get(f"/studio/{SID}/optimize/panel")
     assert "APPLY" in panel.text and "Top" in panel.text
+
+
+def test_panel_shows_what_the_ranking_and_the_dsr_actually_mean(client):
+    """The months are a ratio, and the reported DSR is deflated — both are
+    surprising enough that the panel has to say so, or the numbers read as
+    calendar lengths and as the single-run DSR."""
+    _tiny_sweep(client)
+    client.post(f"/studio/{SID}/optimize")
+    panel = client.get(f"/studio/{SID}/optimize/panel").text
+
+    assert "of sample" in panel                    # in-sample months → share
+    assert "DSR*" in panel and "trials" in panel    # deflated, and against what
+    assert "out-of-sample" in panel.lower()
 
 
 def test_optimize_no_params_422(client):

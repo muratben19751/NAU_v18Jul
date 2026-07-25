@@ -63,10 +63,10 @@ from strategy_studio.mutations import (
     update_rule_param,
 )
 from strategy_studio.optimizer import (
+    MAX_EVALS,
     OPTIMIZER_MAX_RUNS,
-    STUB_MAX_EVALS,
     OptResult,
-    StubWalkForwardOptimizer,
+    WalkForwardOptimizer,
     apply_params,
 )
 from strategy_studio.registry import INDICATOR_REGISTRY, library_by_category
@@ -98,20 +98,20 @@ def _adapter_for(env_var: str):
 # One run per click — STUDIO_BACKTEST=nautilus is safe to flip on its own.
 ADAPTER = _adapter_for("STUDIO_BACKTEST")
 
-# Sweeps and AI trials fan out: the optimizer calls run() once per combination
-# (capped at OPTIMIZER_MAX_RUNS) and the AI loop once per suggestion, while
-# NautilusBacktestAdapter itself costs 1 + walkforward.folds engine runs per
-# call. Sharing ADAPTER would therefore turn a 100-combination sweep into ~700
-# Nautilus runs the moment the single-run switch was flipped. Its own switch
-# keeps the layers independently verifiable; set STUDIO_BACKTEST_OPT=nautilus
-# only once a sweep at real-engine cost is actually what you want.
+# Sweeps and AI trials fan out: the optimizer runs one in-sample screen plus
+# walkforward.folds out-of-sample folds per candidate, and the AI loop one run
+# per suggestion — while an unwindowed NautilusBacktestAdapter call costs
+# 1 + folds engine runs on its own. Sharing ADAPTER would therefore turn a
+# 100-combination sweep into ~700 Nautilus runs the moment the single-run
+# switch was flipped. Its own switch keeps the layers independently verifiable;
+# set STUDIO_BACKTEST_OPT=nautilus only once a sweep at real-engine cost is
+# actually what you want.
 TRIAL_ADAPTER = _adapter_for("STUDIO_BACKTEST_OPT")
 
 # Ceiling on engine runs for one sweep once TRIAL_ADAPTER is the real engine.
 ENGINE_SWEEP_MAX_RUNS = int(os.environ.get("STUDIO_OPT_MAX_ENGINE_RUNS", "200"))
 
-# INTEGRATION POINT: swap for your real walk-forward optimizer (optimizer.py)
-OPTIMIZER = StubWalkForwardOptimizer(adapter=TRIAL_ADAPTER)
+OPTIMIZER = WalkForwardOptimizer(adapter=TRIAL_ADAPTER)
 # INTEGRATION POINT: swap for the LLM client of your existing loop (ai.py)
 LLM = HttpAnthropicClient()
 
@@ -533,11 +533,12 @@ def route_optimize(request: Request, strategy_id: str,
             f"({OPTIMIZER_MAX_RUNS:,}) — narrow some ranges",
             status_code=422)
     # A sweep on the real engine is a different order of cost: the optimizer
-    # samples up to STUB_MAX_EVALS combinations and each one costs
-    # 1 + walkforward.folds engine runs. Refuse before starting rather than
-    # letting a background task grind for hours.
+    # samples up to MAX_EVALS combinations, each costing one in-sample screen
+    # plus (if it survives) walkforward.folds fold runs. The bound below is the
+    # worst case where nothing is screened out. Refuse before starting rather
+    # than letting a background task grind for hours.
     if isinstance(TRIAL_ADAPTER, NautilusBacktestAdapter):
-        engine_runs = min(sweep, STUB_MAX_EVALS) * (1 + defn.walkforward.folds)
+        engine_runs = min(sweep, MAX_EVALS) * (1 + defn.walkforward.folds)
         if engine_runs > ENGINE_SWEEP_MAX_RUNS:
             return PlainTextResponse(
                 f"sweep would take {engine_runs:,} engine runs, over the "

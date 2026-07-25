@@ -17,6 +17,14 @@ Two adapters share the ``BacktestAdapter`` protocol:
 Swap them in ``web/routes/strategy_studio.py`` (``ADAPTER = ...``), or set
 ``STUDIO_BACKTEST=nautilus`` to select the real engine at import time.
 
+Windows
+-------
+``run(compiled, window=...)`` restricts a run to a fractional slice of the
+sample. That is what the walk-forward optimizer folds on: it asks for one
+in-sample window and ``walkforward.folds`` out-of-sample windows instead of
+letting each adapter invent its own split. A windowed run reports no fold
+table of its own — the caller *is* the folding.
+
 What ``to_nautilus`` refuses to translate
 -----------------------------------------
 The composer spec cannot express a regime branch, a ranked allocation block,
@@ -72,8 +80,29 @@ class BacktestMetrics:
         return cls(**d)
 
 
+@dataclass(frozen=True)
+class Window:
+    """A fractional slice of the sample, plus a leading purge.
+
+    Fractions rather than dates: the adapter owns the sample (how many days it
+    loads, at what timeframe), so only it can turn a fraction into rows. The
+    optimizer decides the *geometry* — where in-sample ends, where each
+    out-of-sample fold sits — without needing to know the bar count.
+
+    ``embargo_bars`` rows are dropped from the *front* of the slice, so a
+    position or an indicator state carried over the boundary cannot leak the
+    previous window's information into this one.
+    """
+
+    start: float
+    end: float
+    embargo_bars: int = 0
+    label: str = ""
+
+
 class BacktestAdapter(Protocol):
-    def run(self, compiled: CompiledStrategy) -> BacktestMetrics: ...
+    def run(self, compiled: CompiledStrategy,
+            *, window: Window | None = None) -> BacktestMetrics: ...
 
 
 class StubBacktestAdapter:
@@ -81,7 +110,8 @@ class StubBacktestAdapter:
 
     N_BARS = 220  # equity curve points (fits the 260px sparkline budget)
 
-    def _seed(self, compiled: CompiledStrategy) -> int:
+    def _seed(self, compiled: CompiledStrategy,
+              window: Window | None = None) -> int:
         payload = json.dumps(
             {
                 "instruments": compiled.instruments,
@@ -107,14 +137,19 @@ class StubBacktestAdapter:
                 if compiled.regime and compiled.regime.get("else_strategy")
                 else [],
                 "allocation": compiled.allocation,
+                # A window is part of the identity of a run: two folds of the
+                # same config must not come back with identical metrics, or
+                # every candidate would look perfectly stable across folds.
+                "window": (window.start, window.end) if window else None,
             },
             sort_keys=True,
             default=str,
         )
         return int(hashlib.sha256(payload.encode()).hexdigest()[:12], 16)
 
-    def run(self, compiled: CompiledStrategy) -> BacktestMetrics:
-        rng = random.Random(self._seed(compiled))
+    def run(self, compiled: CompiledStrategy,
+            *, window: Window | None = None) -> BacktestMetrics:
+        rng = random.Random(self._seed(compiled, window))
 
         # plausible-looking drifted random walk
         drift = rng.uniform(-0.0004, 0.0016)
@@ -132,7 +167,9 @@ class StubBacktestAdapter:
         sharpe = mean / std * math.sqrt(252)
         dsr = max(0.0, min(0.99, sharpe / 2 + rng.uniform(-0.12, 0.08)))
 
-        folds = compiled.walkforward.get("folds", 6)
+        # A windowed run is one fold of somebody else's split; sub-folding it
+        # again would report a fold table for a slice, not for the strategy.
+        folds = 0 if window else compiled.walkforward.get("folds", 6)
         fold_metrics = [
             FoldMetrics(
                 fold=i + 1,
@@ -421,17 +458,22 @@ def _norm_cdf(x: float) -> float:
     return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
 
 
-def _psr(returns: list[float], sharpe: float) -> float:
-    """Probabilistic Sharpe Ratio against a zero benchmark.
+def probabilistic_sharpe(returns: list[float], sharpe: float,
+                         benchmark: float = 0.0) -> float:
+    """Probability that the true Sharpe exceeds ``benchmark``.
 
-    This is the *undeflated* statistic: the studio calls the field ``dsr``, but
-    deflating needs the number of trials the Sharpe was selected from, which a
-    single run does not know. PSR is DSR's one-trial case, so it is an upper
-    bound on the deflated value — the deploy gate therefore errs optimistic,
-    not conservative. Wire the trial count through the optimizer to tighten it.
+    ``benchmark=0`` is the Probabilistic Sharpe Ratio — what a *single* run can
+    say, since deflating needs the number of trials the Sharpe was selected
+    from and one run does not know it. Feed the optimizer's expected-maximum
+    Sharpe as the benchmark and the same formula is the Deflated Sharpe Ratio
+    (see ``optimizer.expected_max_sharpe``).
+
+    ``sharpe`` and ``benchmark`` must be on the *per-observation* scale of
+    ``returns`` — an annualized Sharpe against per-bar moments drives every
+    value to 0.99.
     """
     n = len(returns)
-    if n < 3 or not math.isfinite(sharpe):
+    if n < 3 or not math.isfinite(sharpe) or not math.isfinite(benchmark):
         return 0.0
     mean = sum(returns) / n
     var = sum((r - mean) ** 2 for r in returns) / n
@@ -443,8 +485,13 @@ def _psr(returns: list[float], sharpe: float) -> float:
     denom = 1.0 - skew * sharpe + (kurt - 1.0) / 4.0 * sharpe**2
     if denom <= 0:
         return 0.0
-    z = sharpe * math.sqrt(n - 1) / math.sqrt(denom)
+    z = (sharpe - benchmark) * math.sqrt(n - 1) / math.sqrt(denom)
     return round(max(0.0, min(0.99, _norm_cdf(z))), 2)
+
+
+# The single-run path reports the undeflated statistic; keeping the old name
+# next to the call sites documents which of the two they mean.
+_psr = probabilistic_sharpe
 
 
 def _normalize(curve: list[float]) -> list[float]:
@@ -632,7 +679,24 @@ class NautilusBacktestAdapter:
             )
         return folds
 
-    def run(self, compiled: CompiledStrategy) -> BacktestMetrics:
+    MIN_WINDOW_BARS = 30  # below this an engine run reports nothing usable
+
+    def _slice(self, bars, window: Window):
+        """Fractional slice of a bar frame, with the leading purge applied."""
+        n = len(bars)
+        lo = min(max(int(n * window.start) + window.embargo_bars, 0), n)
+        hi = min(max(int(round(n * window.end)), lo), n)
+        chunk = bars.iloc[lo:hi]
+        if len(chunk) < self.MIN_WINDOW_BARS:
+            raise RuntimeError(
+                f"window {window.label or f'{window.start:.2f}-{window.end:.2f}'}: "
+                f"{len(chunk)} bars after a {window.embargo_bars}-bar embargo, "
+                f"under the {self.MIN_WINDOW_BARS}-bar minimum"
+            )
+        return chunk
+
+    def run(self, compiled: CompiledStrategy,
+            *, window: Window | None = None) -> BacktestMetrics:
         spec = to_nautilus(compiled, initial_capital=self.initial_capital)
 
         curves: list[list[float]] = []
@@ -643,6 +707,8 @@ class NautilusBacktestAdapter:
 
         for inst in compiled.instruments:
             bars = self._loader(inst["symbol"], inst["timeframe"])
+            if window is not None:
+                bars = self._slice(bars, window)
             curve, m = self._run_one(spec, bars, inst["symbol"])
             curves.append(curve)
             sleeves.append(m)
@@ -680,8 +746,11 @@ class NautilusBacktestAdapter:
         sharpe = _finite(single.get("sharpe_per_trade"), st.sharpe_ann)
         max_dd = _finite(single.get("max_dd"), -st.max_dd)  # negative fraction
 
+        # A windowed run is already one fold of the optimizer's split; its own
+        # fold table would describe sub-slices of a slice, and it would cost
+        # `folds` extra engine runs per candidate per fold.
         wf = compiled.walkforward
-        folds = self._folds(
+        folds = [] if window is not None else self._folds(
             spec,
             all_bars,
             int(wf.get("folds", 6)),
