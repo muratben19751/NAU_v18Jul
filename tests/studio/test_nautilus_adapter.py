@@ -40,7 +40,7 @@ def _risk():
         stop_loss_atr_len=_p(14),
         take_profit_r=_p(1.5),
         risk_per_trade_pct=_p(1.0),
-        max_concurrent=_p(2),
+        max_concurrent=_p(1),  # >1 is refused: the engine holds one position
     )
 
 
@@ -389,23 +389,22 @@ def test_no_winners_does_not_produce_a_nan_profit_factor(monkeypatch, fake_bars)
     assert "NaN" not in m.to_json()
 
 
-def test_drawdown_ignores_the_mark_to_market_series(monkeypatch, fake_bars):
-    """MTM equity collapses to free cash while a position is open.
-
-    On a real BTCUSDT run that turned a +1.5% strategy into a -94% max_dd, so
-    the adapter measures drawdown on the realized curve until the host app's
-    ComposedStrategy._current_equity includes open-position value.
-    """
+def test_curve_and_drawdown_come_from_the_bar_level_mtm_series(
+    monkeypatch, fake_bars
+):
+    """The realized curve only moves on trade closes; MTM moves every bar."""
     import backtest as engine
 
     monkeypatch.setattr(
         engine,
         "run_composed_backtest",
         lambda spec, bars, **kw: _FakeResult(
-            [10_000, 10_100],  # realized: never drops
-            equity_curve_mtm=[("t0", 10_000.0), ("t1", 590.0), ("t2", 10_100.0)],
-            max_dd=-0.94,
-            sharpe=18.64,
+            [10_000, 10_100],  # realized: two points, never dips
+            equity_curve_mtm=[
+                ("t0", 10_000.0), ("t1", 9_700.0), ("t2", 10_100.0),
+            ],
+            max_dd=-0.03,
+            sharpe=6.02,
             sharpe_per_trade=0.51,
         ),
     )
@@ -413,6 +412,32 @@ def test_drawdown_ignores_the_mark_to_market_series(monkeypatch, fake_bars):
     adapter = NautilusBacktestAdapter(bars_loader=lambda s, tf: fake_bars)
     m = adapter.run(compile_strategy(_defn([_rsi_rule()], [_atr_exit()])))
 
-    assert m.max_dd_pct > -5.0, "picked up the fictional MTM drawdown"
-    assert m.sharpe == 0.51, "used the MTM-derived Sharpe instead of per-trade"
-    assert len(m.equity_curve) == 2  # realized curve, not the 3-point MTM one
+    assert len(m.equity_curve) == 3, "sparkline fell back to the realized curve"
+    assert m.max_dd_pct == pytest.approx(-3.0), "dip only the MTM curve sees"
+
+
+def test_sharpe_is_per_trade_not_bar_frequency(monkeypatch, fake_bars):
+    """Bar-frequency Sharpe counts flat bars as zero returns and inflates.
+
+    The studio ranks strategies (optimizer objective, deploy gate), so it uses
+    the per-trade ratio — otherwise rarely-trading strategies win on exposure
+    rather than on edge.
+    """
+    import backtest as engine
+
+    monkeypatch.setattr(
+        engine,
+        "run_composed_backtest",
+        lambda spec, bars, **kw: _FakeResult(
+            [10_000, 10_100],
+            equity_curve_mtm=[("t0", 10_000.0), ("t1", 10_100.0)],
+            sharpe=6.02,
+            sharpe_per_trade=0.51,
+        ),
+    )
+
+    adapter = NautilusBacktestAdapter(bars_loader=lambda s, tf: fake_bars)
+    m = adapter.run(compile_strategy(_defn([_rsi_rule()], [_atr_exit()])))
+
+    assert m.sharpe == 0.51
+    assert m.sharpe != 6.02

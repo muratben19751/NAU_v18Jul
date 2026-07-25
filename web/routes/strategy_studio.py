@@ -18,6 +18,7 @@ import json
 import os
 import time
 import uuid
+from collections import OrderedDict
 
 from fastapi import APIRouter, BackgroundTasks, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, PlainTextResponse, Response
@@ -37,6 +38,7 @@ from strategy_studio.backtest import (
     BacktestMetrics,
     NautilusBacktestAdapter,
     StubBacktestAdapter,
+    UnsupportedStrategy,
 )
 from strategy_studio.compiler import CompileError, compile_strategy
 from strategy_studio.deploy import (
@@ -47,6 +49,7 @@ from strategy_studio.deploy import (
 )
 from strategy_studio.mutations import (
     MutationError,
+    RuleNotFound,
     add_rule,
     delete_rule,
     find_rule,
@@ -61,6 +64,7 @@ from strategy_studio.mutations import (
 )
 from strategy_studio.optimizer import (
     OPTIMIZER_MAX_RUNS,
+    STUB_MAX_EVALS,
     OptResult,
     StubWalkForwardOptimizer,
     apply_params,
@@ -102,6 +106,9 @@ ADAPTER = _adapter_for("STUDIO_BACKTEST")
 # keeps the layers independently verifiable; set STUDIO_BACKTEST_OPT=nautilus
 # only once a sweep at real-engine cost is actually what you want.
 TRIAL_ADAPTER = _adapter_for("STUDIO_BACKTEST_OPT")
+
+# Ceiling on engine runs for one sweep once TRIAL_ADAPTER is the real engine.
+ENGINE_SWEEP_MAX_RUNS = int(os.environ.get("STUDIO_OPT_MAX_ENGINE_RUNS", "200"))
 
 # INTEGRATION POINT: swap for your real walk-forward optimizer (optimizer.py)
 OPTIMIZER = StubWalkForwardOptimizer(adapter=TRIAL_ADAPTER)
@@ -186,17 +193,32 @@ def _block_html(request: Request, defn: StrategyDefinition, block: str,
     return html
 
 
+def _ghost_of(row: dict) -> dict:
+    return {
+        "id": row["id"],
+        "source": row["source"],
+        "s": Suggestion.model_validate_json(row["suggestion"]),
+        "trial": (BacktestMetrics.from_json(row["trial_metrics"])
+                  if row["trial_metrics"] else None),
+        "base": (BacktestMetrics.from_json(row["baseline"])
+                 if row["baseline"] else None),
+    }
+
+
 def _ghost_ctx(defn: StrategyDefinition, block: str) -> list[dict]:
-    out = []
-    for row in store.pending_suggestions(defn.id, block):
-        g = {"id": row["id"], "source": row["source"]}
-        g["s"] = Suggestion.model_validate_json(row["suggestion"])
-        g["trial"] = (BacktestMetrics.from_json(row["trial_metrics"])
-                      if row["trial_metrics"] else None)
-        g["base"] = (BacktestMetrics.from_json(row["baseline"])
-                     if row["baseline"] else None)
-        out.append(g)
-    return out
+    return [_ghost_of(r) for r in store.pending_suggestions(defn.id, block)]
+
+
+def _ghosts_by_block(defn: StrategyDefinition) -> dict[str, list[dict]]:
+    """All pending ghosts in ONE query, grouped by block.
+
+    The page renders seven blocks; asking per block turned a page load into
+    seven identical-shaped queries (plus a fresh sqlite connection each).
+    """
+    grouped: dict[str, list[dict]] = {b: [] for b in _BLOCK_TEMPLATE}
+    for row in store.pending_suggestions(defn.id):
+        grouped.setdefault(row["block"], []).append(_ghost_of(row))
+    return grouped
 
 
 def _block_of_owner(defn: StrategyDefinition, owner: str) -> str:
@@ -234,8 +256,7 @@ def studio_page(request: Request, strategy_id: str,
     return _tpl().TemplateResponse(request, "studio/page.html", _side_ctx(
         request, defn, library=library_by_category(), is_draft=is_draft,
         initial_run=run, initial_metrics=metrics, initial_spark=spark,
-        ghosts_by_block={b: _ghost_ctx(defn, b)
-                         for b in ("entry", "exit", "risk", "regime")}))
+        ghosts_by_block=_ghosts_by_block(defn)))
 
 
 @router.get("/studio/{strategy_id}/history")
@@ -270,6 +291,8 @@ def route_edit_rule(request: Request, strategy_id: str, rule_id: str,
     try:
         update_rule_param(defn, rule_id, param, value)
         block, *_ = find_rule(defn, rule_id)
+    except RuleNotFound as e:
+        raise HTTPException(404, str(e))
     except MutationError as e:
         return PlainTextResponse(str(e), status_code=422)
     store.save_draft(defn)
@@ -321,11 +344,16 @@ def route_allocation(request: Request, strategy_id: str,
 
 
 @router.patch("/studio/{strategy_id}/risk")
-def route_risk(request: Request, strategy_id: str,
-               name: str = Form(...), value: str = Form(...)):
+def route_risk(request: Request, strategy_id: str, value: str = Form(...),
+               name: str | None = Form(None), param: str | None = Form(None)):
+    # The rule endpoints call this field `param`; risk historically called it
+    # `name`. Accept both so one vocabulary works across the whole surface.
+    field = name or param
+    if not field:
+        return PlainTextResponse("missing 'name' (or 'param')", status_code=422)
     defn = _load_working(strategy_id)
     try:
-        update_risk(defn, name, value)
+        update_risk(defn, field, value)
     except MutationError as e:
         return PlainTextResponse(str(e), status_code=422)
     store.save_draft(defn)
@@ -498,6 +526,19 @@ def route_optimize(request: Request, strategy_id: str,
             f"sweep of {total:,} runs exceeds the optimizer limit "
             f"({OPTIMIZER_MAX_RUNS:,}) — narrow some ranges",
             status_code=422)
+    # A sweep on the real engine is a different order of cost: the optimizer
+    # samples up to STUB_MAX_EVALS combinations and each one costs
+    # 1 + walkforward.folds engine runs. Refuse before starting rather than
+    # letting a background task grind for hours.
+    if isinstance(TRIAL_ADAPTER, NautilusBacktestAdapter):
+        engine_runs = min(sweep, STUB_MAX_EVALS) * (1 + defn.walkforward.folds)
+        if engine_runs > ENGINE_SWEEP_MAX_RUNS:
+            return PlainTextResponse(
+                f"sweep would take {engine_runs:,} engine runs, over the "
+                f"{ENGINE_SWEEP_MAX_RUNS:,} limit for STUDIO_BACKTEST_OPT="
+                "nautilus — narrow the ranges, cut folds, or raise "
+                "STUDIO_OPT_MAX_ENGINE_RUNS",
+                status_code=422)
     try:
         compile_strategy(defn)
     except CompileError as e:
@@ -544,9 +585,10 @@ def _baseline_metrics(strategy_id: str) -> BacktestMetrics | None:
     return None
 
 
-# Trial baselines, keyed by (engine, definition). Bounded: the AI loop walks
-# through many definitions and this must not grow without limit.
-_TRIAL_BASELINE_CACHE: dict[tuple[str, str], BacktestMetrics] = {}
+# Trial baselines, keyed by (engine, definition). LRU-bounded: the AI loop
+# walks through many definitions, and a clear-all would make a loop over
+# MAX+1 definitions miss every single time.
+_TRIAL_BASELINE_CACHE: OrderedDict[tuple[str, str], BacktestMetrics] = OrderedDict()
 _TRIAL_BASELINE_CACHE_MAX = 64
 
 
@@ -575,14 +617,19 @@ def _trial_baseline(defn: StrategyDefinition) -> BacktestMetrics | None:
            hashlib.sha256(defn.model_dump_json().encode()).hexdigest())
     hit = _TRIAL_BASELINE_CACHE.get(key)
     if hit is not None:
+        _TRIAL_BASELINE_CACHE.move_to_end(key)
         return hit
     try:
         metrics = TRIAL_ADAPTER.run(compile_strategy(defn))
-    except Exception:  # noqa: BLE001 — unrunnable baseline ⇒ guardrails skip it
+    except (CompileError, UnsupportedStrategy):
+        # This strategy cannot be measured on this engine — guardrails skip the
+        # comparison. Anything else (a broken engine, a bad adapter) propagates
+        # rather than silently disabling the guardrails.
         return None
-    if len(_TRIAL_BASELINE_CACHE) >= _TRIAL_BASELINE_CACHE_MAX:
-        _TRIAL_BASELINE_CACHE.clear()
     _TRIAL_BASELINE_CACHE[key] = metrics
+    _TRIAL_BASELINE_CACHE.move_to_end(key)
+    while len(_TRIAL_BASELINE_CACHE) > _TRIAL_BASELINE_CACHE_MAX:
+        _TRIAL_BASELINE_CACHE.popitem(last=False)
     return metrics
 
 

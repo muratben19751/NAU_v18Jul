@@ -1671,6 +1671,7 @@ class ComposedStrategy(Strategy):
         # _current_equity fast path: the first successful strategy is used directly
         # by subsequent ones ("portfolio" | "balances" | None=not yet known)
         self._equity_mode: str | None = None
+        self._equity_ccy: str | None = None  # settlement currency code, resolved once
         self._prev_state: dict = {}
         # Per-block Nautilus indicators, keyed by block index.
         self._indicators: dict[int, dict] = {}
@@ -1786,21 +1787,69 @@ class ComposedStrategy(Strategy):
     def _iid(self) -> InstrumentId:
         return self._iid_obj
 
+    def _settlement_ccy_code(self) -> str | None:
+        """Currency the equity is denominated in — cached, resolved once."""
+        if self._equity_ccy is not None:
+            return self._equity_ccy
+        for source in (
+            lambda: self.portfolio.account(self._iid_obj.venue).base_currency,
+            lambda: self.instrument.settlement_currency,
+            lambda: self.instrument.quote_currency,
+        ):
+            try:
+                ccy = source()
+                if ccy is not None:
+                    self._equity_ccy = str(getattr(ccy, "code", ccy))
+                    return self._equity_ccy
+            except Exception:
+                continue
+        return None
+
     def _current_equity(self) -> float:
         """Best-effort account equity. Portfolio.equity() → USDT balance fallback → constant.
 
         Since it is called every candle (MTM curve), the first successful path is
         saved to ``_equity_mode`` and on subsequent candles the attempt/fallback chain
         is skipped — same API, same value, less Python cost.
+
+        M-equity: ``Portfolio.equity()`` returns **dict[Currency, Money]**, not a
+        Money — ``float(dict)`` raised, the except swallowed it, and every run
+        silently fell through to the balance scan below. On a CASH account (the
+        default whenever ``allow_short`` is off) that balance is the *unspent
+        cash*: buying converts USDT into BTC, so the MTM curve dropped to the
+        leftover cash for as long as a position was open and froze there. A
+        180-day BTCUSDT 1h run reported equity 10084 → 5762 while holding a
+        position that closed +$69.70, feeding a fictional -94% max_dd and an
+        inflated Sharpe into every consumer of these metrics.
+
+        The dict is exactly what is wanted — per currency it is
+        ``balance.total + Σ mark_value(open positions)`` for cash accounts and
+        ``balance.total + Σ unrealized_pnl`` for margin ones. Read the entry for
+        the settlement currency; the sibling entries (e.g. a BTC holding) are
+        the same value in other units, so summing them would double count.
         """
         venue = self._iid_obj.venue
         # 1) Portfolio.equity(venue) — v2 native path
         if self._equity_mode in (None, "portfolio"):
             try:
                 eq = self.portfolio.equity(venue)
-                if eq is not None:
-                    self._equity_mode = "portfolio"
-                    return float(eq.as_double() if hasattr(eq, "as_double") else eq)
+                if eq:
+                    money = None
+                    if isinstance(eq, dict):
+                        want = self._settlement_ccy_code()
+                        for ccy, m in eq.items():
+                            if str(getattr(ccy, "code", ccy)) == want:
+                                money = m
+                                break
+                        if money is None and len(eq) == 1:
+                            money = next(iter(eq.values()))
+                    else:  # older builds returned a bare Money
+                        money = eq
+                    if money is not None:
+                        self._equity_mode = "portfolio"
+                        return float(
+                            money.as_double() if hasattr(money, "as_double") else money
+                        )
             except Exception:
                 pass
         # 2) Scan account balances — USDT/USD preferred, then the first found

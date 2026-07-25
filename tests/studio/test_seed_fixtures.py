@@ -58,8 +58,14 @@ def test_design_fixture_is_refused_and_says_why():
         to_nautilus(compile_strategy(build_fixture()))
 
     blob = " ".join(e.value.reasons)
-    for expected in ("regime", "funding_z", "ema", "time_stop"):
-        assert expected in blob
+    for expected in (
+        "regime",  # conditional branch
+        "funding_z",  # no composer block
+        "timeframe",  # the 1h EMA rule on a 15m/5m strategy
+        "time_stop",  # no time-based exit
+        "max_concurrent",  # engine holds one position
+    ):
+        assert expected in blob, f"{expected!r} missing from: {blob}"
 
 
 def test_the_two_fixtures_are_distinct_strategies():

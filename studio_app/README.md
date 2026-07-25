@@ -16,7 +16,7 @@ touch your existing code is marked `INTEGRATION POINT` in the source.
 python scripts/seed_studio.py           # creates studio.db + demo strategy
 uvicorn server:app --reload
 # open http://127.0.0.1:8000/studio/wt-funding-v3
-python -m pytest tests/studio -q        # 111 tests (+1 env-flagged LLM smoke)
+python -m pytest tests/studio -q        # 140 tests (+1 env-flagged LLM smoke)
 ```
 
 ## What each phase added
@@ -77,6 +77,16 @@ app has no other SQLite database.
 - **`deploy.py` — still the stub runner.** `launch(artifact)` against a live/sim
   TradingNode is not wired.
 
+### What `to_nautilus` refuses (the full list)
+
+Anything it cannot express faithfully is refused with every reason at once,
+never silently dropped: regime branch · ranked allocation · an indicator with
+no composer block · an operator with no engine equivalent (`ADX < x`) · a rule
+pinned to a **timeframe** other than the instrument's (one bar feed per run) ·
+`risk.max_concurrent > 1` (the engine holds one position) ·
+`risk.time_stop_bars` (no time-based exit) · `entry match='any'` combined with
+filters. Pinned by `tests/studio/test_review_fixes.py`.
+
 ### Two engine switches, on purpose
 
 | Env var | Selects the engine for | Default |
@@ -87,9 +97,13 @@ app has no other SQLite database.
 They are separate because the fan-out consumers call `adapter.run()` once per
 combination (capped at `OPTIMIZER_MAX_RUNS = 20_000`) or per AI suggestion,
 and `NautilusBacktestAdapter` costs `1 + walkforward.folds` engine runs per
-call — so a 100-combination sweep is ~700 Nautilus runs. Flipping the
-single-run switch alone must not trigger that, and it doesn't: the optimizer
-and `evaluate_trial` read `TRIAL_ADAPTER`, the Run button reads `ADAPTER`.
+call — the optimizer samples up to `STUB_MAX_EVALS` (400) combinations, so a
+sweep is up to ~1 600 Nautilus runs. Flipping the single-run switch alone must
+not trigger that, and it doesn't: the optimizer and `evaluate_trial` read
+`TRIAL_ADAPTER`, the Run button reads `ADAPTER`. With the real engine selected
+for sweeps, `POST /optimize` also refuses upfront above
+`STUDIO_OPT_MAX_ENGINE_RUNS` (default 200) instead of grinding in the
+background.
 
 Because the two can differ, the AI guardrail baseline is **measured on
 `TRIAL_ADAPTER`** (`_trial_baseline`, cached per engine+definition) rather than
@@ -107,7 +121,7 @@ it must judge a real run the user triggered. Guarded by
 
 | Strategy | Runs on | Why |
 |---|---|---|
-| `wt-funding-v3` | stub only | Matches the design mockup — regime branch, `funding_z`, price-vs-`ema`, `time_stop`. `to_nautilus` rejects it with all four reasons. |
+| `wt-funding-v3` | stub only | Matches the design mockup — regime branch, `funding_z`, price-vs-`ema`, `time_stop`. `to_nautilus` rejects it, naming every reason. |
 | `rsi-adx-btc` | stub **and** real engine | `rsi_threshold` + `adx_threshold` entry, `atr_stop` exit, no regime/allocation, one Bybit instrument (BTCUSDT 1h). |
 
 So the fastest path to real Nautilus metrics is
@@ -119,29 +133,36 @@ More generally, strategies built from the mapped indicators (`rsi`, `adx`,
 `macd`, `stochrsi`, `wavetrend`, `relative_volume`, `atr`) run for real; the
 rest are stub-only until their INTEGRATION POINT is wired.
 
-First real run (BTCUSDT 1h, 180 days, 4319 bars, `rsi-adx-btc`): 23 trades,
-net +1.5%, Sharpe 0.51, Deflated SR 0.70, Max DD -2.4%, win rate 47.8%,
+Real run (BTCUSDT 1h, 180 days, 4319 bars, `rsi-adx-btc`): 23 trades,
+net +1.54%, Sharpe 0.51, Deflated SR 0.71, Max DD -2.99%, win rate 47.8%,
 profit factor 1.24 — 1 full run + 3 fold runs in ~2s.
 
-### Open host-app issue: `equity_curve_mtm` collapses while a position is open
+### Fixed: `equity_curve_mtm` used to collapse while a position was open
 
-`ComposedStrategy._current_equity` (via `portfolio.equity(venue)`) appears to
-report roughly the free cash rather than cash + open-position value. On the
-run above, MTM equity fell 10084 → 589 the bar a position opened, stayed there
-for the 51 bars it was held, and returned to 10084 on exit — while that
-position closed **profitably** (+$69.70), no positions overlapped, and the
-worst trade of the run lost $60 on $10k.
+`Portfolio.equity()` returns **`dict[Currency, Money]`**, not a `Money`.
+`ComposedStrategy._current_equity` called `float()` on it, the `except`
+swallowed the `TypeError`, and every run fell through to a balance scan. On a
+CASH account — the default whenever `allow_short` is off — that balance is the
+*unspent cash*: buying converts USDT into BTC, so equity read 10084 → 5762 for
+as long as a position was held.
 
-That series feeds the engine's own `max_dd` (a fictional **-94%**) and, when
-MTM is present, its `sharpe` (**18.64**), so it affects the existing
-`/backtest` page too — this is not something the studio introduced.
+| | before | after |
+|---|---|---|
+| MTM minimum | 588.84 | 9 898.82 |
+| bars under 5000 | 51 | 0 |
+| `max_dd` | −94.27% | −2.99% |
+| `sharpe` (bar-frequency) | 18.64 | 6.02 |
 
-Until it is fixed, `NautilusBacktestAdapter` deliberately works at trade
-resolution: realized equity curve, `sharpe_per_trade` for Sharpe, drawdown
-recomputed from the realized curve. The trade-off is a coarser sparkline (one
-point per closed trade). `_run_one` carries the note and
-`test_drawdown_ignores_the_mark_to_market_series` pins the behaviour — switch
-back to the MTM curve once the snapshot includes open-position value.
+It fed the engine's `max_dd` and `sharpe`, so the `/backtest` page was affected
+too — this was never studio-specific. Fixed in `composer.py`; the studio now
+uses the bar-level curve again.
+
+**Sharpe stays per-trade** on purpose. Bar-frequency Sharpe counts every flat
+bar as a zero return, so a strategy that sits out of the market most of the
+time gets a deflated denominator — the same run reads 6.02 bar-frequency
+against 0.51 per-trade. The studio *ranks* strategies (optimizer objective,
+deploy gate) and that bias would systematically favour rarely-trading ones.
+One line in `run()` switches it to mirror `/backtest`.
 
 ## Guarantees worth knowing
 

@@ -15,6 +15,14 @@ class MutationError(Exception):
     pass
 
 
+class RuleNotFound(MutationError):
+    """No rule with that id — a missing resource, not a bad request.
+
+    Subclasses MutationError so existing `except MutationError` handlers keep
+    working; routes that care can map it to 404 instead of 422.
+    """
+
+
 # ── lookup helpers ───────────────────────────────────────────────
 
 def get_group(defn: StrategyDefinition, block: str) -> RuleGroup:
@@ -45,7 +53,7 @@ def find_rule(defn: StrategyDefinition, rule_id: str):
             for i, rule in enumerate(container):
                 if rule.id == rule_id:
                     return block, container, i, rule
-    raise MutationError(f"rule '{rule_id}' not found")
+    raise RuleNotFound(f"rule '{rule_id}' not found")
 
 
 def _coerce_bounded(value: str, spec: ParamSpec, name: str):

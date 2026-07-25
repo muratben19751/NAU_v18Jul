@@ -283,16 +283,27 @@ _NO_ENGINE_BLOCK = {
     "oi_z": "no composer block (open-interest feed not wired)",
     "cvd_divergence": "no composer block (trade-flow feed not wired)",
     "volume_profile": "no composer block",
-    "time_stop": "expressed as risk.time_stop_bars, not a signal block",
+    "time_stop": "the composer spec has no time-based exit (risk.time_stop_bars is refused too)",
     "session_filter": "no composer block",
 }
 
 
-def _lower_conditions(conds, role: str, reasons: list[str]) -> list:
+def _lower_conditions(conds, role: str, reasons: list[str],
+                      timeframes: set[str] | None = None) -> list:
     from composer import SignalBlock
 
     blocks = []
     for c in conds:
+        # A rule pinned to another timeframe reads a different bar feed. The
+        # composer spec has one feed per run (plus a trend filter that is not
+        # a general per-rule mechanism), so lowering it onto the strategy
+        # timeframe would silently evaluate a different condition.
+        if c.timeframe and timeframes and {c.timeframe} != timeframes:
+            reasons.append(
+                f"rule {c.rule_id}: timeframe '{c.timeframe}' differs from the "
+                f"instrument timeframe(s) {sorted(timeframes)} — the composer "
+                "spec runs on a single bar feed")
+            continue
         why = _NO_ENGINE_BLOCK.get(c.indicator)
         if why:
             reasons.append(f"rule {c.rule_id}: '{c.indicator}' — {why}")
@@ -353,14 +364,31 @@ def to_nautilus(compiled: CompiledStrategy, *, initial_capital: float = 10_000.0
             "entry_logic for every entry block"
         )
 
-    blocks = _lower_conditions(compiled.entry.conditions, "entry", reasons)
-    blocks += _lower_conditions(compiled.entry.filters, "entry", reasons)
-    blocks += _lower_conditions(compiled.exit.conditions, "exit", reasons)
+    risk = compiled.risk
+    # ComposedStrategy holds at most one position at a time (entries are gated
+    # on portfolio.is_flat), so max_concurrent=1 is honoured and anything above
+    # it would quietly run a different risk profile than the one on screen.
+    if int(risk.get("max_concurrent", 1)) > 1:
+        reasons.append(
+            f"risk.max_concurrent={risk['max_concurrent']}: the composer "
+            "strategy holds one position at a time"
+        )
+    # The `time_stop` *rule* is refused via _NO_ENGINE_BLOCK; the risk-block
+    # field has no composer equivalent either, so it must not pass silently.
+    if risk.get("time_stop_bars") is not None:
+        reasons.append(
+            f"risk.time_stop_bars={risk['time_stop_bars']}: the composer spec "
+            "has no time-based exit"
+        )
+
+    timeframes = {i["timeframe"] for i in compiled.instruments}
+    blocks = _lower_conditions(compiled.entry.conditions, "entry", reasons, timeframes)
+    blocks += _lower_conditions(compiled.entry.filters, "entry", reasons, timeframes)
+    blocks += _lower_conditions(compiled.exit.conditions, "exit", reasons, timeframes)
 
     if reasons:
         raise UnsupportedStrategy(reasons)
 
-    risk = compiled.risk
     stop_mult = float(risk["stop_loss_atr_mult"])
     entry_logic = (
         "AND" if (compiled.entry.match == "all" or compiled.entry.filters) else "OR"
@@ -461,6 +489,22 @@ def _curve_stats(curve: list[float], annualization: float = 252.0) -> _CurveStat
                        sharpe_step=step, max_dd=max_dd, returns=rets)
 
 
+def _downsample(curve: list[float], limit: int = 260) -> list[float]:
+    """Thin a curve to what the sparkline can draw.
+
+    A 180-day 1h run produces 4319 points — ~39 KB of JSON per run in the
+    store, re-parsed on every page load, to fill a 260px wide `<path>`. Stats
+    are computed on the full curve before this runs; only the stored/rendered
+    copy is thinned. Endpoints are kept so the net P&L reads true.
+    """
+    if len(curve) <= limit:
+        return curve
+    step = (len(curve) - 1) / (limit - 1)
+    thinned = [curve[round(i * step)] for i in range(limit - 1)]
+    thinned.append(curve[-1])
+    return thinned
+
+
 def _finite(value, default: float = 0.0) -> float:
     """Engine metrics use NaN for 'undefined' (e.g. avg_win with no winners)."""
     try:
@@ -529,35 +573,57 @@ class NautilusBacktestAdapter:
         if result.error:
             raise RuntimeError(f"{label}: {result.error}")
         metrics = result.metrics or {}
-        # Trade-resolution curve on purpose. The bar-level `equity_curve_mtm`
-        # would be the better sparkline, but it is currently unusable: while a
-        # position is open the snapshot drops to roughly the free cash — a
-        # 180-day BTCUSDT 1h run of the rsi-adx-btc fixture shows equity fall
-        # 10084 → 589 for the 51 bars one (profitable) position was open, which
-        # feeds a fictional -94% max_dd and an inflated Sharpe. See
-        # ComposedStrategy._current_equity → portfolio.equity(venue). Switch
-        # back here once that snapshot includes open-position value.
-        return _normalize(result.equity_curve), metrics
+        # Bar-level mark-to-market curve: the realized one only moves when a
+        # trade closes (two points for a one-trade run), which makes both the
+        # sparkline and every curve statistic meaningless.
+        mtm = metrics.get("equity_curve_mtm")
+        curve = [eq for _ts, eq in mtm] if mtm else result.equity_curve
+        return _normalize(curve), metrics
 
-    def _folds(self, spec, bars, n_folds: int) -> list[FoldMetrics]:
-        """Sequential (non-overlapping) slices — the fold table's OOS windows."""
+    def _folds(self, spec, per_instrument_bars: list, n_folds: int,
+               embargo_bars: int = 0) -> list[FoldMetrics]:
+        """Sequential OOS slices, one row per fold.
+
+        Each fold drops its first ``embargo_bars`` rows so a position (or an
+        indicator state) carried across the boundary cannot leak the previous
+        fold's information into this one. Every instrument is sliced the same
+        way and the resulting curves are blended exactly as the headline
+        metrics are, so the fold table and the headline describe the same
+        portfolio — previously the table only ever reflected instrument #1.
+        """
         folds: list[FoldMetrics] = []
-        size = len(bars) // n_folds if n_folds else 0
-        if size < 2:
+        if not per_instrument_bars or n_folds < 1:
             return folds
         for i in range(n_folds):
-            chunk = bars.iloc[i * size : (i + 1) * size]
-            try:
-                curve, m = self._run_one(spec, chunk, f"fold{i + 1}")
-            except RuntimeError:
-                continue  # a fold with no fills tells us nothing; skip it
-            st = _curve_stats(curve, _finite(m.get("annualization"), 252.0))
+            curves, sleeve = [], {}
+            for n, bars in enumerate(per_instrument_bars):
+                size = len(bars) // n_folds
+                if size <= embargo_bars + 1:
+                    continue
+                chunk = bars.iloc[i * size + embargo_bars : (i + 1) * size]
+                try:
+                    curve, m = self._run_one(spec, chunk, f"fold{i + 1}")
+                except UnsupportedStrategy:
+                    raise  # a config problem is not a per-fold hiccup
+                except Exception:  # noqa: BLE001 — a dead fold tells us nothing
+                    continue
+                curves.append(curve)
+                if n == 0:
+                    sleeve = m
+            if not curves:
+                continue
+            width = min(len(c) for c in curves)
+            blended = [sum(c[j] for c in curves) / len(curves) for j in range(width)]
+            st = _curve_stats(blended, _finite(sleeve.get("annualization"), 252.0))
+            single = sleeve if len(curves) == 1 else {}
             folds.append(
                 FoldMetrics(
                     fold=i + 1,
                     dsr=_psr(st.returns, st.sharpe_step),
-                    sharpe=round(_finite(m.get("sharpe_per_trade"), st.sharpe_ann), 2),
-                    max_dd_pct=round(-st.max_dd * 100, 1),
+                    sharpe=round(
+                        _finite(single.get("sharpe_per_trade"), st.sharpe_ann), 2
+                    ),
+                    max_dd_pct=round(_finite(single.get("max_dd"), -st.max_dd) * 100, 1),
                 )
             )
         return folds
@@ -569,15 +635,14 @@ class NautilusBacktestAdapter:
         sleeves: list[dict] = []
         trades = wins = 0
         gross_win = gross_loss = 0.0
-        bars_for_folds = None
+        all_bars: list = []
 
         for inst in compiled.instruments:
             bars = self._loader(inst["symbol"], inst["timeframe"])
             curve, m = self._run_one(spec, bars, inst["symbol"])
             curves.append(curve)
             sleeves.append(m)
-            if bars_for_folds is None:
-                bars_for_folds = bars
+            all_bars.append(bars)
             n = int(m.get("n_trades") or 0)
             trades += n
             wins += int(round(_finite(m.get("win_rate")) * n))
@@ -595,17 +660,28 @@ class NautilusBacktestAdapter:
         blended = [sum(c[i] for c in curves) / len(curves) for i in range(width)]
         st = _curve_stats(blended, _finite(sleeves[0].get("annualization"), 252.0))
 
-        # Everything below is trade-resolution, so it stays self-consistent:
-        # `sharpe_per_trade` is the engine's frequency-correct per-trade ratio
-        # (mean/std × √n_trades), and the drawdown comes from the same realized
-        # curve. The engine's own `sharpe`/`max_dd` are deliberately NOT used —
-        # both derive from the MTM series described in _run_one.
+        # Drawdown: the engine's MTM figure (bar-resolution, so it catches dips
+        # the realized curve never sees). Blended sleeves have no engine-side
+        # equivalent, hence the recomputation fallback.
+        #
+        # Sharpe: `sharpe_per_trade` rather than the engine's bar-frequency
+        # `sharpe`, deliberately. Bar-frequency Sharpe counts every flat bar as
+        # a zero return, so a strategy that sits out of the market most of the
+        # time gets a deflated denominator — the same run reads 6.02
+        # bar-frequency against 0.51 per-trade. The studio *ranks* strategies
+        # (optimizer objective, deploy gate), and that bias would systematically
+        # favour rarely-trading ones. Swap this line for `single.get("sharpe")`
+        # to mirror what the /backtest page shows instead.
         single = sleeves[0] if len(sleeves) == 1 else {}
         sharpe = _finite(single.get("sharpe_per_trade"), st.sharpe_ann)
-        max_dd = -st.max_dd  # negative fraction, from the realized curve
+        max_dd = _finite(single.get("max_dd"), -st.max_dd)  # negative fraction
 
+        wf = compiled.walkforward
         folds = self._folds(
-            spec, bars_for_folds, int(compiled.walkforward.get("folds", 6))
+            spec,
+            all_bars,
+            int(wf.get("folds", 6)),
+            embargo_bars=int(wf.get("embargo_bars", 0) or 0),
         )
 
         return BacktestMetrics(
@@ -616,6 +692,6 @@ class NautilusBacktestAdapter:
             trades=trades,
             win_rate_pct=round(wins / trades * 100, 1) if trades else 0.0,
             profit_factor=round(gross_win / gross_loss, 2) if gross_loss else 0.0,
-            equity_curve=blended,
+            equity_curve=_downsample(blended),
             folds=folds,
         )

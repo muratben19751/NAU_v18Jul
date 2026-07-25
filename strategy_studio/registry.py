@@ -31,17 +31,6 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from indicators import (
-    calc_adx,
-    calc_atr,
-    calc_nadaraya_watson,
-    calc_rsi,
-    calc_stoch_rsi,
-    calc_volume_change,
-    calc_wave_trend,
-    ema,
-)
-
 Bars = Mapping[str, Sequence[float]]
 
 
@@ -51,6 +40,8 @@ def _col(bars: Bars, name: str) -> list[float]:
 
 
 def _impl_wavetrend(bars: Bars, n1: int = 10, n2: int = 21) -> Any:
+    from indicators import calc_wave_trend
+
     return calc_wave_trend(
         _col(bars, "high"),
         _col(bars, "low"),
@@ -61,37 +52,51 @@ def _impl_wavetrend(bars: Bars, n1: int = 10, n2: int = 21) -> Any:
 
 
 def _impl_rsi(bars: Bars, len: int = 14) -> Any:  # noqa: A002 — schema param name
+    from indicators import calc_rsi
+
     return calc_rsi(_col(bars, "close"), period=len)
 
 
 def _impl_stochrsi(bars: Bars, len: int = 14, k: int = 3, d: int = 3) -> Any:  # noqa: A002
+    from indicators import calc_stoch_rsi
+
     return calc_stoch_rsi(
         _col(bars, "close"), rsi_period=len, stoch_period=len, k_period=k, d_period=d
     )
 
 
 def _impl_ema(bars: Bars, len: int = 200) -> Any:  # noqa: A002
+    from indicators import ema
+
     series = ema(_col(bars, "close"), period=len)
     return series[-1] if series else None
 
 
 def _impl_adx(bars: Bars, len: int = 14) -> Any:  # noqa: A002
+    from indicators import calc_adx
+
     return calc_adx(
         _col(bars, "high"), _col(bars, "low"), _col(bars, "close"), period=len
     )
 
 
 def _impl_nadaraya_watson(bars: Bars, bandwidth: float = 8, mult: float = 3) -> Any:
+    from indicators import calc_nadaraya_watson
+
     return calc_nadaraya_watson(
         _col(bars, "close"), bandwidth=bandwidth, multiplier=mult
     )
 
 
 def _impl_relative_volume(bars: Bars, window: int = 20) -> Any:
+    from indicators import calc_volume_change
+
     return calc_volume_change(_col(bars, "volume"), lookback=window)
 
 
 def _impl_atr(bars: Bars, len: int = 14) -> Any:  # noqa: A002
+    from indicators import calc_atr
+
     return calc_atr(
         _col(bars, "high"), _col(bars, "low"), _col(bars, "close"), period=len
     )
