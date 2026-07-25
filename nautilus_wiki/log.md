@@ -550,3 +550,20 @@ geçiyordu (boşluk mikrosaniye mertebesinde) — ayırt edici olmadığı için
 yerine "tek bağlantı" invaryantı ölçülüyor, eski kodda 3 != 1 ile düşüyor.
 
 Testler: 539 → **545 geçen / 0 hatalı**. `ruff check .` (tüm repo) temiz.
+
+## 2026-07-26 (ek) — modül haritası ikinci tura yetiştirildi
+
+Bir önceki senkron (03bf9b6) ikinci tur bulgularını sentez sayfasına işlemiş ama
+[[webapp_module_map]] tablosunu güncellememişti — kod↔doküman köprüsünün yarısı
+eksik kalmıştı. Kapatıldı:
+
+- `strategy_studio/` satırı: `promote_draft`'ın atomikliği (üç ayrı işlem → tek
+  `BEGIN IMMEDIATE`, silme okunan json'a koşullu, ortak gövde `_insert_version`).
+- `web/routes/strategy_studio.py` satırı: `OPTIMIZER`'ın import anında yakaladığı
+  bayat adaptör ve `_optimizer()` çözümü; modül-düzeyi kurulumun bilinçli olarak
+  korunduğu §9.5'e bağlandı.
+- Değişiklik günlüğüne 2026-07-26 turu (4 bulgu + kapatılmayanın gerekçesi +
+  test yöntemi notu).
+
+Lint öncesi/sonrası temiz (0/0); backlinks 71 sayfada tazelendi, index yenilendi,
+sağlık raporu `lint/2026-07-26_health.md` olarak dosyalandı.
