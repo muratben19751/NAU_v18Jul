@@ -13,6 +13,7 @@ Templates live in ``web/templates/studio/``, static assets in
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import time
@@ -532,10 +533,57 @@ def route_opt_apply(strategy_id: str, rank: int = Form(...)):
 
 
 def _baseline_metrics(strategy_id: str) -> BacktestMetrics | None:
+    """Last recorded run — the deploy gate's baseline.
+
+    Deliberately reads what the user actually ran, not a freshly measured
+    number: the gate must judge a real engine run they triggered themselves.
+    """
     run = store.latest_run(strategy_id)
     if run and run["status"] == "done" and run["metrics"]:
         return BacktestMetrics.from_json(run["metrics"])
     return None
+
+
+# Trial baselines, keyed by (engine, definition). Bounded: the AI loop walks
+# through many definitions and this must not grow without limit.
+_TRIAL_BASELINE_CACHE: dict[tuple[str, str], BacktestMetrics] = {}
+_TRIAL_BASELINE_CACHE_MAX = 64
+
+
+def _trial_baseline(defn: StrategyDefinition) -> BacktestMetrics | None:
+    """Baseline measured on the *same* engine the trial will run on.
+
+    evaluate_trial's guardrails compare trial against baseline. Taking the
+    baseline from latest_run would compare a TRIAL_ADAPTER trial against
+    whatever engine produced that stored run — with the two engine switches
+    set differently, the guardrail would then be deciding on stub-vs-Nautilus
+    differences rather than on the suggestion itself. So measure it here, on
+    the unmodified definition, with TRIAL_ADAPTER.
+
+    Cached per (engine, definition): the AI loop asks for the same baseline
+    once per iteration, and under STUDIO_BACKTEST_OPT=nautilus each miss is a
+    full engine run.
+
+    Whether a baseline exists at all is unchanged — it still takes a completed
+    run on the strategy. Measuring one unconditionally would switch the
+    guardrails on for strategies that have never been backtested, which is a
+    different decision from "which engine produced the comparison".
+    """
+    if not _baseline_metrics(defn.id):
+        return None
+    key = (type(TRIAL_ADAPTER).__name__,
+           hashlib.sha256(defn.model_dump_json().encode()).hexdigest())
+    hit = _TRIAL_BASELINE_CACHE.get(key)
+    if hit is not None:
+        return hit
+    try:
+        metrics = TRIAL_ADAPTER.run(compile_strategy(defn))
+    except Exception:  # noqa: BLE001 — unrunnable baseline ⇒ guardrails skip it
+        return None
+    if len(_TRIAL_BASELINE_CACHE) >= _TRIAL_BASELINE_CACHE_MAX:
+        _TRIAL_BASELINE_CACHE.clear()
+    _TRIAL_BASELINE_CACHE[key] = metrics
+    return metrics
 
 
 def _make_suggestion(defn: StrategyDefinition, ask: str,
@@ -543,7 +591,8 @@ def _make_suggestion(defn: StrategyDefinition, ask: str,
                      min_trades: int = 0) -> tuple[str, str]:
     """suggest -> trial -> guardrails. Returns (suggestion_id, status)."""
     from strategy_studio.registry import INDICATOR_REGISTRY as REG
-    baseline = _baseline_metrics(defn.id)
+    # Same engine as the trial — see _trial_baseline.
+    baseline = _trial_baseline(defn)
     prompt = build_prompt(defn, baseline, ask, scope,
                           store.rejected_rationales(defn.id),
                           list(REG.keys()))

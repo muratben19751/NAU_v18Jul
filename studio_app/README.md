@@ -91,6 +91,16 @@ call — so a 100-combination sweep is ~700 Nautilus runs. Flipping the
 single-run switch alone must not trigger that, and it doesn't: the optimizer
 and `evaluate_trial` read `TRIAL_ADAPTER`, the Run button reads `ADAPTER`.
 
+Because the two can differ, the AI guardrail baseline is **measured on
+`TRIAL_ADAPTER`** (`_trial_baseline`, cached per engine+definition) rather than
+read from the last recorded run — otherwise a stub trial would be compared
+against Nautilus numbers and the guardrail would be judging the engine gap.
+Whether a baseline exists at all is unchanged: it still takes a completed run,
+so guardrails stay off until the strategy has actually been backtested. The
+**deploy gate keeps reading `latest_run`** (`_baseline_metrics`) on purpose —
+it must judge a real run the user triggered. Guarded by
+`tests/studio/test_baseline_engine.py`.
+
 ### Known gap: the demo fixture cannot run on the real engine
 
 `wt-funding-v3` uses a regime branch, `funding_z`, price-vs-`ema` and
