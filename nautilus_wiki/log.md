@@ -444,3 +444,35 @@ commit'i vardı (b834d86). Açık boşluklar bir önceki girdideki gibi duruyor.
 **Açık boşluk:** Deflasyon yayılım ölçmeyi gerektiriyor — tek aday skorlayan
 sweep sessizce deflate edilmemiş PSR'a düşüyor. Beşinci INTEGRATION POINT
 (`deploy.py` → gerçek TradingNode hand-off) hâlâ stub.
+
+## 2026-07-25 (4) — IP#5: koşulabilir artifact + paper runner
+
+- **`wiki/synthesis/strategy_studio.md`** — yeni bölüm "Deployment: koşulabilir
+  artifact + paper runner". İki iş: (1) artifact artık stratejinin KENDİSİNİ
+  taşıyor — `to_nautilus`'un indirdiği `ComposedStrategySpec` — eskiden yalnız
+  koşul sayımları vardı, yani beşinci entegrasyon noktası bağlanacak runner'dan
+  ÖNCE, ortada koşulabilir belge olmadığı için tıkalıydı; (2) `PaperRunner`
+  artifact'i sandbox `TradingNode`'una indiriyor (canlı Bybit verisi,
+  `SandboxExecutionClient`, kimlik bilgisi yok).
+- **`environment='live'` reddi kayda geçti** — sessizce paper koşmak yerine
+  gürültülü ret, iki gerekçesiyle: borsa kimlik bilgisi yok ve deploy kapısı
+  hâlâ deflate edilmemiş tek-koşu DSR'ını okuyor.
+- **Ölçümle bulunan dört tuzak** ayrı bir alt bölüm oldu; hiçbiri gerçek node'a
+  bağlanmadan görünmezdi: node kurulduğu loop'a bağlanır (yanlış thread'de
+  kurmak data client'ı hiç bağlamıyor, 60 sn sonra timeout);
+  `product_types=None` = tüm Bybit ürünleri (option dahil) ve bağlantı hiç
+  tamamlanmıyor; 'running' tek seferlik bir iddiadır, sonradan ölen node satırı
+  yeşil bırakıyordu; durmuş bir Nautilus bileşeni START'ı reddeder — UI'daki
+  Resume düğmesi hiçbir şey yapmıyordu, doğru geçiş RESUME.
+- **Durum bölümü**: beş INTEGRATION POINT'in beşi de bağlı. Kalan iş entegrasyon
+  değil kapsam (canlı emir yolu bilerek açılmadı). Üç motor anahtarının da
+  opt-in olma gerekçesi tek yerde toplandı.
+- **`wiki/synthesis/webapp_module_map.md`** — `strategy_studio/` satırına
+  `deploy.py` (koşulabilir artifact) ve yeni `runner.py` işlendi.
+- Lint öncesi/sonrası temiz (0/0); backlinks 70 sayfada tazelendi; index
+  yeniden üretildi; `lint/2026-07-25_health.md` yazıldı.
+
+**Yeni açık boşluklar:** deployment node'ları süreç-içi (sunucu yeniden
+başlarsa koşan her deployment `failed`'a düşer — kalıcılık ayrı bir runner
+süreci ister); `kill_switch_daily_pct` artifact'te taşınıyor ama node tarafında
+uygulanmıyor; paper runner sandbox dolumlarını/PnL'ini panele raporlamıyor.

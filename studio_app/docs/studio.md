@@ -78,6 +78,36 @@ produce by luck alone. It is therefore *not* comparable to the single-run
 `dsr`, which is undeflated PSR (one trial). Nothing survives ⇒
 `NoViableCandidates` with the rejection tally, surfaced as a failed run.
 
+## Deployment contract
+
+`prepare_deployment(defn, latest_metrics, cfg) -> artifact JSON` compiles the
+**saved** version, runs the gate, then lowers it with `to_nautilus`. The
+artifact is runnable, not a description:
+
+| key | what a runner does with it |
+|---|---|
+| `artifact_schema` | refuse a version you do not know (v1 was counts-only) |
+| `spec` | `ComposedStrategySpec.from_dict` → one `ComposedStrategy` per instrument |
+| `instruments` | the spec is instrument-free, so the pairing lives here |
+| `capital`, `risk`, `kill_switch_daily_pct` | account size, risk block, kill switch |
+
+Anything `to_nautilus` refuses (regime branch, ranked allocation, an indicator
+with no engine block …) is refused **at deploy time** with its reasons, and the
+modal disables the button rather than letting you submit into a 422.
+
+`PaperRunner` (`STUDIO_RUNNER=paper`) runs the artifact as a sandbox
+`TradingNode`: live Bybit market data, `SandboxExecutionClient` fills, no
+credentials anywhere. One node per deployment, each on its own thread and loop.
+
+* `environment='live'` is **refused** — no exchange credentials exist, and the
+  gate still reads the undeflated single-run DSR.
+* `pending → running` means the node was built and handed to its loop. If it
+  dies later the serve thread flips the row to `failed` with the reason.
+* pause stops the strategies and keeps the node up; resume uses the component
+  RESUME transition (a STOPPED component refuses START) so warm-up survives.
+* The node registry is in-process, so `reconcile_orphans` marks `running` rows
+  with no node behind them as `failed` at startup.
+
 ## Notes & limitations
 
 - Regime ELSE supports an inline substrategy (entry/exit share the main

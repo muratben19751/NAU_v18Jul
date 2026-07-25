@@ -192,6 +192,59 @@ yanlış kod kullanıcıya "buton hiçbir şey yapmadı" olarak görünür.
   için), ama `route_ai_suggest` bunu yakalar: 500 dönmek HTMX'te hiçbir şeyi
   swap etmez ve hata görünmez olurdu.
 
+## Deployment: koşulabilir artifact + paper runner
+
+Artifact "bir runner'ın tükettiği JSON" diye tanımlanmıştı ama içinde
+stratejinin kendisi yoktu — `compiled` alanı yalnızca **sayımlardı**
+(`entry_conditions: 3`, `has_regime: false`). Beşinci entegrasyon noktası bu
+yüzden, bağlanacak runner'dan önce, elinde koşulabilir bir belge olmadığı için
+tıkalıydı. Artık `to_nautilus`'un indirdiği `ComposedStrategySpec` serileşiyor:
+backtest yolunun çalıştırdığı nesnenin aynısı. Spec enstrümansız olduğundan
+`instruments` ayrı anahtar; runner eşleştirmeyi oradan yapar. `artifact_schema`
+sürümlenir (v1 = sayımlar) — runner bilmediği sürümü reddeder, tahmin etmez.
+
+Bunun getirdiği üç dürüstlük düzeltmesi: indirilemeyen strateji **deploy
+edilemiyor** (tıklamanın kendisi 422 + gerekçeler, modal da butonu kilitliyor);
+`instruments="all"` iş yapıyor (artifact eskiden hep aktif listeyi yazıp
+`config`'te "all" diyordu); ranked allocation artifact'e yazılmıyor —
+`to_nautilus` onu zaten reddediyor, yazılması destekleniyormuş gibi okunuyordu.
+
+`PaperRunner` (`STUDIO_RUNNER=paper`) artifact'i **sandbox ortamında gerçek bir
+`TradingNode`**'a indiriyor: canlı Bybit piyasa verisi, `SandboxExecutionClient`
+dolumları, hiçbir yerde kimlik bilgisi yok. Deployment başına bir node, her biri
+kendi thread'i ve kendi event loop'unda.
+
+`environment='live'` burada **reddediliyor**, sessizce paper koşulmuyor: bu
+uygulamada borsa kimlik bilgisi yok (yalnız LLM anahtarları) ve deploy kapısı
+hâlâ tek-koşunun deflate edilmemiş DSR'ını okuyor — iyimser bir kapının üstüne
+gerçek emir yolu kurmak yanlış sıra.
+
+### Ölçümle bulunan dört tuzak
+
+Gerçek node'a bağlanana kadar dördü de görünmezdi; her birinin regresyon testi
+var:
+
+1. **Node kurulduğu loop'a bağlanır.** Çağıran thread'de kurup başka thread'in
+   loop'unda koşturmak "Started when loop is not running" üretiyor; data
+   client'ın `_connect` coroutine'i hiç await edilmiyor ve node 60 sn sonra
+   `DataEngine.check_connected() == False` ile düşüyor. Node artık
+   `set_event_loop`'tan sonra, kendi thread'inde kuruluyor.
+2. **`product_types=None` = BYBIT_ALL_PRODUCTS** (spot + linear + inverse +
+   option). Bağlantı hiç tamamlanmıyordu; enstrüman id'lerinin kurulduğu tek
+   ürüne sabitlendi.
+3. **'running' tek seferlik bir iddiadır.** Node sonradan ölünce satır yeşil
+   rozetle kalıyordu. Serve thread'i kendi çıkışını bildiriyor (bilerek yapılan
+   stop hariç) ve durum raporu teardown'dan **önce** gidiyor — `dispose()`
+   bloklarsa haber yutulmasın.
+4. **Durmuş bileşen START'ı reddeder** (`InvalidStateTrigger('STOPPED ->
+   START')`) — UI'daki Resume düğmesi hiçbir şey yapmıyordu. Doğru geçiş
+   RESUME; ayrıca `reset()`'in aksine strateji durumunu koruyor, indikatörler
+   ısınmayı baştan yapmıyor.
+
+Node kaydı süreç-içi olduğu için yeniden başlatma sonrası `running` kalan
+satırlar açılışta uzlaştırılıyor (`reconcile_orphans` → `failed` + gerekçe).
+Arkasında node olmayan yeşil rozet, başarısızlıktan kötüdür: iyi görünür.
+
 ## AI guardrail baseline'ı
 
 `evaluate_trial` denemeyi baseline ile karşılaştırır. İki motor anahtarı farklı
@@ -204,10 +257,15 @@ kendi tetiklediği gerçek koşuyu yargılamalıdır.
 
 ## Durum
 
-Beş INTEGRATION POINT'ten dördü bağlı: `registry.py` (indikatörler, 15'te 8),
-`backtest.py` (motor), `optimizer.py` (walk-forward) ve `ai.py` (LLM istemcisi).
-Kalan: `deploy.py` — `_stub_runner_pickup` yaşam döngüsünü simüle ediyor,
-gerçek canlı/sim TradingNode hand-off'u bağlanacak.
+Beş INTEGRATION POINT'in beşi de bağlı: `registry.py` (indikatörler, 15'te 8),
+`backtest.py` (motor), `optimizer.py` (walk-forward), `ai.py` (LLM istemcisi) ve
+`deploy.py` + `runner.py` (sandbox TradingNode). Kalan iş entegrasyon değil,
+kapsam: canlı emir yolu bilerek açılmadı (bkz. yukarıdaki `live` reddi).
+
+Üç motor anahtarı da opt-in, hepsi aynı gerekçeyle — varsayılan kurulum ne ağa
+çıkar ne de pahalı koşar, test takımı çevrimdışı kalır:
+`STUDIO_BACKTEST` (Run), `STUDIO_BACKTEST_OPT` (sweep + AI denemeleri),
+`STUDIO_RUNNER=paper` (deployment node'u).
 
 Tohumlanan iki demo stratejisi: `wt-funding-v3` (tasarım maketi — rejim dalı +
 `funding_z` içerdiği için yalnız stub'da koşar) ve `rsi-adx-btc` (motorda
@@ -218,6 +276,10 @@ net +%1.54, Sharpe 0.51, DSR 0.71, Max DD −%2.99, ~2 sn.
 Gerçek motorda walk-forward doğrulaması (rsi-adx-btc, 3 kombinasyon, 3 fold):
 12 motor koşusu (3 eleme + 3×3 fold), 6.4 sn. Sıralama sönümlemenin beklendiği
 gibi 19 işlemli adayı, 3 işlemli `sharpe=48` tuzağının üstüne koydu.
+
+Paper runner doğrulaması (aynı strateji, canlı Bybit verisi): launch → 2.4 sn'de
+node ayakta, 1 enstrüman cache'te, strateji RUNNING · pause → durdu · resume →
+tekrar çalışıyor · stop → node yıkıldı, thread kalmadı, sahte `failed` olayı yok.
 
 ## Bilinen boşluklar
 
@@ -231,6 +293,12 @@ gibi 19 işlemli adayı, 3 işlemli `sharpe=48` tuzağının üstüne koydu.
 - `OptResult.sharpe` fold Sharpe'larının düz ortalamasıdır; `min_trades`
   eşiğine yakın fold'larda per-trade Sharpe hâlâ büyük sayılar üretebilir
   (sıralamayı bozmaz — sıralama sönümlenmiş skoru kullanır).
+- Deployment node'ları süreç-içi: sunucu yeniden başlarsa koşan her deployment
+  ölür ve `failed`'a düşer. Kalıcılık için ayrı bir runner süreci gerekir.
+- `kill_switch_daily_pct` artifact'te taşınıyor ama node tarafında **henüz
+  uygulanmıyor** — günlük PnL'i izleyip deployment'ı duraklatan monitör yazılmadı.
+- Paper runner sandbox dolumlarını raporlamıyor: panel node'un durumunu
+  gösteriyor, ürettiği işlemleri/PnL'i değil.
 
 <!-- BACKLINKS:BEGIN -->
 ## Referenced by
