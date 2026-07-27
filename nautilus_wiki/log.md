@@ -646,3 +646,30 @@ wiki'ye yansıtıldı. Tasarım dokümanı repo kökünde `CANVAS_DESIGN.md`.
   **39** (545 → 584). Hata aritmetikten değil sıralamadan geldi: ilk tam-süit
   koşusu `test_graph.py` yazıldıktan SONRA yapılmıştı, yani 557'lik ara ölçüm
   zaten 12 yeni testi içeriyordu. `--collect-only` ile beş dosya sayıldı.
+
+## 2026-07-27 (3) — wiki-sync: Strategy Builder enstrüman seçici
+
+Kullanıcı isteği: "backtest edeceğim sembolü seçebilmeliyim, sadece 3 sembol
+görünüyor". Kurucunun enstrüman çipleri seçici hâline getirildi (ekle/sil),
+sonuç iki sayfaya işlendi.
+
+- **[[strategy_studio]]** — yeni bölüm "Enstrüman çipleri: stub'tan seçiciye".
+  Üç tasarım kararı kaydedildi: datalist-vs-select (katalog kapalı liste değil),
+  timeframe listesinin `BYBIT_ALL_INTERVALS`'tan türemesi (adaptörün
+  `_interval_code`'uyla tek kaynak), toggle ile ✕'in kardeş öğe olması.
+- **[[webapp_module_map]]** — değişiklik günlüğüne "Strategy Builder enstrüman
+  seçici (2026-07-27)" maddesi.
+- **düzeltme (bayat iddia)** — route satırındaki `APIRouter (29 route)` sayısı
+  ölçülüp **34** olarak güncellendi. Sayı zaten canvas turunda (3 GET) bayatlamıştı;
+  bu tur 2 route daha ekledi. Ders: haritaya yazılan SAYILAR bayatlar — ölçmeden
+  taşıma.
+- **kapsam notu** — AI cockpit / Lab / Agent Backtest sayfalarındaki sabit
+  BTC/ETH/SOL `<select>`'leri bilerek dokunulmadan bırakıldı (kullanıcı yalnız
+  kurucu çiplerini istedi). Backtest sekmesi zaten `_bybit_symbols()` ile
+  katalogdan besleniyor — üç sayfa bu desene çekilirse ayrı bir tur olur.
+- **boşluk (devam)** — `strategy_studio/*.py` modüllerinin haritada hâlâ kendi
+  satırı yok; enstrüman mutasyonları da paket satırının içinde kaldı.
+
+Genel ders (ikinci beyne de yazıldı, [[strategy_studio]] §Enstrüman çipleri):
+HTMX'te `hx-*` taşıyan bir öğeyi başka bir `hx-*` öğesinin İÇİNE koymak tek
+tıkta iki istek attırır — dinleyici elemanın kendisine bağlıdır, event kabarır.

@@ -319,6 +319,34 @@ yenilenince sürükleme sessizce ölürdü (regresyon olarak elle doğrulandı).
 Hedef bloğun dropdown'ında olmayan bir indikatör 422 üretecek istek atmak
 yerine sessizce yok sayılır. Panel artık gizlenmiyor, daralıyor (170px → 150px).
 
+## Enstrüman çipleri: stub'tan seçiciye (2026-07-27)
+
+Kütüphane panelinin hikâyesi bir kez daha, bu sefer başlıktaki çip şeridinde:
+"+ Add" çipi `cursor:pointer` ile duruyordu ama arkasında endpoint yoktu
+(`title="Phase 2+: add instrument via config"`). Strateji hangi üç enstrümanla
+seed edildiyse onunla kalıyordu; tek yapılabilen aktif/pasif toggle'ıydı.
+
+Artık `POST /studio/{id}/instruments` + `DELETE .../{symbol}` var, mutasyonlar
+`add_instrument`/`remove_instrument`. Üç incelik:
+
+- **Datalist, select değil.** Katalogdaki semboller *öneri*; `load_bybit_bars`
+  bilinmeyen bir sembolü ilk koşuda API'den çeker, dolayısıyla kapalı liste
+  kullanıcıyı gereksiz yere kataloğa hapsederdi. Öneriler yalnız **linear**:
+  `BybitBarsAdapter._recipe` her tarifi `category="linear"` ile kurar, inverse
+  ya da spot-only bir sembol sessizce yanlış piyasadan yüklenirdi.
+- **Timeframe listesi tek kaynaktan.** `BYBIT_ALL_INTERVALS` etiketleri —
+  adaptörün `_interval_code`'unun okuduğu tablonun aynısı; seçiciye düşen her
+  etiket tanımı gereği koşulabilir, "geçersiz timeframe" ancak elle POST'la
+  üretilebilir.
+- **Toggle ile ✕ kardeş.** `hx-delete`'i `hx-patch`'li çipin içine yerleştirmek
+  tek tıkta iki isteğe yol açıyordu; ikisi ayrı öğe olunca JS'siz çözülür.
+
+Silme, toggle'ın "en az bir enstrüman aktif kalmalı" kuralını miras alır ve
+sembol tekil tutulur — rotalar `{symbol}` ile eşlediği için ikinci bir kayıt
+ayırt edilemezdi. Katalog taraması `_ctx`'te her blok render'ında koştuğundan
+60 sn TTL ile cache'lenir: `/data`'dan yeni indirilen bir sembol sunucu
+yeniden başlatılmadan seçicide görünür.
+
 ## HTTP semantiği: 404 kaynak, 422 girdi
 
 HTMX yüzeyinde durum kodu bir UX kararıdır — 2xx dışını HTMX swap etmez, yani
