@@ -53,6 +53,61 @@ shadows the other — but the shared name is worth remembering.
 The store keeps its own SQLite file rather than joining an existing one: the
 app has no other SQLite database.
 
+## Canvas view
+
+`/studio/{strategy_id}/canvas` is the same strategy as a node graph — a second
+visualiser, not a second editor. The form view stays exactly as it was; the two
+link to each other from their headers and both read the same working copy.
+
+Screen: **palette | canvas | inspector**, with the metrics strip in the header.
+
+```
+GET /studio/{id}/canvas                     page
+GET /studio/{id}/canvas/graph               {nodes, edges, meta}
+GET /studio/{id}/canvas/inspector/{node}    the selected node's block partial
+```
+
+All three are GETs, and they are the only routes the canvas added. Everything
+that writes — dropping an indicator, editing a chip, deleting a rule, save,
+discard, run — calls an endpoint that already existed. That is why server rules
+need no restating: delete the last entry rule from the canvas and you get the
+same 422 the form view gets, in the same error banner.
+
+**No node-editor library.** `StrategyDefinition` is a constrained tree
+(`regime? → entry/exit RuleGroup → Rule → risk → allocation`), not a free
+graph. Edges follow from the schema, so the user never draws them, and a
+library that let them would mostly buy validation work. `strategy_studio/graph.py`
+derives `{nodes, edges, meta}` as a pure function — no store access, no request
+— and `web/static/canvas.js` turns layer indices into pixels with plain SVG.
+
+**Nothing about the view is stored.** No position, no zoom, no edge list; the
+schema gained no canvas field. Layout is recomputed on every render, which is
+also why the layer assignment lives in `graph.py` where tests can pin it.
+
+| Node | Comes from | Inspector shows |
+|---|---|---|
+| `instrument` | active `defn.instruments` | `_instruments.html` |
+| `regime` | `defn.regime` (its conditions hang off it) | `_regime_block.html` |
+| `rule` / `filter` | `iter_rules()` — filters get a dashed edge | its containing block |
+| `group` | entry / exit / substrategy `RuleGroup` | `_rule_group.html` |
+| `risk` | `defn.risk` | `_risk_block.html` |
+| `allocation` | `defn.allocation` | `_allocation_block.html` |
+| `ghost` | pending AI suggestion (passed in, not read) | the block, with accept/dismiss |
+
+A rule is inspected through its containing block rather than through
+`_rule.html` alone: a lone rule's controls target `closest .block`, which
+outside a block has nothing to swap. The page loads `studio.js` for the same
+reason — reusing a partial without its behaviour gives you chips that look
+editable and are not.
+
+Controls: wheel or `+`/`-` to zoom, drag or arrow keys to pan, `0` or ⤢ to fit,
+minimap click to jump, `Esc` to clear the selection. Keyboard shortcuts stand
+down while an inspector field has focus.
+
+Deliberately out of scope: drawing your own edges (the schema tree does not
+allow it), persisting node positions, and removing the form view — the two
+views live side by side indefinitely. Design notes: `CANVAS_DESIGN.md`.
+
 ### INTEGRATION POINT status
 
 - **`registry.py` — wired.** Eight indicators (`rsi`, `ema`, `adx`, `atr`,

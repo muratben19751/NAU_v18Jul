@@ -355,6 +355,13 @@ def canvas_page(request: Request, strategy_id: str):
         defn, is_draft = store.working_copy(strategy_id)
     except KeyError:
         raise HTTPException(404, f"strategy '{strategy_id}' not found")
+    # Same three values studio_page computes for the footer; the canvas renders
+    # that same partial compactly in its header rather than duplicating it.
+    run = store.latest_run(strategy_id)
+    metrics = spark = None
+    if run and run["status"] == "done" and run["metrics"]:
+        metrics = BacktestMetrics.from_json(run["metrics"])
+        spark = _spark_path(metrics.equity_curve)
     return _tpl().TemplateResponse(
         request,
         "studio/canvas.html",
@@ -365,14 +372,55 @@ def canvas_page(request: Request, strategy_id: str):
             page_title="Strategy Builder · Canvas",
             library=library_by_category(),
             is_draft=is_draft,
+            initial_run=run,
+            initial_metrics=metrics,
+            initial_spark=spark,
         ),
     )
+
+
+def _ghost_diff_text(sugg: Suggestion) -> str:
+    """One line describing what the suggestion would change — the same fields
+    ``_ghost.html`` shows, flattened for a node caption."""
+    d = sugg.diff or {}
+    if sugg.kind == "add_rule":
+        return d.get("indicator", "") + (" as filter" if d.get("as_filter") else "")
+    if sugg.kind in ("modify_param", "modify_risk"):
+        return f"{d.get('param') or d.get('name')} → {d.get('value')}"
+    if sugg.kind == "remove_rule":
+        return f"rule {str(d.get('rule_id', ''))[:6]}"
+    return (sugg.rationale or "")[:40]
+
+
+def _canvas_ghosts(defn: StrategyDefinition) -> list[dict]:
+    """Pending suggestions, projected for ``to_graph``.
+
+    Kept here rather than in ``graph.py`` so that module never reaches into the
+    store — it stays a pure function of the definition it is handed.
+    """
+    out: list[dict] = []
+    for row in store.pending_suggestions(defn.id):
+        try:
+            sugg = Suggestion.model_validate_json(row["suggestion"])
+        except Exception:  # noqa: BLE001 — a failed suggestion has no diff to draw
+            continue
+        out.append(
+            {
+                "id": row["id"],
+                "block": row["block"],
+                "source": row["source"],
+                "label": sugg.kind.replace("_", " ").title(),
+                "detail": _ghost_diff_text(sugg),
+            }
+        )
+    return out
 
 
 @router.get("/studio/{strategy_id}/canvas/graph")
 def canvas_graph(strategy_id: str):
     """Read-only: StrategyDefinition → {nodes, edges, meta}. No mutation here."""
-    return to_graph(_load_working(strategy_id))
+    defn = _load_working(strategy_id)
+    return to_graph(defn, ghosts=_canvas_ghosts(defn))
 
 
 @router.get(
@@ -388,7 +436,8 @@ def canvas_inspector(request: Request, strategy_id: str, node_id: str):
     ``closest .block`` — outside the block they would have nothing to swap.
     """
     defn = _load_working(strategy_id)
-    node = next((n for n in to_graph(defn)["nodes"] if n["id"] == node_id), None)
+    graph = to_graph(defn, ghosts=_canvas_ghosts(defn))
+    node = next((n for n in graph["nodes"] if n["id"] == node_id), None)
     if node is None:
         raise HTTPException(404, f"node '{node_id}' not found")
     if node["kind"] == "instrument":

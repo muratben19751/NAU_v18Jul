@@ -54,6 +54,18 @@ _GROUP_BADGES = {
 }
 
 
+# Which node a pending suggestion hangs off, by the block it was made for.
+_GHOST_ANCHOR = {
+    "entry": "group:entry",
+    "exit": "group:exit",
+    "sub_entry": "group:sub_entry",
+    "sub_exit": "group:sub_exit",
+    "regime": "regime",
+    "risk": "risk",
+    "allocation": "allocation",
+}
+
+
 def _fmt(v: Any) -> str:
     """Numbers as the UI writes them: 200.0 → '200', 1.5 stays 1.5."""
     if isinstance(v, float) and v.is_integer():
@@ -128,13 +140,18 @@ def _compact(nodes: list[dict]) -> int:
     return len(used)
 
 
-def to_graph(defn: StrategyDefinition) -> dict:
+def to_graph(defn: StrategyDefinition, ghosts: list[dict] | None = None) -> dict:
     """Derive ``{nodes, edges, meta}`` from a strategy definition.
 
     Node kinds: ``instrument | regime | rule | filter | group | risk |
-    allocation``. Edge kinds: ``flow`` (schema spine), ``rule`` (a rule feeding
-    its group), ``filter`` (a "skip if" rule — drawn dashed), ``else`` (the
-    regime's ELSE branch).
+    allocation | ghost``. Edge kinds: ``flow`` (schema spine), ``rule`` (a rule
+    feeding its group), ``filter`` (a "skip if" rule — drawn dashed), ``else``
+    (the regime's ELSE branch), ``ghost`` (a pending AI suggestion).
+
+    ``ghosts`` are pending AI suggestions — ``[{id, block, label, detail,
+    source}]``. They are NOT part of the definition (they live in the store), so
+    they arrive as an argument rather than being read here: this function stays
+    a function of what it is given.
     """
     nodes: list[dict] = []
     edges: list[dict] = []
@@ -271,6 +288,27 @@ def to_graph(defn: StrategyDefinition) -> dict:
         edges.append(_edge(f"group:{block}", "risk"))
     if defn.allocation:
         edges.append(_edge("risk", "allocation"))
+
+    # ── pending AI suggestions, drawn one column left of what they touch ──
+    by_id = {n["id"]: n for n in nodes}
+    for gh in ghosts or []:
+        anchor = by_id.get(_GHOST_ANCHOR.get(gh["block"], ""))
+        if anchor is None:
+            continue  # a suggestion for a block this strategy does not have
+        nodes.append(
+            {
+                "id": f"ghost:{gh['id']}",
+                "kind": "ghost",
+                "label": gh.get("label", "AI suggestion"),
+                "detail": gh.get("detail", ""),
+                "badge": "AI · LOOP" if gh.get("source") == "loop" else "AI",
+                "block": gh["block"],
+                "layer": anchor["layer"] - 1,
+                "badges": [],
+                "ref": {"suggestion_id": gh["id"]},
+            }
+        )
+        edges.append(_edge(f"ghost:{gh['id']}", anchor["id"], "ghost"))
 
     columns = _compact(nodes)
     return {

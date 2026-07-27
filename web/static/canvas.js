@@ -26,9 +26,11 @@ let contentBox = null;           // bbox of the laid-out graph, for fit()
 function applyViewBox() {
   svg.setAttribute('viewBox', `${vb.x} ${vb.y} ${vb.w} ${vb.h}`);
   const label = el('cv-zoom-label');
-  if (!label) return;
-  const r = svg.getBoundingClientRect();
-  if (r.width && vb.w) label.textContent = Math.round((r.width / vb.w) * 100) + '%';
+  if (label) {
+    const r = svg.getBoundingClientRect();
+    if (r.width && vb.w) label.textContent = Math.round((r.width / vb.w) * 100) + '%';
+  }
+  drawMinimapView();
 }
 
 function fit(minScale = 0) {
@@ -128,6 +130,83 @@ document.addEventListener('click', (e) => {
 
 window.addEventListener('resize', applyViewBox);
 
+// ── minimap ────────────────────────────────────────────────────────────
+// A second, fixed projection of the same laid-out graph: content bbox → the
+// minimap's 168×96 box, with the current viewBox drawn on top as a rectangle.
+const MINI_W = 168, MINI_H = 96;
+const mini = el('cv-minimap');
+const miniNodes = el('cv-mini-nodes');
+const miniView = el('cv-mini-view');
+
+function miniScale() {
+  if (!contentBox || !contentBox.w || !contentBox.h) return null;
+  const w = contentBox.w + PAD * 2, h = contentBox.h + PAD * 2;
+  const k = Math.min(MINI_W / w, MINI_H / h);
+  return {
+    k,
+    ox: (MINI_W - w * k) / 2 - (contentBox.x - PAD) * k,
+    oy: (MINI_H - h * k) / 2 - (contentBox.y - PAD) * k,
+  };
+}
+
+function drawMinimapNodes() {
+  if (!miniNodes) return;
+  const s = miniScale();
+  miniNodes.textContent = '';
+  if (!s) return;
+  for (const { node, x, y } of placed.values()) {
+    miniNodes.appendChild(mk('rect', {
+      class: 'cv-mini-node cv-mini-' + node.kind,
+      x: x * s.k + s.ox, y: y * s.k + s.oy,
+      width: Math.max(2, NODE_W * s.k), height: Math.max(1.5, NODE_H * s.k),
+    }));
+  }
+}
+
+function drawMinimapView() {
+  if (!miniView) return;
+  const s = miniScale();
+  if (!s) return;
+  miniView.setAttribute('x', vb.x * s.k + s.ox);
+  miniView.setAttribute('y', vb.y * s.k + s.oy);
+  miniView.setAttribute('width', Math.max(1, vb.w * s.k));
+  miniView.setAttribute('height', Math.max(1, vb.h * s.k));
+}
+
+if (mini) {
+  mini.addEventListener('click', (e) => {
+    const s = miniScale();
+    if (!s) return;
+    const r = mini.getBoundingClientRect();
+    // Click centres the view on that point of the graph.
+    const gx = ((e.clientX - r.left) / r.width * MINI_W - s.ox) / s.k;
+    const gy = ((e.clientY - r.top) / r.height * MINI_H - s.oy) / s.k;
+    vb.x = gx - vb.w / 2;
+    vb.y = gy - vb.h / 2;
+    applyViewBox();
+  });
+}
+
+// ── keyboard ───────────────────────────────────────────────────────────
+const PAN_STEP = 0.12;   // of the current viewport, per press
+
+document.addEventListener('keydown', (e) => {
+  // The inspector is full of inputs; typing "0" in one must not refit the view.
+  const t = e.target;
+  if (t && (t.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(t.tagName))) return;
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
+  const pan = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }[e.key];
+  if (pan) {
+    vb.x += pan[0] * vb.w * PAN_STEP;
+    vb.y += pan[1] * vb.h * PAN_STEP;
+    applyViewBox();
+  } else if (e.key === '+' || e.key === '=') zoomCenter(1 / 1.25);
+  else if (e.key === '-' || e.key === '_') zoomCenter(1.25);
+  else if (e.key === '0') fit();
+  else return;
+  e.preventDefault();
+});
+
 // ── layout ─────────────────────────────────────────────────────────────
 function layout(nodes) {
   const columns = new Map();
@@ -213,6 +292,7 @@ function render() {
     g.appendChild(mk('title', {}, `${node.label}\n${node.detail}`));
     gNodes.appendChild(g);
   }
+  drawMinimapNodes();
   applyViewBox();
 }
 

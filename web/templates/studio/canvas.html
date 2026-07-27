@@ -22,7 +22,19 @@
             hx-target="#strategy-name" hx-swap="outerHTML">Save</button>
     <button class="btn" hx-post="/studio/{{ defn.id }}/discard"
             hx-confirm="Discard all unsaved changes?" hx-swap="none">Discard</button>
+    <button class="btn primary" hx-post="/studio/{{ defn.id }}/backtest"
+            hx-target="#footer-metrics" hx-swap="outerHTML">▶ Run</button>
   </header>
+
+  {# The form view's footer partial, compact and in the header. Reused, not
+     copied — including its self-terminating 2s poll while a run is going. Its
+     Optimize button is hidden by CSS: that one targets the side panel, which
+     belongs to the form view. #}
+  <div class="cv-metrics">
+    {% with run = initial_run, metrics = initial_metrics, spark = initial_spark %}
+      {% include "studio/_footer_metrics.html" %}
+    {% endwith %}
+  </div>
 
   <div class="cv-workspace">
     {# The form view's own palette: server-rendered from INDICATOR_REGISTRY, with
@@ -40,6 +52,11 @@
         </defs>
         <g id="cv-edges"></g>
         <g id="cv-nodes"></g>
+      </svg>
+      <svg class="cv-minimap" id="cv-minimap" viewBox="0 0 168 96"
+           preserveAspectRatio="none" aria-label="Minimap">
+        <g id="cv-mini-nodes"></g>
+        <rect id="cv-mini-view" class="cv-mini-view"></rect>
       </svg>
       <div class="cv-toolbar">
         <button class="cv-tool" data-zoom="out" title="Zoom out">−</button>

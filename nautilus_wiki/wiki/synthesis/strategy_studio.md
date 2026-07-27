@@ -77,6 +77,56 @@ kullanılmadığı için kabuk bundan etkilenmiyor.
 Sayfa içindeki "StrategyBuilder" logosu da kaldırıldı: topbar zaten sayfa adını
 yazıyor.
 
+## Canvas görünümü (2026-07-27)
+
+`/studio/{id}/canvas` — aynı stratejinin node graf'ı. **İkinci bir editör değil,
+ikinci bir görselleştirici**: form görünümü olduğu gibi durur, ikisi header'dan
+birbirine link verir ve ikisi de aynı working copy'yi okur. Düzen: sol palet |
+orta canvas | sağ inspector, header'da metrik şeridi.
+
+**Serbest node editörü (React Flow / Drawflow) kullanılmadı.**
+`StrategyDefinition` serbest bir graf değil, kısıtlı bir ağaçtır
+(`regime? → entry/exit RuleGroup → Rule → risk → allocation`). Kenarlar şemadan
+türer; kullanıcının kablo çekmesine izin veren bir kütüphane, esas olarak
+validasyon işi satın alırdı. Yerine: `strategy_studio/graph.py` içindeki
+`to_graph()` — saf fonksiyon, store'a dokunmaz, request görmez — ve
+`web/static/canvas.js` katman indekslerini piksele çeviren düz SVG (~150 satır
+zoom/pan, bundler yok). Genel ders: [[kisitli_agac_serbest_graf_degil]].
+
+**Görünüme dair hiçbir şey saklanmaz.** Node pozisyonu, zoom, kenar listesi —
+şemaya tek alan eklenmedi; layout her render'da yeniden hesaplanır. Katman
+ataması bilerek `graph.py`'de (tarayıcıda değil), testler kolon sırasını
+çivileyebilsin diye.
+
+Eklenen üç route'un üçü de **GET**:
+
+```
+GET /studio/{id}/canvas                     sayfa
+GET /studio/{id}/canvas/graph               {nodes, edges, meta}
+GET /studio/{id}/canvas/inspector/{node}    seçili node'un blok partial'ı
+```
+
+Yazan her şey — indikatör bırakma, chip düzenleme, kural silme, save, discard,
+run — **zaten var olan endpoint'e** gider. Bu yüzden sunucu kuralları yeniden
+yazılmaz: canvas'tan son entry kuralını silmeye kalkarsan form görünümünün
+aldığı 422'yi, aynı error banner'da alırsın.
+
+İki uygulama ayrıntısı, ikisi de "partial'ı yeniden kullan" kuralının sınırı:
+(1) bir kural, tek başına `_rule.html` ile değil **kapsayan bloğuyla**
+incelenir — yalnız bir kuralın kontrolleri `closest .block`'u hedefler, blok
+dışında swap edecek bir şey bulamaz. (2) canvas sayfası `studio.js`'i de
+yükler — partial'ı davranışı olmadan yeniden kullanmak, düzenlenebilir görünen
+ama düzenlenmeyen chip'ler demek.
+
+Ghost'lar (bekleyen AI önerileri) tanım içinde değil store'da yaşar; bu yüzden
+`to_graph(defn, ghosts=...)` argüman olarak alır — modül kendi girdisini
+aramaya gitmez. Kabul/reddet düğmeleri mevcut `ai/suggestions/{id}/accept|
+dismiss` uçlarına gider.
+
+Bilinçli kapsam dışı: serbest kenar çizimi, node pozisyonlarının kalıcılığı,
+form görünümünün kaldırılması. Tasarım notu: repo kökünde `CANVAS_DESIGN.md`;
+sentez: [[nau_studio_canvas_konsept_c_2026_07]].
+
 ## Katmanlar
 
 ```

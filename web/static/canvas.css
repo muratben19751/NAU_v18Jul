@@ -11,6 +11,20 @@
 }
 .cv-embed .cv-switch:hover{color:var(--text);border-color:var(--branch)}
 
+/* The form view's footer partial, compacted into a header strip. Same markup,
+   same 2s poll while a run is going — only the presentation differs. */
+.cv-embed .cv-metrics{flex-shrink:0;border-bottom:1px solid var(--line);background:var(--panel)}
+.cv-embed .cv-metrics footer{
+  display:flex;align-items:center;gap:18px;flex-wrap:wrap;
+  padding:6px 18px;border-top:none;background:transparent;min-height:0;
+}
+.cv-embed .cv-metrics .metric{display:flex;align-items:baseline;gap:6px}
+.cv-embed .cv-metrics .metric .k{font-size:.66rem}
+.cv-embed .cv-metrics .metric .v{font-size:.82rem}
+.cv-embed .cv-metrics .sparkline{width:120px;height:22px}
+/* Optimize lives in the form view's side panel; the canvas has none to swap. */
+.cv-embed .cv-metrics .run{display:none}
+
 .cv-embed .cv-workspace{
   flex:1;min-height:0;display:grid;
   grid-template-columns:210px minmax(0,1fr) 320px;
@@ -47,6 +61,20 @@
 .cv-embed .cv-zoom{
   font-family:'IBM Plex Mono',monospace;font-size:.7rem;color:var(--muted);
   min-width:38px;text-align:right;
+}
+
+.cv-embed .cv-minimap{
+  position:absolute;right:14px;bottom:52px;width:168px;height:96px;
+  background:var(--panel);border:1px solid var(--line);border-radius:8px;
+  cursor:pointer;opacity:.9;
+}
+.cv-embed .cv-mini-node{fill:var(--muted);opacity:.55}
+.cv-embed .cv-mini-ghost{fill:var(--ai)}
+.cv-embed .cv-mini-risk{fill:var(--opt)}
+.cv-embed .cv-mini-group{fill:var(--long)}
+.cv-embed .cv-mini-view{
+  fill:color-mix(in srgb, var(--branch) 12%, transparent);
+  stroke:var(--branch);stroke-width:1;
 }
 
 .cv-embed .cv-legend{
@@ -120,6 +148,15 @@
 .cv-embed .cv-del text{font-size:10px;fill:var(--muted);text-anchor:middle}
 .cv-embed .cv-del:hover rect{stroke:var(--short)}
 .cv-embed .cv-del:hover text{fill:var(--short)}
+
+/* Pending AI suggestion: present but not yet part of the strategy. */
+.cv-embed .cv-ghost{opacity:.72}
+.cv-embed .cv-ghost .cv-box{
+  fill:var(--ai-dim);stroke:var(--ai);stroke-dasharray:5 4;
+}
+.cv-embed .cv-ghost .cv-accent{fill:var(--ai)}
+.cv-embed .cv-ghost .cv-badge{fill:var(--ai)}
+.cv-embed .cv-edge-ghost{stroke:var(--ai);color:var(--ai);stroke-dasharray:3 4;opacity:.7}
 
 .cv-embed .cv-instrument .cv-accent{fill:var(--muted)}
 .cv-embed .cv-regime .cv-accent{fill:var(--branch)}
