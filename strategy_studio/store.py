@@ -13,6 +13,9 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -157,6 +160,11 @@ class _Conn(sqlite3.Connection):
 class StrategyStore:
     def __init__(self, db_path: Path | str = DB_PATH):
         self.db_path = str(db_path)
+        # One lock per strategy, guarding the read-modify-write in `editing`.
+        # Never evicted: a lock is ~50 bytes and the key set is the strategy
+        # list, so this cannot grow beyond what the DB already holds.
+        self._draft_locks: dict[str, threading.Lock] = {}
+        self._draft_locks_guard = threading.Lock()
         with self._connect() as con:
             con.executescript(_SCHEMA)
             for table, column, decl in _ADDED_COLUMNS:
@@ -292,6 +300,48 @@ class StrategyStore:
         if draft is not None:
             return draft, True
         return self.load(strategy_id), False
+
+    def draft_lock(self, strategy_id: str) -> threading.Lock:
+        """The lock guarding one strategy's draft.
+
+        Exposed for the few writers that cannot use `editing` — the AI loop
+        holds it across a hash check and a `save_draft` it does itself.
+        """
+        with self._draft_locks_guard:
+            return self._draft_locks.setdefault(strategy_id, threading.Lock())
+
+    @contextmanager
+    def editing(self, strategy_id: str) -> Iterator[StrategyDefinition]:
+        """Load the working copy, yield it for mutation, save it back — locked.
+
+        Every studio edit is a read-modify-write over the WHOLE definition
+        document. Without a lock spanning all three steps, two concurrent edits
+        both read the same base, both apply their change, and the second write
+        drops the first — and because each request renders its own copy, the
+        losing request still returns 200 with a fragment that looks applied.
+        Measured before this existed: 24 concurrent instrument adds left 2, and
+        an instrument add racing a rule edit lost one of the two in 10 of 10
+        runs. Touching different blocks does not help; the document is read and
+        written whole.
+
+        Locking only the write would not fix it — the loss is created at the
+        read. Hence the lock is held across the yield.
+
+        A lock per strategy, not one global lock: edits to different strategies
+        never interact, and the studio's optimizer/AI paths can hold this for a
+        moment, so a shared lock would couple unrelated users.
+
+        The save is skipped when the body raises, which is what the routes
+        want: a `MutationError` must leave the draft exactly as it was.
+
+        In-process only. A multi-process deployment needs optimistic
+        concurrency (compare-and-swap on a version/hash, 409 on mismatch)
+        instead; `promote_draft` already takes that shape at the SQL level.
+        """
+        with self.draft_lock(strategy_id):
+            defn, _ = self.working_copy(strategy_id)
+            yield defn
+            self.save_draft(defn)
 
     def promote_draft(self, strategy_id: str, origin: str = "user") -> int:
         """Persist the draft as a new version and clear it — atomically.

@@ -33,6 +33,8 @@ import threading
 import time
 import uuid
 from collections import OrderedDict
+from collections.abc import Iterator
+from contextlib import ExitStack, contextmanager
 
 from fastapi import APIRouter, BackgroundTasks, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, PlainTextResponse, Response
@@ -385,11 +387,28 @@ def _block_of_owner(defn: StrategyDefinition, owner: str) -> str:
 
 
 def _load_working(strategy_id: str) -> StrategyDefinition:
+    """Read-only working copy. Mutating routes must use `_editing` instead."""
     try:
         defn, _ = store.working_copy(strategy_id)
     except KeyError:
         raise HTTPException(404, f"strategy '{strategy_id}' not found")
     return defn
+
+
+@contextmanager
+def _editing(strategy_id: str) -> Iterator[StrategyDefinition]:
+    """`store.editing` with this module's 404 mapping.
+
+    The mapping is scoped to the ENTER (the load) on purpose: a `KeyError`
+    raised by a mutation inside the block is a bug in that mutation, not a
+    missing strategy, and must not be disguised as a 404.
+    """
+    with ExitStack() as stack:
+        try:
+            defn = stack.enter_context(store.editing(strategy_id))
+        except KeyError:
+            raise HTTPException(404, f"strategy '{strategy_id}' not found") from None
+        yield defn
 
 
 # ── pages ────────────────────────────────────────────────────────
@@ -567,12 +586,11 @@ def route_add_rule(
     indicator: str = Form(...),
     as_filter: bool = Form(False),
 ):
-    defn = _load_working(strategy_id)
     try:
-        add_rule(defn, block, indicator, as_filter)
+        with _editing(strategy_id) as defn:
+            add_rule(defn, block, indicator, as_filter)
     except MutationError as e:
         return PlainTextResponse(str(e), status_code=422)
-    store.save_draft(defn)
     return _render_block(request, defn, block)
 
 
@@ -584,28 +602,26 @@ def route_edit_rule(
     param: str = Form(...),
     value: str = Form(...),
 ):
-    defn = _load_working(strategy_id)
     try:
-        update_rule_param(defn, rule_id, param, value)
-        block, *_ = find_rule(defn, rule_id)
+        with _editing(strategy_id) as defn:
+            update_rule_param(defn, rule_id, param, value)
+            block, *_ = find_rule(defn, rule_id)
     except RuleNotFound as e:
         raise HTTPException(404, str(e))
     except MutationError as e:
         return PlainTextResponse(str(e), status_code=422)
-    store.save_draft(defn)
     return _render_block(request, defn, block)
 
 
 @router.delete("/studio/{strategy_id}/rules/{rule_id}")
 def route_delete_rule(request: Request, strategy_id: str, rule_id: str):
-    defn = _load_working(strategy_id)
     try:
-        block = delete_rule(defn, rule_id)
+        with _editing(strategy_id) as defn:
+            block = delete_rule(defn, rule_id)
     except RuleNotFound as e:
         raise HTTPException(404, str(e))
     except MutationError as e:
         return PlainTextResponse(str(e), status_code=422)
-    store.save_draft(defn)
     return _render_block(request, defn, block)
 
 
@@ -618,19 +634,20 @@ def route_block_attr(
     evaluate: str | None = Form(None),
     else_mode: str | None = Form(None),
 ):
-    defn = _load_working(strategy_id)
+    # Checked before the editing block, not inside it: returning from inside
+    # would still run its save and turn a rejected request into a draft.
+    if else_mode is not None and block != "regime":
+        return PlainTextResponse(
+            "else_mode only applies to the regime block", status_code=422
+        )
     try:
-        if else_mode is not None:
-            if block != "regime":
-                return PlainTextResponse(
-                    "else_mode only applies to the regime block", status_code=422
-                )
-            set_regime_else(defn, else_mode)
-        else:
-            set_block_attr(defn, block, match=match, evaluate=evaluate)
+        with _editing(strategy_id) as defn:
+            if else_mode is not None:
+                set_regime_else(defn, else_mode)
+            else:
+                set_block_attr(defn, block, match=match, evaluate=evaluate)
     except MutationError as e:
         return PlainTextResponse(str(e), status_code=422)
-    store.save_draft(defn)
     return _render_block(request, defn, block, oob_side=False)
 
 
@@ -638,12 +655,11 @@ def route_block_attr(
 def route_allocation(
     request: Request, strategy_id: str, name: str = Form(...), value: str = Form(...)
 ):
-    defn = _load_working(strategy_id)
     try:
-        update_allocation(defn, name, value)
+        with _editing(strategy_id) as defn:
+            update_allocation(defn, name, value)
     except MutationError as e:
         return PlainTextResponse(str(e), status_code=422)
-    store.save_draft(defn)
     return _render_block(request, defn, "allocation", oob_side=False)
 
 
@@ -660,12 +676,11 @@ def route_risk(
     field = name or param
     if not field:
         return PlainTextResponse("missing 'name' (or 'param')", status_code=422)
-    defn = _load_working(strategy_id)
     try:
-        update_risk(defn, field, value)
+        with _editing(strategy_id) as defn:
+            update_risk(defn, field, value)
     except MutationError as e:
         return PlainTextResponse(str(e), status_code=422)
-    store.save_draft(defn)
     return _render_block(request, defn, "risk")
 
 
@@ -676,12 +691,11 @@ def _render_instruments(request: Request, defn: StrategyDefinition) -> HTMLRespo
 
 @router.patch("/studio/{strategy_id}/instruments/{symbol}")
 def route_instrument(request: Request, strategy_id: str, symbol: str):
-    defn = _load_working(strategy_id)
     try:
-        toggle_instrument(defn, symbol)
+        with _editing(strategy_id) as defn:
+            toggle_instrument(defn, symbol)
     except MutationError as e:
         return PlainTextResponse(str(e), status_code=422)
-    store.save_draft(defn)
     return _render_instruments(request, defn)
 
 
@@ -697,30 +711,32 @@ def route_add_instrument(
     Lands active, like the toggle route leaves one: an instrument the user just
     asked for should be in the next run without a second click.
     """
-    defn = _load_working(strategy_id)
     try:
-        add_instrument(defn, symbol, timeframe)
+        with _editing(strategy_id) as defn:
+            add_instrument(defn, symbol, timeframe)
     except MutationError as e:
         return PlainTextResponse(str(e), status_code=422)
-    store.save_draft(defn)
     return _render_instruments(request, defn)
 
 
 @router.delete("/studio/{strategy_id}/instruments/{symbol}")
 def route_delete_instrument(request: Request, strategy_id: str, symbol: str):
-    defn = _load_working(strategy_id)
     try:
-        remove_instrument(defn, symbol)
+        with _editing(strategy_id) as defn:
+            remove_instrument(defn, symbol)
     except MutationError as e:
         return PlainTextResponse(str(e), status_code=422)
-    store.save_draft(defn)
     return _render_instruments(request, defn)
 
 
 @router.post("/studio/{strategy_id}/save")
 def route_save(request: Request, strategy_id: str):
+    # Under the same lock as the edit routes. `promote_draft` is already atomic
+    # in SQL, but an edit that read the draft before the promote would write it
+    # back afterwards — resurrecting a draft that was just promoted away.
     try:
-        store.promote_draft(strategy_id)
+        with store.draft_lock(strategy_id):
+            store.promote_draft(strategy_id)
     except KeyError:
         return PlainTextResponse("nothing to save", status_code=422)
     defn = store.load(strategy_id)
@@ -818,15 +834,14 @@ def route_latest_run(request: Request, strategy_id: str):
 def route_opt_toggle(
     request: Request, strategy_id: str, owner: str = Form(...), param: str = Form(...)
 ):
-    defn = _load_working(strategy_id)
     try:
-        toggle_optimize(defn, owner, param)
-        block = _block_of_owner(defn, owner)
+        with _editing(strategy_id) as defn:
+            toggle_optimize(defn, owner, param)
+            block = _block_of_owner(defn, owner)
     except RuleNotFound as e:
         raise HTTPException(404, str(e))
     except MutationError as e:
         return PlainTextResponse(str(e), status_code=422)
-    store.save_draft(defn)
     html = _render_side(request, defn)
     tpl, extra = _BLOCK_TEMPLATE[block]
     ctx = _ctx(request, defn, **extra)
@@ -853,14 +868,13 @@ def route_opt_range(
     step_v: str = Form(..., alias="step"),
     max_v: str = Form(..., alias="max"),
 ):
-    defn = _load_working(strategy_id)
     try:
-        set_optimize_range(defn, owner, param, min_v, step_v, max_v)
+        with _editing(strategy_id) as defn:
+            set_optimize_range(defn, owner, param, min_v, step_v, max_v)
     except RuleNotFound as e:
         raise HTTPException(404, str(e))
     except MutationError as e:
         return PlainTextResponse(str(e), status_code=422)
-    store.save_draft(defn)
     return HTMLResponse(_render_side(request, defn))
 
 
@@ -925,7 +939,8 @@ def route_opt_panel(request: Request, strategy_id: str):
 
 @router.post("/studio/{strategy_id}/optimize/apply")
 def route_opt_apply(strategy_id: str, rank: int = Form(...)):
-    defn = _load_working(strategy_id)
+    # Resolved before the editing block so a rejected apply never takes the
+    # lock — and never turns a clean strategy into a draft.
     opt = store.latest_opt(strategy_id)
     if not opt or opt["status"] != "done" or not opt["results"]:
         return PlainTextResponse("no completed optimization", status_code=422)
@@ -934,10 +949,10 @@ def route_opt_apply(strategy_id: str, rank: int = Form(...)):
     if hit is None:
         return PlainTextResponse(f"rank {rank} not found", status_code=422)
     try:
-        apply_params(defn, hit.params)
+        with _editing(strategy_id) as defn:
+            apply_params(defn, hit.params)
     except MutationError as e:
         return PlainTextResponse(str(e), status_code=422)
-    store.save_draft(defn)
     return Response(headers={"HX-Refresh": "true"})
 
 
@@ -1110,18 +1125,17 @@ def route_ai_suggest(
 
 @router.post("/studio/{strategy_id}/ai/suggestions/{sid}/accept")
 def route_ai_accept(request: Request, strategy_id: str, sid: str):
-    defn = _load_working(strategy_id)
     row = store.get_suggestion(sid)
     if not row or row["status"] != "review":
         return PlainTextResponse("suggestion not reviewable", status_code=422)
     sugg = Suggestion.model_validate_json(row["suggestion"])
     try:
-        apply_suggestion(defn, sugg)
+        with _editing(strategy_id) as defn:
+            apply_suggestion(defn, sugg)
     except MutationError as e:
         store.set_suggestion_status(sid, "failed", str(e))
         return PlainTextResponse(str(e), status_code=422)
     store.set_suggestion_status(sid, "accepted")
-    store.save_draft(defn)
     return HTMLResponse(
         _block_html(request, defn, row["block"]) + _render_side(request, defn, oob=True)
     )
@@ -1158,8 +1172,20 @@ def _execute_loop(loop_id: str, strategy_id: str, cfg: dict) -> None:
                 )
                 sugg = Suggestion.model_validate_json(row["suggestion"])
                 if improved(defn, trial, base):
-                    current, _ = store.working_copy(strategy_id)
-                    if definition_hash(current) != base_hash:
+                    # The hash check and the write must be ONE critical section.
+                    # Read the hash, then save without the lock, and a user edit
+                    # landing in between is checked against and then overwritten
+                    # anyway — the guard would report "no concurrent edit" about
+                    # a moment that had already passed.
+                    stale = False
+                    with store.draft_lock(strategy_id):
+                        current, _ = store.working_copy(strategy_id)
+                        if definition_hash(current) != base_hash:
+                            stale = True
+                        else:
+                            apply_suggestion(defn, sugg)
+                            store.save_draft(defn)
+                    if stale:
                         # The user edited the strategy while this iteration ran.
                         # Saving now would overwrite their change with a stale
                         # copy, so drop the suggestion and stop: the remaining
@@ -1171,8 +1197,6 @@ def _execute_loop(loop_id: str, strategy_id: str, cfg: dict) -> None:
                             loop_id, "done", f"stopped at iteration {n}: {note}"
                         )
                         return
-                    apply_suggestion(defn, sugg)
-                    store.save_draft(defn)
                     store.set_suggestion_status(
                         sid, "accepted", "auto-accepted (OOS improved)"
                     )
@@ -1428,5 +1452,8 @@ def route_deployment_action(
 
 @router.post("/studio/{strategy_id}/discard")
 def route_discard(strategy_id: str):
-    store.delete_draft(strategy_id)
+    # Same lock as the edit routes: otherwise an in-flight edit's write lands
+    # after the delete and the discarded draft comes back.
+    with store.draft_lock(strategy_id):
+        store.delete_draft(strategy_id)
     return Response(headers={"HX-Refresh": "true"})

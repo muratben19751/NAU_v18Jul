@@ -312,6 +312,9 @@ def toggle_instrument(defn: StrategyDefinition, symbol: str) -> None:
         raise MutationError("at least one instrument must stay active")
 
 
+_MAX_SYMBOL_LEN = 32
+
+
 def timeframe_choices() -> tuple[str, ...]:
     """Timeframes an instrument may carry — the Bybit interval labels.
 
@@ -338,6 +341,14 @@ def add_instrument(defn: StrategyDefinition, symbol: str, timeframe: str) -> Non
         raise MutationError("symbol is required")
     if not sym.isalnum() or not sym.isascii():
         raise MutationError(f"invalid symbol '{symbol}' — letters and digits only")
+    # The charset check alone let a 5000-character name through: it rendered
+    # into every page and would have become a filename in the bars cache, where
+    # Windows' path limit turns it into a run-time failure far from here.
+    # Bybit's longest listed symbol is under 20 characters.
+    if len(sym) > _MAX_SYMBOL_LEN:
+        raise MutationError(
+            f"symbol too long ({len(sym)} chars, max {_MAX_SYMBOL_LEN})"
+        )
     if any(i.symbol == sym for i in defn.instruments):
         raise MutationError(f"instrument '{sym}' is already configured")
     tf = (timeframe or "").strip()
