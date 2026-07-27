@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+{% block title %}Canvas — {{ defn.name }}{% endblock %}
+
+{% block head %}
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  {# studio.css first: the inspector reuses the form view's own partials, so it
+     needs their styles. canvas.css only adds the .cv-* layer on top. #}
+  <link rel="stylesheet" href="/static/studio.css?v={{ static_version }}">
+  <link rel="stylesheet" href="/static/canvas.css?v={{ static_version }}">
+  <style>:root{font-size:15px}</style>
+{% endblock %}
+
+{% block content %}
+<div class="studio-embed cv-embed" data-strategy="{{ defn.id }}">
+  <div id="error-banner" class="error-banner" hidden></div>
+  <header>
+    {% include "studio/_strategy_name.html" %}
+    <a class="cv-switch" href="/studio/{{ defn.id }}">⇄ Form view</a>
+    <div class="spacer"></div>
+    {% include "studio/_instruments.html" %}
+  </header>
+
+  <div class="cv-workspace">
+    <aside class="cv-palette">
+      <div class="cv-pane-title">Indicators</div>
+      <p class="cv-hint">Drag-and-drop arrives in a later phase — this column is
+        the palette's place in the layout.</p>
+    </aside>
+
+    <div class="cv-stage">
+      <svg id="cv-svg" class="cv-svg" role="img" aria-label="Strategy graph">
+        <defs>
+          <marker id="cv-arrow" viewBox="0 0 8 8" refX="7" refY="4"
+                  markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0 0 L8 4 L0 8 z" fill="currentColor"></path>
+          </marker>
+        </defs>
+        <g id="cv-edges"></g>
+        <g id="cv-nodes"></g>
+      </svg>
+      <div class="cv-toolbar">
+        <button class="cv-tool" data-zoom="out" title="Zoom out">−</button>
+        <button class="cv-tool" data-zoom="in" title="Zoom in">+</button>
+        <button class="cv-tool" data-zoom="fit" title="Fit to view">⤢</button>
+        <span class="cv-zoom" id="cv-zoom-label">100%</span>
+      </div>
+      <div class="cv-legend">
+        <span><i class="lg-rule"></i>rule</span>
+        <span><i class="lg-filter"></i>skip-if filter</span>
+        <span><i class="lg-opt"></i>optimized</span>
+      </div>
+    </div>
+
+    <aside class="cv-inspector">
+      <div class="cv-pane-title">Inspector</div>
+      <p class="cv-hint">Selecting a node opens its editor here in a later
+        phase. The graph is read-only for now.</p>
+    </aside>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+  <script src="/static/canvas.js?v={{ static_version }}"></script>
+{% endblock %}

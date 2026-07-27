@@ -60,6 +60,7 @@ from strategy_studio.deploy import (
     DeployConfig,
     prepare_deployment,
 )
+from strategy_studio.graph import to_graph
 from strategy_studio.mutations import (
     MutationError,
     RuleNotFound,
@@ -340,6 +341,38 @@ def studio_page(request: Request, strategy_id: str, version: int | None = None):
             ghosts_by_block=_ghosts_by_block(defn),
         ),
     )
+
+
+@router.get("/studio/{strategy_id}/canvas", response_class=HTMLResponse)
+def canvas_page(request: Request, strategy_id: str):
+    """Canvas view — the same strategy as a node graph (CANVAS_DESIGN.md).
+
+    An alternative visualiser, not a second editor: it reads the same working
+    copy the form view reads, and every mutation it offers goes through the
+    endpoints already defined above.
+    """
+    try:
+        defn, is_draft = store.working_copy(strategy_id)
+    except KeyError:
+        raise HTTPException(404, f"strategy '{strategy_id}' not found")
+    return _tpl().TemplateResponse(
+        request,
+        "studio/canvas.html",
+        _ctx(
+            request,
+            defn,
+            active="studio_builder",
+            page_title="Strategy Builder · Canvas",
+            library=library_by_category(),
+            is_draft=is_draft,
+        ),
+    )
+
+
+@router.get("/studio/{strategy_id}/canvas/graph")
+def canvas_graph(strategy_id: str):
+    """Read-only: StrategyDefinition → {nodes, edges, meta}. No mutation here."""
+    return to_graph(_load_working(strategy_id))
 
 
 @router.get("/studio/{strategy_id}/history")

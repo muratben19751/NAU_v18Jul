@@ -1,0 +1,98 @@
+/* Strategy Builder — canvas view (CANVAS_DESIGN.md).
+   Loaded AFTER studio.css and scoped under .cv-embed, which is itself a
+   .studio-embed: the colour variables come from there, and every rule here is
+   prefixed so nothing leaks into the app shell (the same containment rule the
+   form view's stylesheet follows). */
+
+.cv-embed .cv-switch{
+  font-size:.78rem;color:var(--muted);text-decoration:none;
+  border:1px solid var(--line);border-radius:6px;padding:5px 10px;
+  background:var(--panel-2);transition:.15s;
+}
+.cv-embed .cv-switch:hover{color:var(--text);border-color:var(--branch)}
+
+.cv-embed .cv-workspace{
+  flex:1;min-height:0;display:grid;
+  grid-template-columns:210px minmax(0,1fr) 320px;
+}
+.cv-embed .cv-palette,
+.cv-embed .cv-inspector{
+  background:var(--panel);border-right:1px solid var(--line);
+  overflow:auto;padding:12px;
+}
+.cv-embed .cv-inspector{border-right:none;border-left:1px solid var(--line)}
+.cv-embed .cv-pane-title{
+  font-size:.68rem;letter-spacing:.09em;text-transform:uppercase;
+  color:var(--muted);margin-bottom:10px;
+}
+.cv-embed .cv-hint{font-size:.76rem;color:var(--muted);line-height:1.5}
+
+/* ── stage ─────────────────────────────── */
+.cv-embed .cv-stage{position:relative;min-width:0;background:var(--bg)}
+.cv-embed .cv-svg{
+  width:100%;height:100%;display:block;cursor:grab;
+  background-image:radial-gradient(circle,var(--line) 1px,transparent 1px);
+  background-size:26px 26px;
+}
+.cv-embed .cv-svg.panning{cursor:grabbing}
+
+.cv-embed .cv-toolbar{
+  position:absolute;right:14px;bottom:14px;display:flex;align-items:center;gap:6px;
+  background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:5px 8px;
+}
+.cv-embed .cv-tool{
+  border:1px solid var(--line);background:var(--panel-2);color:var(--text);
+  border-radius:6px;width:26px;height:26px;font-size:.9rem;cursor:pointer;
+}
+.cv-embed .cv-tool:hover{border-color:var(--branch)}
+.cv-embed .cv-zoom{
+  font-family:'IBM Plex Mono',monospace;font-size:.7rem;color:var(--muted);
+  min-width:38px;text-align:right;
+}
+
+.cv-embed .cv-legend{
+  position:absolute;left:14px;bottom:14px;display:flex;gap:14px;
+  font-size:.68rem;color:var(--muted);
+}
+.cv-embed .cv-legend i{
+  display:inline-block;width:14px;height:2px;margin-right:5px;vertical-align:middle;
+  background:var(--line);
+}
+.cv-embed .cv-legend .lg-rule{background:var(--branch)}
+.cv-embed .cv-legend .lg-filter{
+  background:none;border-top:2px dashed var(--muted);height:0;
+}
+.cv-embed .cv-legend .lg-opt{
+  width:9px;height:9px;border-radius:50%;background:var(--opt);
+}
+
+/* ── edges ─────────────────────────────── */
+.cv-embed .cv-edge{fill:none;stroke:var(--line);stroke-width:1.6;color:var(--line)}
+.cv-embed .cv-edge-rule{stroke:var(--branch);color:var(--branch);opacity:.75}
+.cv-embed .cv-edge-filter{
+  stroke:var(--muted);color:var(--muted);stroke-dasharray:5 4;opacity:.8;
+}
+.cv-embed .cv-edge-else{stroke:var(--ai);color:var(--ai);stroke-dasharray:2 3}
+
+/* ── nodes ─────────────────────────────── */
+.cv-embed .cv-node .cv-box{
+  fill:var(--panel);stroke:var(--line);stroke-width:1;transition:.12s;
+}
+.cv-embed .cv-node:hover .cv-box{stroke:var(--branch)}
+.cv-embed .cv-node .cv-accent{fill:var(--line)}
+.cv-embed .cv-node text{font-family:'Space Grotesk',system-ui,sans-serif}
+.cv-embed .cv-badge{
+  font-size:8.5px;letter-spacing:.09em;fill:var(--muted);text-transform:uppercase;
+}
+.cv-embed .cv-label{font-size:12.5px;font-weight:600;fill:var(--text)}
+.cv-embed .cv-detail{font-family:'IBM Plex Mono',monospace;font-size:9.5px;fill:var(--muted)}
+.cv-embed .cv-opt{fill:var(--opt)}
+
+.cv-embed .cv-instrument .cv-accent{fill:var(--muted)}
+.cv-embed .cv-regime .cv-accent{fill:var(--branch)}
+.cv-embed .cv-rule .cv-accent{fill:var(--long)}
+.cv-embed .cv-filter .cv-accent{fill:var(--short)}
+.cv-embed .cv-filter .cv-box{stroke-dasharray:4 3}
+.cv-embed .cv-group .cv-accent{fill:var(--long)}
+.cv-embed .cv-risk .cv-accent{fill:var(--opt)}
+.cv-embed .cv-allocation .cv-accent{fill:var(--ai)}

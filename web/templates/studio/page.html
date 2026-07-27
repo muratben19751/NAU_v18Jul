@@ -15,6 +15,7 @@
   <div id="modal-slot"></div>
   <header>
     {% include "studio/_strategy_name.html" %}
+    <a class="btn" href="/studio/{{ defn.id }}/canvas">⇄ Canvas view</a>
     <div class="spacer"></div>
     {% include "studio/_instruments.html" %}
     <button class="btn" hx-post="/studio/{{ defn.id }}/save"
