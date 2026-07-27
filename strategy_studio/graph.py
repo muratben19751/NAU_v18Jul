@@ -15,7 +15,10 @@ of the tested contract; the client only turns a layer index into pixels.
 
 Wiki References
 ---------------
-Bkz: [[strategy_studio]], [[kisitli_agac_serbest_graf_degil]]
+Bkz: [[strategy_studio]] "Canvas görünümü", [[webapp_module_map]]
+
+Kısıtlı-ağaç-serbest-graf-değil kararının genelleştirilmiş hâli genel ikinci
+beyinde: `kisitli_agac_serbest_graf_degil` (bu wiki'de sayfası yok).
 """
 
 from __future__ import annotations

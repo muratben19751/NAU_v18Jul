@@ -618,3 +618,31 @@ sağlık raporu `lint/2026-07-26_health.md` olarak dosyalandı.
   biriydi (diğeri: ingress 8111 yerine 3700'ü gösteriyordu).
 - **studio** — İndikatör kütüphanesi paneli işi (26 Tem) bu commit'le kod tarafında
   da yerine oturdu; wiki karşılığı `synthesis/strategy_studio.md`'de zaten yazılıydı.
+
+## 2026-07-27 (2) — wiki-sync: Strategy Builder canvas görünümü
+
+Kod tarafında dört faz halinde uygulanan canvas görünümü (`/studio/{id}/canvas`)
+wiki'ye yansıtıldı. Tasarım dokümanı repo kökünde `CANVAS_DESIGN.md`.
+
+- **eklenen** — `synthesis/strategy_studio.md` → "Canvas görünümü (2026-07-27)"
+  bölümü: kütüphane seçmeme gerekçesi (kısıtlı ağaç ≠ serbest graf), üç GET
+  route, "yazan her şey mevcut uca iner" kuralı, iki partial-yeniden-kullanım
+  kısıtı, ghost'ların argüman olarak gelmesi.
+- **güncellenen** — `synthesis/webapp_module_map.md`: `web/routes/strategy_studio.py`
+  satırına canvas paragrafı (yeni `strategy_studio/graph.py` dahil) + sondaki
+  değişiklik günlüğüne tam kayıt + `summary` tazelendi.
+- **köprü** — `strategy_studio/graph.py` docstring'i `Bkz: [[strategy_studio]]
+  "Canvas görünümü", [[webapp_module_map]]`; harita da ters yönden karşılık
+  veriyor. İki yön de kapalı.
+- **kural** — Genel ikinci beyindeki sayfalara (`kisitli_agac_serbest_graf_degil`,
+  `nau_studio_canvas_konsept_c_2026_07`) `[[bare-name]]` ile bağ **verilmiyor**:
+  bu wiki'nin linter'ı yalnız kendi ağacını görür, bağ `broken_links`'e düşer.
+  Köprü yönü main vault → nau_wiki; ters yön düz metin. (Bu turda ilk yazımda
+  iki bağ öyle kondu, lint yakaladı, düz metne çevrildi.)
+- **boşluk** — `strategy_studio/*.py` modüllerinin haritada kendi satırı yok;
+  canvas ayrıntısı route satırının içine yazıldı. Modül-başına satır açmak
+  ileride ayrı bir işe değer.
+- **düzeltme (denetim turu)** — İlk yazımda "27 yeni test" yazılmıştı; doğrusu
+  **39** (545 → 584). Hata aritmetikten değil sıralamadan geldi: ilk tam-süit
+  koşusu `test_graph.py` yazıldıktan SONRA yapılmıştı, yani 557'lik ara ölçüm
+  zaten 12 yeni testi içeriyordu. `--collect-only` ile beş dosya sayıldı.

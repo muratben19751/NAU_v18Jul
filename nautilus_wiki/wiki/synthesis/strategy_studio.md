@@ -5,7 +5,7 @@ sources:
   - https://github.com/nautechsystems/nautilus_trader
   - sources/02_architecture_docs.md
 last_updated: 2026-07-27
-summary: /studio/{id} altındaki görsel strateji kurucu; sürümlü şema → derleyici → to_nautilus → composer spec → run_composed_backtest zinciri, çeviremediğini sessizce atmak yerine gerekçesiyle reddeder; sweep pencereli walk-forward ve deflate edilmiş DSR ile skorlanır. Nav'da ve sayfa markasında "Strategy Builder" adını taşır (2026-07-27).
+summary: /studio/{id} altındaki görsel strateji kurucu; sürümlü şema → derleyici → to_nautilus → composer spec → run_composed_backtest zinciri, çeviremediğini sessizce atmak yerine gerekçesiyle reddeder; sweep pencereli walk-forward ve deflate edilmiş DSR ile skorlanır. Nav'da "Strategy Builder"; /canvas altında aynı stratejinin node graf'ı ikinci yüzey olarak durur (2026-07-27).
 key_concepts:
   - strategy_and_actor
   - backtesting_guide
