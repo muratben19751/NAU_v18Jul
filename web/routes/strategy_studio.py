@@ -27,7 +27,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
+import threading
 import time
 import uuid
 from collections import OrderedDict
@@ -90,6 +92,8 @@ from strategy_studio.registry import INDICATOR_REGISTRY, library_by_category
 from strategy_studio.runner import PaperRunner, RunnerError, reconcile_orphans
 from strategy_studio.schema import StrategyDefinition
 from strategy_studio.store import StrategyStore, definition_hash
+
+log = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -184,17 +188,47 @@ _BLOCK_TEMPLATE = {
 
 
 _SYMBOLS_TTL_S = 60.0
-_symbols_cache: tuple[float, tuple[str, ...]] | None = None
+_symbols_cache: tuple[float, tuple[str, ...], tuple[str, ...]] | None = None
+_universe_warming = False
 
 
-def _symbol_choices() -> tuple[str, ...]:
-    """Suggestions for the instrument picker — symbols we already hold bars for.
+def _warm_symbol_universe() -> None:
+    """Refresh the cached Bybit instrument list off the request path.
+
+    ``list_bybit_instruments`` is an HTTP call when its 12h disk cache lapses.
+    Doing that inline would stall a page render behind Bybit; here the render
+    always serves the cache it already has and picks up the new one next time.
+    """
+    global _universe_warming
+    if _universe_warming:
+        return
+    _universe_warming = True
+
+    def _run() -> None:
+        global _universe_warming
+        try:
+            from data import list_bybit_instruments
+
+            list_bybit_instruments("linear")
+        except Exception:  # a suggestion list is never worth a traceback
+            log.debug("bybit instrument universe warm failed", exc_info=True)
+        finally:
+            _universe_warming = False
+
+    threading.Thread(target=_run, daemon=True, name="studio-symbols").start()
+
+
+def _symbol_choices() -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Suggestions for the instrument picker: (already downloaded, rest of Bybit).
+
+    Split rather than merged so the datalist can lead with the symbols whose
+    bars are on disk — those run immediately, the others download on first run.
 
     Only *linear* symbols: the backtest adapter builds every recipe with
     ``category="linear"`` and its loader takes that default too, so an inverse
-    or spot-only symbol would be fetched from the wrong market. The picker is a
-    datalist, not a closed list — a symbol Bybit knows but the catalog does not
-    is still typeable, and the loader fetches it on first run.
+    or spot-only symbol would be fetched from the wrong market. Still a
+    datalist, not a closed list — Bybit lists new contracts between our 12h
+    refreshes, and a symbol we haven't heard of must stay typeable.
 
     Cached briefly: ``_ctx`` runs on every block render, and this walks the
     catalog directory. The TTL keeps data downloaded on ``/data`` showing up
@@ -203,25 +237,33 @@ def _symbol_choices() -> tuple[str, ...]:
     global _symbols_cache
     now = time.monotonic()
     if _symbols_cache and now - _symbols_cache[0] < _SYMBOLS_TTL_S:
-        return _symbols_cache[1]
-    from data import BYBIT_SYMBOLS, list_catalog_bybit_symbols
+        return _symbols_cache[1], _symbols_cache[2]
+    from data import BYBIT_SYMBOLS, list_bybit_instruments, list_catalog_bybit_symbols
 
     known = {
         s["symbol"] for s in list_catalog_bybit_symbols() if s["category"] == "linear"
-    }
-    choices = tuple(sorted(known | set(BYBIT_SYMBOLS)))
-    _symbols_cache = (now, choices)
-    return choices
+    } | set(BYBIT_SYMBOLS)
+    universe = set(list_bybit_instruments("linear", fetch=False))
+    # Unconditional: the warm is a cheap JSON read when the disk cache is still
+    # fresh, and it is the only thing that refreshes a stale one. Bounded by
+    # this function's own TTL — at most one thread a minute.
+    _warm_symbol_universe()
+    cached_first = tuple(sorted(known))
+    rest = tuple(sorted(universe - known))
+    _symbols_cache = (now, cached_first, rest)
+    return cached_first, rest
 
 
 def _ctx(request: Request, defn: StrategyDefinition, **extra) -> dict:
+    cached_symbols, other_symbols = _symbol_choices()
     return {
         "request": request,
         "defn": defn,
         "registry": INDICATOR_REGISTRY,
         # `studio/_instruments.html` renders from several routes; keeping the
         # picker's options in the shared context means none of them can forget.
-        "symbol_choices": _symbol_choices(),
+        "cached_symbols": cached_symbols,
+        "other_symbols": other_symbols,
         "timeframe_choices": timeframe_choices(),
         **extra,
     }

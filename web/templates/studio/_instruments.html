@@ -1,4 +1,4 @@
-{# ctx: defn, symbol_choices, timeframe_choices #}
+{# ctx: defn, cached_symbols, other_symbols, timeframe_choices #}
 <div class="instr" id="instruments">
   {% for inst in defn.instruments %}
     {# Toggle and remove are siblings, not nested: an hx-delete inside the
@@ -16,12 +16,15 @@
   <form class="instr-add"
         hx-post="/studio/{{ defn.id }}/instruments"
         hx-target="#instruments" hx-swap="outerHTML">
-    {# Datalist, not a select: the catalog symbols are suggestions — any symbol
-       Bybit serves is loadable, so typing one must stay possible. #}
-    <input name="symbol" list="instr-symbols" placeholder="Symbol"
+    {# Datalist, not a select: the whole Bybit linear board is offered, but new
+       contracts list between our 12h refreshes, so typing one must stay
+       possible. Downloaded symbols lead — browsers keep document order, so the
+       ones that run without a fetch surface first. #}
+    <input name="symbol" list="instr-symbols" placeholder="Symbol ▾"
            autocomplete="off" spellcheck="false" required>
     <datalist id="instr-symbols">
-      {% for s in symbol_choices %}<option value="{{ s }}"></option>{% endfor %}
+      {% for s in cached_symbols %}<option value="{{ s }}" label="downloaded"></option>{% endfor %}
+      {% for s in other_symbols %}<option value="{{ s }}"></option>{% endfor %}
     </datalist>
     <select name="timeframe">
       {% for tf in timeframe_choices %}

@@ -164,8 +164,51 @@ def test_instrument_delete_and_last_active_guard(client):
 def test_instrument_picker_offers_catalog_symbols_and_timeframes(client):
     page = client.get(f"/studio/{SID}")
     assert 'list="instr-symbols"' in page.text
-    assert '<option value="BTCUSDT">' in page.text  # datalist suggestion
+    # BTCUSDT is in BYBIT_SYMBOLS, so it is always a "downloaded" suggestion
+    assert '<option value="BTCUSDT" label="downloaded">' in page.text
     assert '<option value="4h"' in page.text  # timeframe choice
+
+
+def test_instrument_picker_offers_the_whole_bybit_board(client, monkeypatch):
+    """Suggestions are the tradable universe, not just what we already hold.
+
+    The regression this pins: the picker listed only catalog symbols, so a box
+    with four downloaded series offered four choices even though `load_bybit_bars`
+    fetches any listed contract on first run.
+    """
+    from web.routes import strategy_studio as ss
+
+    monkeypatch.setattr(
+        "data.list_bybit_instruments",
+        lambda category="linear", *, fetch=True: ("BTCUSDT", "XRPUSDT", "WIFUSDT"),
+    )
+    monkeypatch.setattr(ss, "_warm_symbol_universe", lambda: None)
+    ss._symbols_cache = None
+    try:
+        page = client.get(f"/studio/{SID}").text
+    finally:
+        ss._symbols_cache = None
+    # Not downloaded, still offered — and after the downloaded ones.
+    assert '<option value="WIFUSDT">' in page
+    assert page.index('label="downloaded"') < page.index('<option value="WIFUSDT">')
+
+
+def test_instrument_picker_survives_an_empty_universe(client, monkeypatch):
+    """Bybit unreachable on a cold cache degrades the list, never the page."""
+    from web.routes import strategy_studio as ss
+
+    monkeypatch.setattr(
+        "data.list_bybit_instruments",
+        lambda category="linear", *, fetch=True: (),
+    )
+    monkeypatch.setattr(ss, "_warm_symbol_universe", lambda: None)
+    ss._symbols_cache = None
+    try:
+        page = client.get(f"/studio/{SID}")
+    finally:
+        ss._symbols_cache = None
+    assert page.status_code == 200
+    assert '<option value="BTCUSDT" label="downloaded">' in page.text
 
 
 def test_draft_survives_reload_and_page_shows_it(client):

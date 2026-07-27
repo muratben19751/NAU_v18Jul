@@ -830,6 +830,92 @@ BYBIT_ALL_INTERVALS: tuple[tuple[str, str], ...] = (
     ("D", "1d"),
 )
 
+_BYBIT_INSTRUMENTS_URL = "https://api.bybit.com/v5/market/instruments-info"
+_BYBIT_INSTRUMENTS_TTL_S = 12 * 3600.0
+
+
+def _bybit_instruments_cache_path(category: str) -> Path:
+    return BYBIT_CACHE_DIR / f"instruments_{category}.json"
+
+
+def list_bybit_instruments(
+    category: str = "linear", *, fetch: bool = True
+) -> tuple[str, ...]:
+    """Every symbol Bybit currently trades in ``category`` — the tradable universe.
+
+    Distinct from `list_catalog_bybit_symbols`, which reports only what we have
+    already downloaded. `load_bybit_bars` fetches any live symbol on first use,
+    so a picker limited to the local catalog offers a handful of symbols when
+    hundreds are loadable.
+
+    Cached on disk for `_BYBIT_INSTRUMENTS_TTL_S`; the list changes on listing
+    days, not minutes. Network failures return the stale cache (or an empty
+    tuple offline) instead of raising: callers use this for suggestions, so a
+    short list is a degraded picker, not a broken page.
+
+    ``fetch=False`` never touches the network — it reports the disk cache even
+    when stale. Callers on a request path use it so a cold or expired cache
+    costs them nothing, and warm the cache from a background thread.
+    """
+    if category not in BYBIT_CATEGORIES:
+        raise ValueError(f"unsupported bybit category: {category!r}")
+    path = _bybit_instruments_cache_path(category)
+    cached: list[str] = []
+    if path.exists():
+        try:
+            blob = json.loads(path.read_text())
+            cached = blob.get("symbols") or []
+            if (
+                time.time() - float(blob.get("fetched_at", 0))
+                < _BYBIT_INSTRUMENTS_TTL_S
+            ):
+                return tuple(cached)
+        except Exception:
+            pass
+    if not fetch:
+        return tuple(cached)
+
+    symbols: set[str] = set()
+    cursor = ""
+    try:
+        # Paginated: linear alone is ~600 instruments against a 1000 page cap,
+        # so one page is enough today — the cursor loop keeps it correct when
+        # it isn't.
+        for _ in range(10):
+            params = {"category": category, "limit": 1000}
+            if cursor:
+                params["cursor"] = cursor
+            r = _get_bybit_session().get(
+                _BYBIT_INSTRUMENTS_URL, params=params, timeout=15
+            )
+            r.raise_for_status()
+            payload = r.json()
+            if payload.get("retCode") != 0:
+                raise RuntimeError(payload.get("retMsg", "bybit error"))
+            result = payload.get("result") or {}
+            for item in result.get("list") or []:
+                sym = (item.get("symbol") or "").strip().upper()
+                # Only currently-listed contracts, and only names the studio's
+                # symbol validator accepts (PreLaunch/Delivering names and the
+                # dated futures' "BTC-27JUN25" form would be dead options).
+                if item.get("status") != "Trading" or not sym.isalnum():
+                    continue
+                symbols.add(sym)
+            cursor = result.get("nextPageCursor") or ""
+            if not cursor:
+                break
+    except Exception as e:
+        log.warning("bybit instruments-info failed (%s); serving cached list", e)
+        return tuple(cached)
+
+    out = sorted(symbols)
+    try:
+        BYBIT_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"fetched_at": time.time(), "symbols": out}))
+    except Exception:
+        pass
+    return tuple(out)
+
 
 def _read_parquet_stats(path: Path) -> dict | None:
     """Return {rows, first, last, size_bytes} for an existing OHLCV parquet.
