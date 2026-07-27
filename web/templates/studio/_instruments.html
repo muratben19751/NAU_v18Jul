@@ -1,9 +1,33 @@
-{# ctx: defn #}
+{# ctx: defn, symbol_choices, timeframe_choices #}
 <div class="instr" id="instruments">
   {% for inst in defn.instruments %}
-    <div class="chip {% if inst.active %}active{% endif %}"
-         hx-patch="/studio/{{ defn.id }}/instruments/{{ inst.symbol }}"
-         hx-target="#instruments" hx-swap="outerHTML">{{ inst.symbol }} · {{ inst.timeframe }}</div>
+    {# Toggle and remove are siblings, not nested: an hx-delete inside the
+       hx-patch chip would fire both requests on one click. #}
+    <div class="chip {% if inst.active %}active{% endif %}">
+      <span class="chip-label"
+            title="Toggle active"
+            hx-patch="/studio/{{ defn.id }}/instruments/{{ inst.symbol }}"
+            hx-target="#instruments" hx-swap="outerHTML">{{ inst.symbol }} · {{ inst.timeframe }}</span>
+      <button type="button" class="chip-x" title="Remove {{ inst.symbol }}"
+              hx-delete="/studio/{{ defn.id }}/instruments/{{ inst.symbol }}"
+              hx-target="#instruments" hx-swap="outerHTML">×</button>
+    </div>
   {% endfor %}
-  <div class="chip" title="Phase 2+: add instrument via config">+ Add</div>
+  <form class="instr-add"
+        hx-post="/studio/{{ defn.id }}/instruments"
+        hx-target="#instruments" hx-swap="outerHTML">
+    {# Datalist, not a select: the catalog symbols are suggestions — any symbol
+       Bybit serves is loadable, so typing one must stay possible. #}
+    <input name="symbol" list="instr-symbols" placeholder="Symbol"
+           autocomplete="off" spellcheck="false" required>
+    <datalist id="instr-symbols">
+      {% for s in symbol_choices %}<option value="{{ s }}"></option>{% endfor %}
+    </datalist>
+    <select name="timeframe">
+      {% for tf in timeframe_choices %}
+        <option value="{{ tf }}" {% if tf == "1h" %}selected{% endif %}>{{ tf }}</option>
+      {% endfor %}
+    </select>
+    <button class="chip add" type="submit">＋ Add</button>
+  </form>
 </div>

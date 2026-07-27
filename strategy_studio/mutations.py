@@ -7,6 +7,7 @@ Wiki References
 ---------------
 Bkz: [[strategy_studio]]
 """
+
 from __future__ import annotations
 
 from .registry import INDICATOR_REGISTRY, ParamSpec
@@ -28,6 +29,7 @@ class RuleNotFound(MutationError):
 
 
 # ── lookup helpers ───────────────────────────────────────────────
+
 
 def get_group(defn: StrategyDefinition, block: str) -> RuleGroup:
     if block == "entry":
@@ -81,24 +83,27 @@ def _coerce_bounded(value: str, spec: ParamSpec, name: str):
 
 # ── mutations ────────────────────────────────────────────────────
 
-def add_rule(defn: StrategyDefinition, block: str, indicator: str,
-             as_filter: bool = False) -> Rule:
+
+def add_rule(
+    defn: StrategyDefinition, block: str, indicator: str, as_filter: bool = False
+) -> Rule:
     spec = INDICATOR_REGISTRY.get(indicator)
     if spec is None:
         raise MutationError(f"unknown indicator '{indicator}'")
     group = get_group(defn, block)
-    params = {p.name: Param(value=p.default)
-              for p in spec.params if p.default is not None}
+    params = {
+        p.name: Param(value=p.default) for p in spec.params if p.default is not None
+    }
     operator = spec.operators[0]
     target = Param(value=0) if operator in _TARGET_OPS else None
-    rule = Rule(indicator=indicator, params=params,
-                operator=operator, target=target)
+    rule = Rule(indicator=indicator, params=params, operator=operator, target=target)
     (group.filters if as_filter else group.rules).append(rule)
     return rule
 
 
-def update_rule_param(defn: StrategyDefinition, rule_id: str,
-                      param: str, value: str) -> Rule:
+def update_rule_param(
+    defn: StrategyDefinition, rule_id: str, param: str, value: str
+) -> Rule:
     _block, _c, _i, rule = find_rule(defn, rule_id)
     spec = INDICATOR_REGISTRY[rule.indicator]
     if param == "target":
@@ -112,27 +117,31 @@ def update_rule_param(defn: StrategyDefinition, rule_id: str,
         return rule
     known = {p.name: p for p in spec.params}
     if param not in known:
-        raise MutationError(
-            f"unknown param '{param}' for '{rule.indicator}'")
+        raise MutationError(f"unknown param '{param}' for '{rule.indicator}'")
     coerced = _coerce_bounded(value, known[param], param)
     old = rule.params.get(param)
-    rule.params[param] = Param(value=coerced,
-                               optimize=old.optimize if old else None)
+    rule.params[param] = Param(value=coerced, optimize=old.optimize if old else None)
     return rule
 
 
 def delete_rule(defn: StrategyDefinition, rule_id: str) -> str:
     block, container, i, _rule = find_rule(defn, rule_id)
-    if block == "entry" and container is defn.entry.rules \
-            and len(defn.entry.rules) == 1:
+    if (
+        block == "entry"
+        and container is defn.entry.rules
+        and len(defn.entry.rules) == 1
+    ):
         raise MutationError("entry block must keep at least one rule")
     container.pop(i)
     return block
 
 
-def set_block_attr(defn: StrategyDefinition, block: str,
-                   match: str | None = None,
-                   evaluate: str | None = None) -> None:
+def set_block_attr(
+    defn: StrategyDefinition,
+    block: str,
+    match: str | None = None,
+    evaluate: str | None = None,
+) -> None:
     if match is not None:
         if match not in ("all", "any"):
             raise MutationError("match must be 'all' or 'any'")
@@ -146,9 +155,12 @@ def set_block_attr(defn: StrategyDefinition, block: str,
 
 
 _RISK_BOUNDS = {
-    "stop_loss_atr_mult": (0.1, 20.0), "stop_loss_atr_len": (2, 100),
-    "take_profit_r": (0.1, 20.0), "risk_per_trade_pct": (0.01, 5.0),
-    "max_concurrent": (1, 50), "time_stop_bars": (1, 5000),
+    "stop_loss_atr_mult": (0.1, 20.0),
+    "stop_loss_atr_len": (2, 100),
+    "take_profit_r": (0.1, 20.0),
+    "risk_per_trade_pct": (0.01, 5.0),
+    "max_concurrent": (1, 50),
+    "time_stop_bars": (1, 5000),
 }
 
 
@@ -165,8 +177,7 @@ def update_risk(defn: StrategyDefinition, name: str, value: str) -> None:
     if name in ("stop_loss_atr_len", "max_concurrent", "time_stop_bars"):
         v = int(v)
     old: Param | None = getattr(defn.risk, name)
-    setattr(defn.risk, name,
-            Param(value=v, optimize=old.optimize if old else None))
+    setattr(defn.risk, name, Param(value=v, optimize=old.optimize if old else None))
 
 
 def _find_param(defn: StrategyDefinition, owner: str, name: str) -> Param:
@@ -209,12 +220,14 @@ def toggle_optimize(defn: StrategyDefinition, owner: str, name: str) -> bool:
     return p.optimize is not None
 
 
-def set_optimize_range(defn: StrategyDefinition, owner: str, name: str,
-                       min_v: str, step_v: str, max_v: str) -> None:
+def set_optimize_range(
+    defn: StrategyDefinition, owner: str, name: str, min_v: str, step_v: str, max_v: str
+) -> None:
     p = _find_param(defn, owner, name)
     try:
-        p.optimize = OptimizeRange(min=float(min_v), step=float(step_v),
-                                   max=float(max_v))
+        p.optimize = OptimizeRange(
+            min=float(min_v), step=float(step_v), max=float(max_v)
+        )
     except (TypeError, ValueError) as e:
         raise MutationError(f"invalid range: {e}")
 
@@ -231,13 +244,20 @@ def set_regime_else(defn: StrategyDefinition, mode: str) -> None:
     defn.regime.else_ = mode
     if mode == "substrategy" and defn.regime.substrategy is None:
         from .schema import SubStrategy
+
         sub = SubStrategy(name="Mean-revert in chop")
-        rsi_in = Rule(indicator="rsi",
-                      params={"len": Param(value=14)},
-                      operator="lt", target=Param(value=30))
-        rsi_out = Rule(indicator="rsi",
-                       params={"len": Param(value=14)},
-                       operator="gt", target=Param(value=50))
+        rsi_in = Rule(
+            indicator="rsi",
+            params={"len": Param(value=14)},
+            operator="lt",
+            target=Param(value=30),
+        )
+        rsi_out = Rule(
+            indicator="rsi",
+            params={"len": Param(value=14)},
+            operator="gt",
+            target=Param(value=50),
+        )
         sub.entry.rules.append(rsi_in)
         sub.exit.rules.append(rsi_out)
         defn.regime.substrategy = sub
@@ -245,16 +265,17 @@ def set_regime_else(defn: StrategyDefinition, mode: str) -> None:
 
 _ALLOC_FIELDS = {
     "mode": ("single", "ranked"),
-    "sort_indicator": None,          # validated against the registry
+    "sort_indicator": None,  # validated against the registry
     "sort_direction": ("desc", "asc"),
     "weighting": ("equal", "inverse_volatility"),
     "rebalance": ("daily", "weekly", "on_signal"),
-    "top_n": None,                   # validated as int >= 1
+    "top_n": None,  # validated as int >= 1
 }
 
 
 def update_allocation(defn: StrategyDefinition, name: str, value: str) -> None:
     from .schema import AllocationBlock
+
     if name not in _ALLOC_FIELDS:
         raise MutationError(f"unknown allocation field '{name}'")
     if defn.allocation is None:
@@ -275,8 +296,7 @@ def update_allocation(defn: StrategyDefinition, name: str, value: str) -> None:
         return
     allowed = _ALLOC_FIELDS[name]
     if value not in allowed:
-        raise MutationError(
-            f"allocation.{name} must be one of {', '.join(allowed)}")
+        raise MutationError(f"allocation.{name} must be one of {', '.join(allowed)}")
     setattr(defn.allocation, name, value)
 
 
@@ -290,3 +310,47 @@ def toggle_instrument(defn: StrategyDefinition, symbol: str) -> None:
         raise MutationError(f"instrument '{symbol}' not configured")
     if not any(i.active for i in defn.instruments):
         raise MutationError("at least one instrument must stay active")
+
+
+def timeframe_choices() -> tuple[str, ...]:
+    """Timeframes an instrument may carry — the Bybit interval labels.
+
+    Single source of truth with the backtest adapter: it resolves a studio
+    timeframe through this same table (`BybitBarsAdapter._interval_code`), so a
+    label the picker offers is by construction one a run can load.
+    """
+    from data import BYBIT_ALL_INTERVALS
+
+    return tuple(label for _, label in BYBIT_ALL_INTERVALS)
+
+
+def add_instrument(defn: StrategyDefinition, symbol: str, timeframe: str) -> None:
+    """Append an instrument, active, to the strategy.
+
+    One entry per symbol: `toggle_instrument` and the instrument routes key on
+    the symbol alone, so a second entry for the same symbol would be
+    indistinguishable from the first.
+    """
+    from .schema import InstrumentConfig
+
+    sym = (symbol or "").strip().upper()
+    if not sym:
+        raise MutationError("symbol is required")
+    if not sym.isalnum() or not sym.isascii():
+        raise MutationError(f"invalid symbol '{symbol}' — letters and digits only")
+    if any(i.symbol == sym for i in defn.instruments):
+        raise MutationError(f"instrument '{sym}' is already configured")
+    tf = (timeframe or "").strip()
+    allowed = timeframe_choices()
+    if tf not in allowed:
+        raise MutationError(f"timeframe must be one of {', '.join(allowed)}")
+    defn.instruments.append(InstrumentConfig(symbol=sym, timeframe=tf, active=True))
+
+
+def remove_instrument(defn: StrategyDefinition, symbol: str) -> None:
+    kept = [i for i in defn.instruments if i.symbol != symbol]
+    if len(kept) == len(defn.instruments):
+        raise MutationError(f"instrument '{symbol}' not configured")
+    if not any(i.active for i in kept):
+        raise MutationError("at least one instrument must stay active")
+    defn.instruments = kept

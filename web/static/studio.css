@@ -49,13 +49,32 @@
 .studio-embed .strategy-name .dot{width:7px;height:7px;border-radius:50%;background:var(--opt)}
 .studio-embed .strategy-name small{color:var(--muted)}
 .studio-embed header .spacer{flex:1}
-.studio-embed .instr{display:flex;gap:8px}
+.studio-embed .instr{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
 .studio-embed .instr .chip{
   font-family:'IBM Plex Mono',monospace;font-size:.75rem;
   background:var(--chip);border:1px solid var(--line);border-radius:6px;
   padding:5px 10px;color:var(--muted);cursor:pointer;transition:.15s;
+  display:flex;align-items:center;gap:6px;
 }
 .studio-embed .instr .chip.active{color:var(--text);border-color:var(--long);background:var(--long-dim)}
+.studio-embed .instr .chip-label{cursor:pointer}
+.studio-embed .instr .chip-x{
+  background:none;border:none;padding:0;line-height:1;
+  color:var(--muted);font-size:.9rem;cursor:pointer;transition:.15s;
+}
+.studio-embed .instr .chip-x:hover{color:var(--short)}
+.studio-embed .instr-add{display:flex;gap:6px;align-items:center}
+.studio-embed .instr-add input,.studio-embed .instr-add select{
+  font-family:'IBM Plex Mono',monospace;font-size:.75rem;
+  background:var(--bg);border:1px solid var(--line);border-radius:6px;
+  color:var(--text);padding:5px 8px;
+}
+.studio-embed .instr-add input{width:110px}
+.studio-embed .instr-add input:focus,.studio-embed .instr-add select:focus{
+  outline:none;border-color:var(--long);
+}
+.studio-embed .instr .chip.add{border-style:dashed;color:var(--text)}
+.studio-embed .instr .chip.add:hover{border-color:var(--long);border-style:solid}
 .studio-embed .btn{
   border:1px solid var(--line);background:var(--panel-2);color:var(--text);
   font-family:inherit;font-size:.85rem;font-weight:600;

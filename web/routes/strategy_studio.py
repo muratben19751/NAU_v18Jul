@@ -64,12 +64,15 @@ from strategy_studio.graph import to_graph
 from strategy_studio.mutations import (
     MutationError,
     RuleNotFound,
+    add_instrument,
     add_rule,
     delete_rule,
     find_rule,
+    remove_instrument,
     set_block_attr,
     set_optimize_range,
     set_regime_else,
+    timeframe_choices,
     toggle_instrument,
     toggle_optimize,
     update_allocation,
@@ -180,8 +183,48 @@ _BLOCK_TEMPLATE = {
 }
 
 
+_SYMBOLS_TTL_S = 60.0
+_symbols_cache: tuple[float, tuple[str, ...]] | None = None
+
+
+def _symbol_choices() -> tuple[str, ...]:
+    """Suggestions for the instrument picker — symbols we already hold bars for.
+
+    Only *linear* symbols: the backtest adapter builds every recipe with
+    ``category="linear"`` and its loader takes that default too, so an inverse
+    or spot-only symbol would be fetched from the wrong market. The picker is a
+    datalist, not a closed list — a symbol Bybit knows but the catalog does not
+    is still typeable, and the loader fetches it on first run.
+
+    Cached briefly: ``_ctx`` runs on every block render, and this walks the
+    catalog directory. The TTL keeps data downloaded on ``/data`` showing up
+    without a restart.
+    """
+    global _symbols_cache
+    now = time.monotonic()
+    if _symbols_cache and now - _symbols_cache[0] < _SYMBOLS_TTL_S:
+        return _symbols_cache[1]
+    from data import BYBIT_SYMBOLS, list_catalog_bybit_symbols
+
+    known = {
+        s["symbol"] for s in list_catalog_bybit_symbols() if s["category"] == "linear"
+    }
+    choices = tuple(sorted(known | set(BYBIT_SYMBOLS)))
+    _symbols_cache = (now, choices)
+    return choices
+
+
 def _ctx(request: Request, defn: StrategyDefinition, **extra) -> dict:
-    return {"request": request, "defn": defn, "registry": INDICATOR_REGISTRY, **extra}
+    return {
+        "request": request,
+        "defn": defn,
+        "registry": INDICATOR_REGISTRY,
+        # `studio/_instruments.html` renders from several routes; keeping the
+        # picker's options in the shared context means none of them can forget.
+        "symbol_choices": _symbol_choices(),
+        "timeframe_choices": timeframe_choices(),
+        **extra,
+    }
 
 
 def _side_ctx(request: Request, defn: StrategyDefinition, **extra) -> dict:
@@ -584,6 +627,11 @@ def route_risk(
     return _render_block(request, defn, "risk")
 
 
+def _render_instruments(request: Request, defn: StrategyDefinition) -> HTMLResponse:
+    html = _tpl().get_template("studio/_instruments.html").render(_ctx(request, defn))
+    return HTMLResponse(html)
+
+
 @router.patch("/studio/{strategy_id}/instruments/{symbol}")
 def route_instrument(request: Request, strategy_id: str, symbol: str):
     defn = _load_working(strategy_id)
@@ -592,8 +640,39 @@ def route_instrument(request: Request, strategy_id: str, symbol: str):
     except MutationError as e:
         return PlainTextResponse(str(e), status_code=422)
     store.save_draft(defn)
-    html = _tpl().get_template("studio/_instruments.html").render(_ctx(request, defn))
-    return HTMLResponse(html)
+    return _render_instruments(request, defn)
+
+
+@router.post("/studio/{strategy_id}/instruments")
+def route_add_instrument(
+    request: Request,
+    strategy_id: str,
+    symbol: str = Form(...),
+    timeframe: str = Form(...),
+):
+    """Add a symbol to the strategy — the picker behind the '+ Add' chip.
+
+    Lands active, like the toggle route leaves one: an instrument the user just
+    asked for should be in the next run without a second click.
+    """
+    defn = _load_working(strategy_id)
+    try:
+        add_instrument(defn, symbol, timeframe)
+    except MutationError as e:
+        return PlainTextResponse(str(e), status_code=422)
+    store.save_draft(defn)
+    return _render_instruments(request, defn)
+
+
+@router.delete("/studio/{strategy_id}/instruments/{symbol}")
+def route_delete_instrument(request: Request, strategy_id: str, symbol: str):
+    defn = _load_working(strategy_id)
+    try:
+        remove_instrument(defn, symbol)
+    except MutationError as e:
+        return PlainTextResponse(str(e), status_code=422)
+    store.save_draft(defn)
+    return _render_instruments(request, defn)
 
 
 @router.post("/studio/{strategy_id}/save")
