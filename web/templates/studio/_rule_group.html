@@ -16,7 +16,7 @@
       </select>
     </span>
   </div>
-  <div class="block-body">
+  <div class="block-body" data-dropzone="{{ block_kind }}">
     {% for rule in group.rules %}
       {% if not loop.first %}<div class="and-tag">{{ "AND" if group.match == "all" else "OR" }}</div>{% endif %}
       {% with spec = registry.get(rule.indicator) %}{% include "studio/_rule.html" %}{% endwith %}

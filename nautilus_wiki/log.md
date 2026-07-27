@@ -2,6 +2,15 @@
 
 Append-only. Her ingest, query veya lint operasyonu bir satır bırakır.
 
+## 2026-07-26 (3) — İndikatör kütüphanesi paneli: dekoratiften işlevliye (kod → wiki)
+
+- **rapor** — Kullanıcı: "strategy studio da sol frame yok oluyor". Kök neden çökme değil: `studio.css` `@media (max-width:1100px){ .library{display:none} }` — dar pencerede panel geri getirilemeden kayboluyordu.
+- **asıl bulgu** — Panel **zaten işlevsizdi**: `studio.js`'te tek referansı yoktu (tıklama/sürükleme yok, arama kutusu ölü). Kural ekleme yalnızca blokların kendi `add-rule-form`'undan yapılabiliyordu. Gizleyen CSS kuralı, panelin işlevsizliğini de gizliyordu.
+- **karar** — Kullanıcı "işlevli hale getir" dedi. **Yeni endpoint açılmadı**: drag-drop + tıkla-ekle hedef bloğun DOM'daki `add-rule-form`'unu doldurup submit eder → "＋ Add condition" ile aynı sunucu yolu, aynı doğrulama. Sunucu tarafı değişmedi.
+- **incelik** — regime bloğu tek `.block-body`'de üç kural listesi tutuyor → üç ayrı dropzone (`regime`/`sub_entry`/`sub_exit`). `data-dropzone` htmx swap sonrası HTML'de de bulunmalı, yoksa ilk bırakmadan sonra sürükleme sessizce ölür (doğrulandı). Panel artık gizlenmiyor, daralıyor.
+- **doğrulama** — 3 dropzone + 15 draggable öğe render; `POST blocks/exit/rules` RSI'ı doğru bloğa ekledi; swap sonrası `data-dropzone` korunuyor; taslak discard ile temizlendi. **207 geçti / 1 atlandı**, ruff temiz.
+- **wiki** — `synthesis/strategy_studio.md`'ye yeni bölüm. Backlinks + index + lint yenilendi.
+
 ## 2026-07-26 (2) — Nav'a "Strategy Builder" linki + bayat doküman keşfi (kod → wiki)
 
 - **bulgu** — Kullanıcı `studio_app`'i ana app'e APIRouter olarak taşıma isteğiyle geldi; iş **zaten 2026-07-25'te tamamlanmıştı** (`web/routes/strategy_studio.py`, `server.py` include_router, paylaşılan templates/static/store). Talep bayat bir öncüle dayanıyordu.
@@ -576,3 +585,21 @@ eksik kalmıştı. Kapatıldı:
 
 Lint öncesi/sonrası temiz (0/0); backlinks 71 sayfada tazelendi, index yenilendi,
 sağlık raporu `lint/2026-07-26_health.md` olarak dosyalandı.
+
+## 2026-07-27 — wiki-sync: serve.py modül haritasına girdi (kod → wiki)
+
+- **boşluk** — `serve.py` modül haritasında yoktu; dosyanın kendi docstring'i
+  `Bkz: [[webapp_module_map]], [[nautilus_kernel]]` diyordu ama harita karşılık
+  vermiyordu — iki yönlü köprü tek yönlü kalmıştı. Dosya aynı zamanda **git'te
+  izlenmiyordu**: PM2'nin `dump.pm2` kaydı `C:\myAI_Projects\NAU_v18Jul\serve.py`
+  yolunu işaret ederken dosya versiyon kontrolünde değildi, yani makine
+  sıfırlansa giriş noktası kaybolurdu. Bu senkronla git'e alındı.
+- **eklenen** — `webapp_module_map.md`'ye `serve.py` satırı: süreç sarmalayıcısı
+  rolü (kurmaz, başlatır), `reload=False`'un neden bilinçli olduğu (worker
+  thread'deki bellek durumu), yalnız-loopback bağlanma kararı.
+- **operasyonel not** — Tünel ingress'i `localhost` değil `127.0.0.1` yazmalı:
+  uvicorn yalnız IPv4 dinliyor, `localhost` önce `::1`'e çözülüp reddediliyor.
+  Bu, 2026-07-27'de `nautilus.muratben.com`'un 502 vermesinin iki nedeninden
+  biriydi (diğeri: ingress 8111 yerine 3700'ü gösteriyordu).
+- **studio** — İndikatör kütüphanesi paneli işi (26 Tem) bu commit'le kod tarafında
+  da yerine oturdu; wiki karşılığı `synthesis/strategy_studio.md`'de zaten yazılıydı.

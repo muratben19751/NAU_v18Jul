@@ -19,19 +19,21 @@
     </span>
   </div>
   <div class="block-body">
-    {% for rule in regime.conditions.rules %}
-      {% if not loop.first %}<div class="and-tag">{{ "AND" if regime.conditions.match == "all" else "OR" }}</div>{% endif %}
-      {% with spec = registry.get(rule.indicator) %}{% include "studio/_rule.html" %}{% endwith %}
-    {% endfor %}
-    {% if ghosts is defined %}{% for g in ghosts %}{% include "studio/_ghost.html" %}{% endfor %}{% endif %}
-    <form class="add-rule-form"
-          hx-post="/studio/{{ defn.id }}/blocks/regime/rules"
-          hx-target="#block-regime" hx-swap="outerHTML">
-      <select name="indicator">
-        {% for key, s in registry.items() %}<option value="{{ key }}">{{ s.label }}</option>{% endfor %}
-      </select>
-      <button class="add-rule" type="submit">＋ Add condition</button>
-    </form>
+    <div class="dropzone" data-dropzone="regime">
+      {% for rule in regime.conditions.rules %}
+        {% if not loop.first %}<div class="and-tag">{{ "AND" if regime.conditions.match == "all" else "OR" }}</div>{% endif %}
+        {% with spec = registry.get(rule.indicator) %}{% include "studio/_rule.html" %}{% endwith %}
+      {% endfor %}
+      {% if ghosts is defined %}{% for g in ghosts %}{% include "studio/_ghost.html" %}{% endfor %}{% endif %}
+      <form class="add-rule-form"
+            hx-post="/studio/{{ defn.id }}/blocks/regime/rules"
+            hx-target="#block-regime" hx-swap="outerHTML">
+        <select name="indicator">
+          {% for key, s in registry.items() %}<option value="{{ key }}">{{ s.label }}</option>{% endfor %}
+        </select>
+        <button class="add-rule" type="submit">＋ Add condition</button>
+      </form>
+    </div>
     <div class="branch then">
       <div class="branch-label">THEN <small>· trending regime</small></div>
       <div class="subcard"><span class="arrow">↓</span>
@@ -53,30 +55,34 @@
         <span>entry &amp; exit below · shares main RISK block</span>
         <span class="meta">active in chop</span></div>
       <div class="nested sub-rules">
-        <div class="and-tag" style="margin-left:0">SUB · ENTRY</div>
-        {% for rule in regime.substrategy.entry.rules %}
-          {% with spec = registry.get(rule.indicator) %}{% include "studio/_rule.html" %}{% endwith %}
-        {% endfor %}
-        <form class="add-rule-form"
-              hx-post="/studio/{{ defn.id }}/blocks/sub_entry/rules"
-              hx-target="#block-regime" hx-swap="outerHTML">
-          <select name="indicator">
-            {% for key, s in registry.items() %}<option value="{{ key }}">{{ s.label }}</option>{% endfor %}
-          </select>
-          <button class="add-rule" type="submit">＋ Add condition</button>
-        </form>
-        <div class="and-tag" style="margin-left:0">SUB · EXIT</div>
-        {% for rule in regime.substrategy.exit.rules %}
-          {% with spec = registry.get(rule.indicator) %}{% include "studio/_rule.html" %}{% endwith %}
-        {% endfor %}
-        <form class="add-rule-form"
-              hx-post="/studio/{{ defn.id }}/blocks/sub_exit/rules"
-              hx-target="#block-regime" hx-swap="outerHTML">
-          <select name="indicator">
-            {% for key, s in registry.items() %}<option value="{{ key }}">{{ s.label }}</option>{% endfor %}
-          </select>
-          <button class="add-rule" type="submit">＋ Add condition</button>
-        </form>
+        <div class="dropzone" data-dropzone="sub_entry">
+          <div class="and-tag" style="margin-left:0">SUB · ENTRY</div>
+          {% for rule in regime.substrategy.entry.rules %}
+            {% with spec = registry.get(rule.indicator) %}{% include "studio/_rule.html" %}{% endwith %}
+          {% endfor %}
+          <form class="add-rule-form"
+                hx-post="/studio/{{ defn.id }}/blocks/sub_entry/rules"
+                hx-target="#block-regime" hx-swap="outerHTML">
+            <select name="indicator">
+              {% for key, s in registry.items() %}<option value="{{ key }}">{{ s.label }}</option>{% endfor %}
+            </select>
+            <button class="add-rule" type="submit">＋ Add condition</button>
+          </form>
+        </div>
+        <div class="dropzone" data-dropzone="sub_exit">
+          <div class="and-tag" style="margin-left:0">SUB · EXIT</div>
+          {% for rule in regime.substrategy.exit.rules %}
+            {% with spec = registry.get(rule.indicator) %}{% include "studio/_rule.html" %}{% endwith %}
+          {% endfor %}
+          <form class="add-rule-form"
+                hx-post="/studio/{{ defn.id }}/blocks/sub_exit/rules"
+                hx-target="#block-regime" hx-swap="outerHTML">
+            <select name="indicator">
+              {% for key, s in registry.items() %}<option value="{{ key }}">{{ s.label }}</option>{% endfor %}
+            </select>
+            <button class="add-rule" type="submit">＋ Add condition</button>
+          </form>
+        </div>
       </div>
       {% else %}
       <div class="subcard flat"><span class="arrow">⏸</span>

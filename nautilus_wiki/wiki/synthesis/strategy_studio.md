@@ -195,6 +195,38 @@ rozeti), DSR*/fold/trial satırı hiç basılmaz ve panel koşunun walk-forward'
 göründüğünü test etmek değildir; regresyon testi eski satırı yeni alanları
 soyarak üretir.
 
+## İndikatör kütüphanesi paneli: dekoratiften işlevliye (2026-07-26)
+
+Kullanıcı raporu "sol frame yok oluyor" idi; kök neden çökme değil, bilinçli
+bir CSS kuralıydı: `@media (max-width:1100px){ .library{display:none} }`.
+Pencere 1100px altına inince panel geri getirilemeden kayboluyordu.
+
+İzi sürerken **daha ağır bir bulgu** çıktı: panel zaten hiçbir şeye bağlı
+değildi. `studio.js` içinde tek bir referansı yoktu — tıklama yok, sürükleme
+yok, arama kutusu hiçbir şey yapmıyordu. Kural ekleme yalnızca her bloğun
+kendi içindeki `<select>` + "＋ Add condition" formundan yapılabiliyordu.
+`cursor:grab` imleci hiçbir şeyi tutmuyordu; panel salt dekoratif bir listeydi.
+
+**Ders:** görünür bir UI öğesinin varlığı, bağlı olduğunun kanıtı değildir.
+Gizleyen CSS kuralı, panelin işlevsizliğini de gizliyordu — kimse kaybını fark
+etmediği için kural yıllarca sorgulanmadı. Bir bileşen "responsive" gerekçesiyle
+tamamen gizleniyorsa, önce **hâlâ bir işi var mı** diye bakılmalı.
+
+Panel işlevli hale getirildi. Tasarım kararı: **yeni endpoint açılmadı.**
+Sürükle-bırak ve tıkla-ekle, hedef bloğun DOM'da zaten duran
+`add-rule-form`'unun `<select>`'ini doldurup htmx ile submit eder — yani
+"＋ Add condition" ile **tam olarak aynı** sunucu yolundan, aynı doğrulamadan
+geçer. Böylece kütüphane kendi doğrulama/CSRF yüzeyini üretmez; sunucu tarafında
+hiçbir şey değişmedi (salt `studio.js` + şablonlarda `data-dropzone` + CSS).
+
+İki incelik: (1) regime bloğu tek `.block-body` içinde **üç** kural listesi
+tutar (`regime`, `sub_entry`, `sub_exit`) — tek ortak dropzone hangisine
+ekleneceği belirsiz olurdu, üçü ayrı işaretlendi. (2) `data-dropzone` htmx
+swap'ıyla dönen HTML'de de bulunmak zorunda; yoksa ilk bırakmadan sonra blok
+yenilenince sürükleme sessizce ölürdü (regresyon olarak elle doğrulandı).
+Hedef bloğun dropdown'ında olmayan bir indikatör 422 üretecek istek atmak
+yerine sessizce yok sayılır. Panel artık gizlenmiyor, daralıyor (170px → 150px).
+
 ## HTTP semantiği: 404 kaynak, 422 girdi
 
 HTMX yüzeyinde durum kodu bir UX kararıdır — 2xx dışını HTMX swap etmez, yani

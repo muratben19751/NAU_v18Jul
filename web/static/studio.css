@@ -78,6 +78,12 @@ header .spacer{flex:1}
   transition:.15s;
 }
 .lib-item:hover{border-color:var(--long);transform:translateX(2px)}
+.lib-item:active{cursor:grabbing}
+.lib-item.dragging{opacity:.45;border-color:var(--long)}
+[data-dropzone].drop-hover{
+  outline:2px dashed var(--long);outline-offset:-4px;
+  background:color-mix(in srgb, var(--long) 8%, transparent);
+}
 .lib-item .tag{font-family:'IBM Plex Mono',monospace;font-size:.65rem;color:var(--muted)}
 .lib-search{
   width:100%;background:var(--bg);border:1px solid var(--line);border-radius:8px;
@@ -380,12 +386,16 @@ footer .run{margin-left:auto;display:flex;gap:10px;align-items:center}
 ::-webkit-scrollbar-thumb{background:var(--line);border-radius:5px}
 ::-webkit-scrollbar-track{background:transparent}
 
+/* The library is interactive (drag/click to add rules), so it narrows instead
+   of disappearing — hiding it used to remove the only indicator browser. */
 @media (max-width:1100px){
-  .workspace{grid-template-columns:1fr 350px}
-  .library{display:none}
+  .workspace{grid-template-columns:170px 1fr 350px}
+  .library{padding:10px}
+  .lib-item{padding:6px 8px;font-size:.76rem}
+  .lib-item .tag{display:none}
 }
 @media (max-width:760px){
-  .workspace{grid-template-columns:1fr}
+  .workspace{grid-template-columns:150px 1fr}
   .side{display:none}
   footer{flex-wrap:wrap}
 }

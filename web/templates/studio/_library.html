@@ -4,7 +4,7 @@
   {% for category, specs in library.items() %}
     <div class="lib-title">{{ category | replace("_", " ") | title }}</div>
     {% for s in specs %}
-      <div class="lib-item" data-key="{{ s.key }}">{{ s.label }}
+      <div class="lib-item" data-key="{{ s.key }}" draggable="true">{{ s.label }}
         <span class="tag">{{ s.category[:4] }}</span></div>
     {% endfor %}
   {% endfor %}
