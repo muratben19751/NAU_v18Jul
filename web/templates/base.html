@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{{ page_title or "Nautilus Lab" }}</title>
+  <title>{% block title %}{{ page_title or "Nautilus Lab" }}{% endblock %}</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -13,8 +13,9 @@
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
   <script src="/static/lightweight-charts.js"></script>
   <script src="/static/chart.js?v={{ static_version }}"></script>
+  {% block head %}{% endblock %}
 </head>
-<body class="{{ 'page-studio' if active == 'studio' }}">
+<body class="{% if active == 'studio' %}page-studio{% elif active == 'studio_builder' %}page-builder{% endif %}">
   <div class="shell">
     <aside class="sidebar">
       <div class="brand">

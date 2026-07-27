@@ -2,6 +2,21 @@
 
 Append-only. Her ingest, query veya lint operasyonu bir satır bırakır.
 
+## 2026-07-27 (2) — Strategy Builder ana kabuğun içine alındı (kod → wiki)
+
+- **rapor** — Kullanıcı: "strategy builder diğer sayfalar gibi solda link ve frame ile açılsın". Sayfa kendi başına duran bir HTML belgesiydi; nav linki vardı ama tıklayınca kabuk (sidebar + topbar) kayboluyordu.
+- **fix** — `web/templates/studio/page.html` artık `base.html`'i extend ediyor; `base.html`'e `{% block head %}` + `{% block title %}` eklendi, body sınıfı `page-builder` oldu. Route `active="studio_builder"` + `page_title` geçiriyor (nav highlight + topbar başlığı).
+- **asıl iş** — `studio.css` global yazılmıştı (`:root`, `body`, `header`, `footer`, `.btn`, `.metric`, `.tab`, `--panel`…) ve kabuğu yeniden renklendirirdi. **Tüm kurallar `.studio-embed` altına kapsandı** (mekanik dönüşüm + elle düzeltilen `body` kuralı). Özgüllük de lehe çalışıyor: `.studio-embed .btn` app.css'in `.btn`'ini yener.
+- **incelik** — htmx artık yalnız `base.html`'den geliyor (sayfanın cdnjs kopyası silindi, çift dinleyici riski); `rem` kökten çözüldüğü için 15px kök ölçüsü sayfa-yerel `<style>:root{font-size:15px}</style>` ile korundu (app.css'te `rem` yok). Sayfa içi "StrategyBuilder" logosu kaldırıldı — topbar zaten adı yazıyor.
+- **doğrulama** — `/studio/wt-funding-v3`: `<body class="page-builder">`, nav linki `active`, topbar "Strategy Builder", tek `.studio-embed`, tek htmx. **544 geçti / 3 atlandı**, ruff check temiz. (`test_promote_draft_atomicity` bir kez düştü, yeniden koşumda 5/5 geçti — eşzamanlılık testinde flake, bu değişiklikle ilgisiz.)
+
+## 2026-07-27 — Kurucunun sayfa markası nav'dan ayrıştırıldı (kod → wiki)
+
+- **rapor** — Kullanıcı (ekran görüntüsüyle): "bunun adı ile sol menüdeki ad karışıyor". Kurucu sayfası `Strategy<span>Studio</span>` logosunu taşıyordu; soldaki nav'da ise farklı bir sayfaya (`/studio`, Composer+Backtest) giden "Strategy Studio" linki vardı. Nav 2026-07-26'da ayrışmıştı ama sayfanın kendi markası hizalanmamıştı.
+- **fix** — `web/templates/studio/page.html`: logo → `Strategy<span>Builder</span>`, `<title>` → "Strategy Builder — {ad}". Nav etiketiyle ("Strategy Builder") artık birebir aynı.
+- **karar** — Yalnızca kullanıcı yüzeyi değişti; `web/routes/strategy_studio.py`, `strategy_studio/` paketi ve `/studio/{id}` rota öneki tarihsel adlarını korudu (modül docstring'i bu ayrımı açıkça yazıyor).
+- **wiki** — `synthesis/strategy_studio.md` nav-çakışması bölümü sonuçla güncellendi, `summary` + `last_updated` tazelendi.
+
 ## 2026-07-26 (3) — İndikatör kütüphanesi paneli: dekoratiften işlevliye (kod → wiki)
 
 - **rapor** — Kullanıcı: "strategy studio da sol frame yok oluyor". Kök neden çökme değil: `studio.css` `@media (max-width:1100px){ .library{display:none} }` — dar pencerede panel geri getirilemeden kayboluyordu.

@@ -1,4 +1,14 @@
-"""Strategy Studio — visual strategy builder routes.
+"""Strategy Builder — visual strategy builder routes.
+
+Named "Strategy Builder" in the UI to stay distinct from the nav's "Strategy
+Studio" (the Composer+Backtest page at ``/studio``); the module and route prefix
+keep the historical ``strategy_studio`` / ``/studio/{id}`` names.
+
+The page renders inside ``base.html`` like every other page (sidebar nav +
+topbar), so ``studio_page`` passes ``active="studio_builder"`` and a
+``page_title``. Its stylesheet is scoped under ``.studio-embed`` — unscoped
+``:root``/``body``/``header`` rules and shared class names would otherwise
+repaint the app shell.
 
 Wiki References
 ---------------
@@ -319,6 +329,9 @@ def studio_page(request: Request, strategy_id: str, version: int | None = None):
         _side_ctx(
             request,
             defn,
+            # renders inside base.html's shell — nav highlight + topbar title
+            active="studio_builder",
+            page_title="Strategy Builder",
             library=library_by_category(),
             is_draft=is_draft,
             initial_run=run,

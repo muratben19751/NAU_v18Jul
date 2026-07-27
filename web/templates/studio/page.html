@@ -1,51 +1,54 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Strategy Studio — {{ defn.name }}</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/static/studio.css">
-<script src="https://cdnjs.cloudflare.com/ajax/libs/htmx/1.9.12/htmx.min.js"></script>
-</head>
-<body>
-<div id="error-banner" class="error-banner" hidden></div>
-<div id="modal-slot"></div>
-<header>
-  <div class="logo">Strategy<span>Studio</span></div>
-  {% include "studio/_strategy_name.html" %}
-  <div class="spacer"></div>
-  {% include "studio/_instruments.html" %}
-  <button class="btn" hx-post="/studio/{{ defn.id }}/save"
-          hx-target="#strategy-name" hx-swap="outerHTML">Save</button>
-  <button class="btn" hx-post="/studio/{{ defn.id }}/discard"
-          hx-confirm="Discard all unsaved changes?" hx-swap="none">Discard</button>
-  <button class="btn primary" hx-post="/studio/{{ defn.id }}/backtest"
-          hx-target="#footer-metrics" hx-swap="outerHTML">▶ Run backtest</button>
-  <button class="btn" hx-get="/studio/{{ defn.id }}/deploy/modal"
-          hx-target="#modal-slot" hx-swap="innerHTML">⇪ Deploy</button>
-</header>
-<div class="workspace">
-  {% include "studio/_library.html" %}
-  <div class="canvas-wrap">
-    <main class="canvas">
-      {% with regime = defn.regime, ghosts = ghosts_by_block["regime"] %}{% include "studio/_regime_block.html" %}{% endwith %}
-      {% with allocation = defn.allocation, ghosts = [] %}{% include "studio/_allocation_block.html" %}{% endwith %}
-      {% with group = defn.entry, block_kind = "entry", title = "Long conditions", ghosts = ghosts_by_block["entry"] %}{% include "studio/_rule_group.html" %}{% endwith %}
-      {% with group = defn.exit, block_kind = "exit", title = "Exit conditions", ghosts = ghosts_by_block["exit"] %}{% include "studio/_rule_group.html" %}{% endwith %}
-      {% with risk = defn.risk, ghosts = ghosts_by_block["risk"] %}{% include "studio/_risk_block.html" %}{% endwith %}
-    </main>
-    <form class="ai-bar" hx-post="/studio/{{ defn.id }}/ai/suggest"
-          hx-swap="none" hx-indicator="find .btn">
-      <span class="spark-ic">✦</span>
-      <input name="ask" placeholder='Ask AI — "add a volatility regime filter", "reduce drawdown"…'>
-      <button class="btn ai" type="submit">Generate</button>
-    </form>
+{% extends "base.html" %}
+{% block title %}Strategy Builder — {{ defn.name }}{% endblock %}
+
+{% block head %}
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/studio.css?v={{ static_version }}">
+  {# studio.css sizes in rem against a 15px root; app.css is px-only, so the
+     shell around it is unaffected by this page-local root size. #}
+  <style>:root{font-size:15px}</style>
+{% endblock %}
+
+{% block content %}
+<div class="studio-embed">
+  <div id="error-banner" class="error-banner" hidden></div>
+  <div id="modal-slot"></div>
+  <header>
+    {% include "studio/_strategy_name.html" %}
+    <div class="spacer"></div>
+    {% include "studio/_instruments.html" %}
+    <button class="btn" hx-post="/studio/{{ defn.id }}/save"
+            hx-target="#strategy-name" hx-swap="outerHTML">Save</button>
+    <button class="btn" hx-post="/studio/{{ defn.id }}/discard"
+            hx-confirm="Discard all unsaved changes?" hx-swap="none">Discard</button>
+    <button class="btn primary" hx-post="/studio/{{ defn.id }}/backtest"
+            hx-target="#footer-metrics" hx-swap="outerHTML">▶ Run backtest</button>
+    <button class="btn" hx-get="/studio/{{ defn.id }}/deploy/modal"
+            hx-target="#modal-slot" hx-swap="innerHTML">⇪ Deploy</button>
+  </header>
+  <div class="workspace">
+    {% include "studio/_library.html" %}
+    <div class="canvas-wrap">
+      <main class="canvas">
+        {% with regime = defn.regime, ghosts = ghosts_by_block["regime"] %}{% include "studio/_regime_block.html" %}{% endwith %}
+        {% with allocation = defn.allocation, ghosts = [] %}{% include "studio/_allocation_block.html" %}{% endwith %}
+        {% with group = defn.entry, block_kind = "entry", title = "Long conditions", ghosts = ghosts_by_block["entry"] %}{% include "studio/_rule_group.html" %}{% endwith %}
+        {% with group = defn.exit, block_kind = "exit", title = "Exit conditions", ghosts = ghosts_by_block["exit"] %}{% include "studio/_rule_group.html" %}{% endwith %}
+        {% with risk = defn.risk, ghosts = ghosts_by_block["risk"] %}{% include "studio/_risk_block.html" %}{% endwith %}
+      </main>
+      <form class="ai-bar" hx-post="/studio/{{ defn.id }}/ai/suggest"
+            hx-swap="none" hx-indicator="find .btn">
+        <span class="spark-ic">✦</span>
+        <input name="ask" placeholder='Ask AI — "add a volatility regime filter", "reduce drawdown"…'>
+        <button class="btn ai" type="submit">Generate</button>
+      </form>
+    </div>
+    {% include "studio/_side_panel.html" %}
   </div>
-  {% include "studio/_side_panel.html" %}
+  {% with run = initial_run, metrics = initial_metrics, spark = initial_spark %}{% include "studio/_footer_metrics.html" %}{% endwith %}
 </div>
-{% with run = initial_run, metrics = initial_metrics, spark = initial_spark %}{% include "studio/_footer_metrics.html" %}{% endwith %}
-<script src="/static/studio.js"></script>
-</body>
-</html>
+{% endblock %}
+
+{% block scripts %}
+  <script src="/static/studio.js?v={{ static_version }}"></script>
+{% endblock %}

@@ -2368,3 +2368,17 @@ body.page-studio .cockpit-idle-mark {
 }
 .sw-light { white-space: nowrap; }
 .sw-finish-actions { margin-top: 4px; }
+
+/* ------- Strategy Builder (/studio/{id}) -------
+   The builder is a full-height workspace, not a padded document. It renders in
+   the normal shell (sidebar + topbar) but its .content host must drop the 24px
+   padding and stop growing, so the library / canvas / side panel scroll inside
+   .studio-embed instead of the page. See web/static/studio.css. */
+body.page-builder .main { height: 100vh; min-height: 0; }
+body.page-builder .content {
+  padding: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}

@@ -4,8 +4,8 @@ type: synthesis
 sources:
   - https://github.com/nautechsystems/nautilus_trader
   - sources/02_architecture_docs.md
-last_updated: 2026-07-26
-summary: /studio/{id} altındaki görsel strateji kurucu; sürümlü şema → derleyici → to_nautilus → composer spec → run_composed_backtest zinciri, çeviremediğini sessizce atmak yerine gerekçesiyle reddeder; sweep pencereli walk-forward ve deflate edilmiş DSR ile skorlanır. Nav'da ayrı "Strategy Builder" linkiyle erişilir (2026-07-26).
+last_updated: 2026-07-27
+summary: /studio/{id} altındaki görsel strateji kurucu; sürümlü şema → derleyici → to_nautilus → composer spec → run_composed_backtest zinciri, çeviremediğini sessizce atmak yerine gerekçesiyle reddeder; sweep pencereli walk-forward ve deflate edilmiş DSR ile skorlanır. Nav'da ve sayfa markasında "Strategy Builder" adını taşır (2026-07-27).
 key_concepts:
   - strategy_and_actor
   - backtesting_guide
@@ -34,6 +34,48 @@ zaten `/studio`'ya giden bir "Strategy Studio" linki vardı; kurucuya
 kullanmak iki farklı sayfaya aynı isimle gitmek anlamına gelirdi. Çözüm: yeni
 link ayrı bir etiketle eklendi — **"Strategy Builder"** → `/studio/wt-funding-v3`
 — var olan "Strategy Studio" → `/studio` linkine dokunulmadı.
+
+Nav ayrışmıştı ama sayfanın kendisi hâlâ "StrategyStudio" markasını taşıyordu:
+kullanıcı soldaki "Strategy Studio" linkine tıklayıp gelince üstte gene aynı adı
+görüyordu. 2026-07-27'de kurucunun yüzeydeki adı da nav etiketiyle hizalandı —
+logo `Strategy<span>Builder</span>`, `<title>` "Strategy Builder — {ad}"
+(`web/templates/studio/page.html`). Kod tarafı bilerek değişmedi: modül adı
+`web/routes/strategy_studio.py`, rota öneki `/studio/{id}` ve `strategy_studio/`
+paketi tarihsel adlarını korur — yeniden adlandırma yalnızca kullanıcı yüzeyinde.
+
+## Kabuk entegrasyonu (2026-07-27)
+
+Kurucu, birleşmeden bu yana **kendi başına duran bir HTML belgesiydi**: kendi
+`<html>`/`<head>`'i, kendi htmx kopyası, kendi `body{height:100vh}` düzeni. Ana
+uygulamanın sol navigasyonu ve topbar'ı bu sayfada yoktu — linke tıklayan
+kullanıcı kabuğun dışına düşüyordu. Artık diğer sayfalar gibi `base.html`'i
+extend ediyor.
+
+İşin zor kısmı düzen değil **CSS izolasyonuydu**. `studio.css` global yazılmıştı:
+
+| çakışan | etkisi (kapsanmasaydı) |
+|---|---|
+| `:root{--panel,--panel-2,…}` | app.css aynı adlı değişkenleri kullanıyor → tüm kabuk yeniden renklenirdi |
+| `body{height:100vh;overflow:hidden}` | `.shell` grid düzenini bozardı |
+| `header{…}` / `footer{…}` | eleman seçicileri base.html'in `.topbar`'ını vururdu |
+| `.btn`, `.metric`, `.tab`, `.chip`, `.modal`, `.seg` | app.css'te aynı adlar var |
+
+Çözüm: `studio.css`'in **tüm kuralları `.studio-embed` altına kapsandı**
+(`:root`/`body` → `.studio-embed`, geri kalan her seçiciye önek). Böylece
+özgüllük de doğru tarafa çalışıyor: `.studio-embed .btn` (0,2,0) app.css'in
+`.btn`'ini (0,1,0) yener, tersi olmaz. Kabuk tarafında tek eklenti
+`body.page-builder` altında `.content`'in 24px padding'ini ve büyümesini
+kaldırmak — kaydırma sayfada değil, kurucunun kendi panellerinde kalsın diye.
+
+İki incelik: (1) htmx artık yalnızca `base.html`'den yükleniyor, sayfanın kendi
+cdnjs kopyası kaldırıldı — iki kopya çift olay dinleyicisi demekti. (2)
+`studio.css` `rem` ile ölçüyor ve eski kök 15px'ti; `rem` ebeveynden değil
+kökten çözüldüğü için kapsama bunu taşımaz, bu yüzden sayfa-yerel bir
+`<style>:root{font-size:15px}</style>` eklendi — app.css'te hiç `rem`
+kullanılmadığı için kabuk bundan etkilenmiyor.
+
+Sayfa içindeki "StrategyBuilder" logosu da kaldırıldı: topbar zaten sayfa adını
+yazıyor.
 
 ## Katmanlar
 
