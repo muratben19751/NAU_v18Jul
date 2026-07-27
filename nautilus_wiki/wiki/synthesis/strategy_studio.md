@@ -91,7 +91,7 @@ türer; kullanıcının kablo çekmesine izin veren bir kütüphane, esas olarak
 validasyon işi satın alırdı. Yerine: `strategy_studio/graph.py` içindeki
 `to_graph()` — saf fonksiyon, store'a dokunmaz, request görmez — ve
 `web/static/canvas.js` katman indekslerini piksele çeviren düz SVG (~150 satır
-zoom/pan, bundler yok). Genel ders: [[kisitli_agac_serbest_graf_degil]].
+zoom/pan, bundler yok). Genel ders genel ikinci beyinde: `kisitli_agac_serbest_graf_degil`.
 
 **Görünüme dair hiçbir şey saklanmaz.** Node pozisyonu, zoom, kenar listesi —
 şemaya tek alan eklenmedi; layout her render'da yeniden hesaplanır. Katman
@@ -125,7 +125,7 @@ dismiss` uçlarına gider.
 
 Bilinçli kapsam dışı: serbest kenar çizimi, node pozisyonlarının kalıcılığı,
 form görünümünün kaldırılması. Tasarım notu: repo kökünde `CANVAS_DESIGN.md`;
-sentez: [[nau_studio_canvas_konsept_c_2026_07]].
+uygulama dersleri genel ikinci beyinde `nau_studio_canvas_konsept_c_2026_07`.
 
 ## Katmanlar
 
