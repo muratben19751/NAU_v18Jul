@@ -7,6 +7,8 @@
 
 const NS = 'http://www.w3.org/2000/svg';
 const NODE_W = 210, NODE_H = 60, COL_GAP = 96, ROW_GAP = 22, PAD = 60;
+// Where a dragged indicator may land: the containers that hold rules.
+const DROP_KINDS = new Set(['group', 'regime']);
 
 const el = (id) => document.getElementById(id);
 const svg = el('cv-svg');
@@ -198,6 +200,15 @@ function render() {
     if (node.badges.includes('opt')) {
       g.appendChild(mk('circle', { class: 'cv-opt', cx: NODE_W - 14, cy: 16, r: 4.5 }));
     }
+    // Blocks that accept a dropped indicator, named with the mutation
+    // vocabulary the existing endpoint already speaks.
+    if (DROP_KINDS.has(node.kind)) g.setAttribute('data-drop', node.block);
+    if (node.kind === 'rule' || node.kind === 'filter') {
+      const del = mk('g', { class: 'cv-del', 'data-rule': node.ref.rule_id });
+      del.appendChild(mk('rect', { x: NODE_W - 22, y: NODE_H - 22, width: 18, height: 18, rx: 4 }));
+      del.appendChild(mk('text', { x: NODE_W - 13, y: NODE_H - 9 }, '✕'));
+      g.appendChild(del);
+    }
     // Hover tooltip: the untruncated text, so clipping never hides information.
     g.appendChild(mk('title', {}, `${node.label}\n${node.detail}`));
     gNodes.appendChild(g);
@@ -238,6 +249,8 @@ function clearSelection() {
 
 svg.addEventListener('click', (e) => {
   if (dragMoved) return;              // that was a pan, not a click
+  const del = e.target.closest('.cv-del');
+  if (del) { deleteRule(del.dataset.rule); return; }
   const g = e.target.closest('.cv-node');
   if (g) select(g.dataset.node);
   else clearSelection();
@@ -258,8 +271,79 @@ document.body.addEventListener('htmx:afterSwap', (e) => {
   }
 });
 
+// ── mutations: existing endpoints only ─────────────────────────────────
+// The canvas opens no new write path. Dropping calls the same POST the block's
+// own "＋ Add condition" form calls; the ✕ calls the same DELETE the rule's own
+// ✕ calls. Server rules (entry keeps at least one rule) therefore hold here for
+// free, and their 422 lands in studio.js's error banner.
+
+function send(verb, path, values) {
+  // Resolve either way: a refused mutation (422 — "entry block must keep at
+  // least one rule") is an outcome, not an exception. studio.js has already
+  // put it in the error banner by the time this settles.
+  return new Promise((resolve) => {
+    htmx.ajax(verb, path, { source: svg, swap: 'none', values }).then(resolve, resolve);
+  });
+}
+
+async function addRule(block, indicator) {
+  const before = new Set(graph.nodes.map(n => n.id));
+  await send('POST', `/studio/${strategyId}/blocks/${encodeURIComponent(block)}/rules`,
+             { indicator });
+  await refresh();
+  // Select what the drop just created, so the inspector opens on it.
+  const fresh = graph.nodes.find(n => !before.has(n.id) && n.kind !== 'group');
+  if (fresh) select(fresh.id);
+}
+
+async function deleteRule(ruleId) {
+  await send('DELETE', `/studio/${strategyId}/rules/${ruleId}`);
+  await refresh();
+  if (selected === `rule:${ruleId}` && !graph.nodes.some(n => n.id === selected)) {
+    clearSelection();
+  }
+}
+
+// Drop targets live in the SVG, so the canvas runs its own dragover/drop rather
+// than studio.js's, which routes through a block's in-DOM add-rule form.
+function dropTarget(e) {
+  return e.target.closest ? e.target.closest('.cv-node[data-drop]') : null;
+}
+
+svg.addEventListener('dragover', (e) => {
+  const t = dropTarget(e);
+  if (!t) return;
+  e.preventDefault();                 // without this the drop never fires
+  e.dataTransfer.dropEffect = 'copy';
+  gNodes.querySelectorAll('.drop-hover').forEach(x => x.classList.remove('drop-hover'));
+  t.classList.add('drop-hover');
+});
+svg.addEventListener('dragleave', (e) => {
+  const t = dropTarget(e);
+  if (t && !t.contains(e.relatedTarget)) t.classList.remove('drop-hover');
+});
+svg.addEventListener('drop', (e) => {
+  const t = dropTarget(e);
+  if (!t) return;
+  e.preventDefault();
+  t.classList.remove('drop-hover');
+  const key = e.dataTransfer.getData('text/plain');
+  if (key) addRule(t.dataset.drop, key);
+});
+
 // ── data ───────────────────────────────────────────────────────────────
-async function refresh({ keepView = true } = {}) {
+let inFlight = null;
+
+// A mutation triggers a refresh twice — once from the caller that awaits the
+// new graph, once from the global afterRequest hook. Coalescing keeps them one
+// fetch, so the caller never diffs against a graph a second render replaced.
+function refresh(opts) {
+  if (inFlight) return inFlight;
+  inFlight = doRefresh(opts || {}).finally(() => { inFlight = null; });
+  return inFlight;
+}
+
+async function doRefresh({ keepView = true }) {
   if (!strategyId) return;
   const r = await fetch(`/studio/${strategyId}/canvas/graph`, {
     headers: { Accept: 'application/json' },

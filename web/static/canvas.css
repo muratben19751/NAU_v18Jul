@@ -15,12 +15,11 @@
   flex:1;min-height:0;display:grid;
   grid-template-columns:210px minmax(0,1fr) 320px;
 }
-.cv-embed .cv-palette,
+.cv-embed .library{min-height:0}       /* grid child: scroll instead of stretching */
 .cv-embed .cv-inspector{
-  background:var(--panel);border-right:1px solid var(--line);
-  overflow:auto;padding:12px;
+  background:var(--panel);border-left:1px solid var(--line);
+  overflow:auto;padding:12px;min-height:0;
 }
-.cv-embed .cv-inspector{border-right:none;border-left:1px solid var(--line)}
 .cv-embed .cv-pane-title{
   font-size:.68rem;letter-spacing:.09em;text-transform:uppercase;
   color:var(--muted);margin-bottom:10px;
@@ -110,6 +109,17 @@
 .cv-embed .cv-label{font-size:12.5px;font-weight:600;fill:var(--text)}
 .cv-embed .cv-detail{font-family:'IBM Plex Mono',monospace;font-size:9.5px;fill:var(--muted)}
 .cv-embed .cv-opt{fill:var(--opt)}
+
+.cv-embed .cv-node[data-drop].drop-hover .cv-box{
+  stroke:var(--long);stroke-width:2;stroke-dasharray:5 4;fill:var(--long-dim);
+}
+.cv-embed .cv-del{opacity:0;transition:.12s;cursor:pointer}
+.cv-embed .cv-node:hover .cv-del,
+.cv-embed .cv-node.selected .cv-del{opacity:1}
+.cv-embed .cv-del rect{fill:var(--chip);stroke:var(--line)}
+.cv-embed .cv-del text{font-size:10px;fill:var(--muted);text-anchor:middle}
+.cv-embed .cv-del:hover rect{stroke:var(--short)}
+.cv-embed .cv-del:hover text{fill:var(--short)}
 
 .cv-embed .cv-instrument .cv-accent{fill:var(--muted)}
 .cv-embed .cv-regime .cv-accent{fill:var(--branch)}

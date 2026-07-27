@@ -18,14 +18,17 @@
     <a class="cv-switch" href="/studio/{{ defn.id }}">⇄ Form view</a>
     <div class="spacer"></div>
     {% include "studio/_instruments.html" %}
+    <button class="btn" hx-post="/studio/{{ defn.id }}/save"
+            hx-target="#strategy-name" hx-swap="outerHTML">Save</button>
+    <button class="btn" hx-post="/studio/{{ defn.id }}/discard"
+            hx-confirm="Discard all unsaved changes?" hx-swap="none">Discard</button>
   </header>
 
   <div class="cv-workspace">
-    <aside class="cv-palette">
-      <div class="cv-pane-title">Indicators</div>
-      <p class="cv-hint">Drag-and-drop arrives in a later phase — this column is
-        the palette's place in the layout.</p>
-    </aside>
+    {# The form view's own palette: server-rendered from INDICATOR_REGISTRY, with
+       studio.js providing its search and drag source. The registry is never
+       copied into JS. #}
+    {% include "studio/_library.html" %}
 
     <div class="cv-stage">
       <svg id="cv-svg" class="cv-svg" role="img" aria-label="Strategy graph">
