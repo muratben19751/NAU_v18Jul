@@ -66,6 +66,27 @@
   width:9px;height:9px;border-radius:50%;background:var(--opt);
 }
 
+/* ── inspector ─────────────────────────── */
+.cv-embed .cv-oob-sink{display:none}
+.cv-embed .cv-insp-name{
+  font-size:.92rem;font-weight:600;margin-bottom:10px;
+  display:flex;align-items:center;gap:8px;
+}
+.cv-embed .cv-insp-opt{
+  font-family:'IBM Plex Mono',monospace;font-size:.6rem;letter-spacing:.06em;
+  color:var(--opt);border:1px solid var(--opt);border-radius:4px;padding:1px 5px;
+}
+/* The block partial was drawn for a wide column; let it breathe in a narrow one. */
+.cv-embed .cv-insp .block{margin:0}
+.cv-embed .cv-insp .rule{flex-wrap:wrap}
+.cv-embed .cv-insp .rule.cv-focus{
+  outline:1px solid var(--branch);outline-offset:2px;border-radius:6px;
+}
+.cv-embed .cv-inspector kbd{
+  font-family:'IBM Plex Mono',monospace;font-size:.68rem;
+  border:1px solid var(--line);border-radius:4px;padding:0 4px;background:var(--chip);
+}
+
 /* ── edges ─────────────────────────────── */
 .cv-embed .cv-edge{fill:none;stroke:var(--line);stroke-width:1.6;color:var(--line)}
 .cv-embed .cv-edge-rule{stroke:var(--branch);color:var(--branch);opacity:.75}
@@ -78,7 +99,9 @@
 .cv-embed .cv-node .cv-box{
   fill:var(--panel);stroke:var(--line);stroke-width:1;transition:.12s;
 }
+.cv-embed .cv-node{cursor:pointer}
 .cv-embed .cv-node:hover .cv-box{stroke:var(--branch)}
+.cv-embed .cv-node.selected .cv-box{stroke:var(--branch);stroke-width:2;fill:var(--panel-2)}
 .cv-embed .cv-node .cv-accent{fill:var(--line)}
 .cv-embed .cv-node text{font-family:'Space Grotesk',system-ui,sans-serif}
 .cv-embed .cv-badge{

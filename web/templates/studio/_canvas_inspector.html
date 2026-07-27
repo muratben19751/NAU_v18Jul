@@ -1,0 +1,10 @@
+{# ctx: node (graph node dict), body (rendered block partial), focus (rule id|"") , defn #}
+<div class="cv-insp" data-node="{{ node.id }}" data-focus="{{ focus }}">
+  <div class="cv-pane-title">{{ node.badge or node.kind }}</div>
+  <div class="cv-insp-name">{{ node.label }}
+    {% if "opt" in node.badges %}<span class="cv-insp-opt" title="has an optimization range">opt</span>{% endif %}
+  </div>
+  {# The form view's own partial, verbatim: its hx-* attributes are the mutation
+     path, so editing here goes exactly where editing there goes. #}
+  {{ body | safe }}
+</div>

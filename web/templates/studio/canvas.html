@@ -51,15 +51,25 @@
       </div>
     </div>
 
-    <aside class="cv-inspector">
+    <aside class="cv-inspector" id="cv-inspector">
       <div class="cv-pane-title">Inspector</div>
-      <p class="cv-hint">Selecting a node opens its editor here in a later
-        phase. The graph is read-only for now.</p>
+      <p class="cv-hint">Click a node to edit it here. <kbd>Esc</kbd> clears the
+        selection.</p>
     </aside>
   </div>
+
+  {# Mutations re-render their block AND append the side panel out-of-band. The
+     canvas has no optimization panel, so this hidden sink gives that swap an
+     id to land on instead of an htmx "no target" error on every edit. #}
+  <div class="cv-oob-sink" aria-hidden="true"><div id="side-panel"></div></div>
 </div>
 {% endblock %}
 
 {% block scripts %}
+  {# The inspector renders the form view's own partials, so it needs the form
+     view's behaviour with them: inline chip editing, the library search and
+     drag source, the 422 → error-banner handler. Loading studio.js is what
+     makes "reuse the partial" mean reuse the interaction too. #}
+  <script src="/static/studio.js?v={{ static_version }}"></script>
   <script src="/static/canvas.js?v={{ static_version }}"></script>
 {% endblock %}

@@ -375,6 +375,43 @@ def canvas_graph(strategy_id: str):
     return to_graph(_load_working(strategy_id))
 
 
+@router.get(
+    "/studio/{strategy_id}/canvas/inspector/{node_id}", response_class=HTMLResponse
+)
+def canvas_inspector(request: Request, strategy_id: str, node_id: str):
+    """The selected node's editor — the form view's own partial, in a narrow column.
+
+    Read-only itself: it renders the block the node belongs to, and that markup
+    carries the same hx-patch/hx-post/hx-delete attributes the form view uses.
+    A rule is inspected through its containing block rather than through
+    ``_rule.html`` alone, because a lone rule's controls target
+    ``closest .block`` — outside the block they would have nothing to swap.
+    """
+    defn = _load_working(strategy_id)
+    node = next((n for n in to_graph(defn)["nodes"] if n["id"] == node_id), None)
+    if node is None:
+        raise HTTPException(404, f"node '{node_id}' not found")
+    if node["kind"] == "instrument":
+        body = (
+            _tpl().get_template("studio/_instruments.html").render(_ctx(request, defn))
+        )
+    else:
+        body = _block_html(request, defn, node["block"].split(".")[0])
+    return HTMLResponse(
+        _tpl()
+        .get_template("studio/_canvas_inspector.html")
+        .render(
+            _ctx(
+                request,
+                defn,
+                node=node,
+                body=body,
+                focus=node.get("ref", {}).get("rule_id", ""),
+            )
+        )
+    )
+
+
 @router.get("/studio/{strategy_id}/history")
 def studio_history(strategy_id: str):
     return store.history(strategy_id)

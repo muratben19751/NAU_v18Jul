@@ -77,10 +77,12 @@ svg.addEventListener('wheel', (e) => {
 }, { passive: false });
 
 let drag = null;
+let dragMoved = false;
 svg.addEventListener('mousedown', (e) => {
   if (e.button !== 0) return;
   const ctm = svg.getScreenCTM();
   if (!ctm) return;
+  dragMoved = false;
   // Units-per-pixel is captured once: recomputing it mid-drag against a
   // viewBox that is itself moving makes the pan drift away from the cursor.
   drag = { x: e.clientX, y: e.clientY, vx: vb.x, vy: vb.y, u: 1 / ctm.a };
@@ -88,6 +90,7 @@ svg.addEventListener('mousedown', (e) => {
 });
 window.addEventListener('mousemove', (e) => {
   if (!drag) return;
+  if (Math.hypot(e.clientX - drag.x, e.clientY - drag.y) > 4) dragMoved = true;
   vb.x = drag.vx - (e.clientX - drag.x) * drag.u;
   vb.y = drag.vy - (e.clientY - drag.y) * drag.u;
   applyViewBox();
@@ -202,6 +205,59 @@ function render() {
   applyViewBox();
 }
 
+// ── selection + inspector ──────────────────────────────────────────────
+// The inspector is the form view's own partial in a narrow column; its hx-*
+// attributes are untouched, so editing here posts exactly where editing there
+// posts. This file only decides WHICH partial to load.
+let selected = null;
+const inspector = el('cv-inspector');
+
+const EMPTY_INSPECTOR =
+  '<div class="cv-pane-title">Inspector</div>' +
+  '<p class="cv-hint">Click a node to edit it here. <kbd>Esc</kbd> clears the ' +
+  'selection.</p>';
+
+function paintSelection() {
+  gNodes.querySelectorAll('.cv-node').forEach(g =>
+    g.classList.toggle('selected', g.dataset.node === selected));
+}
+
+function select(id) {
+  if (!strategyId || !inspector) return;
+  selected = id;
+  paintSelection();
+  htmx.ajax('GET', `/studio/${strategyId}/canvas/inspector/${encodeURIComponent(id)}`,
+            { target: '#cv-inspector', swap: 'innerHTML' });
+}
+
+function clearSelection() {
+  selected = null;
+  paintSelection();
+  if (inspector) inspector.innerHTML = EMPTY_INSPECTOR;
+}
+
+svg.addEventListener('click', (e) => {
+  if (dragMoved) return;              // that was a pan, not a click
+  const g = e.target.closest('.cv-node');
+  if (g) select(g.dataset.node);
+  else clearSelection();
+});
+
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && selected) clearSelection();
+});
+
+// Highlight the inspected rule inside the block partial it came with.
+document.body.addEventListener('htmx:afterSwap', (e) => {
+  if (!inspector || !inspector.contains(e.target)) return;
+  const insp = inspector.querySelector('.cv-insp');
+  const focus = insp && insp.dataset.focus;
+  if (focus) {
+    const rule = inspector.querySelector('#rule-' + CSS.escape(focus));
+    if (rule) rule.classList.add('cv-focus');
+  }
+});
+
 // ── data ───────────────────────────────────────────────────────────────
 async function refresh({ keepView = true } = {}) {
   if (!strategyId) return;
@@ -211,12 +267,19 @@ async function refresh({ keepView = true } = {}) {
   if (!r.ok) return;
   graph = await r.json();
   render();
+  paintSelection();                   // survives a re-render; the node id is stable
   if (!keepView) fit(OPEN_MIN_SCALE);
 }
 
-// Every mutation still goes through the form view's endpoints; they announce
-// themselves with this trigger, and the canvas just re-reads the graph.
+// Every mutation still goes through the form view's endpoints. Those were left
+// untouched, so they do not announce themselves — the canvas instead re-reads
+// the graph after any successful write it just made. (The named trigger is
+// honoured too, in case the endpoints ever start sending it.)
 document.body.addEventListener('studio:changed', () => refresh());
+document.body.addEventListener('htmx:afterRequest', (e) => {
+  const verb = (e.detail.requestConfig && e.detail.requestConfig.verb) || 'get';
+  if (verb !== 'get' && e.detail.successful) refresh();
+});
 
 const OPEN_MIN_SCALE = 0.62;   // readable enough to see what the nodes say
 
