@@ -23,9 +23,17 @@
         </label>
         <label class="field">Symbol
           <select name="symbol">
-            <option value="BTCUSDT" selected>BTCUSDT</option>
-            <option value="ETHUSDT">ETHUSDT</option>
-            <option value="SOLUSDT">SOLUSDT</option>
+            <optgroup label="Bybit">
+              <option value="BTCUSDT" selected>BTCUSDT</option>
+              <option value="ETHUSDT">ETHUSDT</option>
+              <option value="SOLUSDT">SOLUSDT</option>
+            </optgroup>
+            {% if external_symbols %}
+            {# Dotted ids load from the external catalog (Category ignored). #}
+            <optgroup label="US Catalog">
+              {% for s in external_symbols %}<option value="{{ s }}">{{ s }}</option>{% endfor %}
+            </optgroup>
+            {% endif %}
           </select>
         </label>
         <label class="field">Category

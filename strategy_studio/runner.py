@@ -30,6 +30,7 @@ Wiki References
 ---------------
 Bkz: [[strategy_studio]], [[environment_contexts]], [[strategy_and_actor]]
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -41,12 +42,24 @@ from typing import Any
 
 # Studio timeframe → the Bybit kline code `_make_bybit_bar_type` understands.
 _INTERVAL_FOR = {
-    "1m": "1", "5m": "5", "15m": "15", "30m": "30",
-    "1h": "60", "4h": "240", "12h": "720", "1d": "D",
+    "1m": "1",
+    "5m": "5",
+    "15m": "15",
+    "30m": "30",
+    "1h": "60",
+    "4h": "240",
+    "12h": "720",
+    "1d": "D",
 }
 _BAR_STEP = {
-    "1": "1-MINUTE", "5": "5-MINUTE", "15": "15-MINUTE", "30": "30-MINUTE",
-    "60": "1-HOUR", "240": "4-HOUR", "720": "12-HOUR", "D": "1-DAY",
+    "1": "1-MINUTE",
+    "5": "5-MINUTE",
+    "15": "15-MINUTE",
+    "30": "30-MINUTE",
+    "60": "1-HOUR",
+    "240": "4-HOUR",
+    "720": "12-HOUR",
+    "D": "1-DAY",
 }
 
 # The venue the Bybit adapter registers itself under (one venue for every
@@ -66,7 +79,8 @@ def _bar_type_str(symbol: str, timeframe: str, product: str = "LINEAR") -> str:
     if code is None:
         raise RunnerError(
             f"timeframe '{timeframe}' has no Bybit kline code "
-            f"({', '.join(sorted(_INTERVAL_FOR))})")
+            f"({', '.join(sorted(_INTERVAL_FOR))})"
+        )
     return f"{symbol}-{product}.{BYBIT_VENUE}-{_BAR_STEP[code]}-LAST-EXTERNAL"
 
 
@@ -98,7 +112,8 @@ def build_node_config(artifact: dict, *, trader_id: str, product: str = "LINEAR"
         raise RunnerError(
             f"artifact schema {schema!r} is not one this runner knows "
             f"({', '.join(map(str, SUPPORTED_ARTIFACT_SCHEMAS))}) — "
-            "re-deploy the strategy to regenerate it")
+            "re-deploy the strategy to regenerate it"
+        )
 
     env = artifact.get("environment")
     if env == "live":
@@ -106,13 +121,24 @@ def build_node_config(artifact: dict, *, trader_id: str, product: str = "LINEAR"
             "live deployment is not wired: this app holds no exchange "
             "credentials, and the deploy gate still reads the undeflated "
             "single-run DSR. Deploy as 'paper' — running live under a paper "
-            "runner would be a live label on a simulated account")
+            "runner would be a live label on a simulated account"
+        )
     if env != "paper":
         raise RunnerError(f"unknown environment '{env}'")
 
     instruments = artifact.get("instruments") or []
     if not instruments:
         raise RunnerError("artifact carries no instruments to trade")
+    # Dotted ids are external-catalog instruments (QQQ.NASDAQ): historical
+    # bars only, no Bybit websocket feed — a node built for one would sit
+    # silently barless. Backtest/optimize accept them; deployment cannot.
+    ext = sorted(i["symbol"] for i in instruments if "." in str(i.get("symbol", "")))
+    if ext:
+        raise RunnerError(
+            f"external catalog instruments are backtest-only ({', '.join(ext)}) "
+            "— no live Bybit feed exists for them; deactivate them before "
+            "deploying"
+        )
 
     spec_json = json.dumps(artifact["spec"])
     strategies = [
@@ -155,7 +181,9 @@ def build_node_config(artifact: dict, *, trader_id: str, product: str = "LINEAR"
                 api_key=None,
                 api_secret=None,
                 product_types=[product_type],
-                instrument_provider=InstrumentProviderConfig(load_ids=frozenset(load_ids)),
+                instrument_provider=InstrumentProviderConfig(
+                    load_ids=frozenset(load_ids)
+                ),
             )
         },
         exec_clients={
@@ -233,8 +261,10 @@ class PaperRunner:
         """
         try:
             config = build_node_config(
-                artifact, trader_id=f"STUDIO-{deploy_id[:6].upper()}",
-                product=self.product)
+                artifact,
+                trader_id=f"STUDIO-{deploy_id[:6].upper()}",
+                product=self.product,
+            )
         except Exception as e:  # noqa: BLE001 — surfaced on the row
             self.on_status(deploy_id, "failed", str(e))
             return
@@ -260,7 +290,8 @@ class PaperRunner:
                 node = self._build_node(config)
                 with self._lock:
                     self._nodes[deploy_id] = _Node(
-                        thread=threading.current_thread(), loop=loop, node=node)
+                        thread=threading.current_thread(), loop=loop, node=node
+                    )
             except Exception as e:  # noqa: BLE001
                 failure.append(str(e))
                 built.set()
@@ -284,17 +315,21 @@ class PaperRunner:
                 # 'stopped' itself.
                 if announced.is_set() and not stopping:
                     self.on_status(
-                        deploy_id, "failed",
-                        failure[0] if failure
-                        else "the node exited on its own (see the server log)")
+                        deploy_id,
+                        "failed",
+                        failure[0]
+                        if failure
+                        else "the node exited on its own (see the server log)",
+                    )
                 try:
                     node.dispose()
                 except Exception:  # noqa: BLE001 — teardown noise, already reported
                     pass
                 loop.close()
 
-        t = threading.Thread(target=_serve, name=f"studio-deploy-{deploy_id[:6]}",
-                             daemon=True)
+        t = threading.Thread(
+            target=_serve, name=f"studio-deploy-{deploy_id[:6]}", daemon=True
+        )
         t.start()
         # Wait for the build, not for the run: run_async only returns when the
         # node is finished. `running` therefore means "the node was constructed
@@ -302,8 +337,10 @@ class PaperRunner:
         # through the `finally` above.
         if not built.wait(timeout=self.BUILD_TIMEOUT):
             self.on_status(
-                deploy_id, "failed",
-                f"the node did not finish building within {self.BUILD_TIMEOUT:.0f}s")
+                deploy_id,
+                "failed",
+                f"the node did not finish building within {self.BUILD_TIMEOUT:.0f}s",
+            )
             return
         if failure:
             self.on_status(deploy_id, "failed", failure[0])
@@ -317,7 +354,8 @@ class PaperRunner:
         if entry is None:
             raise RunnerError(
                 f"deployment {deploy_id[:6]} has no live node "
-                "(the server was restarted, or it already stopped)")
+                "(the server was restarted, or it already stopped)"
+            )
         return entry, entry.node.trader.strategies()
 
     def pause(self, deploy_id: str) -> None:
@@ -345,7 +383,8 @@ class PaperRunner:
         for s in strategies:
             if not s.is_running:
                 entry.loop.call_soon_threadsafe(
-                    s.resume if hasattr(s, "resume") else s.start)
+                    s.resume if hasattr(s, "resume") else s.start
+                )
 
     def stop(self, deploy_id: str) -> None:
         """Terminal. The thread's `finally` disposes the node and deregisters."""
@@ -377,8 +416,10 @@ def reconcile_orphans(rows: list[dict], active: set[str]) -> list[tuple[str, str
     orphans = []
     for row in rows:
         if row["status"] in ("running", "paused") and row["deploy_id"] not in active:
-            orphans.append((
-                row["deploy_id"],
-                "runner process restarted — the node behind this deployment is gone",
-            ))
+            orphans.append(
+                (
+                    row["deploy_id"],
+                    "runner process restarted — the node behind this deployment is gone",
+                )
+            )
     return orphans

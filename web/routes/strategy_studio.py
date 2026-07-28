@@ -190,7 +190,9 @@ _BLOCK_TEMPLATE = {
 
 
 _SYMBOLS_TTL_S = 60.0
-_symbols_cache: tuple[float, tuple[str, ...], tuple[str, ...]] | None = None
+_symbols_cache: (
+    tuple[float, tuple[str, ...], tuple[str, ...], tuple[str, ...]] | None
+) = None
 _universe_warming = False
 
 
@@ -220,8 +222,8 @@ def _warm_symbol_universe() -> None:
     threading.Thread(target=_run, daemon=True, name="studio-symbols").start()
 
 
-def _symbol_choices() -> tuple[tuple[str, ...], tuple[str, ...]]:
-    """Suggestions for the instrument picker: (already downloaded, rest of Bybit).
+def _symbol_choices() -> tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...]]:
+    """Picker suggestions: (downloaded Bybit, rest of Bybit, external catalog).
 
     Split rather than merged so the datalist can lead with the symbols whose
     bars are on disk — those run immediately, the others download on first run.
@@ -239,8 +241,13 @@ def _symbol_choices() -> tuple[tuple[str, ...], tuple[str, ...]]:
     global _symbols_cache
     now = time.monotonic()
     if _symbols_cache and now - _symbols_cache[0] < _SYMBOLS_TTL_S:
-        return _symbols_cache[1], _symbols_cache[2]
-    from data import BYBIT_SYMBOLS, list_bybit_instruments, list_catalog_bybit_symbols
+        return _symbols_cache[1], _symbols_cache[2], _symbols_cache[3]
+    from data import (
+        BYBIT_SYMBOLS,
+        list_bybit_instruments,
+        list_catalog_bybit_symbols,
+        list_external_instruments,
+    )
 
     known = {
         s["symbol"] for s in list_catalog_bybit_symbols() if s["category"] == "linear"
@@ -250,14 +257,21 @@ def _symbol_choices() -> tuple[tuple[str, ...], tuple[str, ...]]:
     # fresh, and it is the only thing that refreshes a stale one. Bounded by
     # this function's own TTL — at most one thread a minute.
     _warm_symbol_universe()
+    # Dotted ids from the external catalogs (QQQ.NASDAQ …): backtest-only —
+    # the adapter loads them via load_external_bars, the deploy gate rejects
+    # them. Directory-scan only, no parquet decode; same TTL as the rest.
+    try:
+        external = tuple(r["instrument_id"] for r in list_external_instruments())
+    except Exception:  # a suggestion list is never worth a traceback
+        external = ()
     cached_first = tuple(sorted(known))
     rest = tuple(sorted(universe - known))
-    _symbols_cache = (now, cached_first, rest)
-    return cached_first, rest
+    _symbols_cache = (now, cached_first, rest, external)
+    return cached_first, rest, external
 
 
 def _ctx(request: Request, defn: StrategyDefinition, **extra) -> dict:
-    cached_symbols, other_symbols = _symbol_choices()
+    cached_symbols, other_symbols, external_symbols = _symbol_choices()
     return {
         "request": request,
         "defn": defn,
@@ -266,6 +280,7 @@ def _ctx(request: Request, defn: StrategyDefinition, **extra) -> dict:
         # picker's options in the shared context means none of them can forget.
         "cached_symbols": cached_symbols,
         "other_symbols": other_symbols,
+        "external_symbols": external_symbols,
         "timeframe_choices": timeframe_choices(),
         **extra,
     }

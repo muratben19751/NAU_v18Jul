@@ -80,6 +80,11 @@
                      onchange="btToggleAsset('Index');">
               Index / Equity
             </label>
+            <label class="seg-opt">
+              <input type="radio" name="instrument_kind" value="External"
+                     onchange="btToggleAsset('External');">
+              US Catalog
+            </label>
           </div>
 
           {# Bybit fields #}
@@ -154,6 +159,33 @@
                 {{ tflabel }}
               </label>
               {% endfor %}
+            </div>
+          </div>
+
+          {# External catalog fields — 592 US equities/ETFs/indices, read in place #}
+          <div id="external-fields" style="display:none;">
+            <div class="row" style="align-items:flex-end;gap:12px;flex-wrap:wrap;margin-top:14px;">
+              <label class="field" style="flex:1;min-width:220px;">
+                Instrument <span class="text-muted" style="font-size:10px;">(external Nautilus catalog)</span>
+                <select name="ext_instrument" id="ext-instrument-select"
+                        hx-get="/backtest/external_instruments" hx-trigger="load once"
+                        hx-swap="innerHTML" onchange="btExtNarrowGrans(this);">
+                  <option value="">loading…</option>
+                </select>
+              </label>
+              <label class="field">Granularity
+                <select name="ext_granularity" id="ext-gran-select">
+                  {% for g in ['1-MINUTE','5-MINUTE','15-MINUTE','1-HOUR','4-HOUR','1-DAY'] %}
+                  <option value="{{ g }}" {% if g == '1-DAY' %}selected{% endif %}>{{ g }}</option>
+                  {% endfor %}
+                </select>
+              </label>
+              <label class="field">Start <span class="text-muted" style="font-size:10px;">(blank = full range)</span>
+                <input type="date" name="ext_start">
+              </label>
+              <label class="field">End
+                <input type="date" name="ext_end">
+              </label>
             </div>
           </div>
 

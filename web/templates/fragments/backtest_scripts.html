@@ -234,14 +234,22 @@
   };
 
   function btToggleAsset(kind) {
+    // Three source groups; exactly one visible+enabled. Inactive groups are
+    // DISABLED (not just hidden) so their fields never reach the form post.
+    const groups = {
+      Bybit: 'bybit-fields', Index: 'index-fields', External: 'external-fields',
+    };
+    for (const [k, id] of Object.entries(groups)) {
+      const el = document.getElementById(id);
+      if (!el) continue;
+      const active = k === kind;
+      el.style.display = active ? '' : 'none';
+      el.querySelectorAll('input, select').forEach(i => i.disabled = !active);
+    }
+    // The describe-sweep interval chips are Bybit-only.
     const isBybit = kind === 'Bybit';
-    document.getElementById('bybit-fields').style.display = isBybit ? '' : 'none';
-    document.getElementById('index-fields').style.display = isBybit ? 'none' : '';
     document.getElementById('tf-row').style.display = isBybit ? '' : 'none';
-    document.querySelectorAll('#bybit-fields input, #bybit-fields select, #tf-row input')
-      .forEach(el => el.disabled = !isBybit);
-    document.querySelectorAll('#index-fields input, #index-fields select')
-      .forEach(el => el.disabled = isBybit);
+    document.querySelectorAll('#tf-row input').forEach(el => el.disabled = !isBybit);
     // The single-granularity <select> was VTT-only; the Describe flow uses the
     // index-tf-row checkboxes (same name="granularity"). Keep the stale select
     // hidden+disabled so it never double-submits granularity.
@@ -249,6 +257,24 @@
     if (indexGran) {
       indexGran.style.display = 'none';
       indexGran.querySelectorAll('select').forEach(el => el.disabled = true);
+    }
+  }
+
+  // Narrow the granularity <select> to what the chosen external instrument
+  // actually holds (carried in each option's data-grans, set server-side).
+  function btExtNarrowGrans(sel) {
+    const opt = sel.options[sel.selectedIndex];
+    const grans = (opt && opt.dataset.grans) ? opt.dataset.grans.split(',') : [];
+    const gsel = document.getElementById('ext-gran-select');
+    if (!gsel || !grans.length) return;
+    let firstVisible = null;
+    for (const o of gsel.options) {
+      const ok = grans.includes(o.value);
+      o.hidden = !ok; o.disabled = !ok;
+      if (ok && firstVisible === null) firstVisible = o.value;
+    }
+    if (gsel.selectedOptions[0] && gsel.selectedOptions[0].disabled && firstVisible !== null) {
+      gsel.value = grans.includes('1-DAY') ? '1-DAY' : firstVisible;
     }
   }
 

@@ -105,48 +105,85 @@ def _lab_worker(
 
     try:
         # ── Data ──────────────────────────────────────────────────────────────
-        cache_path = None
-        try:
-            from data import _bybit_cache_path
+        # Dotted ids (QQQ.NASDAQ) are external-catalog instruments — same
+        # discriminator as the studio adapter. They load from the read-only
+        # catalog; Bybit symbols keep the kline path below.
+        is_external = "." in symbol
+        if is_external:
+            from data import EXTERNAL_GRAN_BY_BYBIT_CODE, load_external_bars
 
-            cache_path = _bybit_cache_path(category, symbol, interval)
-        except Exception:
-            pass
-
-        if cache_path is not None and cache_path.exists():
-            import pandas as _pd
-
-            cached = _pd.read_parquet(cache_path)
-            cache_start = (
-                cached.index[0].to_pydatetime().replace(tzinfo=UTC)
-                if not cached.empty
-                else None
-            )
-            cache_end = (
-                cached.index[-1].to_pydatetime().replace(tzinfo=UTC)
-                if not cached.empty
-                else None
-            )
+            gran = EXTERNAL_GRAN_BY_BYBIT_CODE.get(interval)
+            if gran is None:
+                with _LAB_LOCK:
+                    if run_id in _LAB_PROGRESS:
+                        _LAB_PROGRESS[run_id]["error"] = (
+                            f"external instrument {symbol} has no "
+                            f"{interval} bars (supported: "
+                            f"{', '.join(EXTERNAL_GRAN_BY_BYBIT_CODE)})"
+                        )
+                return
+            end = end_date if end_date is not None else datetime.now(UTC)
+            start = start_date if start_date is not None else end - timedelta(days=365)
+            try:
+                bars = load_external_bars(symbol, gran, start=start, end=end)
+            except ValueError as e:
+                bars = None
+                ext_err = str(e)
+            if bars is None or bars.empty:
+                with _LAB_LOCK:
+                    if run_id in _LAB_PROGRESS:
+                        _LAB_PROGRESS[run_id]["error"] = (
+                            f"No external bars for {symbol}/{gran}."
+                            + (f" ({ext_err})" if bars is None else "")
+                        )
+                return
         else:
-            cache_start = cache_end = None
+            cache_path = None
+            try:
+                from data import _bybit_cache_path
 
-        end = end_date if end_date is not None else cache_end or datetime.now(UTC)
-        start = (
-            start_date
-            if start_date is not None
-            else cache_start or end - timedelta(days=7)
-        )
-        bars = load_bybit_bars(
-            symbol=symbol, interval=interval, category=category, start=start, end=end
-        )
-        if bars.empty:
-            with _LAB_LOCK:
-                if run_id in _LAB_PROGRESS:
-                    _LAB_PROGRESS[run_id]["error"] = (
-                        f"No data in cache for {symbol}/{category}/{interval}. "
-                        "Fetch it first from the /data screen."
-                    )
-            return
+                cache_path = _bybit_cache_path(category, symbol, interval)
+            except Exception:
+                pass
+
+            if cache_path is not None and cache_path.exists():
+                import pandas as _pd
+
+                cached = _pd.read_parquet(cache_path)
+                cache_start = (
+                    cached.index[0].to_pydatetime().replace(tzinfo=UTC)
+                    if not cached.empty
+                    else None
+                )
+                cache_end = (
+                    cached.index[-1].to_pydatetime().replace(tzinfo=UTC)
+                    if not cached.empty
+                    else None
+                )
+            else:
+                cache_start = cache_end = None
+
+            end = end_date if end_date is not None else cache_end or datetime.now(UTC)
+            start = (
+                start_date
+                if start_date is not None
+                else cache_start or end - timedelta(days=7)
+            )
+            bars = load_bybit_bars(
+                symbol=symbol,
+                interval=interval,
+                category=category,
+                start=start,
+                end=end,
+            )
+            if bars.empty:
+                with _LAB_LOCK:
+                    if run_id in _LAB_PROGRESS:
+                        _LAB_PROGRESS[run_id]["error"] = (
+                            f"No data in cache for {symbol}/{category}/{interval}. "
+                            "Fetch it first from the /data screen."
+                        )
+                return
 
         # ── Phase 0: Generate strategy idea ────────────────────────────────
         _set_phase(run_id, 0, "Requesting idea from Claude…")
@@ -236,10 +273,15 @@ def _lab_worker(
         # class).
         from sandbox import run_backtest_guarded
 
+        recipe = (
+            {"source": "external", "instrument_id": symbol, "granularity": gran}
+            if is_external
+            else {"symbol": symbol, "category": category, "interval": interval}
+        )
         result = run_backtest_guarded(
             spec,
             bars,
-            recipe={"symbol": symbol, "category": category, "interval": interval},
+            recipe=recipe,
             iteration_id=0,
             rationale=f"Strategy Lab · {spec.name}",
             progress_fn=lambda m: _add_backtest_step(run_id, m),
@@ -261,8 +303,8 @@ def _lab_worker(
             _log_backtest(
                 spec,
                 result,
-                "Bybit",
-                {"symbol": symbol, "category": category, "interval": interval},
+                "External" if is_external else "Bybit",
+                recipe,
             )
         except Exception:
             pass
@@ -270,11 +312,18 @@ def _lab_worker(
         with _LAB_LOCK:
             if run_id in _LAB_PROGRESS:
                 _LAB_PROGRESS[run_id]["result"] = result
-                _LAB_PROGRESS[run_id]["bars_info"] = {
-                    "symbol": symbol,
-                    "category": category,
-                    "interval": interval,
-                }
+                # External rows keep the Index convention: no "symbol" key, so
+                # the Bybit chart/robustness panels don't fetch klines for a
+                # non-Bybit instrument.
+                _LAB_PROGRESS[run_id]["bars_info"] = (
+                    {"ticker": symbol, "granularity": gran}
+                    if is_external
+                    else {
+                        "symbol": symbol,
+                        "category": category,
+                        "interval": interval,
+                    }
+                )
 
     except Exception as e:
         with _LAB_LOCK:
@@ -386,12 +435,29 @@ def _atr_stop_fallback() -> dict:
 
 @router.get("", response_class=HTMLResponse)
 async def page(request: Request):
+    import asyncio
+
     from server import get_market_info, templates
+
+    # External catalog ids for the symbol picker (directory scan, threaded off
+    # the event loop). Best-effort: an empty list just hides the optgroup.
+    try:
+        from data import list_external_instruments
+
+        ext_rows = await asyncio.to_thread(list_external_instruments)
+        external_symbols = [r["instrument_id"] for r in ext_rows]
+    except Exception:
+        external_symbols = []
 
     return templates.TemplateResponse(
         request,
         "lab.html",
-        {"active": "lab", "page_title": "Strategy Lab", "market": get_market_info()},
+        {
+            "active": "lab",
+            "page_title": "Strategy Lab",
+            "market": get_market_info(),
+            "external_symbols": external_symbols,
+        },
     )
 
 

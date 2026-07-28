@@ -101,6 +101,7 @@
       {% endif %}
       {% if row.source == 'external' %}
         <span class="chip">read-only</span>
+        {% if row.used %}<span class="chip" title="loaded for a backtest before — listed first">used</span>{% endif %}
       {% endif %}
     </div>
 

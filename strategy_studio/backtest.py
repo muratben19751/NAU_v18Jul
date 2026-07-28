@@ -619,8 +619,48 @@ class NautilusBacktestAdapter:
             )
         return code
 
+    @staticmethod
+    def _is_external(symbol: str) -> bool:
+        """Dotted ids (QQQ.NASDAQ) are external-catalog instruments.
+
+        Same discriminator as `mutations.add_instrument` — the dot cannot
+        occur in a Bybit symbol (validated alnum there).
+        """
+        return "." in symbol
+
+    @classmethod
+    def _external_granularity(cls, timeframe: str) -> str:
+        from data import BYBIT_ALL_INTERVALS, EXTERNAL_GRAN_BY_BYBIT_CODE
+
+        gran = EXTERNAL_GRAN_BY_BYBIT_CODE.get(cls._interval_code(timeframe))
+        if gran is None:  # 30m/12h — add_instrument rejects these, belt+braces
+            supported = [
+                label
+                for code, label in BYBIT_ALL_INTERVALS
+                if code in EXTERNAL_GRAN_BY_BYBIT_CODE
+            ]
+            raise UnsupportedStrategy(
+                [
+                    f"external instruments support {', '.join(supported)} — "
+                    f"not '{timeframe}'"
+                ]
+            )
+        return gran
+
     def _recipe(self, symbol: str, timeframe: str) -> dict:
-        """Ingredients the sandbox child needs to rebuild the instrument."""
+        """Ingredients the sandbox child needs to rebuild the instrument.
+
+        Two shapes, discriminated exactly as the /backtest route does it:
+        Bybit symbols get the linear kline recipe, dotted ids the external
+        one (`sandbox._build_instrument_bar_type` handles both).
+        """
+        if self._is_external(symbol):
+            return {
+                "source": "external",
+                "instrument_id": symbol,
+                "granularity": self._external_granularity(timeframe),
+                "initial_capital": self.initial_capital,
+            }
         return {
             "symbol": symbol,
             "interval": self._interval_code(timeframe),
@@ -631,14 +671,21 @@ class NautilusBacktestAdapter:
     def _default_loader(self, symbol: str, timeframe: str):
         from datetime import UTC, datetime, timedelta
 
-        from data import load_bybit_bars
+        from data import load_bybit_bars, load_external_bars
 
-        code = self._interval_code(timeframe)
         end = datetime.now(UTC)
+        start = end - timedelta(days=self.lookback_days)
+        if self._is_external(symbol):
+            # Same lookback window as the Bybit path: full-history minute
+            # series run to 20+ years and a studio sweep re-runs the loader
+            # for every candidate — the memo cache holds the sliced frame.
+            return load_external_bars(
+                symbol, self._external_granularity(timeframe), start=start, end=end
+            )
         return load_bybit_bars(
             symbol,
-            interval=code,
-            start=end - timedelta(days=self.lookback_days),
+            interval=self._interval_code(timeframe),
+            start=start,
             end=end,
         )
 

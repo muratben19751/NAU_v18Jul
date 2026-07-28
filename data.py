@@ -844,6 +844,18 @@ BYBIT_ALL_INTERVALS: tuple[tuple[str, str], ...] = (
     ("D", "1d"),
 )
 
+# Studio/Lab timeframes are Bybit interval codes; the external catalog speaks
+# the granularity DSL. 30m and 12h have no external counterpart (the ingest TF
+# set is 1m/5m/15m/1h/4h/1d) — callers reject those for dotted instrument ids.
+EXTERNAL_GRAN_BY_BYBIT_CODE: dict[str, str] = {
+    "1": "1-MINUTE",
+    "5": "5-MINUTE",
+    "15": "15-MINUTE",
+    "60": "1-HOUR",
+    "240": "4-HOUR",
+    "D": "1-DAY",
+}
+
 _BYBIT_INSTRUMENTS_URL = "https://api.bybit.com/v5/market/instruments-info"
 _BYBIT_INSTRUMENTS_TTL_S = 12 * 3600.0
 
@@ -1643,7 +1655,19 @@ def _external_catalog_rows(query: str | None = None, limit: int | None = 50) -> 
 
     total = len(catalog_map)
 
-    inst_ids = sorted(catalog_map)
+    # Used-first ordering: an alphabetical first-page of a 592-instrument
+    # catalog leads with tickers nobody asked for (A, AA, AAL, …). "Used" =
+    # a pandas cache exists under EXTERNAL_CACHE_DIR, i.e. the instrument has
+    # been loaded for a backtest before. One directory listing, no parsing:
+    # cache names are f"{_ticker_to_filename(id)}_{granularity}.parquet", so
+    # the forward mapping is checked against a prefix set.
+    used_fns: set[str] = set()
+    if EXTERNAL_CACHE_DIR.exists():
+        for f in EXTERNAL_CACHE_DIR.glob("*.parquet"):
+            used_fns.add(f.name.rsplit("_", 1)[0])
+    used = {i for i in catalog_map if _ticker_to_filename(i) in used_fns}
+
+    inst_ids = sorted(used) + sorted(set(catalog_map) - used)
     if query:
         q = query.strip().lower()
         inst_ids = [i for i in inst_ids if q in i.lower()]
@@ -1700,6 +1724,8 @@ def _external_catalog_rows(query: str | None = None, limit: int | None = 50) -> 
                 "source": "external",
                 "key": inst_id,
                 "instrument_id": inst_id,
+                # Drives the used-first ordering's badge: loaded before.
+                "used": inst_id in used,
                 # M21: split/dividend adjustment status from the manifest
                 # (True/False, None='unknown' if manifest or field is missing).
                 "adjusted": _external_adjusted_flag(entry["root"], inst_id),

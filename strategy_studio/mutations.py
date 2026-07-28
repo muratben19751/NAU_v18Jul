@@ -339,7 +339,18 @@ def add_instrument(defn: StrategyDefinition, symbol: str, timeframe: str) -> Non
     sym = (symbol or "").strip().upper()
     if not sym:
         raise MutationError("symbol is required")
-    if not sym.isalnum() or not sym.isascii():
+    # Two id families share this field: bare Bybit symbols (BTCUSDT) and
+    # dotted external-catalog ids (QQQ.NASDAQ, BRK.B.NASDAQ). The dot is the
+    # discriminator everywhere downstream (adapter loader, recipe, runner).
+    is_external = "." in sym
+    if is_external:
+        parts = sym.split(".")
+        if len(parts) < 2 or not all(p.isalnum() and p.isascii() for p in parts):
+            raise MutationError(
+                f"invalid instrument id '{symbol}' — expected TICKER.VENUE "
+                "(e.g. QQQ.NASDAQ)"
+            )
+    elif not sym.isalnum() or not sym.isascii():
         raise MutationError(f"invalid symbol '{symbol}' — letters and digits only")
     # The charset check alone let a 5000-character name through: it rendered
     # into every page and would have become a filename in the bars cache, where
@@ -355,6 +366,22 @@ def add_instrument(defn: StrategyDefinition, symbol: str, timeframe: str) -> Non
     allowed = timeframe_choices()
     if tf not in allowed:
         raise MutationError(f"timeframe must be one of {', '.join(allowed)}")
+    if is_external:
+        # The external catalog holds 1m/5m/15m/1h/4h/1d — no 30m/12h. Rejecting
+        # here keeps the invariant that a stored (symbol, timeframe) pair is
+        # always loadable; the adapter would otherwise fail mid-run.
+        from data import BYBIT_ALL_INTERVALS, EXTERNAL_GRAN_BY_BYBIT_CODE
+
+        ext_labels = tuple(
+            label
+            for code, label in BYBIT_ALL_INTERVALS
+            if code in EXTERNAL_GRAN_BY_BYBIT_CODE
+        )
+        if tf not in ext_labels:
+            raise MutationError(
+                f"external instrument '{sym}' supports {', '.join(ext_labels)}"
+                f" — not {tf}"
+            )
     defn.instruments.append(InstrumentConfig(symbol=sym, timeframe=tf, active=True))
 
 
