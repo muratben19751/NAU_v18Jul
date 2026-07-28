@@ -83,6 +83,16 @@ EXTERNAL_CATALOGS: list[Path] = [
     if p.strip()
 ]
 
+# Bu projenin KENDİ ingest'inin yazdığı kök (ingest_equities.py — Massive/Polygon
+# flat-file arşivinden). NAUTILUS_CATALOG_DIR değil: `data.py rebuild` orayı
+# siler; buradaki bar'lar 78 GB'lık arşiv taramasıyla üretiliyor, cache değil.
+# Sona eklenir ki aynı enstrüman iki kökte varsa NAU_ev'inki (adjusted) kazansın;
+# env var ayarlıyken de eklenir — kendi ingest ettiğin verinin panelden kaybolması
+# en büyük sürpriz olurdu. Yalnız var olduğunda: L31 uyarısı taze kutuda susar.
+EQUITY_CATALOG_DIR = CACHE_DIR / "equity_catalog"
+if EQUITY_CATALOG_DIR.exists() and EQUITY_CATALOG_DIR not in EXTERNAL_CATALOGS:
+    EXTERNAL_CATALOGS.append(EQUITY_CATALOG_DIR)
+
 # L31: a non-existent root silently turned into an empty panel — warn at module load.
 for _ext_root in EXTERNAL_CATALOGS:
     if not _ext_root.exists():

@@ -146,7 +146,8 @@ Ana sayfadaki (`/`) Başlat/Durdur, `loop_runner.py`'yi kontrol eder — Claude 
 
 - **Bybit v5 klines** — `data.py::load_bybit_bars`; per (kategori, sembol, interval) parquet cache (`~/.cache/nautilus_web_app/bybit/`), art-arda çağrılarda ileri-doğru genişler.
 - **US-index tick CSV'leri** — `NAUTILUS_INDEX_ROOT` altındaki Polygon-tarzı günlük gzip'ler; tick→OHLCV resample.
-- **Harici Nautilus katalogları** — `NAUTILUS_EXTERNAL_CATALOGS` (varsayılan: NAU_ev, 591 US equity); salt-okunur, yerinde okunur, asla kopyalanmaz/yazılmaz.
+- **Harici Nautilus katalogları** — `NAUTILUS_EXTERNAL_CATALOGS` (varsayılan: NAU_ev, 591 US equity); salt-okunur, yerinde okunur, asla kopyalanmaz/yazılmaz. Bu projenin kendi ingest kökü `~/.cache/nautilus_web_app/equity_catalog` var olduğunda listeye otomatik eklenir.
+- **Kendi equity ingest'i** — `python ingest_equities.py --tickers AA,XYZ --years 2003-2026`: `E:\MarketData` Massive/Polygon flat-file arşivinden (~12.400 ticker) 1-dakikalık bar + RTH TF'ler (5m/15m/1h/4h/1d) üretir, `equity_catalog`'a yazar (UNADJUSTED — manifest bayrağıyla işaretli). Başka external katalogda olan ticker atlanır (`--force` zorlar).
 
 ## Güvenlik notları
 
