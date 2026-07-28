@@ -70,11 +70,15 @@ TICKER_REGISTRY = INDEX_CACHE_DIR / "_tickers.json"
 # Other projects' ParquetDataCatalog roots that this app references in place
 # (never copies). os.pathsep-separated paths, overridable via env var.
 # Default: the NAU_ev backtest desk catalog (591 US-equity instruments).
+# The desk moved drives at some point — E:\myAI_Projects\NAU_ev no longer
+# exists anywhere; D:\NAU_ev is where it lives on this box (verified
+# 2026-07-27: 3,511 bar series). With the old default the /data external
+# panel, the Lab pickers and QQQ/SPX backtest loads all silently emptied.
 EXTERNAL_CATALOGS: list[Path] = [
     Path(p.strip())
     for p in os.environ.get(
         "NAUTILUS_EXTERNAL_CATALOGS",
-        r"E:\myAI_Projects\NAU_ev\backend\data\catalog",
+        r"D:\NAU_ev\backend\data\catalog",
     ).split(os.pathsep)
     if p.strip()
 ]
