@@ -673,3 +673,69 @@ sonuç iki sayfaya işlendi.
 Genel ders (ikinci beyne de yazıldı, [[strategy_studio]] §Enstrüman çipleri):
 HTMX'te `hx-*` taşıyan bir öğeyi başka bir `hx-*` öğesinin İÇİNE koymak tek
 tıkta iki istek attırır — dinleyici elemanın kendisine bağlıdır, event kabarır.
+
+
+## [2026-07-28] fix | EXTERNAL_CATALOGS varsayılanı düzeltildi — E: → D:\NAU_ev
+
+Kullanıcı sorusu: "indirdiğim NASDAQ hisseleri /data'da neden görünmüyor?"
+Kök neden: `data.py` EXTERNAL_CATALOGS varsayılanı `E:\myAI_Projects\NAU_ev\...`
+gösteriyordu; masa sürücü taşımış, katalog `D:\NAU_ev\backend\data\catalog`
+altında (3.511 seri / 591 enstrüman). Tek yanlış yol, aynı listeden çözünen dört
+yüzeyi birden sessizce boşaltıyordu: /data harici paneli, Lab picker'ları
+(`list_external_instruments`), backtest yükleri (`_external_bar_dir`),
+enstrüman tanımları (`external_instrument_object`).
+
+Varsayılan `D:` yoluna çevrildi; canlı doğrulama: /data → "591 instruments",
+`xq=AAPL` → AAPL.NASDAQ (panel alfabetik ilk 50'yi gösterir, gerisi `xq` araması).
+§9.4'teki "ortam sorunu, veri yok" hükmü düzeltildi — hüküm verinin diskte
+gerçekten olmadığı doğrulanmadan verilmişti. Sayfalar:
+nau_guvenlik_dayaniklilik_duzeltmeleri (§9.4 düzeltme paragrafı),
+webapp_module_map (data.py satırı). Modül docstring Wiki References değişmedi
+(yeni kavram yok). NOT: seçici + taslak-yarışı turlarının wiki senkronu hâlâ
+bekliyor (kullanıcı onayı istendi).
+
+## [2026-07-28] feat | ingest_equities.py — NAU_ev flat-file ingest'inin portu
+
+Kullanıcı isteği "NAU_ev'den buraya kopyala": tools/ingest_flatfiles.py +
+tools/build_tf_bars.py ikilisi tek CLI'a portlandı. Akış korunur (yıl-parçalı
+minute ingest → RTH TF resample → manifest en sonda); üç bilinçli fark
+webapp_module_map'in yeni satırında: kendi kök (equity_catalog — NAU_ev'in
+veri klasörüne yazılmaz), universe dışlaması yerine diğer-kök guard'ı,
+TF aynı koşumda (manifest-tazeliği makinesi gereksizleşti).
+
+data.py: EQUITY_CATALOG_DIR var olduğunda EXTERNAL_CATALOGS'a SONA eklenir —
+/data dedup'ı ilk kökü kazandırdığı için NAU_ev'in adjusted sürümü önceliklidir.
+
+Doğrulama: 3 sentetik-arşiv testi (right-label +60e9, premarket RTH dışı,
+guard, taze-yeniden-ingest); gerçek smoke AA 2026 → 109 s / 58.988 minute bar,
+/data paneli 591→592, load_external_bars 124 günlük bar + UNADJUSTED uyarısı.
+Süit 598 geçti (3 yeni); düşen 2 test bilinen süit-altı flaky çifti, izole 6/6.
+README'ye kullanım eklendi. ruff temiz.
+
+## [2026-07-28] feat | External enstrümanlar dört yüzeye açıldı — noktalı id ayrımı
+
+Kullanıcı NASDAQ sembollerini uygulamanın listelerinde göremiyordu; dört yüzey
+birden bağlandı (ayrıntı strategy_studio.md yeni bölümünde):
+1. /backtest ana sayfası: "US Catalog" üçüncü kaynak radio'su + data-grans'a
+   göre daralan granularity — /backtest/external_instruments endpoint'i zaten
+   vardı, yalnız UI eksikti. E2E: AA.NASDAQ 1-DAY koşusu sonuç paneli üretti.
+2. /data external paneli: kullanılan-önce sıralama (EXTERNAL_CACHE_DIR'de
+   pandas cache'i olanlar başa, "used" rozeti) — alfabetik ilk 50 (A, AA,
+   AAL…) işlevsiz doluyordu.
+3. Strategy Builder: picker'da "external" grubu; add_instrument noktalı
+   TICKER.VENUE doğrulaması + external TF kümesi (30m/12h reddi); adaptörde
+   recipe/loader dalı; runner.build_node_config deploy kapısı (RunnerError).
+4. Lab: sembol select'inde "US Catalog" optgroup; is_external dalı yükleme +
+   recipe + bars_info (Index konvansiyonu).
+
+data.py: EXTERNAL_GRAN_BY_BYBIT_CODE tek kaynak (studio+lab paylaşır).
+Testler: 12 yeni (tests/studio/test_external_instruments.py) — mutasyon
+doğrulaması, recipe ayrımı, loader yönlendirmesi (Bybit yoluna sapmadığı da
+kanıtlı), deploy reddi. Süit 611 geçti; tek düşen bilinen flaky
+(promote_atomicity, izole 5/5). Modül docstring'lerine yeni link gerekmedi
+(yeni kavram yok; mevcut Wiki References geçerli).
+
+OPS NOTU: strategy_studio.md frontmatter'ı PowerShell Get/Set-Content ile
+güncellenirken mojibake oldu (PS 5.1 BOM'suz UTF-8'i ANSI okur) — git
+checkout ile geri alınıp Edit ile yeniden uygulandı. Wiki dosyalarına toplu
+metin işlemi PowerShell'le YAPILMAZ; Edit/python kullanılır.

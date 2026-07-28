@@ -12,7 +12,7 @@ related:
   - wiki/synthesis/nau_performans_denetimi.md
   - wiki/synthesis/strategy_studio.md
   - wiki/synthesis/webapp_module_map.md
-last_updated: 2026-07-26
+last_updated: 2026-07-28
 ---
 
 # Güvenlik & Dayanıklılık Düzeltmeleri — 2026-07-25
@@ -198,6 +198,19 @@ uyarı). Kod mantığı değişmedi, yalnız mesaj eyleme dönüştürüldü: ha
 değişkeninin (`NAUTILUS_EXTERNAL_CATALOGS`) ayarlanacağını ve bunu görmezden gelmenin
 ne zaman doğru olduğunu söylüyor. Bybit ve index yolları etkilenmez; harici katalog
 entegrasyonu bu makinede gerçek veriyle **doğrulanmadı** (veri yok).
+
+**Düzeltme (2026-07-28): teşhisin "veri yok" yarısı yanlış çıktı.** Veri bu kutuda
+vardı — NAU_ev masası sürücü değiştirmiş, katalog `D:\NAU_ev\backend\data\catalog`
+altında duruyordu (3.511 bar serisi, 591 enstrüman; QQQ/SPX/NDX dahil). Yanlış
+varsayılan yalnız `/data` panelini değil, aynı `EXTERNAL_CATALOGS` listesinden
+çözünen her şeyi sessizce boşaltıyordu: Lab picker'ları (`list_external_instruments`),
+backtest yükleri (`_external_bar_dir`) ve enstrüman tanımları
+(`external_instrument_object`) — kullanıcı "indirdiğim NASDAQ hisseleri /data'da
+neden yok?" diye sorana kadar. `data.py` varsayılanı `D:` yoluna çevrildi; canlı
+doğrulama: `/data` → "591 instruments", `xq=AAPL` → AAPL.NASDAQ. L31 uyarısı başka
+makineler için yerinde duruyor. Ders: "ortam sorunu, bug değil" hükmü ancak verinin
+GERÇEKTEN yok olduğu doğrulanınca verilebilir — diskte nerede durduğuna bakarak,
+kodun nereyi okuduğuna bakarak değil.
 
 ### 9.5 Kapatılmayan: Studio route bağımlılıklarının import-anı kurulumu
 

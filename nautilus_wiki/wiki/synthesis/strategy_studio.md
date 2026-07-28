@@ -4,7 +4,7 @@ type: synthesis
 sources:
   - https://github.com/nautechsystems/nautilus_trader
   - sources/02_architecture_docs.md
-last_updated: 2026-07-27
+last_updated: 2026-07-28
 summary: /studio/{id} altındaki görsel strateji kurucu; sürümlü şema → derleyici → to_nautilus → composer spec → run_composed_backtest zinciri, çeviremediğini sessizce atmak yerine gerekçesiyle reddeder; sweep pencereli walk-forward ve deflate edilmiş DSR ile skorlanır. Nav'da "Strategy Builder"; /canvas altında aynı stratejinin node graf'ı ikinci yüzey olarak durur (2026-07-27).
 key_concepts:
   - strategy_and_actor
@@ -346,6 +346,39 @@ sembol tekil tutulur — rotalar `{symbol}` ile eşlediği için ikinci bir kay�
 ayırt edilemezdi. Katalog taraması `_ctx`'te her blok render'ında koştuğundan
 60 sn TTL ile cache'lenir: `/data`'dan yeni indirilen bir sembol sunucu
 yeniden başlatılmadan seçicide görünür.
+
+## External enstrümanlar: noktalı id'ler backtest'e girer, deploy'a giremez (2026-07-28)
+
+Seçici artık üçüncü bir grup taşıyor: **external katalog id'leri**
+(`QQQ.NASDAQ`, `BRK.B.NASDAQ` — 592 US hisse/ETF/endeks, `label="external"`).
+Ayrım tek karakterle yapılır ve her katmanda aynıdır: **noktalı id = external.**
+Bybit sembolü alnum doğrulandığı için nokta orada var olamaz — ayraç çakışmaz.
+
+- **`add_instrument`**: noktalı id `TICKER.VENUE` yapısıyla doğrulanır ve
+  timeframe external kümesine (1m/5m/15m/1h/4h/1d) sınırlanır — 30m/12h
+  Bybit'e özgü, katalogda karşılığı yok (`EXTERNAL_GRAN_BY_BYBIT_CODE`,
+  data.py). Kayıtlı her (symbol, timeframe) çifti tanımı gereği yüklenebilir
+  kalır; adaptör koşu ortasında düşmez.
+- **Adaptör** (`NautilusBacktestAdapter`): `_recipe` noktaya göre iki şekil
+  üretir — Bybit linear tarifi ya da `/backtest` rotasının external tarifi
+  (`{"source":"external","instrument_id","granularity",...}`; sandbox ikisini
+  de tanır, `TestExternalRecipe`). `_default_loader` noktalı id'yi
+  `load_external_bars`'a yollar, aynı lookback penceresiyle (tam geçmiş 20+
+  yıl; memo cache dilimlenmiş frame'i tutar). Optimizer ve AI döngüsü aynı
+  adaptörden geçtiği için ikisi de external'da kendiliğinden çalışır.
+- **Deploy kapısı** (`runner.build_node_config`): noktalı id **RunnerError** —
+  canlı Bybit websocket akışı olmayan enstrümanın node'u sessizce bar'sız
+  otururdu. Backtest/optimize serbest, deployment kapalı; hata mesajı hangi
+  enstrümanların pasifleştirileceğini söyler.
+- Aynı ayrım Lab'a da taşındı (`lab.py`: `is_external` dalı — yükleme
+  `load_external_bars`, recipe external şekil, `bars_info`'da Index
+  konvansiyonu: "symbol" anahtarı yok ki Bybit chart'ı kline çekmesin) ve
+  `/backtest` sayfası üçüncü kaynak öğesini kazandı ("US Catalog" radio +
+  `data-grans`'a göre daralan granularity seçici; endpoint zaten vardı,
+  yalnız ana sayfada UI'ı yoktu).
+
+Veri UNADJUSTED olabilir (manifest bayrağı) — uzun geçmişli koşularda split
+sıçraması riski /data rozetinde ve yükleme uyarısında görünür.
 
 ## HTTP semantiği: 404 kaynak, 422 girdi
 
