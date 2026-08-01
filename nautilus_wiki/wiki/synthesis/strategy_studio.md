@@ -137,6 +137,7 @@ derleyici                      strategy_studio/compiler.py → CompiledStrategy
 composer ComposedStrategySpec  ← mevcut blok kataloğu
    ↓ run_composed_backtest()   backtest.py → BacktestEngine
 BacktestMetrics                → sparkline + fold tablosu + deploy kapısı
+  └ per_instrument[]           → sembol×TF döküm tablosu + işlem listeleri
 ```
 
 Sweep aynı zincire pencereli girer: `optimizer.py` geometriyi kurar, adaptör
@@ -187,6 +188,78 @@ elenmediği en kötü durum (`min(sweep, 400) × (1 + folds)`) kullanılır.
 Stub adaptör silinmedi ve **her yerde varsayılandır**: piyasa verisi olmadan tüm
 UI döngüsü çalışır, test takımı çevrimdışı kalır (`tests/studio`, 196 geçti +
 1 atlandı — 2026-07-26'da tekrar ölçüldü — env flag'siz yeşil).
+
+## Backtest tarih aralığı (2026-08-01)
+
+Sonuç yüzeyleri artık koşumun VERİ PENCERESİNİ gösteriyor — kullanıcı isteği
+("backtest sonuçlarına tarih aralığını da ekle") + gizli bir gerçeği görünür
+kılma: gerçek adapter varsayılan olarak yalnız son `lookback_days=180` günü
+yükler; aralık rozeti olmadan bunun tam-tarih koşusu sanılması kolaydı.
+
+- **Şema (additive):** `InstrumentMetrics` + `BacktestMetrics`'e
+  `date_from/date_to` (ISO, `""` = bilinmiyor). Eski store blob'ları
+  `from_json`'da default'a düşer → UI rozeti gizler, migration yok.
+- **Gerçek adapter:** sleeve başına `_bars_span(bars)` (DatetimeIndex min/max;
+  RangeIndex'li sentetik test frame'leri `("","")` — düşmez, gizler);
+  toplam = sleeve'lerin min→max'ı. Windowed (optimizer trial) koşumda dilimin
+  gerçek aralığı yazılır.
+- **Stub:** `_span()` = bugün − 180g → bugün ("kavramsal pencere"). Bilinçli
+  taviz: tarihler saatle değişen TEK stub çıktısı — rng tüketmez, determinizm
+  sözleşmesi (metrikler) bozulmaz.
+- **UI:** footer şeridinde `Range 2026-02-02 → 2026-08-01` rozeti
+  (`_footer_metrics.html`, `date_from` boşsa yok); per-symbol tabloda sembol
+  başına `Range` kolonu (sleeve'ler farklı derinlikte olabilir — QQQ 22 yıl,
+  DOGE 2 gün). Trades satırı `colspan=10` oldu.
+
+## Tema birleşmesi + üst palet (2026-07-29)
+
+Kullanıcı isteğiyle Builder görsel olarak Studio/uygulama kabuğuna eşitlendi ve
+indikatör paleti sola değil ÜSTE alındı:
+
+- `.studio-embed` artık kendi lacivert paletini taşımıyor: `--bg/--line/--text/
+  --muted/--chip` app.css :root değişkenlerine bağlandı, `--panel/--panel-2`
+  hiç yeniden tanımlanmıyor (kalıtım). Space Grotesk gitti — `var(--sans)` /
+  `var(--mono)` (IBM Plex Sans / JetBrains Mono, base.html'den; iki şablondaki
+  Google Fonts linki silindi).
+- **Vurgu ayrımı:** etkileşim vurguları (focus, primary buton, aktif sekme/chip,
+  drag-hover, dropzone) app mavisi `var(--accent)`; `--long/--short` yalnız
+  SEMANTİK kaldı (P&L, entry/exit rozetleri, sparkline).
+- **Palet üstte:** `.workspace` ve `.cv-workspace` grid'leri
+  `grid-template-areas:"library library" / "canvas side"` düzenine geçti;
+  `.library` yatay şerit (flex, overflow-x, kategori başlıkları satır içi).
+  Arama JS'i (`libSearch`) inline `display:''` kullandığı için değişmeden
+  çalışır. Dar ekran kırılımları şerit yüksekliğini küçültür, artık sütun
+  daraltmaz.
+
+## Sembol bazlı sonuç dökümü (2026-07-28)
+
+Çok enstrümanlı bir koşuda adaptör zaten **enstrüman başına ayrı motor koşusu**
+yapıyordu; sleeve metrikleri ve eğriler harmanlanıp atılıyordu — kullanıcı
+"tepede tek Net P&L yetmez" deyince atılan veri saklanır hale getirildi:
+
+- `InstrumentMetrics` dataclass'ı (`strategy_studio/backtest.py`): sembol, TF,
+  P&L, Sharpe, MaxDD, işlem sayısı, Win%, PF + ≤80 noktalık normalize eğri +
+  son ≤100 işlemlik `trades_detail` (giriş/çıkış zaman-fiyat, yön, PnL, süre,
+  çıkış gerekçesi). `BacktestMetrics.per_instrument` alanında, aynı JSON
+  blob'unda saklanır; eski kayıtlar `from_json`'da boş listeye çözülür
+  (migration yok).
+- **Pencere kuralı fold'larla aynı:** `window` verilmişse (optimizer trial)
+  `per_instrument` doldurulmaz — trial blob'ları şişmez. Fold koşularının
+  trade listesi de bilinçli atılır.
+- Yüzeyler: footer'daki **Symbols** butonu → `GET /studio/{id}/runs/latest/symbols`
+  (`studio/_per_symbol.html`, kolon-en-iyisi vurgulu tablo + satır başına mini
+  sparkline); satır tıklanınca `.../symbols/{idx}/trades` işlem listesini satır
+  altına açar. Form görünümünde aynı tablo Results sekmesine `symbol_rows`
+  context'iyle bedavaya girer. İki görünümde de `#symbol-breakdown` mount div'i
+  var (tek tarafta olmaması HTMX hedef hatası olurdu).
+- Canvas incelik: `canvas.css` `.cv-metrics .run`'ı `display:none` ile
+  gizliyordu (Optimize form görünümüne ait) — kural `display:contents` +
+  `.btn:not(.ps-open)` gizlemesine çevrildi ki Symbols butonu canvas'ta görünsün.
+- Stub paritesi: varsayılan env'de de tablo dolu gelir — enstrüman başına
+  **taze** `random.Random(seed ^ hash(sym|tf))`; paylaşılan `rng`'den çekiliş
+  yapılmaz, determinizm sözleşmesi (`test_stub_adapter_is_untouched...`) korunur.
+- Sharpe dipnotu: satırlar sleeve'in işlem-başı Sharpe'ını, şerit N>1'de harman
+  eğrisinin Sharpe'ını gösterir — satırlar şeride "ortalanmaz", bilinçli.
 
 ## Metriklerin kaynağı (ve neden hepsi motordan alınmıyor)
 
