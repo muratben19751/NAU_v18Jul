@@ -58,6 +58,14 @@
         <label class="field">End
           <input type="date" name="end_date">
         </label>
+        <button type="button" class="btn btn-max"
+                title="Önbellekteki/katalogdaki tüm veri aralığını doldur"
+                onclick="var s=this.form.symbol.value, iv=this.form.interval.value,
+                  g={'1':'1-MINUTE','5':'5-MINUTE','15':'15-MINUTE','60':'1-HOUR','240':'4-HOUR','D':'1-DAY'}[iv]||'1-DAY';
+                  nlMaxRange(this, s.indexOf('.')>-1
+                    ? {source:'external', instrument_id:s, granularity:g}
+                    : {source:'bybit', symbol:s, category:this.form.category.value, interval:iv},
+                    this.form.start_date, this.form.end_date)">MAX</button>
         <button class="btn btn-primary" type="submit">⚗ Run</button>
         <span class="htmx-indicator text-muted mono" id="lab-spinner" style="font-size:11px;">
           starting pipeline…

@@ -74,6 +74,23 @@
                  onchange="document.getElementById('interval-sel').disabled=this.checked;document.getElementById('agent-ext-interval').disabled=this.checked">
           <span style="font-size:12px;">Multi-TF <span class="text-muted">(try 1h·4h·1D)</span></span>
         </label>
+        <label class="field">Start <span class="text-muted" style="font-size:10px;">(boş = en geniş)</span>
+          <input type="date" name="range_start" id="agent-range-start">
+        </label>
+        <label class="field">End
+          <input type="date" name="range_end" id="agent-range-end">
+        </label>
+        <button type="button" class="btn btn-max"
+                title="Seçili serinin önbellek/katalog kapsamının tamamını doldur"
+                onclick="var ext = document.getElementById('agent-source').value === 'external';
+                  nlMaxRange(this, ext
+                    ? {source:'external',
+                       instrument_id: document.getElementById('agent-ext-instrument').value,
+                       granularity: document.getElementById('agent-ext-interval').value}
+                    : {source:'bybit', symbol: this.form.symbol.value,
+                       category: this.form.category.value,
+                       interval: document.getElementById('interval-sel').value},
+                    '#agent-range-start', '#agent-range-end')">MAX</button>
       </div>
 
       <div class="row" style="align-items:flex-end;flex-wrap:wrap;gap:12px;margin-bottom:14px;">

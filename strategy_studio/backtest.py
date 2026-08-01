@@ -142,6 +142,25 @@ class BacktestAdapter(Protocol):
     ) -> BacktestMetrics: ...
 
 
+def _slice_dates(bars, date_range: tuple[str, str]):
+    """Inclusive [from, to] day slice of a bars frame; either side may be "".
+
+    Works with tz-aware and naive DatetimeIndex; synthetic frames without a
+    DatetimeIndex (RangeIndex test fixtures) pass through unchanged.
+    """
+    import pandas as pd
+
+    idx = getattr(bars, "index", None)
+    if not isinstance(idx, pd.DatetimeIndex):
+        return bars
+    f, t = date_range
+    if f:
+        bars = bars[bars.index >= pd.Timestamp(f, tz=idx.tz)]
+    if t:
+        bars = bars[bars.index < pd.Timestamp(t, tz=idx.tz) + pd.Timedelta(days=1)]
+    return bars
+
+
 def _bars_span(bars) -> tuple[str, str]:
     """ISO date range of a bars frame; ("", "") when it has no DatetimeIndex.
 
@@ -215,7 +234,11 @@ class StubBacktestAdapter:
         return int(hashlib.sha256(payload.encode()).hexdigest()[:12], 16)
 
     def run(
-        self, compiled: CompiledStrategy, *, window: Window | None = None
+        self,
+        compiled: CompiledStrategy,
+        *,
+        window: Window | None = None,
+        date_range: tuple[str, str] | None = None,
     ) -> BacktestMetrics:
         rng = random.Random(self._seed(compiled, window))
 
@@ -251,7 +274,11 @@ class StubBacktestAdapter:
         # Per-instrument rows use a FRESH Random per instrument, derived from
         # the run seed — drawing from the shared `rng` here would shift every
         # draw above and break the stub's documented determinism contract.
-        span = self._span()
+        # An explicit date_range relabels the notional window (fake metrics
+        # stay seed-deterministic — the range is display metadata here).
+        span = (
+            (date_range[0], date_range[1]) if date_range is not None else self._span()
+        )
         per_inst: list[InstrumentMetrics] = []
         if window is None:
             for inst in compiled.instruments:
@@ -939,7 +966,11 @@ class NautilusBacktestAdapter:
         return chunk
 
     def run(
-        self, compiled: CompiledStrategy, *, window: Window | None = None
+        self,
+        compiled: CompiledStrategy,
+        *,
+        window: Window | None = None,
+        date_range: tuple[str, str] | None = None,
     ) -> BacktestMetrics:
         spec = to_nautilus(compiled, initial_capital=self.initial_capital)
 
@@ -954,6 +985,17 @@ class NautilusBacktestAdapter:
         spans: list[tuple[str, str]] = []
         for inst in compiled.instruments:
             bars = self.load_bars(inst["symbol"], inst["timeframe"])
+            if date_range is not None:
+                bars = _slice_dates(bars, date_range)
+                if len(bars) < self.MIN_WINDOW_BARS:
+                    raise UnsupportedStrategy(
+                        [
+                            f"date range {date_range[0] or '…'} → "
+                            f"{date_range[1] or '…'} leaves {len(bars)} bars for "
+                            f"{inst['symbol']} {inst['timeframe']} — under the "
+                            f"{self.MIN_WINDOW_BARS}-bar minimum"
+                        ]
+                    )
             if window is not None:
                 bars = self._slice(bars, window)
             span = _bars_span(bars)

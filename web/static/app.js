@@ -79,3 +79,31 @@ document.body.addEventListener("htmx:afterSwap", (evt) => {
       .then(j => { if (j.points && j.points.length) NautilusLab.renderEquity("equity-canvas", j.points); });
   }
 });
+
+// ── MAX date-range filler ────────────────────────────────────────────────────
+// Shared by every backtest surface's date pair: fetches the cached coverage of
+// the selected series (GET /data/range or a prebuilt URL) and fills the Start/
+// End inputs. `params` is an object of query params, or {url: "..."} to hit a
+// surface-specific endpoint (Builder). Targets accept an element or selector.
+window.nlMaxRange = function (btn, params, startTarget, endTarget) {
+  function el(t) { return typeof t === "string" ? document.querySelector(t) : t; }
+  var url = params && params.url
+    ? params.url
+    : "/data/range?" + new URLSearchParams(params).toString();
+  var original = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "…";
+  fetch(url)
+    .then(function (r) { if (!r.ok) throw new Error("no-data"); return r.json(); })
+    .then(function (d) {
+      var s = el(startTarget), e = el(endTarget);
+      if (s) { s.value = d.start; s.dispatchEvent(new Event("change", { bubbles: true })); }
+      if (e) { e.value = d.end; e.dispatchEvent(new Event("change", { bubbles: true })); }
+      btn.textContent = original;
+    })
+    .catch(function () {
+      btn.textContent = "veri yok";
+      setTimeout(function () { btn.textContent = original; }, 1800);
+    })
+    .finally(function () { btn.disabled = false; });
+};

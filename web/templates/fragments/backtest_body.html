@@ -115,6 +115,13 @@
               <label class="field">End
                 <input type="date" name="bybit_end">
               </label>
+              <button type="button" class="btn btn-max"
+                      title="Önbellekteki tüm veri aralığını doldur"
+                      onclick="nlMaxRange(this, {source:'bybit',
+                        symbol: this.form.symbol.value,
+                        category: this.form.category.value,
+                        interval: this.form.interval.value},
+                        this.form.bybit_start, this.form.bybit_end)">MAX</button>
             </div>
             <datalist id="bybit-symbols-list">
               {% for s in bybit_symbols %}<option value="{{ s.symbol }}" label="{{ s.symbol }} ({{ s.category }})">{% endfor %}
@@ -146,6 +153,12 @@
               <label class="field">End
                 <input type="date" name="end_date">
               </label>
+              <button type="button" class="btn btn-max"
+                      title="Önbellekteki tüm veri aralığını doldur"
+                      onclick="nlMaxRange(this, {source:'index',
+                        ticker: this.form.ticker.value,
+                        granularity: document.querySelector('#index-granularity-field select').value},
+                        this.form.start_date, this.form.end_date)">MAX</button>
             </div>
             <datalist id="index-tickers-list">
               {% for s in index_symbols %}<option value="{{ s }}">{% endfor %}
@@ -186,6 +199,12 @@
               <label class="field">End
                 <input type="date" name="ext_end">
               </label>
+              <button type="button" class="btn btn-max"
+                      title="Katalogdaki tüm veri aralığını doldur"
+                      onclick="nlMaxRange(this, {source:'external',
+                        instrument_id: this.form.ext_instrument.value,
+                        granularity: this.form.ext_granularity.value},
+                        this.form.ext_start, this.form.ext_end)">MAX</button>
             </div>
           </div>
 

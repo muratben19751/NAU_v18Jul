@@ -599,3 +599,17 @@
 .studio-embed .ps-note{margin:6px 0 0}
 .studio-embed .pg-symbols{padding:0 18px}
 .studio-embed .pg-symbols:empty{display:none}
+
+/* Header date-range inputs (Builder run bar, both views) */
+.studio-embed .hdr-date, .cv-embed .hdr-date {
+  height: 28px;
+  font-size: 11px;
+  font-family: var(--mono);
+  color: var(--text);
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 2px 6px;
+}
+.studio-embed .hdr-date::-webkit-calendar-picker-indicator,
+.cv-embed .hdr-date::-webkit-calendar-picker-indicator { filter: invert(0.7); }

@@ -1098,6 +1098,8 @@ def _agent_worker(
     instrument_id: str = "",
     max_hours: float = 0.0,
     max_total_tokens: int = 0,
+    range_start: str = "",
+    range_end: str = "",
 ) -> None:
     import pandas as pd
 
@@ -1328,13 +1330,34 @@ def _agent_worker(
                         f"Loading catalog data ({instrument_id}, {iv})…",
                     )
                     df = load_external_bars(instrument_id, iv)  # full catalog range
+                    if range_start or range_end:
+                        # Explicit user window (MAX butonu / elle tarih):
+                        # inclusive [start, end] day slice, tz of the frame.
+                        _tz = df.index.tz
+                        if range_start:
+                            df = df[df.index >= pd.Timestamp(range_start, tz=_tz)]
+                        if range_end:
+                            df = df[
+                                df.index
+                                < pd.Timestamp(range_end, tz=_tz) + pd.Timedelta(days=1)
+                            ]
+                        _add_step(
+                            run_id,
+                            f"Date window {range_start or '…'} → {range_end or '…'}"
+                            f" ({len(df):,} bars)",
+                        )
                     if len(df) < 100:
                         raise RuntimeError(
                             f"Insufficient data ({len(df)} bars, {instrument_id} {iv})."
                         )
                     # 1-MINUTE guard: ~23 years >2M bars — crop to the last 2 years
                     # to keep the engine responsive (mirror of the Bybit 1m guard).
-                    if iv == "1-MINUTE" and len(df) > 1_000_000:
+                    # An EXPLICIT user window is honored as-is — the user chose it.
+                    if (
+                        iv == "1-MINUTE"
+                        and len(df) > 1_000_000
+                        and not (range_start or range_end)
+                    ):
                         cutoff = df.index[-1] - pd.Timedelta(days=730)
                         df = df[df.index >= cutoff]
                         _add_step(
@@ -1354,9 +1377,21 @@ def _agent_worker(
                 lookback_days = {"1": 730, "5": 1460, "15": 2200}.get(iv, 2200)
                 end_dt = datetime.now(UTC)
                 start_dt = end_dt - timedelta(days=lookback_days)
+                # Explicit user window overrides the default lookback; an
+                # earlier start triggers load_bybit_bars' cache backfill.
+                if range_start:
+                    start_dt = datetime.strptime(range_start, "%Y-%m-%d").replace(
+                        tzinfo=UTC
+                    )
+                if range_end:
+                    end_dt = datetime.strptime(range_end, "%Y-%m-%d").replace(
+                        tzinfo=UTC
+                    ) + timedelta(days=1)
                 _add_step(
                     run_id,
-                    f"Loading widest range ({iv}, ~{lookback_days}d)…",
+                    f"Date window {range_start} → {range_end} requested…"
+                    if (range_start or range_end)
+                    else f"Loading widest range ({iv}, ~{lookback_days}d)…",
                 )
                 try:
                     df = load_bybit_bars(
@@ -2538,8 +2573,28 @@ async def run(
     ext_trend_interval: str = Form(default="1-DAY"),
     max_hours: float = Form(default=0.0),
     max_total_tokens: int = Form(default=0),
+    range_start: str = Form(default=""),
+    range_end: str = Form(default=""),
 ):
     from server import get_market_info, templates
+
+    # Optional [start, end] data window (blank side = open-ended). Validate up
+    # front — a malformed date should fail the request, not the worker thread.
+    range_start, range_end = range_start.strip(), range_end.strip()
+    for _v in (range_start, range_end):
+        if _v:
+            try:
+                datetime.strptime(_v, "%Y-%m-%d")
+            except ValueError:
+                return HTMLResponse(
+                    f"<div class='empty-state'>invalid date: {_v}</div>",
+                    status_code=400,
+                )
+    if range_start and range_end and range_start > range_end:
+        return HTMLResponse(
+            "<div class='empty-state'>Start date is after end date.</div>",
+            status_code=400,
+        )
 
     n_iterations = max(2, min(15, n_iterations))
     # M22: optional budget ceilings (0 = unlimited — default behavior unchanged).
@@ -2639,6 +2694,8 @@ async def run(
             instrument_id=instrument_id,
             max_hours=max_hours,
             max_total_tokens=max_total_tokens,
+            range_start=range_start,
+            range_end=range_end,
         ),
         daemon=True,
     ).start()

@@ -23,7 +23,16 @@
             hx-target="#strategy-name" hx-swap="outerHTML">Save</button>
     <button class="btn" hx-post="/studio/{{ defn.id }}/discard"
             hx-confirm="Discard all unsaved changes?" hx-swap="none">Discard</button>
+    <input type="date" name="date_from" id="bt-range-from" class="hdr-date"
+           title="Backtest başlangıcı (boş = tüm veri)">
+    <input type="date" name="date_to" id="bt-range-to" class="hdr-date"
+           title="Backtest sonu (boş = bugüne kadar)">
+    <button type="button" class="btn btn-max"
+            title="Enstrümanların önbellek/katalog kapsamının tamamını doldur"
+            onclick="nlMaxRange(this, {url:'/studio/{{ defn.id }}/data-range'},
+              '#bt-range-from', '#bt-range-to')">MAX</button>
     <button class="btn primary" hx-post="/studio/{{ defn.id }}/backtest"
+            hx-include="#bt-range-from,#bt-range-to"
             hx-target="#footer-metrics" hx-swap="outerHTML">▶ Run backtest</button>
     <button class="btn" hx-get="/studio/{{ defn.id }}/deploy/modal"
             hx-target="#modal-slot" hx-swap="innerHTML">⇪ Deploy</button>

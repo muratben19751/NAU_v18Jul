@@ -793,11 +793,15 @@ def _spark_path(curve: list[float], w: int = 260, h: int = 36) -> str:
     return "M" + " L".join(coords)
 
 
-def _execute_run(run_id: str, defn: StrategyDefinition) -> None:
+def _execute_run(
+    run_id: str,
+    defn: StrategyDefinition,
+    date_range: tuple[str, str] | None = None,
+) -> None:
     """Runs in a background task; all outcomes land in studio_runs."""
     try:
         compiled = compile_strategy(defn)
-        metrics = ADAPTER.run(compiled)
+        metrics = ADAPTER.run(compiled, date_range=date_range)
         store.finish_run(run_id, metrics.to_json())
     except Exception as e:  # noqa: BLE001 — surface anything to the UI
         store.fail_run(run_id, str(e))
@@ -805,12 +809,28 @@ def _execute_run(run_id: str, defn: StrategyDefinition) -> None:
 
 @router.post("/studio/{strategy_id}/backtest")
 def route_backtest(
-    request: Request, strategy_id: str, background_tasks: BackgroundTasks
+    request: Request,
+    strategy_id: str,
+    background_tasks: BackgroundTasks,
+    date_from: str = Form(default=""),
+    date_to: str = Form(default=""),
 ):
     try:
         defn, is_draft = store.working_copy(strategy_id)
     except KeyError:
         raise HTTPException(404, f"strategy '{strategy_id}' not found")
+    # Optional [from, to] window (either side may be blank = open-ended).
+    # Validate BEFORE the task starts — a bad date should not consume a run.
+    date_from, date_to = date_from.strip(), date_to.strip()
+    for v in (date_from, date_to):
+        if v:
+            try:
+                datetime.strptime(v, "%Y-%m-%d")
+            except ValueError:
+                return PlainTextResponse(f"invalid date: {v}", status_code=400)
+    if date_from and date_to and date_from > date_to:
+        return PlainTextResponse("start date is after end date", status_code=400)
+    date_range = (date_from, date_to) if (date_from or date_to) else None
     # compile FIRST so config errors surface immediately, not in the task
     try:
         compile_strategy(defn)
@@ -823,8 +843,50 @@ def route_backtest(
     # The hash records WHICH definition this run measures, so the deploy gate
     # can insist on a run of the definition being deployed (see _gate_baseline).
     store.create_run(run_id, strategy_id, defn.version, is_draft, definition_hash(defn))
-    background_tasks.add_task(_execute_run, run_id, defn)
+    background_tasks.add_task(_execute_run, run_id, defn, date_range)
     return _render_footer(request, defn, store.latest_run(strategy_id))
+
+
+@router.get("/studio/{strategy_id}/data-range")
+def route_data_range(strategy_id: str):
+    """Union of cached coverage across the strategy's instruments — the run
+    bar's MAX button. 404 when no instrument has cached/ingested data."""
+    try:
+        defn, _ = store.working_copy(strategy_id)
+    except KeyError:
+        raise HTTPException(404, f"strategy '{strategy_id}' not found")
+    try:
+        compiled = compile_strategy(defn)
+    except CompileError as e:
+        raise HTTPException(422, str(e))
+    from data import coverage_range
+
+    firsts: list[str] = []
+    lasts: list[str] = []
+    for inst in compiled.instruments:
+        sym, tf = inst["symbol"], inst["timeframe"]
+        try:
+            if NautilusBacktestAdapter._is_external(sym):
+                rng = coverage_range(
+                    "external",
+                    instrument_id=sym,
+                    granularity=NautilusBacktestAdapter._external_granularity(tf),
+                )
+            else:
+                rng = coverage_range(
+                    "bybit",
+                    symbol=sym,
+                    category="linear",
+                    interval=NautilusBacktestAdapter._interval_code(tf),
+                )
+        except UnsupportedStrategy:
+            rng = None
+        if rng:
+            firsts.append(rng["start"])
+            lasts.append(rng["end"])
+    if not firsts:
+        raise HTTPException(404, "no cached data for this strategy's instruments")
+    return {"start": min(firsts), "end": max(lasts)}
 
 
 @router.get("/studio/{strategy_id}/runs/latest/folds")

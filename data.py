@@ -1959,6 +1959,63 @@ def load_external_bars(
     return df
 
 
+def coverage_range(
+    source: str,
+    *,
+    symbol: str = "",
+    category: str = "linear",
+    interval: str = "",
+    ticker: str = "",
+    granularity: str = "",
+    instrument_id: str = "",
+) -> dict | None:
+    """Cached-data coverage of ONE bar series → ``{"start","end"}`` ISO dates.
+
+    Backs the date pickers' "MAX" button: a cheap single-cell lookup — bybit/
+    index read the pandas cache's parquet FOOTER stats, the external catalog
+    reads date ranges from parquet FILENAMES; no bars are decoded. Coverage =
+    what is already cached/ingested for that series (Bybit's exchange history
+    can extend further back; ``load_bybit_bars`` backfills on demand when an
+    explicit earlier start is requested). ``None`` → nothing cached yet.
+    """
+    first: str | None = None
+    last: str | None = None
+    if source == "bybit" and symbol and interval:
+        stats = _read_parquet_stats(_bybit_cache_path(category, symbol, interval))
+        if stats and stats["first"]:
+            first, last = stats["first"], stats["last"]
+    elif source == "index" and ticker and granularity:
+        safe = _ticker_to_filename(ticker)
+        stats = _read_parquet_stats(INDEX_CACHE_DIR / f"{safe}_{granularity}.parquet")
+        if stats and stats["first"]:
+            first, last = stats["first"], stats["last"]
+    elif source == "external" and instrument_id and granularity:
+        # BarType directory: {instrument}-{step}-{AGG}-{price}-{source}; the
+        # "1-HOUR" style granularity is exactly the {step}-{AGG} infix. File
+        # names carry the range: <startNs…Z>_<endNs…Z>.parquet (both sortable).
+        prefix = f"{instrument_id}-{granularity}-"
+        for root in EXTERNAL_CATALOGS:
+            bar_dir = root / "data" / "bar"
+            if not bar_dir.exists():
+                continue
+            for d in bar_dir.iterdir():
+                if not d.is_dir() or not d.name.startswith(prefix):
+                    continue
+                files = sorted(p.name for p in d.glob("*.parquet"))
+                if not files:
+                    continue
+                f0 = files[0].split("_")[0]
+                l0 = files[-1].split("_")[1].replace(".parquet", "")
+                if f0 and (first is None or f0 < first):
+                    first = f0
+                if l0 and (last is None or l0 > last):
+                    last = l0
+    if not first or not last:
+        return None
+    # ISO timestamps and catalog filename stamps both lead with YYYY-MM-DD.
+    return {"start": str(first)[:10], "end": str(last)[:10]}
+
+
 def list_catalog(
     index_query: str | None = None,
     index_limit: int | None = 50,

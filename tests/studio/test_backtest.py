@@ -70,7 +70,7 @@ def test_engine_failure_marks_run_failed(client, monkeypatch):
     from web.routes import strategy_studio as main
 
     class Boom:
-        def run(self, compiled):
+        def run(self, compiled, **kw):
             raise RuntimeError("engine exploded")
 
     monkeypatch.setattr(main, "ADAPTER", Boom())

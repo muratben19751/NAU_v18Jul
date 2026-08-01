@@ -114,6 +114,13 @@
         <label class="field">End
           <input type="date" id="sw-end">
         </label>
+        <button type="button" class="btn btn-max"
+                title="Önbellekteki tüm veri aralığını doldur"
+                onclick="nlMaxRange(this, {source:'bybit',
+                  symbol: (document.getElementById('sw-symbol')||{}).value || 'BTCUSDT',
+                  category: 'linear',
+                  interval: (document.querySelector('.sw-quick.active')||{dataset:{}}).dataset.swInterval || '60'},
+                  '#sw-start', '#sw-end')">MAX</button>
       </div>
     </details>
 

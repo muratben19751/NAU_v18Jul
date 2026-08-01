@@ -2392,3 +2392,19 @@ body.page-builder .content {
   flex-direction: column;
   overflow: hidden;
 }
+
+/* MAX date-range filler button (all backtest surfaces' date pairs) */
+.btn-max {
+  font-size: 10px;
+  font-family: var(--mono);
+  letter-spacing: 0.06em;
+  padding: 6px 10px;
+  align-self: flex-end;
+  border: 1px solid var(--bg-700);
+  color: var(--accent);
+  background: transparent;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.btn-max:hover { border-color: var(--accent); background: var(--accent-soft, rgba(74,158,255,.12)); }
+.btn-max:disabled { opacity: .55; cursor: wait; }

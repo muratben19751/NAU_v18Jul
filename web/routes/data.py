@@ -53,6 +53,38 @@ def _template_ctx(request, **extra):
     return ctx
 
 
+@router.get("/range")
+async def coverage(
+    source: str = Query(...),
+    symbol: str = Query(default=""),
+    category: str = Query(default="linear"),
+    interval: str = Query(default=""),
+    ticker: str = Query(default=""),
+    granularity: str = Query(default=""),
+    instrument_id: str = Query(default=""),
+):
+    """Cached coverage of one bar series — the date pickers' MAX button.
+
+    Returns {"start": "YYYY-MM-DD", "end": "YYYY-MM-DD"}; 404 when nothing is
+    cached/ingested for the requested series (the button shows "no data").
+    """
+    from data import coverage_range
+
+    rng = await asyncio.to_thread(
+        coverage_range,
+        source,
+        symbol=symbol.strip().upper(),
+        category=category,
+        interval=interval,
+        ticker=ticker.strip(),
+        granularity=granularity,
+        instrument_id=instrument_id.strip(),
+    )
+    if rng is None:
+        raise HTTPException(404, "no cached data for this series")
+    return rng
+
+
 @router.get("", response_class=HTMLResponse)
 async def page(
     request: Request,
