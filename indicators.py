@@ -449,6 +449,3 @@ def calc_wave_trend(
         "overbought": wt1 > 60,
         "oversold": wt1 < -60,
     }
-
-
-

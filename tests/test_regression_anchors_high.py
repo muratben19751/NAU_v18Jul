@@ -53,7 +53,9 @@ class TestWfoAggregateScorer:
         from backtest_robustness import wfo_aggregate
 
         r = wfo_aggregate(self._windows())
-        assert r["oos_sharpe_penalized"] == 1.5  # mean - 0.5·std (M28 dispersion penalty)
+        assert (
+            r["oos_sharpe_penalized"] == 1.5
+        )  # mean - 0.5·std (M28 dispersion penalty)
         assert r["wfo_efficiency"] == 1.0  # OOS/IS efficiency
         assert r["param_cv"] == {"fast": 0.091, "slow": 0.6}  # std/|mean|
         assert r["unstable_params"] == ["slow"]  # cv>0.5 branch
@@ -123,7 +125,9 @@ class TestSharpePerTradeAlignment:
         )
         v = objective_value(res, "sharpe")
         conf = 100 / (100 + WFO_TRADE_CONF_K)
-        assert v == pytest.approx(2.0 * conf)  # if it were 8.0*conf it would be annualized
+        assert v == pytest.approx(
+            2.0 * conf
+        )  # if it were 8.0*conf it would be annualized
 
     def test_score_uses_per_trade_sharpe(self):
         import math
@@ -371,7 +375,9 @@ class TestStrategyRegistryPins:
         )
         assert res.error is None, res.error
         m = res.metrics
-        assert m["n_trades"] == 11  # H7: RSI*100 rescale — changes if scale is corrupted
+        assert (
+            m["n_trades"] == 11
+        )  # H7: RSI*100 rescale — changes if scale is corrupted
         assert m["pnl"] == pytest.approx(-0.13661076, rel=1e-6)
         assert m["sharpe"] == pytest.approx(-2.0041147573630287, rel=1e-6)
 

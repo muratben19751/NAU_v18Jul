@@ -78,7 +78,9 @@ class TestCodegateRejectionMatrix:
 
         with pytest.raises(GeneratedCodeError) as exc:
             validate_generated_code(src)
-        assert needle in str(exc.value), f"expected rejection reason missing: {exc.value!r}"
+        assert needle in str(exc.value), (
+            f"expected rejection reason missing: {exc.value!r}"
+        )
 
     def test_the_classic_rce_chain_is_blocked(self):
         from codegate import GeneratedCodeError, validate_generated_code
@@ -242,7 +244,9 @@ class TestComputeQty:
         # Fewer than span+1 closes → calc_ewma_vol None → fixed trade_size.
         assert (
             self._qty(
-                _qty_self("vol_target", trade_size=0.1, vol_span=10, closes=[100.0] * 3),
+                _qty_self(
+                    "vol_target", trade_size=0.1, vol_span=10, closes=[100.0] * 3
+                ),
                 50_000.0,
             )
             == 0.1

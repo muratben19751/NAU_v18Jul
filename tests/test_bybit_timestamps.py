@@ -120,9 +120,7 @@ class TestIngestionStaysOpenTime:
         # Bybit fetch now goes through a thread-local requests.Session
         # (_get_bybit_session().get), so patch the session's get, not the
         # module-level requests.get.
-        monkeypatch.setattr(
-            data._get_bybit_session(), "get", lambda *a, **k: _Resp()
-        )
+        monkeypatch.setattr(data._get_bybit_session(), "get", lambda *a, **k: _Resp())
         df = data._fetch_bybit_page("linear", "BTCUSDT", "1", 0, 1)
         assert not df.empty
         # Index is the raw open time, un-shifted.

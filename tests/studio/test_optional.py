@@ -1,4 +1,3 @@
-
 import pytest
 from fastapi.testclient import TestClient
 
@@ -13,6 +12,7 @@ def client(tmp_path, monkeypatch):
     from server import app as _host
     from strategy_studio.store import StrategyStore
     from web.routes import strategy_studio as main
+
     store = StrategyStore(tmp_path / "t.db")
     store.save(build_fixture())
     store.save(build_engine_fixture())
@@ -24,10 +24,11 @@ def client(tmp_path, monkeypatch):
 
 # ── 1 · regime substrategy ───────────────────────────────────────
 
+
 def test_else_toggle_seeds_compilable_substrategy(client):
     from strategy_studio.compiler import compile_strategy
-    r = client.patch(f"/studio/{SID}/blocks/regime",
-                     data={"else_mode": "substrategy"})
+
+    r = client.patch(f"/studio/{SID}/blocks/regime", data={"else_mode": "substrategy"})
     assert r.status_code == 200
     assert "SUB · ENTRY" in r.text and "Mean-revert in chop" in r.text
     d = client.store.load_draft(SID)
@@ -39,35 +40,35 @@ def test_else_toggle_seeds_compilable_substrategy(client):
 
 
 def test_else_toggle_back_preserves_substrategy(client):
-    client.patch(f"/studio/{SID}/blocks/regime",
-                 data={"else_mode": "substrategy"})
+    client.patch(f"/studio/{SID}/blocks/regime", data={"else_mode": "substrategy"})
     client.patch(f"/studio/{SID}/blocks/regime", data={"else_mode": "flat"})
     d = client.store.load_draft(SID)
     assert d.regime.else_ == "flat"
-    assert d.regime.substrategy is not None      # kept for re-enable
+    assert d.regime.substrategy is not None  # kept for re-enable
     from strategy_studio.compiler import compile_strategy
+
     assert "else_strategy" not in compile_strategy(d).regime
 
 
 def test_sub_rules_editable_via_same_endpoints(client):
-    client.patch(f"/studio/{SID}/blocks/regime",
-                 data={"else_mode": "substrategy"})
-    r = client.post(f"/studio/{SID}/blocks/sub_entry/rules",
-                    data={"indicator": "stochrsi"})
+    client.patch(f"/studio/{SID}/blocks/regime", data={"else_mode": "substrategy"})
+    r = client.post(
+        f"/studio/{SID}/blocks/sub_entry/rules", data={"indicator": "stochrsi"}
+    )
     assert r.status_code == 200
     d = client.store.load_draft(SID)
     assert d.regime.substrategy.entry.rules[-1].indicator == "stochrsi"
     rid = d.regime.substrategy.entry.rules[0].id
-    r2 = client.patch(f"/studio/{SID}/rules/{rid}",
-                      data={"param": "len", "value": "21"})
+    r2 = client.patch(
+        f"/studio/{SID}/rules/{rid}", data={"param": "len", "value": "21"}
+    )
     assert r2.status_code == 200
     d2 = client.store.load_draft(SID)
     assert d2.regime.substrategy.entry.rules[0].params["len"].value == 21
 
 
 def test_substrategy_empty_entry_blocks_backtest(client):
-    client.patch(f"/studio/{SID}/blocks/regime",
-                 data={"else_mode": "substrategy"})
+    client.patch(f"/studio/{SID}/blocks/regime", data={"else_mode": "substrategy"})
     d = client.store.load_draft(SID)
     d.regime.substrategy.entry.rules.clear()
     client.store.save_draft(d)
@@ -77,39 +78,49 @@ def test_substrategy_empty_entry_blocks_backtest(client):
 
 
 def test_sub_params_join_the_sweep(client):
-    client.patch(f"/studio/{SID}/blocks/regime",
-                 data={"else_mode": "substrategy"})
+    client.patch(f"/studio/{SID}/blocks/regime", data={"else_mode": "substrategy"})
     d = client.store.load_draft(SID)
     rid = d.regime.substrategy.entry.rules[0].id
-    r = client.patch(f"/studio/{SID}/opt/toggle",
-                     data={"owner": rid, "param": "len"})
+    r = client.patch(f"/studio/{SID}/opt/toggle", data={"owner": rid, "param": "len"})
     assert r.status_code == 200
     d2 = client.store.load_draft(SID)
-    assert any(b == "sub_entry" and n == "len"
-               for b, _r, n, _p in d2.optimized_params())
+    assert any(
+        b == "sub_entry" and n == "len" for b, _r, n, _p in d2.optimized_params()
+    )
 
 
 # ── 2 · allocation block ─────────────────────────────────────────
 
+
 def test_allocation_ranked_flow(client):
-    for name, value in [("mode", "ranked"), ("sort_indicator", "adx"),
-                        ("top_n", "2"), ("weighting", "inverse_volatility"),
-                        ("rebalance", "weekly")]:
-        r = client.patch(f"/studio/{SID}/allocation",
-                         data={"name": name, "value": value})
+    for name, value in [
+        ("mode", "ranked"),
+        ("sort_indicator", "adx"),
+        ("top_n", "2"),
+        ("weighting", "inverse_volatility"),
+        ("rebalance", "weekly"),
+    ]:
+        r = client.patch(
+            f"/studio/{SID}/allocation", data={"name": name, "value": value}
+        )
         assert r.status_code == 200, name
     d = client.store.load_draft(SID)
     a = d.allocation
-    assert (a.mode, a.sort_indicator, a.top_n, a.weighting, a.rebalance) == \
-        ("ranked", "adx", 2, "inverse_volatility", "weekly")
+    assert (a.mode, a.sort_indicator, a.top_n, a.weighting, a.rebalance) == (
+        "ranked",
+        "adx",
+        2,
+        "inverse_volatility",
+        "weekly",
+    )
 
 
 def test_allocation_validation(client):
-    r = client.patch(f"/studio/{SID}/allocation",
-                     data={"name": "sort_indicator", "value": "hokus"})
+    r = client.patch(
+        f"/studio/{SID}/allocation", data={"name": "sort_indicator", "value": "hokus"}
+    )
     assert r.status_code == 422
-    r2 = client.patch(f"/studio/{SID}/allocation",
-                      data={"name": "top_n", "value": "0"})
+    r2 = client.patch(f"/studio/{SID}/allocation", data={"name": "top_n", "value": "0"})
     assert r2.status_code == 422
 
 
@@ -133,8 +144,9 @@ def test_ranked_allocation_is_refused_at_deploy_not_filed_into_the_artifact(clie
     client.post(f"/studio/{EID}/save")
     client.post(f"/studio/{EID}/backtest")
 
-    r = client.post(f"/studio/{EID}/deploy",
-                    data={"environment": "paper", "kill_switch": "off"})
+    r = client.post(
+        f"/studio/{EID}/deploy", data={"environment": "paper", "kill_switch": "off"}
+    )
 
     assert r.status_code == 422 and "allocation" in r.text
     assert client.store.latest_deployment(EID) is None
@@ -142,15 +154,17 @@ def test_ranked_allocation_is_refused_at_deploy_not_filed_into_the_artifact(clie
 
 # ── 4 · deployment lifecycle ─────────────────────────────────────
 
+
 def _deploy(client):
     client.post(f"/studio/{EID}/backtest")
-    client.post(f"/studio/{EID}/deploy",
-                data={"environment": "paper", "kill_switch": "off"})
+    client.post(
+        f"/studio/{EID}/deploy", data={"environment": "paper", "kill_switch": "off"}
+    )
     return client.store.latest_deployment(EID)
 
 
 def test_stub_runner_picks_up(client):
-    dep = _deploy(client)   # bg task ran after response in TestClient
+    dep = _deploy(client)  # bg task ran after response in TestClient
     assert dep["status"] == "running"
 
 

@@ -22,6 +22,7 @@ Wiki References
 ---------------
 Bkz: [[strategy_studio]], [[environment_contexts]]
 """
+
 from __future__ import annotations
 
 import json
@@ -46,35 +47,38 @@ class DeployBlocked(Exception):
 
 @dataclass
 class DeployConfig:
-    environment: str                  # paper | live
-    instruments: str                  # active | all
+    environment: str  # paper | live
+    instruments: str  # active | all
     capital: float
     kill_switch_daily_pct: float | None
     gate_enabled: bool
     gate_min_objective: float
 
 
-def check_gate(defn: StrategyDefinition,
-               latest_metrics: BacktestMetrics | None,
-               cfg: DeployConfig) -> None:
+def check_gate(
+    defn: StrategyDefinition, latest_metrics: BacktestMetrics | None, cfg: DeployConfig
+) -> None:
     """Server-side deployment gate — not just UI."""
     if not cfg.gate_enabled:
         return
     if latest_metrics is None:
         raise DeployBlocked(
-            "deployment gate: no completed walk-forward run to evaluate")
+            "deployment gate: no completed walk-forward run to evaluate"
+        )
     objective = defn.walkforward.objective
-    value = {"sharpe": latest_metrics.sharpe,
-             "max_dd": latest_metrics.max_dd_pct}.get(
-        objective, latest_metrics.dsr)
+    value = {"sharpe": latest_metrics.sharpe, "max_dd": latest_metrics.max_dd_pct}.get(
+        objective, latest_metrics.dsr
+    )
     if value < cfg.gate_min_objective:
         raise DeployBlocked(
             f"deployment gate: OOS {objective.upper()} {value:.2f} "
-            f"below required {cfg.gate_min_objective:.2f}")
+            f"below required {cfg.gate_min_objective:.2f}"
+        )
 
 
-def artifact_instruments(defn: StrategyDefinition, compiled: CompiledStrategy,
-                         cfg: DeployConfig) -> list[dict[str, str]]:
+def artifact_instruments(
+    defn: StrategyDefinition, compiled: CompiledStrategy, cfg: DeployConfig
+) -> list[dict[str, str]]:
     """The instruments the runner should trade, per ``cfg.instruments``.
 
     ``compile_strategy`` already narrows to the active ones, so 'active' takes
@@ -84,17 +88,20 @@ def artifact_instruments(defn: StrategyDefinition, compiled: CompiledStrategy,
     "all", so a runner reading both saw a contradiction.
     """
     if cfg.instruments == "all":
-        return [{"symbol": i.symbol, "timeframe": i.timeframe}
-                for i in defn.instruments]
+        return [
+            {"symbol": i.symbol, "timeframe": i.timeframe} for i in defn.instruments
+        ]
     if cfg.instruments != "active":
         raise DeployBlocked(
             f"unknown instrument selection '{cfg.instruments}' "
-            "(expected 'active' or 'all')")
+            "(expected 'active' or 'all')"
+        )
     return compiled.instruments
 
 
-def build_artifact(defn: StrategyDefinition, compiled: CompiledStrategy,
-                   cfg: DeployConfig) -> str:
+def build_artifact(
+    defn: StrategyDefinition, compiled: CompiledStrategy, cfg: DeployConfig
+) -> str:
     """The JSON document a runner consumes — runnable, not a description.
 
     ``spec`` is a serialized ``ComposedStrategySpec``: feed it through
@@ -108,25 +115,28 @@ def build_artifact(defn: StrategyDefinition, compiled: CompiledStrategy,
             block, …) — with every reason listed.
     """
     spec = to_nautilus(compiled, initial_capital=cfg.capital)
-    return json.dumps({
-        "artifact_schema": ARTIFACT_SCHEMA,
-        "strategy_id": defn.id,
-        "version": defn.version,
-        "environment": cfg.environment,
-        "capital": cfg.capital,
-        "kill_switch_daily_pct": cfg.kill_switch_daily_pct,
-        "instruments": artifact_instruments(defn, compiled, cfg),
-        "risk": compiled.risk,
-        "spec": spec.to_dict(),
-        "config": asdict(cfg),
-    }, indent=2)
+    return json.dumps(
+        {
+            "artifact_schema": ARTIFACT_SCHEMA,
+            "strategy_id": defn.id,
+            "version": defn.version,
+            "environment": cfg.environment,
+            "capital": cfg.capital,
+            "kill_switch_daily_pct": cfg.kill_switch_daily_pct,
+            "instruments": artifact_instruments(defn, compiled, cfg),
+            "risk": compiled.risk,
+            "spec": spec.to_dict(),
+            "config": asdict(cfg),
+        },
+        indent=2,
+    )
 
 
-def prepare_deployment(defn: StrategyDefinition,
-                       latest_metrics: BacktestMetrics | None,
-                       cfg: DeployConfig) -> str:
+def prepare_deployment(
+    defn: StrategyDefinition, latest_metrics: BacktestMetrics | None, cfg: DeployConfig
+) -> str:
     if cfg.environment not in ("paper", "live"):
         raise DeployBlocked(f"unknown environment '{cfg.environment}'")
     check_gate(defn, latest_metrics, cfg)
-    compiled = compile_strategy(defn)   # SAVED version, never the draft
+    compiled = compile_strategy(defn)  # SAVED version, never the draft
     return build_artifact(defn, compiled, cfg)

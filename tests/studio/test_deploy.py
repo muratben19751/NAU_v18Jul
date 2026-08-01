@@ -18,6 +18,7 @@ def client(tmp_path, monkeypatch):
     from server import app as _host
     from strategy_studio.store import StrategyStore
     from web.routes import strategy_studio as main
+
     store = StrategyStore(tmp_path / "t.db")
     store.save(build_fixture())
     store.save(build_engine_fixture())
@@ -30,6 +31,7 @@ def client(tmp_path, monkeypatch):
 def _run_backtest(client, sid=SID):
     client.post(f"/studio/{sid}/backtest")
     from strategy_studio.backtest import BacktestMetrics
+
     return BacktestMetrics.from_json(client.store.latest_run(sid)["metrics"])
 
 
@@ -48,27 +50,39 @@ def test_modal_warns_about_draft(client):
 
 
 def test_gate_blocks_without_run(client):
-    r = client.post(f"/studio/{SID}/deploy",
-                    data={"environment": "paper", "gate_enabled": "true",
-                          "gate_min": "0.8"})
+    r = client.post(
+        f"/studio/{SID}/deploy",
+        data={"environment": "paper", "gate_enabled": "true", "gate_min": "0.8"},
+    )
     assert r.status_code == 422 and "no completed walk-forward run" in r.text
 
 
 def test_gate_blocks_low_dsr(client):
     m = _run_backtest(client)
-    r = client.post(f"/studio/{SID}/deploy",
-                    data={"environment": "paper", "gate_enabled": "true",
-                          "gate_min": str(m.dsr + 0.05)})
+    r = client.post(
+        f"/studio/{SID}/deploy",
+        data={
+            "environment": "paper",
+            "gate_enabled": "true",
+            "gate_min": str(m.dsr + 0.05),
+        },
+    )
     assert r.status_code == 422 and "below required" in r.text
     assert client.store.latest_deployment(SID) is None
 
 
 def test_paper_deploy_creates_record_and_artifact(client):
     m = _run_backtest(client, EID)
-    r = client.post(f"/studio/{EID}/deploy",
-                    data={"environment": "paper", "gate_enabled": "true",
-                          "gate_min": str(max(0.0, m.dsr - 0.05)),
-                          "capital": "25000", "kill_switch": "3"})
+    r = client.post(
+        f"/studio/{EID}/deploy",
+        data={
+            "environment": "paper",
+            "gate_enabled": "true",
+            "gate_min": str(max(0.0, m.dsr - 0.05)),
+            "capital": "25000",
+            "kill_switch": "3",
+        },
+    )
     assert r.status_code == 200 and "pending runner pickup" in r.text
     dep = client.store.latest_deployment(EID)
     # stub runner picked it up in the background task after the response
@@ -85,14 +99,15 @@ def test_the_artifact_is_something_a_runner_can_actually_execute(client):
     from composer import ComposedStrategySpec
 
     _run_backtest(client, EID)
-    client.post(f"/studio/{EID}/deploy",
-                data={"environment": "paper", "capital": "25000"})
+    client.post(
+        f"/studio/{EID}/deploy", data={"environment": "paper", "capital": "25000"}
+    )
     art = json.loads(client.store.latest_deployment(EID)["config"])
 
     spec = ComposedStrategySpec.from_dict(art["spec"])
     assert spec.validate() is None, spec.validate()
-    assert [b.type for b in spec.blocks]          # the rules survived lowering
-    assert spec.trade_size_capital == 25000       # deploy capital, not default
+    assert [b.type for b in spec.blocks]  # the rules survived lowering
+    assert spec.trade_size_capital == 25000  # deploy capital, not default
     # The spec is instrument-free by design, so the runner needs the pairing.
     assert art["instruments"] == [{"symbol": "BTCUSDT", "timeframe": "1h"}]
     assert art["artifact_schema"] >= 2
@@ -103,8 +118,9 @@ def test_a_strategy_no_runner_can_execute_is_refused_with_its_reasons(client):
     deployment for it would file an artifact that fails later, on the runner,
     detached from the click that caused it."""
     _run_backtest(client)
-    r = client.post(f"/studio/{SID}/deploy",
-                    data={"environment": "paper", "kill_switch": "off"})
+    r = client.post(
+        f"/studio/{SID}/deploy", data={"environment": "paper", "kill_switch": "off"}
+    )
 
     assert r.status_code == 422
     assert "cannot deploy" in r.text
@@ -118,14 +134,19 @@ def test_instruments_all_is_honoured_instead_of_contradicting_the_config(client)
 
     defn = client.store.load(EID)
     defn.instruments.append(
-        InstrumentConfig(symbol="ETHUSDT", timeframe="1h", active=False))
+        InstrumentConfig(symbol="ETHUSDT", timeframe="1h", active=False)
+    )
     client.store.save(defn)
     _run_backtest(client, EID)
 
-    for selection, expected in (("active", ["BTCUSDT"]),
-                                ("all", ["BTCUSDT", "ETHUSDT"])):
-        client.post(f"/studio/{EID}/deploy",
-                    data={"environment": "paper", "instruments": selection})
+    for selection, expected in (
+        ("active", ["BTCUSDT"]),
+        ("all", ["BTCUSDT", "ETHUSDT"]),
+    ):
+        client.post(
+            f"/studio/{EID}/deploy",
+            data={"environment": "paper", "instruments": selection},
+        )
         art = json.loads(client.store.latest_deployment(EID)["config"])
         assert [i["symbol"] for i in art["instruments"]] == expected, selection
         assert art["config"]["instruments"] == selection
@@ -133,23 +154,25 @@ def test_instruments_all_is_honoured_instead_of_contradicting_the_config(client)
 
 def test_deploy_ignores_draft_uses_saved(client):
     _run_backtest(client, EID)
-    client.patch(f"/studio/{EID}/risk",
-                 data={"name": "take_profit_r", "value": "3.3"})
-    client.post(f"/studio/{EID}/deploy",
-                data={"environment": "paper", "kill_switch": "off"})
+    client.patch(f"/studio/{EID}/risk", data={"name": "take_profit_r", "value": "3.3"})
+    client.post(
+        f"/studio/{EID}/deploy", data={"environment": "paper", "kill_switch": "off"}
+    )
     art = json.loads(client.store.latest_deployment(EID)["config"])
-    assert art["risk"]["take_profit_r"] == 1.5    # saved v1 value, not 3.3
+    assert art["risk"]["take_profit_r"] == 1.5  # saved v1 value, not 3.3
     assert art["kill_switch_daily_pct"] is None
 
 
 def test_live_requires_name_confirmation(client):
     _run_backtest(client, EID)
-    r = client.post(f"/studio/{EID}/deploy",
-                    data={"environment": "live",
-                          "confirm_name": "wrong name"})
+    r = client.post(
+        f"/studio/{EID}/deploy",
+        data={"environment": "live", "confirm_name": "wrong name"},
+    )
     assert r.status_code == 422 and "exact strategy name" in r.text
-    r2 = client.post(f"/studio/{EID}/deploy",
-                     data={"environment": "live", "confirm_name": ENAME})
+    r2 = client.post(
+        f"/studio/{EID}/deploy", data={"environment": "live", "confirm_name": ENAME}
+    )
     assert r2.status_code == 200
     assert client.store.latest_deployment(EID)["environment"] == "live"
 

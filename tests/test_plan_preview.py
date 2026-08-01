@@ -25,7 +25,11 @@ def _breakdown(entry_logic="OR", n_entry=2):
     # third entry for 3+ AND test
     while len(conds) < n_entry:
         conds.append(
-            {"role": "entry", "label": f"Condition {len(conds)}", "desc": "extra RSI filter"}
+            {
+                "role": "entry",
+                "label": f"Condition {len(conds)}",
+                "desc": "extra RSI filter",
+            }
         )
     conds.append({"role": "exit", "label": "ATR stop", "desc": "3x ATR"})
 
@@ -62,7 +66,9 @@ class TestPlanPreview:
         monkeypatch.setattr(agent, "propose_condition_breakdown", _breakdown())
         r = _client().post(
             "/backtest/plan",
-            data={"description": "RSI 30 altında ve hacim 2x iken al, ATR stop ile çık"},
+            data={
+                "description": "RSI 30 altında ve hacim 2x iken al, ATR stop ile çık"
+            },
         )
         assert r.status_code == 200
         assert "Plan önizleme" in r.text
@@ -74,7 +80,9 @@ class TestPlanPreview:
         import agent
 
         monkeypatch.setattr(
-            agent, "propose_condition_breakdown", _breakdown(entry_logic="AND", n_entry=3)
+            agent,
+            "propose_condition_breakdown",
+            _breakdown(entry_logic="AND", n_entry=3),
         )
         r = _client().post(
             "/backtest/plan",
@@ -151,9 +159,11 @@ class TestPlanPreview:
         monkeypatch.setattr(agent, "propose_condition_breakdown", _breakdown())
         r = _client().post(
             "/backtest/plan",
-            data={"description": "üst bantta short/sat, alt bantta al", "allow_short": "on"},
+            data={
+                "description": "üst bantta short/sat, alt bantta al",
+                "allow_short": "on",
+            },
         )
         assert r.status_code == 200
         # With shorts enabled, the short/MARGIN warning must not appear.
         assert "MARGIN" not in r.text
-

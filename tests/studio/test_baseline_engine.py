@@ -44,12 +44,15 @@ class _TrialEngine:
 
 
 def _sugg():
-    return json.dumps({
-        "kind": "modify_risk", "block": "risk",
-        "diff": {"name": "take_profit_r", "value": 2.2},
-        "rationale": "tighten TP",
-        "expected": {"dsr_delta": 0.05},
-    })
+    return json.dumps(
+        {
+            "kind": "modify_risk",
+            "block": "risk",
+            "diff": {"name": "take_profit_r", "value": 2.2},
+            "rationale": "tighten TP",
+            "expected": {"dsr_delta": 0.05},
+        }
+    )
 
 
 @pytest.fixture()
@@ -87,8 +90,7 @@ def test_trial_baseline_comes_from_the_trial_engine_not_the_stored_run(client):
     row = client.store.pending_suggestions(SID)[0]
     baseline = BacktestMetrics.from_json(row["baseline"])
     assert baseline.sharpe == TRIAL_ENGINE, (
-        "baseline was read from the recorded run instead of measured on "
-        "TRIAL_ADAPTER"
+        "baseline was read from the recorded run instead of measured on TRIAL_ADAPTER"
     )
     assert baseline.sharpe != RECORDED
 

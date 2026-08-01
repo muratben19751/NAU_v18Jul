@@ -81,7 +81,11 @@ class TestRobustnessLogIdentity:
         monkeypatch.setattr(rp, "ROBUSTNESS_LOG", log)
         idx = rp._load_robustness_index()
         assert idx["old1"]["spec_name"] == "Old"
-        assert ("old1", "", "") not in idx  # no composite key produced for empty identity
+        assert (
+            "old1",
+            "",
+            "",
+        ) not in idx  # no composite key produced for empty identity
 
 
 class TestLogRotation:

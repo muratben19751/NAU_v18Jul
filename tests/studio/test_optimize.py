@@ -12,6 +12,7 @@ def client(tmp_path, monkeypatch):
     from server import app as _host
     from strategy_studio.store import StrategyStore
     from web.routes import strategy_studio as main
+
     store = StrategyStore(tmp_path / "t.db")
     store.save(build_fixture())
     monkeypatch.setattr(main, "store", store)
@@ -27,6 +28,7 @@ def _tiny_sweep(client):
         p.optimize = None
     wt = d.entry.rules[0]
     from strategy_studio.schema import OptimizeRange
+
     wt.params["n1"].optimize = OptimizeRange(min=8, step=2, max=12)
     d.risk.take_profit_r.optimize = OptimizeRange(min=1.4, step=0.2, max=2.0)
     client.store.save_draft(d)
@@ -36,21 +38,20 @@ def _tiny_sweep(client):
 def test_toggle_optimize_roundtrip(client):
     d, _ = client.store.working_copy(SID)
     wt = d.entry.rules[0]
-    r = client.patch(f"/studio/{SID}/opt/toggle",
-                     data={"owner": wt.id, "param": "n1"})
+    r = client.patch(f"/studio/{SID}/opt/toggle", data={"owner": wt.id, "param": "n1"})
     assert r.status_code == 200
-    assert 'hx-swap-oob="true"' in r.text          # block refreshed oob
+    assert 'hx-swap-oob="true"' in r.text  # block refreshed oob
     d2 = client.store.load_draft(SID)
     assert d2.entry.rules[0].params["n1"].optimize is None  # was on -> off
-    client.patch(f"/studio/{SID}/opt/toggle",
-                 data={"owner": wt.id, "param": "n1"})
+    client.patch(f"/studio/{SID}/opt/toggle", data={"owner": wt.id, "param": "n1"})
     d3 = client.store.load_draft(SID)
     assert d3.entry.rules[0].params["n1"].optimize is not None  # default range
 
 
 def test_toggle_risk_param(client):
-    client.patch(f"/studio/{SID}/opt/toggle",
-                 data={"owner": "risk", "param": "max_concurrent"})
+    client.patch(
+        f"/studio/{SID}/opt/toggle", data={"owner": "risk", "param": "max_concurrent"}
+    )
     d = client.store.load_draft(SID)
     assert d.risk.max_concurrent.optimize is not None
 
@@ -58,16 +59,18 @@ def test_toggle_risk_param(client):
 def test_range_edit_and_validation(client):
     d, _ = client.store.working_copy(SID)
     wt = d.entry.rules[0]
-    r = client.patch(f"/studio/{SID}/opt/range",
-                     data={"owner": wt.id, "param": "n1",
-                           "min": "4", "step": "1", "max": "10"})
+    r = client.patch(
+        f"/studio/{SID}/opt/range",
+        data={"owner": wt.id, "param": "n1", "min": "4", "step": "1", "max": "10"},
+    )
     assert r.status_code == 200
     d2 = client.store.load_draft(SID)
     opt = d2.entry.rules[0].params["n1"].optimize
     assert (opt.min, opt.step, opt.max) == (4, 1, 10)
-    bad = client.patch(f"/studio/{SID}/opt/range",
-                       data={"owner": wt.id, "param": "n1",
-                             "min": "10", "step": "1", "max": "4"})
+    bad = client.patch(
+        f"/studio/{SID}/opt/range",
+        data={"owner": wt.id, "param": "n1", "min": "10", "step": "1", "max": "4"},
+    )
     assert bad.status_code == 422
 
 
@@ -97,8 +100,8 @@ def test_panel_shows_what_the_ranking_and_the_dsr_actually_mean(client):
     client.post(f"/studio/{SID}/optimize")
     panel = client.get(f"/studio/{SID}/optimize/panel").text
 
-    assert "of sample" in panel                    # in-sample months → share
-    assert "DSR*" in panel and "trials" in panel    # deflated, and against what
+    assert "of sample" in panel  # in-sample months → share
+    assert "DSR*" in panel and "trials" in panel  # deflated, and against what
     assert "out-of-sample" in panel.lower()
 
 
@@ -122,7 +125,7 @@ def test_a_pre_walkforward_run_is_labelled_not_rendered_as_zeros(client):
 
     assert "predates walk-forward" in panel
     assert "0 folds" not in panel and "0 trials" not in panel
-    assert "APPLY" in panel                      # the params still apply
+    assert "APPLY" in panel  # the params still apply
 
 
 def test_optimize_no_params_422(client):
@@ -136,6 +139,7 @@ def test_optimize_no_params_422(client):
 
 def test_optimize_limit_422(client, monkeypatch):
     from web.routes import strategy_studio as main
+
     _tiny_sweep(client)
     monkeypatch.setattr(main, "OPTIMIZER_MAX_RUNS", 10)
     r = client.post(f"/studio/{SID}/optimize")

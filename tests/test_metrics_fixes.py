@@ -154,7 +154,9 @@ class TestIBEquityCommission:
         )
 
         assert isinstance(_fee_model_for(_make_bybit_instrument()), MakerTakerFeeModel)
-        assert isinstance(_fee_model_for(_make_index_instrument("QQQ")), IBFixedFeeModel)
+        assert isinstance(
+            _fee_model_for(_make_index_instrument("QQQ")), IBFixedFeeModel
+        )
 
     def test_ib_fixed_commission_math(self):
         """IB Fixed: max(per-share, min) then clamp with 1% cap."""

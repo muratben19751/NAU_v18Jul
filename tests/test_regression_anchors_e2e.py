@@ -215,7 +215,9 @@ class TestDeleteRangeFailureSkipsWrite:
             is None
         )
         assert fake.delete_called
-        assert fake.bar_writes == 0, "_auto_write must not write bars while delete failed"
+        assert fake.bar_writes == 0, (
+            "_auto_write must not write bars while delete failed"
+        )
 
 
 # ===========================================================================

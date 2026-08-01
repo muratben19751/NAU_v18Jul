@@ -25,9 +25,14 @@ from strategy_studio.runner import (
 def artifact() -> dict:
     from scripts.seed_studio import build_engine_fixture
 
-    cfg = DeployConfig(environment="paper", instruments="active",
-                       capital=25_000.0, kill_switch_daily_pct=3.0,
-                       gate_enabled=False, gate_min_objective=0.8)
+    cfg = DeployConfig(
+        environment="paper",
+        instruments="active",
+        capital=25_000.0,
+        kill_switch_daily_pct=3.0,
+        gate_enabled=False,
+        gate_min_objective=0.8,
+    )
     return json.loads(prepare_deployment(build_engine_fixture(), None, cfg))
 
 
@@ -88,7 +93,7 @@ def test_live_is_refused_rather_than_quietly_run_as_paper(artifact):
 
 def test_an_artifact_from_an_unknown_schema_is_refused(artifact):
     """A runner that guesses at missing fields runs a different strategy."""
-    artifact["artifact_schema"] = 1        # the counts-only shape
+    artifact["artifact_schema"] = 1  # the counts-only shape
 
     with pytest.raises(RunnerError, match="schema"):
         build_node_config(artifact, trader_id="STUDIO-TEST")
@@ -188,7 +193,7 @@ def test_a_node_that_refuses_to_build_fails_the_row_instead_of_raising(artifact)
         raise RuntimeError("venue handshake failed")
 
     runner, seen = _runner(node_factory=_explode)
-    runner.launch("dep002", artifact)   # must not raise
+    runner.launch("dep002", artifact)  # must not raise
 
     assert seen == [("dep002", "failed", "venue handshake failed")]
     assert not runner.is_running("dep002")
@@ -257,7 +262,7 @@ def test_rows_left_live_by_a_restart_are_reported_as_orphans():
     rows = [
         {"deploy_id": "a", "status": "running"},
         {"deploy_id": "b", "status": "paused"},
-        {"deploy_id": "c", "status": "running"},   # this one really is up
+        {"deploy_id": "c", "status": "running"},  # this one really is up
         {"deploy_id": "d", "status": "stopped"},
     ]
 
@@ -294,7 +299,8 @@ def test_a_deliberate_stop_is_not_reported_as_a_failure(artifact):
 
     _wait(lambda: not runner.is_running("dep007"))
     import time
-    time.sleep(0.2)   # give a stray status callback time to arrive
+
+    time.sleep(0.2)  # give a stray status callback time to arrive
     assert [s for _d, s, _e in seen] == ["running"]
 
 

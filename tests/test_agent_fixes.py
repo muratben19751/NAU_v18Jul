@@ -160,7 +160,9 @@ class TestContinuousCircuitBreaker:
             with ab._AGENT_LOCK:
                 ab._AGENT_PROGRESS.pop(rid, None)
 
-        assert calls["n"] == 3, f"should have stopped after 3 runs, ran {calls['n']} runs"
+        assert calls["n"] == 3, (
+            f"should have stopped after 3 runs, ran {calls['n']} runs"
+        )
         assert state.get("done") is True
         joined = " ".join(s["msg"] for s in state.get("steps", []))
         assert "consecutive" in joined, "circuit-breaker step should be logged"

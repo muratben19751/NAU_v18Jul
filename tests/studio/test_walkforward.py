@@ -164,8 +164,13 @@ def test_nautilus_adapter_slices_bars_and_applies_the_embargo(monkeypatch):
     n = 1000
     close = [100 + i * 0.05 for i in range(n)]
     bars = pd.DataFrame(
-        {"open": close, "high": close, "low": close, "close": close,
-         "volume": [10.0] * n},
+        {
+            "open": close,
+            "high": close,
+            "low": close,
+            "close": close,
+            "volume": [10.0] * n,
+        },
         index=pd.date_range("2025-01-01", periods=n, freq="h", tz="UTC"),
     )
     lengths: list[int] = []
@@ -173,8 +178,14 @@ def test_nautilus_adapter_slices_bars_and_applies_the_embargo(monkeypatch):
     class _Res:
         error = None
         equity_curve = [10_000.0, 10_100.0]
-        metrics = {"n_trades": 8, "win_rate": 0.5, "n_wins": 4, "n_losses": 4,
-                   "avg_win": 20.0, "avg_loss": -10.0}
+        metrics = {
+            "n_trades": 8,
+            "win_rate": 0.5,
+            "n_wins": 4,
+            "n_losses": 4,
+            "avg_win": 20.0,
+            "avg_loss": -10.0,
+        }
 
     def _fake(spec, b, recipe=None, **kw):
         lengths.append(len(b))
@@ -197,8 +208,13 @@ def test_a_window_too_thin_to_run_is_refused_not_silently_run(monkeypatch):
     from strategy_studio.backtest import NautilusBacktestAdapter
 
     bars = pd.DataFrame(
-        {"open": [1.0] * 100, "high": [1.0] * 100, "low": [1.0] * 100,
-         "close": [1.0] * 100, "volume": [1.0] * 100},
+        {
+            "open": [1.0] * 100,
+            "high": [1.0] * 100,
+            "low": [1.0] * 100,
+            "close": [1.0] * 100,
+            "volume": [1.0] * 100,
+        },
         index=pd.date_range("2025-01-01", periods=100, freq="h", tz="UTC"),
     )
     adapter = NautilusBacktestAdapter(bars_loader=lambda s, tf: bars)
@@ -219,8 +235,15 @@ def test_penalized_score_prefers_the_steady_candidate():
 
 
 def _m(**kw) -> BacktestMetrics:
-    base = dict(net_pnl_pct=1.0, sharpe=1.0, dsr=0.5, max_dd_pct=-5.0,
-                trades=100, win_rate_pct=50.0, profit_factor=1.2)
+    base = dict(
+        net_pnl_pct=1.0,
+        sharpe=1.0,
+        dsr=0.5,
+        max_dd_pct=-5.0,
+        trades=100,
+        win_rate_pct=50.0,
+        profit_factor=1.2,
+    )
     return BacktestMetrics(**{**base, **kw})
 
 
@@ -236,8 +259,8 @@ def test_expected_max_sharpe_grows_with_the_number_of_trials():
     few, many = expected_max_sharpe(0.1, 10), expected_max_sharpe(0.1, 1000)
 
     assert 0 < few < many
-    assert expected_max_sharpe(0.0, 500) == 0.0   # no spread, nothing to deflate
-    assert expected_max_sharpe(0.1, 1) == 0.0     # one trial is not a search
+    assert expected_max_sharpe(0.0, 500) == 0.0  # no spread, nothing to deflate
+    assert expected_max_sharpe(0.1, 1) == 0.0  # one trial is not a search
 
 
 def test_deflation_only_lowers_the_probability():
@@ -306,8 +329,15 @@ def test_the_grid_is_capped_and_the_cap_is_reported():
 
 def test_stored_results_from_an_older_build_still_rehydrate():
     """The panel rebuilds OptResult(**row) from JSON written before these fields."""
-    old = {"rank": 1, "params": {"r-rsi.len": 14.0}, "dsr": 0.4, "sharpe": 1.1,
-           "net_pnl_pct": 3.0, "max_dd_pct": -2.0, "trades": 40}
+    old = {
+        "rank": 1,
+        "params": {"r-rsi.len": 14.0},
+        "dsr": 0.4,
+        "sharpe": 1.1,
+        "net_pnl_pct": 3.0,
+        "max_dd_pct": -2.0,
+        "trades": 40,
+    }
 
     r = OptResult(**old)
 

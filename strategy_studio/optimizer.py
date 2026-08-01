@@ -41,6 +41,7 @@ Wiki References
 ---------------
 Bkz: [[strategy_studio]], [[backtesting_guide]]
 """
+
 from __future__ import annotations
 
 import itertools
@@ -87,7 +88,7 @@ class NoViableCandidates(Exception):
 @dataclass
 class OptResult:
     rank: int
-    params: dict[str, float]      # "<rule_id>.<name>" -> value
+    params: dict[str, float]  # "<rule_id>.<name>" -> value
     dsr: float
     sharpe: float
     net_pnl_pct: float
@@ -95,9 +96,9 @@ class OptResult:
     trades: int
     # Added after the stub: defaulted so opt runs stored by an older build
     # still rehydrate through OptResult(**row).
-    score: float = 0.0            # penalized walk-forward objective (ranking key)
-    folds_valid: int = 0          # out-of-sample folds that produced a score
-    trials: int = 0               # candidates evaluated — the DSR deflation N
+    score: float = 0.0  # penalized walk-forward objective (ranking key)
+    folds_valid: int = 0  # out-of-sample folds that produced a score
+    trials: int = 0  # candidates evaluated — the DSR deflation N
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -369,8 +370,13 @@ class WalkForwardOptimizer:
                 )
             )
 
-        self.last_run = {"grid": len(grid), "viable": len(viable),
-                         "scored": len(cands), "engine_runs": self._evals, **tally}
+        self.last_run = {
+            "grid": len(grid),
+            "viable": len(viable),
+            "scored": len(cands),
+            "engine_runs": self._evals,
+            **tally,
+        }
         if not cands:
             raise NoViableCandidates(
                 f"no candidate survived the walk-forward screen: {len(grid)} "
@@ -390,9 +396,7 @@ class WalkForwardOptimizer:
         trials = len(grid)
         sharpes = [c.step_sharpe for c in cands]
         mean_sr = sum(sharpes) / len(sharpes)
-        sigma_sr = math.sqrt(
-            sum((s - mean_sr) ** 2 for s in sharpes) / len(sharpes)
-        )
+        sigma_sr = math.sqrt(sum((s - mean_sr) ** 2 for s in sharpes) / len(sharpes))
         sr_star = expected_max_sharpe(sigma_sr, trials)
 
         cands.sort(key=lambda c: c.score, reverse=True)

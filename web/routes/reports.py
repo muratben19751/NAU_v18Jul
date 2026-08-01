@@ -588,7 +588,9 @@ async def detail(request: Request, ts: str):
             end=end,
         )
         if bars.empty:
-            raise RuntimeError("Data is not in the cache — fetch it from the Data page.")
+            raise RuntimeError(
+                "Data is not in the cache — fetch it from the Data page."
+            )
         return run_backtest_guarded(
             spec,
             bars,

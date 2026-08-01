@@ -18,5 +18,6 @@ def test_versioning_append_only(tmp_path):
 def test_load_missing_raises(tmp_path):
     store = StrategyStore(tmp_path / "t.db")
     import pytest
+
     with pytest.raises(KeyError):
         store.load("nope")

@@ -980,7 +980,9 @@ def run_insample_oos_split(
         label = "— (yetersiz veri)"
     else:
         score = round(oos_sharpe / in_sharpe, 2)
-        if score >= 0.5:  # 0.7→0.5: more realistic threshold for different market regimes
+        if (
+            score >= 0.5
+        ):  # 0.7→0.5: more realistic threshold for different market regimes
             label = "✓ Robust"
         elif score >= 0.25:  # 0.4→0.25
             label = "⚠ Caution"
