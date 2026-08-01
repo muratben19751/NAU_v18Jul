@@ -329,11 +329,26 @@ class _ClaudeCLIMessages:
         # The error body also comes back as JSON (even when exit≠0) and the real
         # cause is in its ``result``/``api_error_status`` fields — truncating the
         # raw stdout and embedding it into a string lost this signal.
+        #
+        # Envelope shape depends on the CLI version: historically one JSON
+        # object; newer CLIs emit the whole event stream as one JSON ARRAY
+        # (system/assistant/rate_limit_event/... events) whose terminal
+        # ``type=="result"`` item is the old envelope. Normalize both — the
+        # array shape crashed every LLM call here on 2026-08-01
+        # ("'list' object has no attribute 'get'").
         envelope: dict[str, Any] = {}
         try:
-            envelope = json.loads(proc.stdout) or {}
+            parsed = json.loads(proc.stdout)
         except (json.JSONDecodeError, TypeError):
-            pass
+            parsed = None
+        if isinstance(parsed, dict):
+            envelope = parsed
+        elif isinstance(parsed, list):
+            dicts = [x for x in parsed if isinstance(x, dict)]
+            envelope = next(
+                (x for x in reversed(dicts) if x.get("type") == "result"),
+                dicts[-1] if dicts else {},
+            )
 
         if proc.returncode != 0 or envelope.get("is_error"):
             message = str(envelope.get("result") or "")
