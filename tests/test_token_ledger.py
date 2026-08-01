@@ -120,14 +120,24 @@ def test_format_table_smoke(tmp_path, monkeypatch):
 
 
 def test_cost_usd_prices_fable_with_cache_multipliers():
-    # 1M of everything → 10 + 10*0.1 + 10*1.25 + 50 = $73.50 at Fable list price
+    # 1M of everything, UNLABELED cache_write → priced at the 1h TTL rate (2×,
+    # this ledger's history is all Claude-CLI): 10 + 10*0.1 + 10*2 + 50 = $81
     counts = {
         "input": 1_000_000,
         "output": 1_000_000,
         "cache_read": 1_000_000,
         "cache_write": 1_000_000,
     }
-    assert token_ledger.cost_usd(counts, "claude-fable-5") == pytest.approx(73.5)
+    assert token_ledger.cost_usd(counts, "claude-fable-5") == pytest.approx(81.0)
+    # Same write labeled as 5m TTL → 1.25×: 10 + 1 + 12.5 + 50 = $73.50
+    assert token_ledger.cost_usd(
+        {**counts, "cache_write_5m": 1_000_000}, "claude-fable-5"
+    ) == pytest.approx(73.5)
+    # Mixed split: 400k@5m (×1.25) + 600k@1h (×2) → 10 + 1 + 5 + 12 + 50 = $78
+    assert token_ledger.cost_usd(
+        {**counts, "cache_write_5m": 400_000, "cache_write_1h": 600_000},
+        "claude-fable-5",
+    ) == pytest.approx(78.0)
     # Prefix match: dated Opus variants price like their alias family.
     assert token_ledger.cost_usd(
         {"input": 1_000_000, "output": 0, "cache_read": 0, "cache_write": 0},
@@ -135,6 +145,48 @@ def test_cost_usd_prices_fable_with_cache_multipliers():
     ) == pytest.approx(5.0)
     # Unknown model → None, never a made-up number.
     assert token_ledger.cost_usd(counts, "mystery-llm") is None
+
+
+def test_cost_usd_matches_cli_self_reported_cost():
+    # Live-probe fixture (2026-08-01): `claude -p --model claude-fable-5` result
+    # envelope reported total fable cost $0.240859; our math must reproduce it
+    # to the cent from the same usage payload (1h-TTL cache writes).
+    usage = {
+        "input_tokens": 4,
+        "output_tokens": 97,
+        "cache_read_input_tokens": 57_049,
+        "cache_creation_input_tokens": 8_946,
+        "cache_creation": {
+            "ephemeral_5m_input_tokens": 0,
+            "ephemeral_1h_input_tokens": 8_946,
+        },
+    }
+    counts = token_ledger._extract_usage(usage)
+    assert counts["cache_write"] == 8_946 and counts["cache_write_1h"] == 8_946
+    assert token_ledger.cost_usd(counts, "claude-fable-5") == pytest.approx(0.240859)
+
+
+def test_record_persists_ttl_split_and_summary_prices_it(tmp_path, monkeypatch):
+    ledger = tmp_path / "token_usage.jsonl"
+    monkeypatch.setattr(token_ledger, "LEDGER_PATH", ledger)
+    token_ledger.record(
+        "claude-fable-5",
+        {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cache_read_input_tokens": 0,
+            "cache_creation_input_tokens": 1_000_000,
+            "cache_creation": {"ephemeral_1h_input_tokens": 1_000_000},
+        },
+        "x",
+    )
+    rec = json.loads(ledger.read_text(encoding="utf-8").strip())
+    assert rec["cache_write_1h"] == 1_000_000
+    assert "cache_write_5m" not in rec  # zero split keys stay off the line
+    s = token_ledger.summary(ledger)
+    m = s["models"]["claude-fable-5"]
+    assert m["total"] == 1_000_000  # split must NOT double into totals
+    assert m["cost_usd"] == pytest.approx(20.0)  # 1M 1h-writes × $10 × 2
 
 
 def test_summary_since_filters_and_prices(tmp_path, monkeypatch):
@@ -161,6 +213,40 @@ def test_summary_since_filters_and_prices(tmp_path, monkeypatch):
     assert full["total"]["cost_usd"] == pytest.approx(0.12)
     assert ses["total"]["cost_usd"] == pytest.approx(0.06)
     assert full["models"]["claude-fable-5"]["cost_usd"] == pytest.approx(0.12)
+
+
+def test_cli_side_models_recorded_once(tmp_path, monkeypatch):
+    # The CLI's internal Haiku helper call must land in the ledger; the main
+    # model's modelUsage entry must NOT (it's recorded via resp.usage already).
+    import agent
+
+    ledger = tmp_path / "token_usage.jsonl"
+    monkeypatch.setattr(token_ledger, "LEDGER_PATH", ledger)
+    envelope = {
+        "modelUsage": {
+            "claude-fable-5": {
+                "inputTokens": 4,
+                "outputTokens": 97,
+                "cacheReadInputTokens": 57_049,
+                "cacheCreationInputTokens": 8_946,
+                "canonicalModel": "claude-fable-5",
+            },
+            "claude-haiku-4-5-20251001": {
+                "inputTokens": 521,
+                "outputTokens": 12,
+                "cacheReadInputTokens": 0,
+                "cacheCreationInputTokens": 0,
+                "canonicalModel": "claude-haiku-4-5",
+            },
+        }
+    }
+    agent._record_cli_side_models(envelope, "claude-fable-5")
+    s = token_ledger.summary(ledger)
+    assert list(s["models"]) == ["claude-haiku-4-5"]
+    m = s["models"]["claude-haiku-4-5"]
+    assert m["input"] == 521 and m["output"] == 12
+    # 521×$1 + 12×$5 per MTok = $0.000581 — matches the CLI's own costUSD.
+    assert m["cost_usd"] == pytest.approx(0.000581)
 
 
 def test_tokens_badge_endpoint(tmp_path, monkeypatch):

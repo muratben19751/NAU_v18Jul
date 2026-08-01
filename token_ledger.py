@@ -41,10 +41,14 @@ _FIELDS = ("input", "output", "cache_read", "cache_write")
 
 # ── Pricing (USD per 1M tokens, Anthropic API list prices) ───────────────────
 # Source: claude-api skill model table (cached 2026-06-24). Cache multipliers
-# are Anthropic's published ones: reads ~0.1× input, writes ~1.25× input (5-min
-# TTL — what a per-call API/CLI wrapper effectively gets). Prefix-matched so
-# dated variants (claude-opus-4-8-20xx…) price the same as their alias; an
-# unknown model prices at 0 and shows as "?" rather than inventing a number.
+# are Anthropic's published ones: reads 0.1× input; writes 1.25× input for the
+# 5-minute TTL and 2× input for the 1-hour TTL. The Claude CLI writes with the
+# 1-HOUR TTL (probe 2026-08-01: our 2× math reproduced the CLI's own
+# ``total_cost_usd`` to the cent; 1.25× under-billed by 28%), so unlabeled
+# cache_write lines — every line this app's CLI backend ever wrote before the
+# 5m/1h split was recorded — price at the 1h rate. Prefix-matched so dated
+# variants (claude-opus-4-8-20xx…) price the same as their alias; an unknown
+# model prices as None and shows "?" rather than inventing a number.
 # NOTE: calls via the Claude CLI ride the subscription — this is the NOTIONAL
 # API-equivalent cost, shown so usage has a money scale, not an invoice.
 _PRICES_PER_MTOK: tuple[tuple[str, float, float], ...] = (
@@ -56,17 +60,24 @@ _PRICES_PER_MTOK: tuple[tuple[str, float, float], ...] = (
     ("claude-haiku", 1.0, 5.0),
 )
 _CACHE_READ_MULT = 0.1
-_CACHE_WRITE_MULT = 1.25
+_CACHE_WRITE_5M_MULT = 1.25
+_CACHE_WRITE_1H_MULT = 2.0
 
 
 def cost_usd(counts: dict, model: str) -> float | None:
     """Notional API cost of one counter dict for ``model``; None if unpriced."""
     for prefix, in_p, out_p in _PRICES_PER_MTOK:
         if (model or "").startswith(prefix):
+            w5 = counts.get("cache_write_5m", 0)
+            w1 = counts.get("cache_write_1h", 0)
+            # Unlabeled remainder = written before the TTL split existed; all
+            # of it came through the Claude CLI → 1h TTL (see pricing note).
+            unlabeled = max(counts.get("cache_write", 0) - w5 - w1, 0)
             return (
                 counts.get("input", 0) * in_p
                 + counts.get("cache_read", 0) * in_p * _CACHE_READ_MULT
-                + counts.get("cache_write", 0) * in_p * _CACHE_WRITE_MULT
+                + w5 * in_p * _CACHE_WRITE_5M_MULT
+                + (w1 + unlabeled) * in_p * _CACHE_WRITE_1H_MULT
                 + counts.get("output", 0) * out_p
             ) / 1_000_000
     return None
@@ -83,7 +94,8 @@ _USAGE_KEYS = {
 
 def _extract_usage(usage) -> dict[str, int]:
     """Normalize an Anthropic ``resp.usage`` object OR a plain dict → the four
-    int counters. Missing/None fields become 0."""
+    int counters (+ the cache-write TTL split when the response carries one).
+    Missing/None fields become 0."""
     out = {f: 0 for f in _FIELDS}
     if usage is None:
         return out
@@ -94,6 +106,22 @@ def _extract_usage(usage) -> dict[str, int]:
             if val:
                 out[field] = int(val)
                 break
+    # Cache-write TTL split (``usage.cache_creation``): 5m and 1h writes price
+    # differently (1.25× vs 2× input), so keep the split when it's available.
+    cc = (
+        usage.get("cache_creation")
+        if is_dict
+        else getattr(usage, "cache_creation", None)
+    )
+    if cc is not None:
+        cc_dict = isinstance(cc, dict)
+        for field, key in (
+            ("cache_write_5m", "ephemeral_5m_input_tokens"),
+            ("cache_write_1h", "ephemeral_1h_input_tokens"),
+        ):
+            val = cc.get(key) if cc_dict else getattr(cc, key, None)
+            if val:
+                out[field] = int(val)
     return out
 
 
@@ -113,7 +141,8 @@ def record(model: str, usage, purpose: str = "") -> None:
             "ts": datetime.now(UTC).isoformat(timespec="seconds"),
             "model": model or "unknown",
             "purpose": purpose or "",
-            **counts,
+            # TTL-split keys only when present — legacy line shape otherwise.
+            **{k: v for k, v in counts.items() if k in _FIELDS or v},
         }
         payload = json.dumps(line, ensure_ascii=False)
         with _LOCK:
@@ -187,6 +216,12 @@ def summary(path: Path | None = None, *, since: str | None = None) -> dict:
                     m["total"] += v
                     grand[fld] += v
                     grand["total"] += v
+                # TTL split rides along for pricing only — it is a breakdown of
+                # cache_write, so it must NOT be added into "total" again.
+                for fld in ("cache_write_5m", "cache_write_1h"):
+                    v = int(rec.get(fld) or 0)
+                    if v:
+                        m[fld] = m.get(fld, 0) + v
                 ts = rec.get("ts")
                 if ts:
                     if first_ts is None or ts < first_ts:

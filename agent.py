@@ -217,6 +217,10 @@ class _CLIUsage:
         self.cache_creation_input_tokens = int(
             usage.get("cache_creation_input_tokens", 0) or 0
         )
+        # 5m/1h TTL split — the CLI writes cache with the 1-HOUR TTL, which
+        # prices at 2× input (not the 5-minute 1.25×); the ledger needs the
+        # split to bill writes correctly (see token_ledger.cost_usd).
+        self.cache_creation = dict(usage.get("cache_creation") or {})
 
 
 class _CLIResponse:
@@ -365,7 +369,40 @@ class _ClaudeCLIMessages:
             raise _CLIError(
                 f"claude CLI error ({envelope.get('subtype')}): {detail[:500]}"
             )
+        _record_cli_side_models(envelope, model)
         return _CLIResponse(envelope.get("result") or "", envelope.get("usage") or {})
+
+
+def _record_cli_side_models(envelope: dict, called_model: str) -> None:
+    """Ledger the CLI's INTERNAL side-model calls from ``modelUsage``.
+
+    Each `claude -p` run makes small helper calls on other models (e.g. a
+    Haiku topic/safety pass, ~$0.0006/çağrı). The envelope's top-level
+    ``usage`` covers only the main model, so without this the ledger silently
+    drops them. The main model's own entry is skipped — ``_create_message``
+    already records it from ``resp.usage``. Best-effort: never raises.
+    """
+    try:
+        import token_ledger
+
+        for name, u in (envelope.get("modelUsage") or {}).items():
+            if not isinstance(u, dict):
+                continue
+            canon = str(u.get("canonicalModel") or name)
+            if name.startswith(called_model) or canon.startswith(called_model):
+                continue  # main call — recorded via resp.usage, don't double-count
+            token_ledger.record(
+                canon,
+                {
+                    "input_tokens": u.get("inputTokens", 0),
+                    "output_tokens": u.get("outputTokens", 0),
+                    "cache_read_input_tokens": u.get("cacheReadInputTokens", 0),
+                    "cache_creation_input_tokens": u.get("cacheCreationInputTokens", 0),
+                },
+                "cli_internal",
+            )
+    except Exception:
+        pass
 
 
 class _ClaudeCLIClient:
