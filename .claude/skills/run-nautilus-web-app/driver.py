@@ -149,7 +149,16 @@ def run_backtest(base: str, spec_id: str, timeout_s: int = 420) -> tuple[bool, s
                 ]
                 if s.strip()
             )
-            return True, summary or "result rendered (no metric parsed)"
+            if summary:
+                return True, summary
+            # No metric = almost certainly an error panel (e.g. "sandbox: timed
+            # out"). A PASS here once masked a real 180s sandbox kill — surface
+            # the panel text and fail instead.
+            err = re.search(r"(sandbox:[^|<]{0,120}|[Ee]rror[^|<]{0,120})", text)
+            return (
+                False,
+                f"result rendered without metrics: {err.group(0).strip() if err else text[:200]}",
+            )
         time.sleep(1)
     return False, f"backtest did not complete within {timeout_s}s"
 

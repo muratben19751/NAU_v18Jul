@@ -128,6 +128,14 @@ python -m ruff format --check .
   backtests use the FULL cached range (1m BTCUSDT cache is 1M+ bars → run
   takes minutes, incl. commissions since 2026-07). Default wait is 420s;
   raise with `--backtest-timeout 900` if the cache keeps growing.
+- Driver prints `FAIL: result rendered without metrics: sandbox: timed out
+  after 180s` — the binding limit is NOT the driver wait but
+  `sandbox.DEFAULT_TIMEOUT_S` (180s): user runs go through the killable child
+  (`force_subprocess=True`), and a full-range 1m run can exceed it, especially
+  under CPU contention. The error panel renders fine, so before 2026-07-31 the
+  driver mistook this for a PASS ("no metric parsed"). Rerun on an idle box or
+  drive a smaller spec/range; if full-range runs keep dying, the sandbox
+  default needs raising, not the driver wait.
 - Driver prints `FAIL: server did not become ready` — a slow first Bybit fetch or
   an occupied port. Retry with a different `--port`, or check the uvicorn output
   it inherits to stdout.
