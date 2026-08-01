@@ -2575,6 +2575,7 @@ async def run(
     max_total_tokens: int = Form(default=0),
     range_start: str = Form(default=""),
     range_end: str = Form(default=""),
+    tfs: list[str] = Form(default=[]),
 ):
     from server import get_market_info, templates
 
@@ -2622,7 +2623,17 @@ async def run(
         )
         trend_interval = ext_trend_interval
     else:
-        intervals = ["60", "240", "D"] if is_multi_tf else [interval]
+        # Explicit TF multi-select (studio AUTO tab chips) beats the single
+        # `interval` select; the legacy Multi-TF checkbox keeps its curated
+        # trio. Unknown codes are dropped (defense against hand-crafted posts).
+        _allowed = ("1", "5", "15", "30", "60", "240", "720", "D")
+        chosen = [t for t in tfs if t in _allowed]
+        if is_multi_tf:
+            intervals = ["60", "240", "D"]
+        elif chosen:
+            intervals = chosen
+        else:
+            intervals = [interval]
 
     run_id = uuid.uuid4().hex[:8]
 

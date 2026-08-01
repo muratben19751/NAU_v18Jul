@@ -75,13 +75,29 @@
               <option value="spot">spot</option>
             </select>
           </label>
-          <label class="field">Timeframe
-            <select name="interval">
-              <option value="15">15m</option>
-              <option value="60" selected>1h</option>
-              <option value="240">4h</option>
-            </select>
+          <label class="field">Timeframe <span class="text-muted" style="font-weight:400;font-size:10px;">(birden fazla seçilebilir)</span>
+            <span class="chip-row" style="margin-top:4px;">
+              {% for code, lbl in [("5","5m"), ("15","15m"), ("60","1h"), ("240","4h"), ("D","1d")] %}
+              <label class="chip-choice">
+                <input type="checkbox" name="tfs" value="{{ code }}"
+                       {% if code == "60" %}checked{% endif %}>
+                {{ lbl }}
+              </label>
+              {% endfor %}
+            </span>
           </label>
+          <label class="field">Start <span class="text-muted" style="font-weight:400;font-size:10px;">(boş = en geniş)</span>
+            <input type="date" name="range_start">
+          </label>
+          <label class="field">End
+            <input type="date" name="range_end">
+          </label>
+          <button type="button" class="btn btn-max" style="margin-bottom:2px;"
+                  title="Seçili sembol+TF önbellek kapsamının tamamını doldur"
+                  onclick="var tf=(this.form.querySelector('input[name=tfs]:checked')||{}).value||'60';
+                    nlMaxRange(this, {source:'bybit', symbol: this.form.symbol.value,
+                      category: this.form.category.value, interval: tf},
+                      this.form.range_start, this.form.range_end)">MAX</button>
           <label class="field" style="max-width:150px;">
             Iterations <span class="text-muted" style="font-weight:400;" id="iter-val">5</span>
             <input type="range" name="n_iterations" min="2" max="15" value="5"
