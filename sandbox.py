@@ -18,13 +18,25 @@ primitives across the boundary (spec dataclass, pandas DataFrame, a string
 ``recipe``). The child rebuilds the pyo3-backed Nautilus instrument/bar_type
 from the recipe, so no Rust object is ever pickled. The child imports the light
 ``sandbox`` module (not ``server``), so the FastAPI app/lifespan never re-runs.
+
+Headless (pm2) runs spawn children via ``pythonw.exe`` — console-subsystem
+children froze at console init before Python booted, hanging Process.start()
+forever with the timeout watchdog never armed (see the module-level
+``set_executable`` block and ``_child_stdio_guard``).
+
+Wiki References
+---------------
+See: [[webapp_module_map]] (sandbox satırı + pm2 spawn donması vakası),
+[[crash_only_design]] (parent her koşulda hayatta kalır; çocuk öldürülebilir).
 """
 
 from __future__ import annotations
 
 import atexit
 import multiprocessing as mp
+import os as _os
 import queue as _queue
+import sys as _sys
 import threading as _threading
 import time as _time
 import traceback
@@ -58,6 +70,50 @@ def _terminate_live_children() -> None:
 
 
 atexit.register(_terminate_live_children)
+
+# ── Headless (pm2) spawn: children via pythonw.exe ───────────────────────────
+# 2026-08-01: under pm2, console-subsystem (python.exe) spawn children froze at
+# console/loader init BEFORE Python ever booted (~2MB WS, 0 CPU, forever). The
+# parent then blocks inside Process.start() → reduction.dump (writing the
+# pickled payload into a pipe nobody reads), and because the timeout watchdog
+# below is armed only AFTER start(), the run hung with no timeout and no log
+# line. pythonw.exe (GUI subsystem — no console to attach) boots instantly in
+# the same pm2 environment (probe: 50MB payload end-to-end in 0.06s). Scope:
+# only when running under pm2 (PM2_HOME marker) — console sessions (pytest,
+# driver) keep the normal interpreter. Kill-switch: NAUTILUS_SPAWN_PYW=0.
+# Children of pythonw boot with NO stdio — see _child_stdio_guard.
+if (
+    _os.name == "nt"
+    and _os.environ.get("PM2_HOME")
+    and _os.environ.get("NAUTILUS_SPAWN_PYW", "1") != "0"
+):
+    _pyw = Path(_sys.exec_prefix) / "pythonw.exe"
+    if _pyw.exists():
+        mp.set_executable(str(_pyw))
+
+
+def _child_stdio_guard() -> None:
+    """Make child stdio safe in both spawn flavors.
+
+    pythonw children boot with ``sys.stdout``/``sys.stderr`` = None AND invalid
+    C-level fds 1/2 — a Python ``print()`` or a Rust/C write from the Nautilus
+    engine would otherwise crash or error. Bind both layers to devnull. Console
+    children instead get UTF-8 (Turkish/glyph progress text vs cp125x).
+    """
+    for name, fd in (("stdout", 1), ("stderr", 2)):
+        stream = getattr(_sys, name)
+        if stream is None:
+            f = open(_os.devnull, "w", encoding="utf-8")  # noqa: SIM115 — lives for the child's lifetime
+            setattr(_sys, name, f)
+            try:
+                _os.dup2(f.fileno(), fd)
+            except OSError:
+                pass
+            continue
+        try:
+            stream.reconfigure(encoding="utf-8")  # type: ignore[union-attr]
+        except (AttributeError, ValueError):
+            pass
 
 
 def _derive_base(symbol: str) -> str:
@@ -133,7 +189,6 @@ def _child_entry(q, payload):
     """Top-level target for the spawned process. Imports only light modules
     (never ``server``). Puts ('result'|'error'|'progress', payload) on the queue.
     """
-    import sys
 
     # M8: if the parent is hard-killed (pm2 delete+start / TerminateProcess)
     # the daemon flag does NOT kill the child (atexit does not run) — without a
@@ -142,11 +197,7 @@ def _child_entry(q, payload):
 
     # Progress strings contain Turkish/glyph chars; a fresh Windows child that
     # never imported server needs UTF-8 stdout or print() crashes on cp125x.
-    for stream in (sys.stdout, sys.stderr):
-        try:
-            stream.reconfigure(encoding="utf-8")  # type: ignore[union-attr]
-        except (AttributeError, ValueError):
-            pass
+    _child_stdio_guard()
 
     try:
         spec, bars_df, recipe, iteration_id, rationale = payload
@@ -304,15 +355,10 @@ def _robustness_child(q, payload):
     Spawned NON-daemonic (so it may own a parallel_exec.BacktestPool);
     the parent watchdog guarantees it never outlives the server.
     """
-    import sys
 
     _start_parent_watchdog()
 
-    for stream in (sys.stdout, sys.stderr):
-        try:
-            stream.reconfigure(encoding="utf-8")  # type: ignore[union-attr]
-        except (AttributeError, ValueError):
-            pass
+    _child_stdio_guard()
 
     try:
         spec, bars_df, recipe, trades, symbol, interval = payload
@@ -406,15 +452,10 @@ def _manual_suite_child(q, payload):
     the bug fixed in the agent). The returned dict carries the pieces the route
     expects: {wfo_windows, wfo_summary, split, mc, full_error}.
     """
-    import sys
 
     _start_parent_watchdog()
 
-    for stream in (sys.stdout, sys.stderr):
-        try:
-            stream.reconfigure(encoding="utf-8")  # type: ignore[union-attr]
-        except (AttributeError, ValueError):
-            pass
+    _child_stdio_guard()
 
     try:
         spec, bars_df, recipe, params = payload
@@ -531,14 +572,9 @@ def run_manual_suite_guarded(
 
 def _legacy_backtest_child(q, payload):
     """Child target: legacy STRATEGY_REGISTRY backtest (loop 'agent' mode)."""
-    import sys
 
     _start_parent_watchdog()  # M8: so it isn't orphaned on hard-kill
-    for stream in (sys.stdout, sys.stderr):
-        try:
-            stream.reconfigure(encoding="utf-8")  # type: ignore[union-attr]
-        except (AttributeError, ValueError):
-            pass
+    _child_stdio_guard()
     try:
         strategy_name, params, bars_df, iteration_id, rationale = payload
         from backtest import run_backtest
