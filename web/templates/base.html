@@ -85,6 +85,10 @@
           {{ "RUNNING" if loop_running() else "IDLE" }}
         </div>
         <div class="engine-sub">Claude Fable 5 · Nautilus</div>
+        {# Session token spend + notional $ (ledger view since server start);
+           refreshes each minute — an LLM call is never faster than that matters. #}
+        <div id="token-badge-host" hx-get="/tokens/badge"
+             hx-trigger="load, every 60s" hx-swap="innerHTML"></div>
       </div>
     </aside>
 

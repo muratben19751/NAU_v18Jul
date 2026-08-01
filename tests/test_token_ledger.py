@@ -12,6 +12,8 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 import token_ledger
 
 
@@ -112,3 +114,67 @@ def test_format_table_smoke(tmp_path, monkeypatch):
     assert "TOTAL" in table
     # Empty ledger → friendly message, not a crash.
     assert "No token usage" in token_ledger.format_table(tmp_path / "nope.jsonl")
+
+
+# ── cost + session view (the sidebar token badge) ───────────────────────────
+
+
+def test_cost_usd_prices_fable_with_cache_multipliers():
+    # 1M of everything → 10 + 10*0.1 + 10*1.25 + 50 = $73.50 at Fable list price
+    counts = {
+        "input": 1_000_000,
+        "output": 1_000_000,
+        "cache_read": 1_000_000,
+        "cache_write": 1_000_000,
+    }
+    assert token_ledger.cost_usd(counts, "claude-fable-5") == pytest.approx(73.5)
+    # Prefix match: dated Opus variants price like their alias family.
+    assert token_ledger.cost_usd(
+        {"input": 1_000_000, "output": 0, "cache_read": 0, "cache_write": 0},
+        "claude-opus-4-8-20260101",
+    ) == pytest.approx(5.0)
+    # Unknown model → None, never a made-up number.
+    assert token_ledger.cost_usd(counts, "mystery-llm") is None
+
+
+def test_summary_since_filters_and_prices(tmp_path, monkeypatch):
+    ledger = tmp_path / "token_usage.jsonl"
+    monkeypatch.setattr(token_ledger, "LEDGER_PATH", ledger)
+    old = json.dumps(
+        {
+            "ts": "2026-07-01T00:00:00+00:00",
+            "model": "claude-fable-5",
+            "purpose": "",
+            "input": 1000,
+            "output": 1000,
+            "cache_read": 0,
+            "cache_write": 0,
+        }
+    )
+    new = old.replace("2026-07-01", "2026-08-01")
+    ledger.write_text(old + "\n" + new + "\n", encoding="utf-8")
+
+    full = token_ledger.summary(ledger)
+    ses = token_ledger.summary(ledger, since="2026-07-15T00:00:00+00:00")
+    assert full["total"]["calls"] == 2 and ses["total"]["calls"] == 1
+    # 1000 in + 1000 out on Fable = 0.00001*10 … = $0.06 per line
+    assert full["total"]["cost_usd"] == pytest.approx(0.12)
+    assert ses["total"]["cost_usd"] == pytest.approx(0.06)
+    assert full["models"]["claude-fable-5"]["cost_usd"] == pytest.approx(0.12)
+
+
+def test_tokens_badge_endpoint(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    monkeypatch.setattr(token_ledger, "LEDGER_PATH", tmp_path / "token_usage.jsonl")
+    token_ledger.record("claude-fable-5", _usage_obj(500_000, 100_000, 0, 0), "x")
+
+    from server import app
+
+    r = TestClient(app).get("/tokens/badge")
+    assert r.status_code == 200
+    assert "token-badge" in r.text and "$" in r.text
+    # Session view can be empty (records predate server start) but the
+    # all-time Σ line must reflect the ledger.
+    assert "Σ" in r.text
+    assert TestClient(app).get("/tokens/table").status_code == 200

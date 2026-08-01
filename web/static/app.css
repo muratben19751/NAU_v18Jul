@@ -153,6 +153,16 @@ html, body {
 .engine-dot.live { background: var(--pnl-up); }
 .engine-dot.idle { background: var(--text-muted); }
 .engine-sub { font-size: 10px; color: var(--text-muted); margin-top: 4px; }
+/* Session token spend line under the engine card (see /tokens/badge). */
+.token-badge {
+  display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap;
+  margin-top: 6px; padding-top: 6px; border-top: 1px solid var(--bg-700);
+  font-size: 10px; color: var(--text-muted); cursor: default;
+}
+.token-badge .tb-k { letter-spacing: .08em; text-transform: uppercase; }
+.token-badge .tb-v { color: var(--text-secondary); font-weight: 600; }
+.token-badge .tb-usd { color: var(--accent); font-weight: 600; }
+.token-badge .tb-all { width: 100%; opacity: .75; }
 
 /* min-width:0 is required: a grid item's default is min-width:auto — wide
    tables (reports 26 columns ~2400px) were stretching the whole page sideways.

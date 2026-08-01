@@ -225,6 +225,9 @@ from web.routes import (
 from web.routes import (
     strategy_studio as strategy_studio_route,
 )
+from web.routes import (
+    tokens as tokens_route,
+)
 
 app.include_router(dashboard.router)
 app.include_router(studio.router)
@@ -243,3 +246,4 @@ app.include_router(robustness_route.router)
 app.include_router(reports.router)
 app.include_router(agent_route.router)
 app.include_router(sessions_route.router)
+app.include_router(tokens_route.router)

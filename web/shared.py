@@ -25,14 +25,18 @@ from pathlib import Path
 try:
     import markdown as _md
 
-    def render_md(txt: str, extensions: tuple[str, ...] = ("fenced_code", "tables")) -> str:
+    def render_md(
+        txt: str, extensions: tuple[str, ...] = ("fenced_code", "tables")
+    ) -> str:
         """Render markdown → HTML. Was hand-copied into strategy/backtest/wiki
         routes; lives here now (leaf module). ``extensions`` lets the wiki route
         keep its ``toc`` variant without a second copy."""
         return _md.markdown(txt, extensions=list(extensions))
 except Exception:  # pragma: no cover
 
-    def render_md(txt: str, extensions: tuple[str, ...] = ("fenced_code", "tables")) -> str:
+    def render_md(
+        txt: str, extensions: tuple[str, ...] = ("fenced_code", "tables")
+    ) -> str:
         return f"<pre>{txt}</pre>"
 
 
@@ -45,6 +49,13 @@ except Exception:  # pragma: no cover
 # ``.set_cookie``) so it need not import FastAPI.
 # ---------------------------------------------------------------------------
 SESSION_COOKIE = "nautlab_sid"
+
+# When this server process came up (module import ≈ process start). The token
+# badge uses it as the "this session" cutoff into the persistent ledger —
+# session-scoping is a VIEW over one ledger file, not a second counter that
+# could drift from it. Same isoformat shape as token_ledger lines, so plain
+# string comparison filters correctly.
+SERVER_STARTED_AT = datetime.now(UTC).isoformat(timespec="seconds")
 _SESSION_COOKIE_MAX_AGE = 3600
 
 
@@ -57,7 +68,10 @@ def session_id(request, response=None) -> str:
         sid = uuid.uuid4().hex
     if response is not None:
         response.set_cookie(
-            SESSION_COOKIE, sid, httponly=True, samesite="lax",
+            SESSION_COOKIE,
+            sid,
+            httponly=True,
+            samesite="lax",
             max_age=_SESSION_COOKIE_MAX_AGE,
         )
     return sid

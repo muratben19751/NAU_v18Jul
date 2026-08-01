@@ -39,6 +39,39 @@ _LOCK = threading.Lock()
 # The four usage fields, in the order the app already uses everywhere.
 _FIELDS = ("input", "output", "cache_read", "cache_write")
 
+# ── Pricing (USD per 1M tokens, Anthropic API list prices) ───────────────────
+# Source: claude-api skill model table (cached 2026-06-24). Cache multipliers
+# are Anthropic's published ones: reads ~0.1× input, writes ~1.25× input (5-min
+# TTL — what a per-call API/CLI wrapper effectively gets). Prefix-matched so
+# dated variants (claude-opus-4-8-20xx…) price the same as their alias; an
+# unknown model prices at 0 and shows as "?" rather than inventing a number.
+# NOTE: calls via the Claude CLI ride the subscription — this is the NOTIONAL
+# API-equivalent cost, shown so usage has a money scale, not an invoice.
+_PRICES_PER_MTOK: tuple[tuple[str, float, float], ...] = (
+    # (model-id prefix, input $/MTok, output $/MTok)
+    ("claude-fable-5", 10.0, 50.0),
+    ("claude-mythos-5", 10.0, 50.0),
+    ("claude-opus", 5.0, 25.0),  # Opus 5 / 4.8 / 4.7 / 4.6 all $5/$25
+    ("claude-sonnet", 3.0, 15.0),
+    ("claude-haiku", 1.0, 5.0),
+)
+_CACHE_READ_MULT = 0.1
+_CACHE_WRITE_MULT = 1.25
+
+
+def cost_usd(counts: dict, model: str) -> float | None:
+    """Notional API cost of one counter dict for ``model``; None if unpriced."""
+    for prefix, in_p, out_p in _PRICES_PER_MTOK:
+        if (model or "").startswith(prefix):
+            return (
+                counts.get("input", 0) * in_p
+                + counts.get("cache_read", 0) * in_p * _CACHE_READ_MULT
+                + counts.get("cache_write", 0) * in_p * _CACHE_WRITE_MULT
+                + counts.get("output", 0) * out_p
+            ) / 1_000_000
+    return None
+
+
 # Anthropic/CLI usage attribute (or dict-key) names → our short field names.
 _USAGE_KEYS = {
     "input": ("input_tokens",),
@@ -92,30 +125,44 @@ def record(model: str, usage, purpose: str = "") -> None:
         pass
 
 
-def summary(path: Path | None = None) -> dict:
+def summary(path: Path | None = None, *, since: str | None = None) -> dict:
     """Fold the ledger into a per-model breakdown.
+
+    ``since`` (ISO-8601 UTC string) keeps only records with ``ts >= since`` —
+    string comparison is safe because every line is written with the same
+    ``isoformat(timespec="seconds")`` shape. This is how "this session"
+    (= since server start) views are produced without a second ledger.
 
     Returns::
 
         {
           "models": {
             "claude-fable-5": {"calls": 12, "input": …, "output": …,
-                               "cache_read": …, "cache_write": …, "total": …},
+                               "cache_read": …, "cache_write": …, "total": …,
+                               "cost_usd": 1.23 | None},
             "claude-opus-4-8": {…},
           },
-          "total": {"calls": …, "input": …, …, "total": …},
+          "total": {"calls": …, "input": …, …, "total": …, "cost_usd": …},
           "first_ts": "…", "last_ts": "…",
         }
 
-    Missing/torn JSONL lines are skipped. Returns empty structures if the ledger
-    does not exist yet.
+    ``cost_usd`` is the NOTIONAL Anthropic-API list cost (see _PRICES_PER_MTOK
+    — CLI/subscription calls aren't billed per token; this gives usage a money
+    scale). ``None`` when the model isn't in the price table; the total prices
+    only priced models. Missing/torn JSONL lines are skipped. Returns empty
+    structures if the ledger does not exist yet.
     """
     p = path or LEDGER_PATH
     models: dict[str, dict] = {}
     grand = {"calls": 0, **{f: 0 for f in _FIELDS}, "total": 0}
     first_ts = last_ts = None
     if not p.exists():
-        return {"models": models, "total": grand, "first_ts": None, "last_ts": None}
+        return {
+            "models": models,
+            "total": {**grand, "cost_usd": 0.0},
+            "first_ts": None,
+            "last_ts": None,
+        }
     try:
         with open(p, encoding="utf-8") as f:
             for ln in f:
@@ -126,6 +173,8 @@ def summary(path: Path | None = None) -> dict:
                     rec = json.loads(ln)
                 except Exception:
                     continue  # torn line from a concurrent append — skip
+                if since and (rec.get("ts") or "") < since:
+                    continue
                 model = rec.get("model") or "unknown"
                 m = models.setdefault(
                     model, {"calls": 0, **{fld: 0 for fld in _FIELDS}, "total": 0}
@@ -146,6 +195,13 @@ def summary(path: Path | None = None) -> dict:
                         last_ts = ts
     except Exception:
         pass
+    total_cost = 0.0
+    for model, m in models.items():
+        c = cost_usd(m, model)
+        m["cost_usd"] = c
+        if c is not None:
+            total_cost += c
+    grand["cost_usd"] = round(total_cost, 4)
     return {"models": models, "total": grand, "first_ts": first_ts, "last_ts": last_ts}
 
 
