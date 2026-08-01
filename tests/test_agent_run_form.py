@@ -55,6 +55,35 @@ def test_bogus_tf_codes_fall_back_to_single_interval(monkeypatch):
     assert got["intervals"] == ["240"]
 
 
+def test_dotted_symbol_promotes_to_external_with_mapped_tfs(monkeypatch):
+    client, got, done = _client_and_capture(monkeypatch)
+    r = client.post(
+        "/agent/run",
+        data={"symbol": "QQQ.NASDAQ", "tfs": ["60", "D"], "n_iterations": 2},
+    )
+    assert r.status_code == 200
+    assert done.wait(5)
+    assert got["source"] == "external"
+    assert got["instrument_id"] == "QQQ.NASDAQ"
+    assert got["intervals"] == ["1-HOUR", "1-DAY"]  # bybit codes → granularities
+
+
+def test_model_pick_reaches_worker_and_thread_pin(monkeypatch):
+    import agent
+
+    client, got, done = _client_and_capture(monkeypatch)
+    r = client.post("/agent/run", data={"model": "claude-haiku-4-5", "n_iterations": 2})
+    assert r.status_code == 200
+    assert done.wait(5)
+    assert got["model"] == "claude-haiku-4-5"
+    # Thread pin: known model pins THIS thread only; unknown clears.
+    agent.set_thread_model("claude-haiku-4-5")
+    assert agent.current_model() == "claude-haiku-4-5"
+    agent.set_thread_model("uydurma-model")
+    assert agent.current_model() == agent.MODEL
+    agent.set_thread_model(None)
+
+
 def test_bad_dates_rejected_before_worker(monkeypatch):
     client, got, done = _client_and_capture(monkeypatch)
     assert client.post("/agent/run", data={"range_start": "kotu"}).status_code == 400

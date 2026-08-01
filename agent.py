@@ -42,10 +42,31 @@ _model_lock = threading.Lock()
 _client: Anthropic | _ClaudeCLIClient | _OpenRouterClient | None = None
 _client_lock = threading.Lock()
 
+# Per-THREAD model override — the AUTO loop's model picker. Thread-local on
+# purpose: a loop run pins only its own worker thread's LLM calls (idea /
+# custom blocks / narratives all run there); concurrent surfaces (chat, PRO
+# describe) keep the app default. The credit-exhaustion fallback above still
+# wins — that is a billing fact, not a preference.
+_MODEL_OVERRIDE = threading.local()
+
+SELECTABLE_MODELS = (
+    "claude-fable-5",
+    "claude-opus-5",
+    "claude-sonnet-5",
+    "claude-haiku-4-5",
+)
+
+
+def set_thread_model(model: str | None) -> None:
+    """Pin THIS thread's LLM calls to ``model``; None/unknown clears the pin."""
+    _MODEL_OVERRIDE.model = model if model in SELECTABLE_MODELS else None
+
 
 def current_model() -> str:
     """The model currently in use (FALLBACK_MODEL if fallback has kicked in)."""
-    return _active_model or MODEL
+    if _active_model:
+        return _active_model
+    return getattr(_MODEL_OVERRIDE, "model", None) or MODEL
 
 
 _CREDIT_EXHAUSTED_SIGNALS = (

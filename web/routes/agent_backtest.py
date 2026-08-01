@@ -1100,10 +1100,15 @@ def _agent_worker(
     max_total_tokens: int = 0,
     range_start: str = "",
     range_end: str = "",
+    model: str = "",
 ) -> None:
     import pandas as pd
 
-    from agent import propose_composed_strategy
+    from agent import propose_composed_strategy, set_thread_model
+
+    # Pin THIS worker thread's LLM calls to the picked model (unknown/"" =
+    # app default). Thread-local — concurrent surfaces are unaffected.
+    set_thread_model(model or None)
     from composer import load_catalog
     from data import _bybit_cache_path
     from sandbox import run_backtest_guarded, run_robustness_guarded
@@ -2576,6 +2581,7 @@ async def run(
     range_start: str = Form(default=""),
     range_end: str = Form(default=""),
     tfs: list[str] = Form(default=[]),
+    model: str = Form(default=""),
 ):
     from server import get_market_info, templates
 
@@ -2606,8 +2612,14 @@ async def run(
     is_continuous = continuous == "1"
     is_multi_tf = multi_tf == "1"
     use_web_research = web_research == "1"
-    is_external = source == "external"
+    # App-wide convention: a DOTTED id (QQQ.NASDAQ) is an external-catalog
+    # instrument — the studio AUTO cockpit posts it through the plain symbol
+    # select, so promote it here instead of requiring a separate source field.
+    symbol = symbol.strip()
     instrument_id = instrument_id.strip()
+    if source != "external" and "." in symbol:
+        source, instrument_id = "external", symbol
+    is_external = source == "external"
 
     if is_external and not instrument_id:
         return HTMLResponse(
@@ -2617,23 +2629,25 @@ async def run(
 
     # Intervals to try in Multi-TF mode
     # 15m removed (6% success), Daily added (clean signal, few trades but quality)
+    # Explicit TF multi-select (studio AUTO tab chips) beats the single
+    # `interval` select; the legacy Multi-TF checkbox keeps its curated trio.
+    # Unknown codes are dropped (defense against hand-crafted posts).
+    _allowed = ("1", "5", "15", "30", "60", "240", "720", "D")
+    chosen = [t for t in tfs if t in _allowed]
     if is_external:
+        from data import EXTERNAL_GRAN_BY_BYBIT_CODE
+
+        mapped = [
+            EXTERNAL_GRAN_BY_BYBIT_CODE[t]
+            for t in chosen
+            if t in EXTERNAL_GRAN_BY_BYBIT_CODE
+        ]
         intervals: list[str] = (
-            ["1-HOUR", "4-HOUR", "1-DAY"] if is_multi_tf else [ext_interval]
+            ["1-HOUR", "4-HOUR", "1-DAY"] if is_multi_tf else (mapped or [ext_interval])
         )
         trend_interval = ext_trend_interval
     else:
-        # Explicit TF multi-select (studio AUTO tab chips) beats the single
-        # `interval` select; the legacy Multi-TF checkbox keeps its curated
-        # trio. Unknown codes are dropped (defense against hand-crafted posts).
-        _allowed = ("1", "5", "15", "30", "60", "240", "720", "D")
-        chosen = [t for t in tfs if t in _allowed]
-        if is_multi_tf:
-            intervals = ["60", "240", "D"]
-        elif chosen:
-            intervals = chosen
-        else:
-            intervals = [interval]
+        intervals = ["60", "240", "D"] if is_multi_tf else (chosen or [interval])
 
     run_id = uuid.uuid4().hex[:8]
 
@@ -2707,6 +2721,7 @@ async def run(
             max_total_tokens=max_total_tokens,
             range_start=range_start,
             range_end=range_end,
+            model=model.strip(),
         ),
         daemon=True,
     ).start()

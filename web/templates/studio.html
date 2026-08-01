@@ -67,6 +67,16 @@
               <option value="BTCUSDT" selected>BTCUSDT</option>
               <option value="ETHUSDT">ETHUSDT</option>
               <option value="SOLUSDT">SOLUSDT</option>
+              {# Noktalı id = external katalog (route otomatik terfi ettirir). #}
+              <option value="QQQ.NASDAQ">QQQ (Nasdaq)</option>
+            </select>
+          </label>
+          <label class="field">Model
+            <select name="model">
+              <option value="" selected>Fable 5 (varsayılan)</option>
+              <option value="claude-opus-5">Opus 5</option>
+              <option value="claude-sonnet-5">Sonnet 5</option>
+              <option value="claude-haiku-4-5">Haiku 4.5</option>
             </select>
           </label>
           <label class="field">Category
@@ -93,10 +103,13 @@
             <input type="date" name="range_end">
           </label>
           <button type="button" class="btn btn-max" style="margin-bottom:2px;"
-                  title="Seçili sembol+TF önbellek kapsamının tamamını doldur"
-                  onclick="var tf=(this.form.querySelector('input[name=tfs]:checked')||{}).value||'60';
-                    nlMaxRange(this, {source:'bybit', symbol: this.form.symbol.value,
-                      category: this.form.category.value, interval: tf},
+                  title="Seçili sembol+TF önbellek/katalog kapsamının tamamını doldur"
+                  onclick="var tf=(this.form.querySelector('input[name=tfs]:checked')||{}).value||'60',
+                    s=this.form.symbol.value,
+                    g={'1':'1-MINUTE','5':'5-MINUTE','15':'15-MINUTE','60':'1-HOUR','240':'4-HOUR','D':'1-DAY'}[tf]||'1-DAY';
+                    nlMaxRange(this, s.indexOf('.')>-1
+                      ? {source:'external', instrument_id:s, granularity:g}
+                      : {source:'bybit', symbol:s, category: this.form.category.value, interval: tf},
                       this.form.range_start, this.form.range_end)">MAX</button>
           <label class="field" style="max-width:150px;">
             Iterations <span class="text-muted" style="font-weight:400;" id="iter-val">5</span>
