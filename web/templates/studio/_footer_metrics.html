@@ -19,6 +19,10 @@
     <div class="metric"><span class="k">Max DD</span><span class="v neg">{{ "%.1f%%" | format(metrics.max_dd_pct) }}</span></div>
     <div class="metric"><span class="k">Trades</span><span class="v">{{ metrics.trades }}</span></div>
     <div class="metric"><span class="k">Win rate</span><span class="v">{{ "%.1f%%" | format(metrics.win_rate_pct) }}</span></div>
+    {% if metrics.date_from %}
+    <div class="metric"><span class="k">Range</span>
+      <span class="v range mono">{{ metrics.date_from }} → {{ metrics.date_to }}</span></div>
+    {% endif %}
     {% if spark %}
     <svg class="sparkline" viewBox="0 0 260 36" preserveAspectRatio="none" aria-label="Equity curve">
       <path d="{{ spark }}" fill="none" stroke="#31C48D" stroke-width="1.6"/>
@@ -26,6 +30,10 @@
     {% endif %}
     <div class="run">
       <span class="status">Run {{ run.run_id[:6] }} · v{{ run.version }}{% if run.is_draft %} (draft){% endif %} ✓</span>
+      {% if metrics.per_instrument %}
+      <button class="btn ps-open" hx-get="/studio/{{ defn.id }}/runs/latest/symbols?closable=1"
+              hx-target="#symbol-breakdown" hx-swap="innerHTML">Symbols</button>
+      {% endif %}
       <button class="btn" hx-post="/studio/{{ defn.id }}/optimize"
               hx-target="#side-panel" hx-swap="outerHTML">Optimize</button>
     </div>

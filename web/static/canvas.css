@@ -22,14 +22,30 @@
 .cv-embed .cv-metrics .metric .k{font-size:.66rem}
 .cv-embed .cv-metrics .metric .v{font-size:.82rem}
 .cv-embed .cv-metrics .sparkline{width:120px;height:22px}
-/* Optimize lives in the form view's side panel; the canvas has none to swap. */
-.cv-embed .cv-metrics .run{display:none}
+/* Optimize lives in the form view's side panel; the canvas has none to swap.
+   The Symbols button (.ps-open) stays: its target #symbol-breakdown exists in
+   both views, and the per-symbol table is most useful right on the canvas. */
+.cv-embed .cv-metrics .run{display:contents}
+.cv-embed .cv-metrics .run .status{display:none}
+.cv-embed .cv-metrics .run .btn:not(.ps-open){display:none}
 
+/* Per-symbol breakdown drops under the metrics strip; empty div is invisible. */
+.cv-embed .cv-symbols:empty{display:none}
+.cv-embed .cv-symbols{
+  flex-shrink:0;max-height:45vh;overflow-y:auto;
+  padding:8px 18px;border-bottom:1px solid var(--line);background:var(--panel);
+}
+
+/* Library strip on top (styled in studio.css); stage + inspector below. */
 .cv-embed .cv-workspace{
   flex:1;min-height:0;display:grid;
-  grid-template-columns:210px minmax(0,1fr) 320px;
+  grid-template-columns:minmax(0,1fr) 320px;
+  grid-template-rows:auto minmax(0,1fr);
+  grid-template-areas:"library library" "stage inspector";
 }
-.cv-embed .library{min-height:0}       /* grid child: scroll instead of stretching */
+.cv-embed .cv-workspace .library{grid-area:library;min-height:0}
+.cv-embed .cv-stage{grid-area:stage}
+.cv-embed .cv-inspector{grid-area:inspector}
 .cv-embed .cv-inspector{
   background:var(--panel);border-left:1px solid var(--line);
   overflow:auto;padding:12px;min-height:0;
@@ -59,7 +75,7 @@
 }
 .cv-embed .cv-tool:hover{border-color:var(--branch)}
 .cv-embed .cv-zoom{
-  font-family:'IBM Plex Mono',monospace;font-size:.7rem;color:var(--muted);
+  font-family:var(--mono);font-size:.7rem;color:var(--muted);
   min-width:38px;text-align:right;
 }
 
@@ -100,7 +116,7 @@
   display:flex;align-items:center;gap:8px;
 }
 .cv-embed .cv-insp-opt{
-  font-family:'IBM Plex Mono',monospace;font-size:.6rem;letter-spacing:.06em;
+  font-family:var(--mono);font-size:.6rem;letter-spacing:.06em;
   color:var(--opt);border:1px solid var(--opt);border-radius:4px;padding:1px 5px;
 }
 /* The block partial was drawn for a wide column; let it breathe in a narrow one. */
@@ -110,7 +126,7 @@
   outline:1px solid var(--branch);outline-offset:2px;border-radius:6px;
 }
 .cv-embed .cv-inspector kbd{
-  font-family:'IBM Plex Mono',monospace;font-size:.68rem;
+  font-family:var(--mono);font-size:.68rem;
   border:1px solid var(--line);border-radius:4px;padding:0 4px;background:var(--chip);
 }
 
@@ -130,16 +146,16 @@
 .cv-embed .cv-node:hover .cv-box{stroke:var(--branch)}
 .cv-embed .cv-node.selected .cv-box{stroke:var(--branch);stroke-width:2;fill:var(--panel-2)}
 .cv-embed .cv-node .cv-accent{fill:var(--line)}
-.cv-embed .cv-node text{font-family:'Space Grotesk',system-ui,sans-serif}
+.cv-embed .cv-node text{font-family:var(--sans)}
 .cv-embed .cv-badge{
   font-size:8.5px;letter-spacing:.09em;fill:var(--muted);text-transform:uppercase;
 }
 .cv-embed .cv-label{font-size:12.5px;font-weight:600;fill:var(--text)}
-.cv-embed .cv-detail{font-family:'IBM Plex Mono',monospace;font-size:9.5px;fill:var(--muted)}
+.cv-embed .cv-detail{font-family:var(--mono);font-size:9.5px;fill:var(--muted)}
 .cv-embed .cv-opt{fill:var(--opt)}
 
 .cv-embed .cv-node[data-drop].drop-hover .cv-box{
-  stroke:var(--long);stroke-width:2;stroke-dasharray:5 4;fill:var(--long-dim);
+  stroke:var(--accent);stroke-width:2;stroke-dasharray:5 4;fill:var(--accent-soft);
 }
 .cv-embed .cv-del{opacity:0;transition:.12s;cursor:pointer}
 .cv-embed .cv-node:hover .cv-del,

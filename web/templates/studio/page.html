@@ -2,7 +2,8 @@
 {% block title %}Strategy Builder — {{ defn.name }}{% endblock %}
 
 {% block head %}
-  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  {# Fonts come from base.html (IBM Plex Sans / JetBrains Mono) — the Builder
+     shares the app theme since 2026-07-29; Space Grotesk is gone. #}
   <link rel="stylesheet" href="/static/studio.css?v={{ static_version }}">
   {# studio.css sizes in rem against a 15px root; app.css is px-only, so the
      shell around it is unaffected by this page-local root size. #}
@@ -46,6 +47,8 @@
     </div>
     {% include "studio/_side_panel.html" %}
   </div>
+  {# Footer "Symbols" button target — also fed by the Results side-panel tab. #}
+  <div id="symbol-breakdown" class="pg-symbols"></div>
   {% with run = initial_run, metrics = initial_metrics, spark = initial_spark %}{% include "studio/_footer_metrics.html" %}{% endwith %}
 </div>
 {% endblock %}

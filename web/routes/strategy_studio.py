@@ -35,6 +35,7 @@ import uuid
 from collections import OrderedDict
 from collections.abc import Iterator
 from contextlib import ExitStack, contextmanager
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, BackgroundTasks, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, PlainTextResponse, Response
@@ -835,7 +836,103 @@ def route_run_folds(request: Request, strategy_id: str):
     return HTMLResponse(
         _tpl()
         .get_template("studio/_results_pane.html")
-        .render(_ctx(request, _load_working(strategy_id), metrics=metrics, run=run))
+        .render(
+            _ctx(
+                request,
+                _load_working(strategy_id),
+                metrics=metrics,
+                run=run,
+                symbol_rows=_symbol_rows(metrics),
+            )
+        )
+    )
+
+
+def _symbol_rows(metrics: BacktestMetrics) -> list[dict]:
+    """Per-instrument table rows: sparkline path + best-of-column flags.
+
+    Rows are sorted by net P&L desc; `idx` keeps the original per_instrument
+    index so the trades route addresses the right sleeve after sorting.
+    """
+    rows = [
+        {"idx": i, "m": im, "spark": _spark_path(im.equity_curve, w=90, h=20)}
+        for i, im in enumerate(metrics.per_instrument)
+    ]
+    rows.sort(key=lambda r: r["m"].net_pnl_pct, reverse=True)
+    if rows:
+        max(rows, key=lambda r: r["m"].net_pnl_pct)["best_pnl"] = True
+        max(rows, key=lambda r: r["m"].sharpe)["best_sharpe"] = True
+        # max_dd_pct is negative; "best" = smallest magnitude = largest value
+        max(rows, key=lambda r: r["m"].max_dd_pct)["best_dd"] = True
+    return rows
+
+
+@router.get("/studio/{strategy_id}/runs/latest/symbols")
+def route_run_symbols(request: Request, strategy_id: str, closable: int = 0):
+    run = store.latest_run(strategy_id)
+    if not run or run["status"] != "done" or not run["metrics"]:
+        return HTMLResponse('<p class="opt-note">No completed run yet.</p>')
+    metrics = BacktestMetrics.from_json(run["metrics"])
+    if not metrics.per_instrument:
+        return HTMLResponse(
+            '<p class="opt-note">No per-symbol detail for this run '
+            "— re-run the backtest.</p>"
+        )
+    return HTMLResponse(
+        _tpl()
+        .get_template("studio/_per_symbol.html")
+        .render(
+            _ctx(
+                request,
+                _load_working(strategy_id),
+                symbol_rows=_symbol_rows(metrics),
+                closable=bool(closable),
+            )
+        )
+    )
+
+
+@router.get("/studio/{strategy_id}/runs/latest/symbols/{idx}/trades")
+def route_symbol_trades(request: Request, strategy_id: str, idx: int):
+    run = store.latest_run(strategy_id)
+    if not run or run["status"] != "done" or not run["metrics"]:
+        return HTMLResponse('<p class="opt-note">No completed run yet.</p>')
+    metrics = BacktestMetrics.from_json(run["metrics"])
+    if not (0 <= idx < len(metrics.per_instrument)):
+        raise HTTPException(404, f"no instrument #{idx} in the latest run")
+    im = metrics.per_instrument[idx]
+
+    def _ts(v: int) -> str:
+        return datetime.fromtimestamp(v, UTC).strftime("%Y-%m-%d %H:%M") if v else "—"
+
+    def _dur(mins: int) -> str:
+        return f"{mins // 60}h{mins % 60:02d}" if mins >= 60 else f"{mins}m"
+
+    trade_rows = [
+        {
+            "side": t.get("side") or "—",
+            "entry": _ts(int(t.get("entry_time") or 0)),
+            "exit": _ts(int(t.get("exit_time") or 0)),
+            "entry_price": t.get("entry_price"),
+            "exit_price": t.get("exit_price"),
+            "pnl": float(t.get("pnl") or 0.0),
+            "dur": _dur(int(t.get("dur_min") or 0)),
+            "exit_reason": t.get("exit_reason"),
+        }
+        for t in im.trades_detail
+    ]
+    return HTMLResponse(
+        _tpl()
+        .get_template("studio/_symbol_trades.html")
+        .render(
+            _ctx(
+                request,
+                _load_working(strategy_id),
+                im=im,
+                idx=idx,
+                trade_rows=trade_rows,
+            )
+        )
     )
 
 

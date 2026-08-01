@@ -1,0 +1,37 @@
+{# ctx: im (InstrumentMetrics), trade_rows (formatted dicts: entry/exit iso,
+   prices, side, pnl, dur, exit_reason). Rendered into the hidden detail row
+   under the clicked per-symbol row. #}
+{% if not trade_rows %}
+<p class="opt-note">No trade detail for {{ im.symbol }} in this run.</p>
+{% else %}
+<div class="ps-trades">
+  <table class="ps-table ps-inner">
+    <thead>
+      <tr>
+        <th class="l">#</th><th class="l">Side</th>
+        <th class="l">Entry</th><th>Price</th>
+        <th class="l">Exit</th><th>Price</th>
+        <th>PnL</th><th>Dur</th><th class="l">Exit reason</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for t in trade_rows %}
+      <tr>
+        <td class="l">{{ loop.index }}</td>
+        <td class="l {{ 'pos' if t.side == 'BUY' else 'neg' }}">{{ t.side }}</td>
+        <td class="l mono">{{ t.entry }}</td>
+        <td>{{ t.entry_price }}</td>
+        <td class="l mono">{{ t.exit }}</td>
+        <td>{{ t.exit_price }}</td>
+        <td class="{{ 'pos' if t.pnl > 0 else 'neg' if t.pnl < 0 }}">{{ "%+.2f" | format(t.pnl) }}</td>
+        <td>{{ t.dur }}</td>
+        <td class="l reason">{{ t.exit_reason or '—' }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% if im.trades > trade_rows | length %}
+  <p class="opt-note">Last {{ trade_rows | length }} of {{ im.trades }} trades.</p>
+  {% endif %}
+</div>
+{% endif %}

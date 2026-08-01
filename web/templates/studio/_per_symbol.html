@@ -1,0 +1,61 @@
+{# ctx: defn, symbol_rows (list of {idx, m: InstrumentMetrics, spark, best_*}),
+   closable (bool — canvas overlay renders a close control, side panel doesn't).
+   Sharpe note: rows use the sleeve's per-trade Sharpe (fallback: curve Sharpe);
+   with several instruments the headline strip's Sharpe comes from the blended
+   curve, so rows do not visually average to it — by design, not a bug. #}
+<div class="ps-panel">
+  <div class="ps-head">
+    <span class="t">Per symbol · {{ symbol_rows | length }} instrument{{ 's' if symbol_rows | length != 1 }}</span>
+    {% if closable %}
+    <button class="btn ps-close" type="button" aria-label="Close"
+            onclick="document.getElementById('symbol-breakdown').innerHTML=''">✕</button>
+    {% endif %}
+  </div>
+  <div class="ps-scroll">
+    <table class="ps-table">
+      <thead>
+        <tr>
+          <th class="l">Symbol</th><th class="l">TF</th><th class="l">Range</th>
+          <th>Net P&L</th><th>Sharpe</th><th>Max DD</th>
+          <th>Trades</th><th>Win rate</th><th>PF</th><th class="l">Equity</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in symbol_rows %}
+        {% set m = r.m %}
+        <tr class="ps-row{% if m.trades_detail %} clickable{% endif %}"
+            {% if m.trades_detail %}
+            hx-get="/studio/{{ defn.id }}/runs/latest/symbols/{{ r.idx }}/trades"
+            hx-trigger="click once" hx-target="#ps-trades-{{ r.idx }} td" hx-swap="innerHTML"
+            hx-on:click="var d=document.getElementById('ps-trades-{{ r.idx }}'); d.hidden=!d.hidden"
+            title="Click for the trade list"
+            {% endif %}>
+          <td class="l sym">{{ m.symbol }}</td>
+          <td class="l tf">{{ m.timeframe }}</td>
+          <td class="l range">{% if m.date_from %}{{ m.date_from }} → {{ m.date_to }}{% endif %}</td>
+          <td class="{{ 'pos' if m.net_pnl_pct > 0 else 'neg' if m.net_pnl_pct < 0 }}{{ ' best' if r.best_pnl }}">
+            {{ "%+.2f%%" | format(m.net_pnl_pct) }}</td>
+          <td class="{{ 'best' if r.best_sharpe }}">{{ "%.2f" | format(m.sharpe) }}</td>
+          <td class="neg{{ ' best' if r.best_dd }}">{{ "%.1f%%" | format(m.max_dd_pct) }}</td>
+          <td>{{ m.trades }}</td>
+          <td>{{ "%.1f%%" | format(m.win_rate_pct) }}</td>
+          <td>{{ "%.2f" | format(m.profit_factor) }}</td>
+          <td class="l">
+            {% if r.spark %}
+            <svg class="ps-spark" viewBox="0 0 90 20" preserveAspectRatio="none"
+                 aria-label="{{ m.symbol }} equity curve">
+              <path d="{{ r.spark }}" fill="none"
+                    stroke="{{ '#31C48D' if m.net_pnl_pct >= 0 else '#f87171' }}"
+                    stroke-width="1.2"/>
+            </svg>
+            {% endif %}
+          </td>
+        </tr>
+        <tr id="ps-trades-{{ r.idx }}" class="ps-trades-row" hidden><td colspan="10"></td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p class="opt-note ps-note">Bold = best in column. Rows are one engine run per
+    instrument (equal-weight blend feeds the headline strip); click a row for its trades.</p>
+</div>

@@ -23,7 +23,10 @@ Windows
 sample. That is what the walk-forward optimizer folds on: it asks for one
 in-sample window and ``walkforward.folds`` out-of-sample windows instead of
 letting each adapter invent its own split. A windowed run reports no fold
-table of its own — the caller *is* the folding.
+table of its own — the caller *is* the folding. The same rule gates
+``per_instrument``: only a full (window-less) run keeps the per-sleeve
+breakdown (``InstrumentMetrics`` rows incl. capped trade lists) that the
+studio's per-symbol table renders.
 
 What ``to_nautilus`` refuses to translate
 -----------------------------------------
@@ -61,6 +64,29 @@ class FoldMetrics:
 
 
 @dataclass
+class InstrumentMetrics:
+    """One sleeve of a multi-instrument run — the engine already computes all
+    of this per instrument; this dataclass is what keeps it from being blended
+    away. ``sharpe`` follows the same per-trade-preferred convention as the
+    aggregate, so a single-instrument run's row matches the headline strip;
+    with several instruments the strip's Sharpe comes from the blended curve
+    and the rows will not visually average to it."""
+
+    symbol: str
+    timeframe: str
+    net_pnl_pct: float
+    sharpe: float
+    max_dd_pct: float
+    trades: int
+    win_rate_pct: float
+    profit_factor: float
+    equity_curve: list[float] = field(default_factory=list)  # normalized, ≤80 pts
+    trades_detail: list[dict] = field(default_factory=list)  # last ≤100 trades
+    date_from: str = ""  # ISO date of the sleeve's first bar ("" = unknown)
+    date_to: str = ""  # ISO date of the sleeve's last bar
+
+
+@dataclass
 class BacktestMetrics:
     net_pnl_pct: float
     sharpe: float
@@ -71,6 +97,11 @@ class BacktestMetrics:
     profit_factor: float
     equity_curve: list[float] = field(default_factory=list)  # normalized, 1.0 start
     folds: list[FoldMetrics] = field(default_factory=list)
+    per_instrument: list[InstrumentMetrics] = field(default_factory=list)
+    # Backtest data window (min/max across sleeves, ISO dates; "" = unknown —
+    # old stored runs deserialize to "" and the UI hides the range chip).
+    date_from: str = ""
+    date_to: str = ""
 
     def to_json(self) -> str:
         return json.dumps(asdict(self))
@@ -79,6 +110,9 @@ class BacktestMetrics:
     def from_json(cls, raw: str) -> BacktestMetrics:
         d = json.loads(raw)
         d["folds"] = [FoldMetrics(**f) for f in d.get("folds", [])]
+        d["per_instrument"] = [
+            InstrumentMetrics(**p) for p in d.get("per_instrument", [])
+        ]
         return cls(**d)
 
 
@@ -108,10 +142,41 @@ class BacktestAdapter(Protocol):
     ) -> BacktestMetrics: ...
 
 
+def _bars_span(bars) -> tuple[str, str]:
+    """ISO date range of a bars frame; ("", "") when it has no DatetimeIndex.
+
+    Tolerant on purpose: tests inject synthetic frames with RangeIndex, and a
+    missing range must degrade to the hidden-chip state, not crash a run.
+    """
+    try:
+        import pandas as pd
+
+        idx = bars.index
+        if not isinstance(idx, pd.DatetimeIndex) or len(idx) == 0:
+            return "", ""
+        return str(idx.min())[:10], str(idx.max())[:10]
+    except Exception:
+        return "", ""
+
+
 class StubBacktestAdapter:
     """Deterministic fake engine. See module docstring."""
 
     N_BARS = 220  # equity curve points (fits the 260px sparkline budget)
+    LOOKBACK_DAYS = 180  # mirrors NautilusBacktestAdapter's default window
+
+    def _span(self) -> tuple[str, str]:
+        """The notional data window a real run would load (now − lookback).
+
+        Dates are the one non-deterministic stub output: they move with the
+        clock, deliberately — they describe the window, not the fake metrics,
+        and none of the rng draws depend on them.
+        """
+        from datetime import UTC, datetime, timedelta
+
+        end = datetime.now(UTC)
+        start = end - timedelta(days=self.LOOKBACK_DAYS)
+        return start.date().isoformat(), end.date().isoformat()
 
     def _seed(self, compiled: CompiledStrategy, window: Window | None = None) -> int:
         payload = json.dumps(
@@ -183,6 +248,41 @@ class StubBacktestAdapter:
             for i in range(folds)
         ]
 
+        # Per-instrument rows use a FRESH Random per instrument, derived from
+        # the run seed — drawing from the shared `rng` here would shift every
+        # draw above and break the stub's documented determinism contract.
+        span = self._span()
+        per_inst: list[InstrumentMetrics] = []
+        if window is None:
+            for inst in compiled.instruments:
+                key = f"{inst['symbol']}|{inst['timeframe']}"
+                irng = random.Random(
+                    self._seed(compiled, window)
+                    ^ int(hashlib.sha256(key.encode()).hexdigest()[:12], 16)
+                )
+                idrift = irng.uniform(-0.0004, 0.0016)
+                ivol = irng.uniform(0.004, 0.011)
+                icurve = [1.0]
+                for _ in range(79):
+                    icurve.append(icurve[-1] * (1 + irng.gauss(idrift, ivol)))
+                ist = _curve_stats(icurve)
+                per_inst.append(
+                    InstrumentMetrics(
+                        symbol=inst["symbol"],
+                        timeframe=inst["timeframe"],
+                        net_pnl_pct=round((icurve[-1] - 1) * 100, 2),
+                        sharpe=round(ist.sharpe_ann, 2),
+                        max_dd_pct=round(-ist.max_dd * 100, 2),
+                        trades=irng.randint(20, 200),
+                        win_rate_pct=round(irng.uniform(38, 58), 1),
+                        profit_factor=round(irng.uniform(0.9, 1.9), 2),
+                        equity_curve=[round(x, 5) for x in icurve],
+                        trades_detail=[],  # stub has no trades; UI hides expander
+                        date_from=span[0],
+                        date_to=span[1],
+                    )
+                )
+
         return BacktestMetrics(
             net_pnl_pct=round(net, 1),
             sharpe=round(sharpe, 2),
@@ -193,6 +293,9 @@ class StubBacktestAdapter:
             profit_factor=round(rng.uniform(0.9, 1.9), 2),
             equity_curve=[round(x, 5) for x in equity],
             folds=fold_metrics,
+            per_instrument=per_inst,
+            date_from=span[0],
+            date_to=span[1],
         )
 
 
@@ -575,6 +678,24 @@ def _finite(value, default: float = 0.0) -> float:
     return f if math.isfinite(f) else default
 
 
+def _trade_row(t: dict) -> dict:
+    """Persisted subset of an engine trade dict (times are unix seconds).
+
+    The full trade carries chart-marker and reason-join fields; only what the
+    per-symbol trade table renders goes into the store blob.
+    """
+    return {
+        "entry_time": int(t.get("entry_time") or 0),
+        "exit_time": int(t.get("exit_time") or 0),
+        "entry_price": _finite(t.get("entry_price")),
+        "exit_price": _finite(t.get("exit_price")),
+        "side": str(t.get("side") or ""),
+        "pnl": _finite(t.get("pnl")),
+        "dur_min": int(t.get("dur_min") or 0),
+        "exit_reason": t.get("exit_reason"),
+    }
+
+
 class NautilusBacktestAdapter:
     """Runs a CompiledStrategy through the app's existing NautilusTrader runner.
 
@@ -715,7 +836,7 @@ class NautilusBacktestAdapter:
 
     def _run_one(
         self, spec, bars, label: str, recipe: dict
-    ) -> tuple[list[float], dict]:
+    ) -> tuple[list[float], dict, list[dict]]:
         # Engine runs go through the sandbox child like every other engine call
         # in the app (agent, /backtest, robustness, loop). A Nautilus backtest
         # holds the GIL for its entire run, so calling run_composed_backtest
@@ -740,7 +861,7 @@ class NautilusBacktestAdapter:
         # sparkline and every curve statistic meaningless.
         mtm = metrics.get("equity_curve_mtm")
         curve = [eq for _ts, eq in mtm] if mtm else result.equity_curve
-        return _normalize(curve), metrics
+        return _normalize(curve), metrics, list(getattr(result, "trades", None) or [])
 
     def _folds(
         self,
@@ -771,7 +892,9 @@ class NautilusBacktestAdapter:
                 chunk = bars.iloc[i * size + embargo_bars : (i + 1) * size]
                 recipe = (recipes or [])[n] if recipes and n < len(recipes) else {}
                 try:
-                    curve, m = self._run_one(spec, chunk, f"fold{i + 1}", recipe)
+                    # Trades are dropped on purpose: a per-fold trade list would
+                    # multiply the store blob by fold count for no UI surface.
+                    curve, m, _ = self._run_one(spec, chunk, f"fold{i + 1}", recipe)
                 except UnsupportedStrategy:
                     raise  # a config problem is not a per-fold hiccup
                 except Exception:  # noqa: BLE001 — a dead fold tells us nothing
@@ -826,14 +949,18 @@ class NautilusBacktestAdapter:
         gross_win = gross_loss = 0.0
         all_bars: list = []
         recipes: list[dict] = []
+        per_inst: list[InstrumentMetrics] = []
 
+        spans: list[tuple[str, str]] = []
         for inst in compiled.instruments:
             bars = self.load_bars(inst["symbol"], inst["timeframe"])
             if window is not None:
                 bars = self._slice(bars, window)
+            span = _bars_span(bars)
+            spans.append(span)
             recipe = self._recipe(inst["symbol"], inst["timeframe"])
             recipes.append(recipe)
-            curve, m = self._run_one(spec, bars, inst["symbol"], recipe)
+            curve, m, inst_trades = self._run_one(spec, bars, inst["symbol"], recipe)
             curves.append(curve)
             sleeves.append(m)
             all_bars.append(bars)
@@ -843,8 +970,39 @@ class NautilusBacktestAdapter:
             # profit_factor is a ratio, so it cannot be summed across sleeves —
             # rebuild it from gross P&L. avg_win/avg_loss are NaN when the side
             # never traded, hence _finite rather than `or 0.0` (NaN is truthy).
-            gross_win += _finite(m.get("avg_win")) * int(m.get("n_wins") or 0)
-            gross_loss += abs(_finite(m.get("avg_loss"))) * int(m.get("n_losses") or 0)
+            sleeve_gw = _finite(m.get("avg_win")) * int(m.get("n_wins") or 0)
+            sleeve_gl = abs(_finite(m.get("avg_loss"))) * int(m.get("n_losses") or 0)
+            gross_win += sleeve_gw
+            gross_loss += sleeve_gl
+            if window is None:
+                # Same skip rule as `folds`: a windowed run is one optimizer
+                # trial slice, and per-sleeve detail there would bloat every
+                # trial's store blob for a table nobody renders.
+                sst = _curve_stats(curve, _finite(m.get("annualization"), 252.0))
+                per_inst.append(
+                    InstrumentMetrics(
+                        symbol=inst["symbol"],
+                        timeframe=inst["timeframe"],
+                        net_pnl_pct=round((curve[-1] - 1) * 100, 2),
+                        sharpe=round(
+                            _finite(m.get("sharpe_per_trade"), sst.sharpe_ann), 2
+                        ),
+                        max_dd_pct=round(
+                            _finite(m.get("max_dd"), -sst.max_dd) * 100, 2
+                        ),
+                        trades=n,
+                        win_rate_pct=round(_finite(m.get("win_rate")) * 100, 1),
+                        profit_factor=round(sleeve_gw / sleeve_gl, 2)
+                        if sleeve_gl
+                        else 0.0,
+                        equity_curve=[
+                            round(v, 5) for v in _downsample(curve, limit=80)
+                        ],
+                        trades_detail=[_trade_row(t) for t in inst_trades[-100:]],
+                        date_from=span[0],
+                        date_to=span[1],
+                    )
+                )
 
         if not curves:
             raise UnsupportedStrategy(["strategy has no active instruments"])
@@ -886,6 +1044,8 @@ class NautilusBacktestAdapter:
             )
         )
 
+        froms = sorted(s[0] for s in spans if s[0])
+        tos = sorted(s[1] for s in spans if s[1])
         return BacktestMetrics(
             net_pnl_pct=round((blended[-1] - 1) * 100, 2),
             sharpe=round(sharpe, 2),
@@ -896,4 +1056,7 @@ class NautilusBacktestAdapter:
             profit_factor=round(gross_win / gross_loss, 2) if gross_loss else 0.0,
             equity_curve=_downsample(blended),
             folds=folds,
+            per_instrument=per_inst,
+            date_from=froms[0] if froms else "",
+            date_to=tos[-1] if tos else "",
         )

@@ -1,4 +1,4 @@
-{# ctx: defn, metrics, run #}
+{# ctx: defn, metrics, run, symbol_rows (list|None — per-instrument breakdown) #}
 <p class="opt-note">Run {{ run.run_id[:6] }} · v{{ run.version }} · fold-by-fold OOS metrics.</p>
 <div class="wf" style="margin-top:0">
   <div class="t">OOS folds</div>
@@ -14,3 +14,6 @@
   <div class="wf-row"><span>Profit factor</span><span>{{ "%.2f" | format(metrics.profit_factor) }}</span></div>
   <div class="wf-row"><span>Trades</span><span>{{ metrics.trades }}</span></div>
 </div>
+{% if symbol_rows %}
+{% with closable = False %}{% include "studio/_per_symbol.html" %}{% endwith %}
+{% endif %}

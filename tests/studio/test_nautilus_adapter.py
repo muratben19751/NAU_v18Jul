@@ -13,9 +13,11 @@ import pandas as pd
 import pytest
 
 from strategy_studio.backtest import (
+    BacktestMetrics,
     NautilusBacktestAdapter,
     StubBacktestAdapter,
     UnsupportedStrategy,
+    Window,
     to_nautilus,
 )
 from strategy_studio.compiler import compile_strategy
@@ -311,6 +313,120 @@ def test_runner_error_surfaces_instead_of_returning_fake_metrics(
         adapter.run(compile_strategy(_defn([_rsi_rule()], [_atr_exit()])))
 
 
+# ── per-instrument breakdown (the sleeves the blend used to discard) ────────
+
+
+def _two_instrument_defn():
+    # _defn passes instruments itself, so a kwarg would collide — override after.
+    d = _defn([_rsi_rule()], [_atr_exit()])
+    d.instruments = [
+        InstrumentConfig(symbol="BTCUSDT", timeframe="1h", active=True),
+        InstrumentConfig(symbol="QQQ.NASDAQ", timeframe="4h", active=True),
+    ]
+    return d
+
+
+def test_run_captures_per_instrument_metrics(monkeypatch, fake_bars):
+    import sandbox
+
+    def _fake_run(spec, bars, recipe, **kw):
+        # Distinguishable sleeves: the external recipe doubles, Bybit is flat.
+        gain = 2.0 if recipe.get("source") == "external" else 1.0
+        r = _FakeResult([10_000 + (10_000 * gain / 100) * i for i in range(101)])
+        r.trades = [
+            {
+                "entry_time": 1_700_000_000 + i * 3600,
+                "exit_time": 1_700_001_800 + i * 3600,
+                "entry_price": 100.0,
+                "exit_price": 101.0,
+                "side": "BUY",
+                "pnl": 1.0,
+                "dur_min": 30,
+                "exit_reason": "tp",
+                "chart_marker": object(),  # non-persistable extras must be dropped
+            }
+            for i in range(120)
+        ]
+        return r
+
+    monkeypatch.setattr(sandbox, "run_backtest_guarded", _fake_run)
+    adapter = NautilusBacktestAdapter(bars_loader=lambda s, tf: fake_bars)
+    m = adapter.run(compile_strategy(_two_instrument_defn()))
+
+    assert [(p.symbol, p.timeframe) for p in m.per_instrument] == [
+        ("BTCUSDT", "1h"),
+        ("QQQ.NASDAQ", "4h"),
+    ]
+    btc, qqq = m.per_instrument
+    assert btc.net_pnl_pct == pytest.approx(100.0)
+    assert qqq.net_pnl_pct == pytest.approx(200.0)
+    assert btc.trades == 10 and btc.win_rate_pct == pytest.approx(60.0)
+    assert len(btc.equity_curve) <= 80 and btc.equity_curve[0] == 1.0
+    # capped at the last 100 trades, reduced to the persisted subset
+    assert len(qqq.trades_detail) == 100
+    row = qqq.trades_detail[0]
+    assert set(row) == {
+        "entry_time",
+        "exit_time",
+        "entry_price",
+        "exit_price",
+        "side",
+        "pnl",
+        "dur_min",
+        "exit_reason",
+    }
+    # the whole thing must survive the store's JSON roundtrip
+    from strategy_studio.backtest import BacktestMetrics
+
+    again = BacktestMetrics.from_json(m.to_json())
+    assert again.per_instrument[1].trades_detail == qqq.trades_detail
+
+
+def test_windowed_run_skips_per_instrument_detail(monkeypatch, fake_bars):
+    import sandbox
+
+    monkeypatch.setattr(
+        sandbox,
+        "run_backtest_guarded",
+        lambda spec, bars, recipe, **kw: _FakeResult(
+            [10_000 + 100 * i for i in range(101)]
+        ),
+    )
+    adapter = NautilusBacktestAdapter(bars_loader=lambda s, tf: fake_bars)
+    m = adapter.run(
+        compile_strategy(_two_instrument_defn()),
+        window=Window(start=0.0, end=0.5),
+    )
+
+    assert m.per_instrument == []
+
+
+def test_legacy_metrics_json_decodes_without_per_instrument():
+    from strategy_studio.backtest import BacktestMetrics
+
+    legacy = (
+        '{"net_pnl_pct": 1.0, "sharpe": 0.5, "dsr": 0.4, "max_dd_pct": -3.0,'
+        ' "trades": 7, "win_rate_pct": 50.0, "profit_factor": 1.2,'
+        ' "equity_curve": [1.0, 1.01], "folds": []}'
+    )
+    m = BacktestMetrics.from_json(legacy)
+
+    assert m.per_instrument == []
+
+
+def test_stub_generates_per_instrument_rows():
+    compiled = compile_strategy(_two_instrument_defn())
+    m = StubBacktestAdapter().run(compiled)
+
+    assert [(p.symbol, p.timeframe) for p in m.per_instrument] == [
+        ("BTCUSDT", "1h"),
+        ("QQQ.NASDAQ", "4h"),
+    ]
+    assert m.per_instrument[0].trades_detail == []  # stub has no trade lists
+    # rows differ per instrument (fresh per-instrument rng, not one shared draw)
+    assert m.per_instrument[0].equity_curve != m.per_instrument[1].equity_curve
+
+
 # ── the stub stays the default path ─────────────────────────────────────────
 
 
@@ -470,3 +586,60 @@ def test_sweeps_follow_a_swapped_trial_adapter(monkeypatch):
     assert main._optimizer().adapter is swapped, (
         "sweep would have run on the stale import-time adapter"
     )
+
+
+# ── backtest data window (the Range chip in the results strip) ──────────────
+
+
+def test_run_fills_date_range_from_bars(monkeypatch, fake_bars):
+    import sandbox
+
+    monkeypatch.setattr(
+        sandbox,
+        "run_backtest_guarded",
+        lambda spec, bars, recipe, **kw: _FakeResult([10_000 + i for i in range(101)]),
+    )
+    adapter = NautilusBacktestAdapter(bars_loader=lambda s, tf: fake_bars)
+    m = adapter.run(compile_strategy(_defn([_rsi_rule()], [_atr_exit()])))
+
+    assert m.date_from == "2025-01-01"
+    assert m.date_to == "2025-01-17"  # 400 hourly bars end 399h after start
+    row = m.per_instrument[0]
+    assert (row.date_from, row.date_to) == (m.date_from, m.date_to)
+    # survives the store blob roundtrip the routes rely on
+    back = BacktestMetrics.from_json(m.to_json())
+    assert (back.date_from, back.date_to) == (m.date_from, m.date_to)
+    assert back.per_instrument[0].date_to == m.date_to
+
+
+def test_date_range_degrades_without_datetime_index(monkeypatch, fake_bars):
+    """Synthetic frames (RangeIndex) must hide the chip, not crash the run."""
+    import sandbox
+
+    monkeypatch.setattr(
+        sandbox,
+        "run_backtest_guarded",
+        lambda spec, bars, recipe, **kw: _FakeResult([10_000 + i for i in range(101)]),
+    )
+    plain = fake_bars.reset_index(drop=True)
+    adapter = NautilusBacktestAdapter(bars_loader=lambda s, tf: plain)
+    m = adapter.run(compile_strategy(_defn([_rsi_rule()], [_atr_exit()])))
+    assert (m.date_from, m.date_to) == ("", "")
+
+
+def test_legacy_json_without_dates_decodes_to_empty():
+    legacy = BacktestMetrics(
+        net_pnl_pct=1.0,
+        sharpe=0.5,
+        dsr=0.6,
+        max_dd_pct=-3.0,
+        trades=7,
+        win_rate_pct=50.0,
+        profit_factor=1.2,
+    ).to_json()
+    import json as _json
+
+    d = _json.loads(legacy)
+    d.pop("date_from"), d.pop("date_to")  # a blob stored before the field existed
+    back = BacktestMetrics.from_json(_json.dumps(d))
+    assert (back.date_from, back.date_to) == ("", "")

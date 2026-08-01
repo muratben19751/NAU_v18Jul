@@ -2,9 +2,9 @@
 {% block title %}Canvas — {{ defn.name }}{% endblock %}
 
 {% block head %}
-  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-  {# studio.css first: the inspector reuses the form view's own partials, so it
-     needs their styles. canvas.css only adds the .cv-* layer on top. #}
+  {# Fonts come from base.html (IBM Plex Sans / JetBrains Mono) — shared app
+     theme. studio.css first: the inspector reuses the form view's own
+     partials, so it needs their styles. canvas.css only adds .cv-* on top. #}
   <link rel="stylesheet" href="/static/studio.css?v={{ static_version }}">
   <link rel="stylesheet" href="/static/canvas.css?v={{ static_version }}">
   <style>:root{font-size:15px}</style>
@@ -35,6 +35,9 @@
       {% include "studio/_footer_metrics.html" %}
     {% endwith %}
   </div>
+  {# Per-symbol breakdown drops in here (footer's "Symbols" button target);
+     empty = invisible. Present in BOTH views — a missing hx-target errors. #}
+  <div id="symbol-breakdown" class="cv-symbols"></div>
 
   <div class="cv-workspace">
     {# The form view's own palette: server-rendered from INDICATOR_REGISTRY, with
