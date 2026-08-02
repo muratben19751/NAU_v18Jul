@@ -4,7 +4,9 @@ Wiki References
 ---------------
 See: [[webapp_module_map]] (bu modülün rolü + `_create_message` ledger-hook'u),
 [[crash_only_design]] (best-effort append; ledger I/O bir LLM çağrısını asla
-bozamaz — restart'ta veri kaybolmasın diye diske yazılır).
+bozamaz — restart'ta veri kaybolmasın diye diske yazılır),
+[[llm_maliyet_kaldiraclari]] (bu defterden çıkarılan maliyet denetimi: kalem
+kırılımı, model kıyası, çağrı-sınıfı başına cache oranı).
 
 Every LLM call in the app funnels through ``agent._create_message`` (and the four
 narrative/summary helpers that were routed through it). Each successful call

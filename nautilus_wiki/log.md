@@ -755,3 +755,15 @@ OPS NOTU: bu turda calisma agacinda BASKA bir degisiklik seti daha vardi — AUT
 - 2026-08-02 (4) — wiki-sync: kod<->dokuman koprusunun KOD YONU tazelendi. webapp_module_map'te iki satir guncellendi: `agent.py` (ucretsiz filtresi — `_is_free` fiyat alanindan okur, `:free` son ekinden DEGIL cunku openrouter/free o eki tasimaz; bayrak cache'e girer, suzme render'da; NAUTILUS_OPENROUTER_FREE_ONLY=0 tum katalogu acar; free-only yedegi AYRI cunku eski statik uclu tamamen paraliydi; NAUTILUS_OPENROUTER_EXTRA_MODELS ucretsizlere EK olarak parali id ekler ve pin'den farki listenin yerine gecmemesi) ve `web/routes/studio.py` (yeni context anahtarlari _llm_or_free_only + _llm_or_paid_extras — sablon grubu "ucretsiz (N)"/"tumu (N)" diye baslikladirsin ve elle eklenen paraliyi ayri optgroup'a koysun diye). Karsi yon zaten yerindeydi: agent.py docstring'ine "ucretsiz filtresi" eklendi, web/routes/studio.py docstring'i model_secici_ve_gorunurluk'e bakiyordu. Lint 0 -> 0 (broken_links/orphans/missing_summary/missing_frontmatter/stale/stubs hepsi sifir).
 
 OPS NOTU: calisma agacinda bu oturumdan ONCE var olan izlenmeyen dosyalar duruyor (_e2e*.py, _fix_i18n*.py, _scan_tr.py, _stoptime.py, ck*.txt, pyout.txt, r.txt, tmp_m.txt, _studio.html, _auto_shot.png, .claude/settings.local.json.yedek-*). Skill'in onerdigi `git add '*.py'` bunlarin bir kismini SUPURURDU — commit yalnizca bu oturumda degistirilen 7 dosya acikca sahnelenerek atildi.
+
+## 2026-08-02 — LLM maliyet denetimi wiki'ye islendi
+- ingest: wiki/synthesis/llm_maliyet_kaldiraclari.md (yeni)
+- update: wiki/synthesis/webapp_module_map.md — agent.py + token_ledger.py satirlarina maliyet denetimi ozeti
+- update: wiki/synthesis/auto_mission_control.md — BUTCE gostergesi -> kaldirac sayfasina bag
+- update: agent.py + token_ledger.py docstring Wiki References -> [[llm_maliyet_kaldiraclari]]
+- olcum: defter 2026-07-23>08-02 = 3304 cagri / 21.5M token / ~$346; cache yazimi $234 + output $103
+- olcum: model probu — sonnet-5 -61% (44 cagrilik gercek kosu dogruladi), opus-5 +22% PAHALI (2.8x uzun yanit)
+- tespit: _ClaudeCLIMessages.create max_tokens'i dusuruyor -> 400/900/4000 tavanlari varsayilan yolda olu
+- tespit: _purpose'suz 6 cagri noktasi harcamanin %92'si ($316)
+- tespit: cache_rd/wr cagri sinifina gore ayrisiyor — custom_block 2.34, composed 0.52, idea 0.45
+- acik: defterde 8 sentetik custom_block satiri, kaynagi bulunamadi

@@ -6,8 +6,11 @@ Returns a dict:
 Wiki References
 ---------------
 See: [[model_secici_ve_gorunurluk]] (model seçici, canlı OpenRouter kataloğu,
-ücretsiz filtresi, model adının çözülmesi). Geri kalanı app-specific; wiki
-kapsamı dışında (LLM parametre önericisi, bir Nautilus kavramı değil).
+ücretsiz filtresi, model adının çözülmesi), [[llm_maliyet_kaldiraclari]] (defter
+denetimi + maliyet kaldıraçları; `_ClaudeCLIMessages.create`'in `max_tokens`'ı
+düşürdüğü ve `_purpose`suz çağrıların kör alan oluşturduğu buradan izlenir).
+Geri kalanı app-specific; wiki kapsamı dışında (LLM parametre önericisi, bir
+Nautilus kavramı değil).
 """
 
 from __future__ import annotations

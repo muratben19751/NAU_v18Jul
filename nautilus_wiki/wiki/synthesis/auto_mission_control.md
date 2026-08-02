@@ -78,7 +78,8 @@ Ajan state'ine üç şey eklendi (koşu başlangıcında **anlık görüntü**, 
 sonradan değiştirmez):
 
 - `brief` — BRIEF rayının kaynağı; kokpit request formunu yeniden türetmez,
-- `started_at` + `max_hours` / `max_total_tokens` — BÜTÇE göstergeleri,
+- `started_at` + `max_hours` / `max_total_tokens` — BÜTÇE göstergeleri
+  (tavanın altında kalmanın kaldıraçları: [[llm_maliyet_kaldiraclari]]),
 - her backtest satırında `equity` — sparkline için ~40 noktaya indirgenmiş eğri.
 
 **Sparkline neden indirgenir:** ham equity eğrisi 100k+ nokta olabilir; 1 sn'lik
