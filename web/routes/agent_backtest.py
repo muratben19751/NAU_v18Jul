@@ -12,6 +12,11 @@ Endpoints:
     GET  /agent               Page
     POST /agent/run           Start pipeline (returns immediately)
     GET  /agent/progress/{id} Status polling (HTMX every 1s)
+
+Wiki References
+---------------
+See: [[auto_mission_control]] (AUTO kokpitinin ?view=mission sunumu),
+[[webapp_module_map]], [[backtesting_guide]], [[strategy_and_actor]]
 """
 
 from __future__ import annotations

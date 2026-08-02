@@ -7,7 +7,7 @@ template stays presentation-only and the mapping is unit-testable.
 
 Wiki References
 ---------------
-See: [[webapp_module_map]]
+See: [[auto_mission_control]], [[webapp_module_map]]
 """
 
 from __future__ import annotations

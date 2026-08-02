@@ -3,7 +3,8 @@
 
 Wiki References
 ---------------
-See: [[strategy_and_actor]], [[backtesting_guide]], [[webapp_module_map]]
+See: [[strategy_and_actor]], [[backtesting_guide]], [[webapp_module_map]],
+[[auto_mission_control]] (AUTO sekmesinin kokpit yüzeyi)
 
 The merged Compose + Backtest surface. This module owns only the ``GET /studio``
 entry point that renders ``studio.html`` with the UNION of both pages' contexts;
