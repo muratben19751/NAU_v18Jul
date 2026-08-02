@@ -34,6 +34,10 @@ class IterationResult:
     bars_info: dict = field(
         default_factory=dict
     )  # {symbol, category, interval, n_bars}
+    # backtest_log.jsonl timestamp of this iteration, stamped after the log
+    # write — the key the tear sheet overlay opens the run with. "" when the
+    # log write failed or the iteration predates the field.
+    log_ts: str = ""
 
 
 @dataclass

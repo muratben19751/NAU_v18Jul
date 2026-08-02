@@ -36,8 +36,13 @@
     <div class="panel pulse-border">
       <div class="panel-body row">
         <div style="flex:1;">
-          <div class="section-title" style="margin:0 0 4px">🧠 AI Strategy Designer</div>
-          <div class="text-muted">Claude Fable 5 looks at past backtest results and the current catalog to suggest a new strategy for you — including blocks, roles, parameters and name.</div>
+          <div class="section-title" style="margin:0 0 4px;display:flex;align-items:center;gap:10px;">
+            🧠 AI Strategy Designer
+            {% include "fragments/model_badge.html" %}
+          </div>
+          {# Model adı sabit yazılmaz: uygulama varsayılanı değişince (ya da
+             kredi fallback'i devreye girince) burası da onunla değişsin. #}
+          <div class="text-muted">{{ llm_model_label or "The model" }} looks at past backtest results and the current catalog to suggest a new strategy for you — including blocks, roles, parameters and name.</div>
         </div>
         <form hx-post="/strategy/suggest" hx-target="#drafts" hx-swap="outerHTML" hx-indicator="#suggest-spinner" hx-include="#description-input">
           <button class="btn btn-primary" type="submit">🧠 Ask Claude to suggest</button>

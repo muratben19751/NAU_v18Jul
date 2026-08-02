@@ -105,6 +105,23 @@
 
   <div id="toast-host"></div>
 
+  {# ══ Tear sheet overlay ═══════════════════════════════════════════════════
+     Every backtest listing (Reports, Studio run history, AUTO iterations,
+     Session Logs, Strategy Builder) links here via openTearsheet(url). It is
+     an OVERLAY, not a navigation: the screen underneath keeps its scroll
+     position, its polling and its charts, so closing returns to exactly what
+     the user was looking at. ── #}
+  <div id="tsh-overlay" class="tsh-overlay" hidden>
+    <div class="tsh-scrim" onclick="closeTearsheet()"></div>
+    <div class="tsh-dialog" role="dialog" aria-modal="true" aria-label="Tear sheet">
+      <button type="button" class="tsh-x" onclick="closeTearsheet()"
+              aria-label="Close tear sheet">✕</button>
+      <div id="tsh-body" class="tsh-body">
+        <div class="tsh-empty">Loading…</div>
+      </div>
+    </div>
+  </div>
+
   <script src="/static/app.js?v={{ static_version }}"></script>
   <script>
   // ── Toast helper ──────────────────────────────────────────────────────────
@@ -128,6 +145,45 @@
       const [kind, ...rest] = h.split("|");
       window.showToast(rest.join("|") || kind, kind === "err" ? "err" : "ok");
     }
+  });
+  // ── Tear sheet overlay ────────────────────────────────────────────────────
+  //    openTearsheet("/tearsheet?src=log&ts=…") — loads the fragment into the
+  //    overlay. History gets one pushState so the browser Back button closes
+  //    the sheet instead of leaving the page the user was working on.
+  window.openTearsheet = function (url) {
+    var ov = document.getElementById("tsh-overlay");
+    var body = document.getElementById("tsh-body");
+    if (!ov || !body) return;
+    body.innerHTML = '<div class="tsh-empty">Loading…</div>';
+    ov.hidden = false;
+    document.body.classList.add("tsh-open");
+    if (!window.__tshHistory) {
+      history.pushState({ tsh: 1 }, "", location.href);
+      window.__tshHistory = true;
+    }
+    htmx.ajax("GET", url, { target: "#tsh-body", swap: "innerHTML" });
+  };
+  window.closeTearsheet = function (fromPop) {
+    var ov = document.getElementById("tsh-overlay");
+    if (!ov || ov.hidden) return;
+    ov.hidden = true;
+    document.body.classList.remove("tsh-open");
+    // Release the Chart.js canvases — the overlay is reused for the next run,
+    // and a stale chart would keep its old data alive on the next open.
+    ["__tshEq", "__tshDd"].forEach(function (k) {
+      if (window[k] && typeof window[k].destroy === "function") window[k].destroy();
+      window[k] = null;
+    });
+    document.getElementById("tsh-body").innerHTML = "";
+    if (window.__tshHistory && !fromPop) history.back();
+    window.__tshHistory = false;
+  };
+  document.addEventListener("keydown", function (e) {
+    if (e.key === "Escape") window.closeTearsheet();
+  });
+  window.addEventListener("popstate", function () {
+    // fromPop: the history entry is already gone, so don't call back() again.
+    window.closeTearsheet(true);
   });
   // On page load, ?saved / ?saved_block / ?error query-param → toast
   (function() {

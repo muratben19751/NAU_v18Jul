@@ -319,7 +319,13 @@ def log_backtest(
     bars_info: dict,
     elapsed_sec: float | None = None,
     run_id: str | None = None,
-) -> None:
+) -> str:
+    """Append one backtest to the log; returns the record's ``ts``.
+
+    The ts is the log's identity key, so a caller that keeps its own row for the
+    same run (the AUTO loop's live iteration list) can store it and link
+    straight to the tear sheet instead of re-matching on metrics later.
+    """
     BACKTEST_LOG.parent.mkdir(parents=True, exist_ok=True)
     record = {
         "ts": datetime.now(UTC).isoformat(),
@@ -367,6 +373,7 @@ def log_backtest(
         rotate_if_large(BACKTEST_LOG)
         with open(BACKTEST_LOG, "a") as f:
             f.write(json.dumps(record, default=str) + "\n")
+    return record["ts"]
 
 
 # ── Full-result snapshot store ────────────────────────────────────────────

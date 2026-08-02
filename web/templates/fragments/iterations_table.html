@@ -11,6 +11,7 @@
         <th class="num">Win Rate</th>
         <th class="num">Max Drawdown</th>
         <th>Time</th>
+        <th style="width:32px;" title="Tear sheet"></th>
       </tr>
     </thead>
     <tbody>
@@ -31,6 +32,12 @@
         <td class="num">{{ r.win_rate_fmt }}</td>
         <td class="num down">{{ r.max_dd_fmt }}</td>
         <td class="text-muted mono">{{ r.timestamp }}</td>
+        <td style="text-align:center;">
+          {% if r.log_ts %}
+          <button type="button" class="tsh-link" title="Tear sheet"
+                  onclick="openTearsheet('/tearsheet?src=log&ts=' + encodeURIComponent('{{ r.log_ts }}'))">📈</button>
+          {% endif %}
+        </td>
       </tr>
     {% endfor %}
     </tbody>

@@ -1673,13 +1673,17 @@ def _agent_worker(
                 r.strategy = f"composed:{spec.name} [{block_types_str}]"
                 history.append(r)
                 results.append((spec, r, iter_iv))
+                # The returned ts is this iteration's key into the backtest log
+                # — the cockpit card links its tear sheet with it.
+                _bt_log_ts = ""
                 try:
-                    _log_backtest(
+                    _bt_log_ts = _log_backtest(
                         spec,
                         r,
                         "External" if is_external else "Bybit",
                         iter_bars_info,
                         elapsed_sec=_bt_elapsed,
+                        run_id=run_id,
                     )
                 except Exception as log_exc:
                     _add_step(run_id, f"  ⚠ Could not write log: {log_exc}")
@@ -1696,6 +1700,7 @@ def _agent_worker(
                                 "round": run_number,
                                 "interval": iter_iv,
                                 "spec_name": spec.name,
+                                "ts": _bt_log_ts,
                                 "score": round(sc, 4) if sc > float("-inf") else None,
                                 "pnl": m_bt.get("pnl"),
                                 "pnl_pct": m_bt.get("pnl_pct"),

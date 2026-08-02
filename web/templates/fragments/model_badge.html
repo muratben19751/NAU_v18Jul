@@ -1,0 +1,10 @@
+{# Bu yüzeyin hangi LLM'i kullandığını yazan rozet.
+   Context: llm_model_label / llm_model_id (routes/studio.py :: llm_badge()).
+   SIMPLE ve PRO uygulama varsayılanını kullanır — AUTO'da model koşu başına
+   seçildiği için orada rozet ayrı yaşar (#mc-model-slot, studio.html). #}
+{% if llm_model_label %}
+<div class="model-badge" title="{{ llm_model_id }}">
+  <span class="model-badge-k">MODEL</span>
+  <span class="model-badge-v">⬢ {{ llm_model_label }}</span>
+</div>
+{% endif %}

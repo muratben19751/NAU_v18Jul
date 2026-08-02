@@ -402,6 +402,8 @@ def _recent_runs(limit: int = 6) -> list[dict]:
                     "name": spec.get("name", "?"),
                     "pnl": m.get("pnl"),
                     "run_id": rec.get("run_id") or "",
+                    # Raw ISO ts = the tear sheet's key into this same log.
+                    "ts": ts,
                 }
             )
             if len(out) >= limit:
@@ -985,17 +987,11 @@ async def run(
 
             # Persist the FULL result view-model so the history tab can reload
             # this exact screen later (the jsonl log keeps only scalar metrics).
-            if result.error is None:
-                try:
-                    _save_result_snapshot(
-                        run_id,
-                        _result_viewmodel(result, spec.name, narrative, bars_info),
-                    )
-                except Exception:
-                    pass  # snapshot failure must not hide the result
-
+            # Log BEFORE the snapshot: the returned ts is the tear sheet key and
+            # `_result_viewmodel` copies it off `result`, so a snapshot written
+            # first would be the one view of this run without a tear sheet link.
             try:
-                _log_backtest(
+                result.log_ts = _log_backtest(
                     run_spec if "run_spec" in locals() else spec,
                     result,
                     instrument_kind,
@@ -1004,7 +1000,16 @@ async def run(
                     run_id=run_id,
                 )
             except Exception:
-                pass  # log I/O failure must not hide the result already stored above
+                pass  # log I/O failure must not hide the result
+
+            if result.error is None:
+                try:
+                    _save_result_snapshot(
+                        run_id,
+                        _result_viewmodel(result, spec.name, narrative, bars_info),
+                    )
+                except Exception:
+                    pass  # snapshot failure must not hide the result
         except Exception as e:
             with _RUN_PROGRESS_LOCK:
                 if run_id in _RUN_PROGRESS:

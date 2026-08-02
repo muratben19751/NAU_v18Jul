@@ -7,7 +7,8 @@ template stays presentation-only and the mapping is unit-testable.
 
 Wiki References
 ---------------
-See: [[auto_mission_control]], [[webapp_module_map]]
+See: [[auto_mission_control]], [[model_secici_ve_gorunurluk]],
+[[tear_sheet_overlay]], [[webapp_module_map]]
 """
 
 from __future__ import annotations
@@ -17,10 +18,10 @@ from __future__ import annotations
 # into ROBUSTNESS because to the user it is one "pick + validate" stage.
 _CELLS: list[tuple[str, tuple[int, ...]]] = [
     ("DATA", (0,)),
-    ("STRATEJİ", (1,)),
+    ("STRATEGY", (1,)),
     ("BACKTEST", (2,)),
     ("ROBUSTNESS", (3, 4)),
-    ("KATALOG", (5,)),
+    ("CATALOG", (5,)),
 ]
 
 _KIND_COLORS = {
@@ -161,6 +162,11 @@ def _candidates(state: dict, running: bool, stopping: bool = False) -> list[dict
                     else "DD —",
                     f"{r.get('n_trades', 0)} tr",
                 ],
+                # Backtest-log timestamp captured when this iteration was
+                # logged — the tear sheet's key. Empty for a run that started
+                # before the loop recorded it; the card then has no link
+                # rather than a broken one.
+                "ts": r.get("ts") or "",
             }
         )
     # Newest first: the just-finished iteration should sit near the top, but the
@@ -173,14 +179,37 @@ def _candidates(state: dict, running: bool, stopping: bool = False) -> list[dict
         out.append(
             {
                 "state": "active",
-                "title": f"#{done_n + 1} çalışıyor",
-                "badge": "duraklatıldı" if stopping else None,
-                "note": "döngü duraklatıldı" if stopping else "backtest sürüyor",
+                "title": f"#{done_n + 1} running",
+                "badge": "paused" if stopping else None,
+                "note": "loop paused" if stopping else "backtest in progress",
             }
         )
         for i in range(done_n + 2, total + 1):
-            out.append({"state": "queued", "title": f"#{i} sırada"})
+            out.append({"state": "queued", "title": f"#{i} queued"})
     return out
+
+
+def _model_label(picked: str | None) -> str:
+    """Brief'teki model seçiminin okunur adı; boş seçim = uygulama varsayılanı.
+
+    ``agent`` tembel import ediliyor: bu modül saf bir render katmanı ve
+    testleri LLM istemcisi kurmadan çalışabilmeli. Import edilemezse ham değer
+    (ya da dürüstçe "default") döner — uydurma model adı yok.
+    """
+    try:
+        from agent import model_label
+    except Exception:
+        return (picked or "").strip() or "default"
+    return model_label(picked)
+
+
+def _model_id(picked: str | None) -> str:
+    """``_model_label`` ile aynı çözüm, ham id — rozetin title'ında gösterilir."""
+    try:
+        from agent import model_id
+    except Exception:
+        return (picked or "").strip()
+    return model_id(picked)
 
 
 def mission_view(
@@ -208,14 +237,14 @@ def mission_view(
     for label, idxs in _CELLS:
         sts = [ph(i).get("status", "pending") for i in idxs]
         if all(s == "done" for s in sts):
-            cell_state, value = "done", "✓ tamam"
+            cell_state, value = "done", "✓ done"
         elif "running" in sts:
             cell_state, value = (
                 "active",
-                ("duraklatıldı" if stopping else "▸ çalışıyor"),
+                ("paused" if stopping else "▸ running"),
             )
         else:
-            cell_state, value = "pending", "bekliyor"
+            cell_state, value = "pending", "waiting"
         detail = next((ph(i).get("detail") for i in idxs if ph(i).get("detail")), "")
         cells.append({"label": label, "state": cell_state, "value": detail or value})
 
@@ -233,14 +262,14 @@ def mission_view(
 
     if not running:
         headline = (
-            "Döngü tamamlandı" if not state.get("error") else "Döngü hatayla bitti"
+            "Loop completed" if not state.get("error") else "Loop ended with an error"
         )
-        subline = state.get("error") or "Sonuçlar aşağıda · Session Logs'ta arşivlendi"
+        subline = state.get("error") or "Results below · archived in Session Logs"
     elif stopping:
-        headline = "Döngü duraklatıldı"
-        subline = "Devam etmek için sağ üstten START…"
+        headline = "Loop paused"
+        subline = "Press START at the top right to continue…"
     else:
-        headline = ph(cur_i or 0).get("label") or "Hazırlanıyor"
+        headline = ph(cur_i or 0).get("label") or "Preparing"
         subline = ph(cur_i or 0).get("detail") or ""
 
     # ── Console: newest first (template renders column-reverse) ───────────
@@ -251,7 +280,7 @@ def mission_view(
             continue
         k = _step_kind(msg)
         lines.append({"t": st.get("ts", ""), "k": k, "c": _KIND_COLORS[k], "m": msg})
-    tail = lines[-1] if lines else {"t": "", "m": "başlıyor…"}
+    tail = lines[-1] if lines else {"t": "", "m": "starting…"}
     lines = list(reversed(lines[:-1]))[:9]
 
     # ── Budget gauges ─────────────────────────────────────────────────────
@@ -279,7 +308,11 @@ def mission_view(
         "done": done,
         "brief": brief,
         "tf_label": tf_label,
-        "guidance_label": brief.get("guidance") or "— otonom",
+        # Boş seçim = uygulama varsayılanı; kokpitte "default" yerine gerçek
+        # model adı yazsın diye burada çözülür (agent.model_label).
+        "model_label": _model_label(brief.get("model")),
+        "model_id": _model_id(brief.get("model")),
+        "guidance_label": brief.get("guidance") or "— autonomous",
         "elapsed_label": fmt_clock(elapsed),
         "time_pct": pct(elapsed, max_hours * 3600),
         "token_label": fmt_tokens(tokens),
@@ -293,7 +326,7 @@ def mission_view(
             f"conic-gradient(#e0762e 0turn {ring / 100:.4f}turn,"
             f"#241c17 {ring / 100:.4f}turn 1turn)"
         ),
-        "status_label": "RUNNING" if (running and not stopping) else "DURDURULDU",
+        "status_label": "RUNNING" if (running and not stopping) else "STOPPED",
         "headline": headline,
         "subline": subline,
         "iter": iter_no,
@@ -303,7 +336,7 @@ def mission_view(
         "lines": lines,
         "tail_line": tail["m"],
         "tail_time": tail["t"],
-        "console_meta": f"{fmt_clock(elapsed)} · {len(state.get('steps') or [])} adım",
+        "console_meta": f"{fmt_clock(elapsed)} · {len(state.get('steps') or [])} steps",
         "candidates": _candidates(state, running, stopping=stopping),
         "winner_spec_id": state.get("winner_spec_id") or "",
     }

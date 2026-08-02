@@ -1,5 +1,7 @@
 {# ctx: defn, metrics, run, symbol_rows (list|None — per-instrument breakdown) #}
-<p class="opt-note">Run {{ run.run_id[:6] }} · v{{ run.version }} · fold-by-fold OOS metrics.</p>
+<p class="opt-note">Run {{ run.run_id[:6] }} · v{{ run.version }} · fold-by-fold OOS metrics.
+  <button type="button" class="tsh-link" title="Tear sheet — this run's performance sheet"
+          onclick="openTearsheet('/tearsheet?src=strategy&run_id={{ run.run_id }}')">📈</button></p>
 <div class="wf" style="margin-top:0">
   <div class="t">OOS folds</div>
   {% for f in metrics.folds %}

@@ -18,22 +18,23 @@
     <aside class="mc-rail mc-rail-left">
       <div class="mc-rail-head">
         <span class="mc-label">BRIEF</span>
-        <span class="mc-edit" onclick="mcBrief(true)">✎ değiştir</span>
+        <span class="mc-edit" onclick="mcBrief(true)">✎ edit</span>
       </div>
       <div class="mc-brief">
         <div class="mc-brief-row"><span>symbol</span><span>{{ mv.brief.symbol }}</span></div>
         <div class="mc-brief-row"><span>category</span><span>{{ mv.brief.category }}</span></div>
         <div class="mc-brief-row"><span>timeframe</span><span class="acc">{{ mv.tf_label }}</span></div>
-        <div class="mc-brief-row"><span>model</span><span>{{ mv.brief.model or "varsayılan" }}</span></div>
+        {# Boş seçim "default" değil: mission_view gerçek model adını çözer. #}
+        <div class="mc-brief-row"><span>model</span><span class="acc" title="{{ mv.model_id }}">{{ mv.model_label }}</span></div>
         <div class="mc-brief-row"><span>range</span><span>{{ mv.brief.range }}</span></div>
         <div class="mc-brief-row"><span>robustness</span><span>{{ mv.brief.robustness }}</span></div>
-        <div class="mc-brief-row"><span>iterasyon</span><span>{{ mv.brief.iterations }}</span></div>
+        <div class="mc-brief-row"><span>iterations</span><span>{{ mv.brief.iterations }}</span></div>
         <div class="mc-brief-row last"><span>guidance</span><span class="faint">{{ mv.guidance_label }}</span></div>
       </div>
 
       <div class="mc-budget">
-        <div class="mc-label" style="margin-bottom:9px;">BÜTÇE</div>
-        <div class="mc-budget-row"><span>süre</span><span>{{ mv.elapsed_label }}</span></div>
+        <div class="mc-label" style="margin-bottom:9px;">BUDGET</div>
+        <div class="mc-budget-row"><span>elapsed</span><span>{{ mv.elapsed_label }}</span></div>
         <div class="mc-bar"><i class="time" style="width:{{ mv.time_pct }}%"></i></div>
         <div class="mc-budget-row"><span>token</span><span>{{ mv.token_label }}</span></div>
         <div class="mc-bar"><i class="tok" style="width:{{ mv.token_pct }}%"></i></div>
@@ -42,7 +43,7 @@
       <div class="mc-spacer"></div>
 
       <div class="mc-opts">
-        <div class="mc-opt {{ 'on' if mv.brief.continuous }}"><i></i>Kazanandan sonra yeniden başlat</div>
+        <div class="mc-opt {{ 'on' if mv.brief.continuous }}"><i></i>Restart after a winner</div>
       </div>
     </aside>
 
@@ -52,12 +53,12 @@
         <div class="mc-ring" style="background:{{ mv.ring_bg }}">
           <div class="mc-ring-in">
             <div class="mc-ring-pct">{{ mv.progress_label }}</div>
-            <div class="mc-ring-cap">ADIM</div>
+            <div class="mc-ring-cap">STEP</div>
           </div>
         </div>
         <div class="mc-hero-txt">
           <div class="mc-hero-top">
-            <span class="mc-label">ŞU AN</span>
+            <span class="mc-label">NOW</span>
             <span class="mc-pill {{ 'run' if mv.running else 'stop' }}">{{ mv.status_label }}</span>
           </div>
           <div class="mc-headline">{{ mv.headline }}</div>
@@ -65,7 +66,7 @@
         </div>
         <div class="mc-hero-gap"></div>
         <div class="mc-iter">
-          <div class="mc-label">İTERASYON</div>
+          <div class="mc-label">ITERATION</div>
           <div class="mc-iter-n">{{ mv.iter }}<span>{{ mv.iter_of }}</span></div>
         </div>
       </div>
@@ -81,7 +82,7 @@
 
       <div class="mc-console">
         <div class="mc-console-head">
-          <span class="mc-label" style="color:#c9bdb2;">KONSOL</span>
+          <span class="mc-label" style="color:#c9bdb2;">CONSOLE</span>
           <span class="faint" style="font-size:10px;">{{ mv.console_meta }}</span>
         </div>
         <div class="mc-console-body">
@@ -106,7 +107,7 @@
     {# ── Right rail: iterations / candidates ───────────────────────────── #}
     <aside class="mc-rail mc-rail-right">
       <div class="mc-rail-head">
-        <span class="mc-label">İTERASYONLAR</span>
+        <span class="mc-label">ITERATIONS</span>
         <span class="faint" style="font-size:10px;">{{ mv.iter }}{{ mv.iter_of }}</span>
       </div>
       <div class="mc-cands">
@@ -128,7 +129,13 @@
           <div class="mc-cand {{ c.state }}">
             <div class="mc-cand-top">
               <span>{{ c.title }}</span>
-              <span class="{{ 'ok' if c.state == 'leader' else 'dim' }}">{{ c.score }}</span>
+              <span class="{{ 'ok' if c.state == 'leader' else 'dim' }}">
+                {% if c.ts %}
+                <button type="button" class="tsh-link" title="Tear sheet"
+                        onclick="openTearsheet('/tearsheet?src=log&ts=' + encodeURIComponent('{{ c.ts }}'))">📈</button>
+                {% endif %}
+                {{ c.score }}
+              </span>
             </div>
             {% if c.spark %}
             <svg viewBox="0 0 260 {{ c.spark_h }}" preserveAspectRatio="none"
@@ -143,15 +150,15 @@
           </div>
           {% endif %}
         {% else %}
-        <div class="mc-cand queued">henüz iterasyon yok</div>
+        <div class="mc-cand queued">no iterations yet</div>
         {% endfor %}
       </div>
       <div class="mc-cta">
         {% if mv.winner_spec_id %}
-        <a class="mc-btn-primary" href="/studio?spec_id={{ mv.winner_spec_id }}">Lideri kataloğa ekle</a>
+        <a class="mc-btn-primary" href="/studio?spec_id={{ mv.winner_spec_id }}">Add leader to catalog</a>
         {% else %}
-        <div class="mc-btn-primary disabled" title="Kazanan robustness'ı geçince otomatik kataloğa eklenir">
-          Lideri kataloğa ekle
+        <div class="mc-btn-primary disabled" title="The winner is added to the catalog automatically once it passes robustness">
+          Add leader to catalog
         </div>
         {% endif %}
       </div>
@@ -175,9 +182,12 @@
           hx-post="/agent/stop/{{ mv.run_id }}"
           hx-target="this" hx-swap="outerHTML"
           {% if mv.stopping %}disabled{% endif %}>
-    {{ "■ durduruluyor…" if mv.stopping else "■ STOP" }}
+    {{ "■ stopping…" if mv.stopping else "■ STOP" }}
   </button>
   {% endif %}
 </div>
 <span id="mc-cost-slot" class="mc-cost" hx-swap-oob="innerHTML">{{ mv.cost_label }}</span>
+{# Üst bardaki model rozeti: koşu sırasında picker'ın değil, koşan modelin adı. #}
+<span id="mc-model-slot" class="mc-model-badge" hx-swap-oob="outerHTML"
+      title="{{ mv.model_id }}">⬢ {{ mv.model_label }}</span>
 

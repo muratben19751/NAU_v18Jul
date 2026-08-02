@@ -163,7 +163,7 @@ def main() -> int:
         page.wait_for_timeout(1500)
         page.screenshot(path=os.path.join(OUT, "auto-stopped.png"))
         st = page.evaluate("document.querySelector('.mc-pill').textContent.trim()")
-        if st != "DURDURULDU":
+        if st != "STOPPED":
             problems.append(f"stopped: status is {st!r}")
         page.close()
         b.close()

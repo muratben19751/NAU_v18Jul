@@ -149,7 +149,7 @@
         <th class="num" data-key="wf_pass" draggable="true"
             title="Walk-Forward Pass — How many test windows closed with a profit in the walk-forward analysis (e.g. 4/6 = 4 of 6 windows positive). Measures consistency over time; the higher the ratio the more solid.">WF Pass</th>
         <th data-key="bt_link" draggable="true"
-            title="Open Backtest — With ▶ you can reopen/rerun this strategy on the Backtest page."></th>{# backtest link #}
+            title="📈 opens this run's tear sheet over the table (Esc closes it); ▶ reopens the strategy on the Backtest page."></th>{# tear sheet + backtest link #}
       </tr>
       {# ── Column filter row — text: substring · numeric: >5  <=0  100..500 ── #}
       <tr class="filter-row">
@@ -243,9 +243,13 @@
         <td data-key="mc_median" class="num">{{ r.rob_mc_median_fmt }}</td>
         <td data-key="mc_dd_p95" class="num text-down">{{ r.rob_mc_dd_p95_fmt }}</td>
         <td data-key="wf_pass" class="num">{{ r.rob_wf_pass_fmt }}</td>
-        <td data-key="bt_link">
+        <td data-key="bt_link" style="white-space:nowrap;">
+          {# stopPropagation: the row itself toggles the expand panel. #}
+          <button type="button" class="tsh-link" title="Tear sheet — this run's performance sheet"
+                  onclick="event.stopPropagation();openTearsheet('/tearsheet?src=log&ts=' + encodeURIComponent('{{ r.ts_raw }}'))">📈</button>
           {% if r.spec_id %}
-            <a href="/backtest?spec_id={{ r.spec_id }}" class="btn" style="font-size:11px;padding:2px 6px;">▶</a>
+            <a href="/backtest?spec_id={{ r.spec_id }}" class="btn" style="font-size:11px;padding:2px 6px;"
+               onclick="event.stopPropagation();">▶</a>
           {% endif %}
         </td>
       </tr>

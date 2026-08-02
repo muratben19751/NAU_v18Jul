@@ -102,10 +102,10 @@ def test_phase_strip_has_five_cells_and_one_active():
     mv = mission_view(_state(running_idx=2), now=10)
     assert [c["label"] for c in mv["cells"]] == [
         "DATA",
-        "STRATEJİ",
+        "STRATEGY",
         "BACKTEST",
         "ROBUSTNESS",
-        "KATALOG",
+        "CATALOG",
     ]
     assert [c["state"] for c in mv["cells"]].count("active") == 1
     assert mv["cells"][2]["state"] == "active"
@@ -133,9 +133,9 @@ def test_stop_requested_flips_status_and_headline():
     mv = mission_view(_state(stop_requested=True), now=10)
     assert mv["running"] is False
     assert mv["stopping"] is True
-    assert mv["status_label"] == "DURDURULDU"
-    assert mv["headline"] == "Döngü duraklatıldı"
-    assert mv["cells"][2]["value"] == "duraklatıldı"
+    assert mv["status_label"] == "STOPPED"
+    assert mv["headline"] == "Loop paused"
+    assert mv["cells"][2]["value"] == "paused"
 
 
 def test_finished_run_shows_dash_ring():
@@ -162,7 +162,7 @@ def test_stopped_run_keeps_active_card_and_marks_it_paused():
         c for c in mission_view(st, now=10)["candidates"] if c["state"] == "active"
     ]
     assert len(active) == 1
-    assert active[0]["badge"] == "duraklatıldı"
+    assert active[0]["badge"] == "paused"
 
 
 # ── progress / iterations ─────────────────────────────────────────────────

@@ -100,6 +100,8 @@ def iteration_row(r: IterationResult) -> dict:
         # L19: bar-resolution MTM curve [(iso_ts, eq)] — reported
         # max_dd comes from this series; UI draws it if present (realized fallback).
         "equity_curve_mtm": m.get("equity_curve_mtm") or [],
+        # Tear sheet key — "" hides the link rather than opening a dead one.
+        "log_ts": getattr(r, "log_ts", "") or "",
     }
 
 

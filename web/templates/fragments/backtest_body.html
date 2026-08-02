@@ -601,6 +601,11 @@
             <span class="bt-hist-pnl {% if r.pnl is not none and r.pnl >= 0 %}up{% elif r.pnl is not none %}down{% endif %}">
               {% if r.pnl is not none %}{{ "%+.2f"|format(r.pnl) }}{% else %}—{% endif %}
             </span>
+            {# stopPropagation: the row itself restores the full result screen. #}
+            {% if r.ts %}
+            <button type="button" class="tsh-link" title="Tear sheet"
+                    onclick="event.stopPropagation();openTearsheet('/tearsheet?src=log&ts=' + encodeURIComponent('{{ r.ts }}'))">📈</button>
+            {% endif %}
             <span class="bt-hist-arrow">→</span>
           </div>
           {% endfor %}

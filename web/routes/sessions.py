@@ -388,9 +388,13 @@ async def session_detail(request: Request, run_id: str):
     # field; the template's sort(attribute='score') call would drop the page to
     # 500 on an Undefined comparison. Fill missing/None score with a sortable
     # -inf (no-op on existing records).
-    for _bt in backtests:
+    for _i, _bt in enumerate(backtests):
         if _bt.get("score") is None:
             _bt["score"] = float("-inf")
+        # Position in the file's backtest_result sequence — the tear sheet
+        # addresses an iteration by it. Stamped before the template sorts by
+        # score, which would otherwise lose the ordering the key refers to.
+        _bt["ev_i"] = _i
     robustness = [e for e in events if e.get("event") == "robustness_result"]
     proposals = [e for e in events if e.get("event") == "strategy_proposed"]
     custom_blocks = [e for e in events if e.get("event") == "custom_block_generated"]

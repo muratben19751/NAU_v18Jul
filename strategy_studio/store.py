@@ -421,6 +421,24 @@ class StrategyStore:
             ).fetchone()
         return dict(row) if row else None
 
+    def get_run(self, run_id: str) -> dict | None:
+        """One run by id — the tear sheet overlay opens a specific past run."""
+        with self._connect() as con:
+            row = con.execute(
+                "SELECT * FROM studio_runs WHERE run_id=?", (run_id,)
+            ).fetchone()
+        return dict(row) if row else None
+
+    def runs(self, strategy_id: str, limit: int = 20) -> list[dict]:
+        """Run history, newest first — the Strategy Builder's run list."""
+        with self._connect() as con:
+            rows = con.execute(
+                "SELECT * FROM studio_runs WHERE strategy_id=? "
+                "ORDER BY created_at DESC LIMIT ?",
+                (strategy_id, limit),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
     def latest_run_for_hash(self, strategy_id: str, defn_hash: str) -> dict | None:
         """Newest COMPLETED run that measured exactly this definition.
 

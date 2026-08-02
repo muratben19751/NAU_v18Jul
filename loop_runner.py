@@ -61,7 +61,11 @@ def _try_log(
             "interval": interval,
             "n_bars": n_bars,
         }
-        _log_backtest(spec, result, instrument_kind, bars_info, elapsed_sec=elapsed_sec)
+        # Stamp the log key back onto the iteration so the dashboard row can
+        # link its tear sheet without re-matching on metrics.
+        result.log_ts = _log_backtest(
+            spec, result, instrument_kind, bars_info, elapsed_sec=elapsed_sec
+        )
     except Exception:
         pass
 

@@ -30,6 +30,8 @@
     {% endif %}
     <div class="run">
       <span class="status">Run {{ run.run_id[:6] }} · v{{ run.version }}{% if run.is_draft %} (draft){% endif %} ✓</span>
+      <button type="button" class="tsh-link" title="Tear sheet — this run's performance sheet"
+              onclick="openTearsheet('/tearsheet?src=strategy&run_id={{ run.run_id }}')">📈</button>
       {% if metrics.per_instrument %}
       <button class="btn ps-open" hx-get="/studio/{{ defn.id }}/runs/latest/symbols?closable=1"
               hx-target="#symbol-breakdown" hx-swap="innerHTML">Symbols</button>

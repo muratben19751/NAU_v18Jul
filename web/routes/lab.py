@@ -300,7 +300,9 @@ def _lab_worker(
 
         # Log to shared backtest_log.jsonl so /reports picks this up
         try:
-            _log_backtest(
+            # The returned ts is the tear sheet key; iteration_row() carries it
+            # into the result panel from the dataclass.
+            result.log_ts = _log_backtest(
                 spec,
                 result,
                 "External" if is_external else "Bybit",

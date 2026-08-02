@@ -23,6 +23,10 @@
     {% endif %}
   </div>
   <div class="actions">
+    {% if g.trial %}
+    <button type="button" class="tsh-link" title="Tear sheet — this trial backtest"
+            onclick="openTearsheet('/tearsheet?src=suggestion&id={{ g.id }}')">📈</button>
+    {% endif %}
     <button class="accept"
             hx-post="/studio/{{ defn.id }}/ai/suggestions/{{ g.id }}/accept"
             hx-target="closest .block" hx-swap="outerHTML">✓ Accept</button>

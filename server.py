@@ -226,6 +226,9 @@ from web.routes import (
     strategy_studio as strategy_studio_route,
 )
 from web.routes import (
+    tearsheet as tearsheet_route,
+)
+from web.routes import (
     tokens as tokens_route,
 )
 
@@ -247,3 +250,5 @@ app.include_router(reports.router)
 app.include_router(agent_route.router)
 app.include_router(sessions_route.router)
 app.include_router(tokens_route.router)
+# GET /tearsheet — the overlay every backtest listing links to (read-only).
+app.include_router(tearsheet_route.router)

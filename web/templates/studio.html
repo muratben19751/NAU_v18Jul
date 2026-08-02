@@ -56,7 +56,11 @@
         <span class="mc-edit" onclick="mcBrief(true)">✎ brief</span>
       </div>
       <div style="display:flex;align-items:center;gap:12px;">
-        <span class="htmx-indicator mc-cost" id="agent-spinner">döngü başlatılıyor…</span>
+        {# Hangi LLM koşacak/koşuyor. Idle'da picker'ı yansıtır (mcModel), bir
+           koşu canlıyken cockpit fragment'i OOB ile koşan modeli yazar. #}
+        <span class="mc-model-badge" id="mc-model-slot"
+              title="{{ llm_model_id }}">⬢ {{ llm_model_label }}</span>
+        <span class="htmx-indicator mc-cost" id="agent-spinner">starting loop…</span>
         {# Both slots are refreshed by the cockpit fragment's hx-swap-oob. #}
         <span class="mc-cost" id="mc-cost-slot"></span>
         <span id="mc-run-slot">
@@ -73,11 +77,11 @@
 
     {# ── Brief slide-over: the full run configuration ── #}
     <div class="mc-scrim" onclick="mcBrief(false)"></div>
-    <div class="mc-drawer" role="dialog" aria-label="Brief'i düzenle">
+    <div class="mc-drawer" role="dialog" aria-label="Edit brief">
       <div class="mc-drawer-head">
         <div>
-          <div class="mc-drawer-title">BRIEF'İ DÜZENLE</div>
-          <div class="mc-drawer-sub">Boş guidance = tam otonom araştırma.</div>
+          <div class="mc-drawer-title">EDIT BRIEF</div>
+          <div class="mc-drawer-sub">Empty guidance = fully autonomous research.</div>
         </div>
         <button type="button" class="mc-drawer-x" onclick="mcBrief(false)">✕</button>
       </div>
@@ -102,10 +106,23 @@
           </div>
           <div class="mc-f">
             <label for="mc-model">MODEL</label>
-            <select id="mc-model" name="model">
-              {% for mval, mlabel in llm_models %}
-              <option value="{{ mval }}" {% if mval == "" %}selected{% endif %}>{{ mlabel }}</option>
-              {% endfor %}
+            {# Claude + (anahtar varsa) openrouter.ai'nin CANLI kataloğu —
+               yüzlerce satır olabildiği için iki optgroup'a ayrılır. #}
+            <select id="mc-model" name="model" onchange="mcModel(this)">
+              <optgroup label="Claude">
+                {% for mval, mlabel in llm_models if not mval.startswith("or:") %}
+                <option value="{{ mval }}" {% if mval == "" %}selected{% endif %}>{{ mlabel }}</option>
+                {% endfor %}
+              </optgroup>
+              {% set or_models = [] %}
+              {% for m in llm_models if m[0].startswith("or:") %}{% set _ = or_models.append(m) %}{% endfor %}
+              {% if or_models %}
+              <optgroup label="OpenRouter · openrouter.ai ({{ or_models | length }})">
+                {% for mval, mlabel in or_models %}
+                <option value="{{ mval }}">{{ mlabel }}</option>
+                {% endfor %}
+              </optgroup>
+              {% endif %}
             </select>
           </div>
         </div>
@@ -113,7 +130,7 @@
         <div class="mc-f">
           <div style="display:flex;justify-content:space-between;">
             <span class="mc-f-label">TIMEFRAME</span>
-            <span style="font-size:9.5px;color:#5a4f46;">birden fazla seçilebilir</span>
+            <span style="font-size:9.5px;color:#5a4f46;">multiple allowed</span>
           </div>
           <div class="mc-tfs">
             {% for code, lbl in [("5","5M"), ("15","15M"), ("60","1H"), ("240","4H"), ("D","1D")] %}
@@ -146,9 +163,9 @@
 
         <div class="mc-f">
           <div style="display:flex;justify-content:space-between;align-items:baseline;">
-            <span class="mc-f-label">TARİH ARALIĞI</span>
+            <span class="mc-f-label">DATE RANGE</span>
             <button type="button" class="mc-edit" style="border:0;background:none;"
-                    title="Seçili sembol+TF kapsamının tamamını doldur"
+                    title="Fill the full coverage of the selected symbol+TF"
                     onclick="var f=this.form,
                       tf=(f.querySelector('input[name=tfs]:checked')||{}).value||'60',
                       s=f.symbol.value,
@@ -176,11 +193,11 @@
 
         <div class="mc-grid2">
           <div class="mc-f">
-            <label for="mc-hours">MAX SAAT <span style="color:#5a4f46;">0=∞</span></label>
+            <label for="mc-hours">MAX HOURS <span style="color:#5a4f46;">0=∞</span></label>
             <input type="number" id="mc-hours" name="max_hours" min="0" step="0.5" value="0">
           </div>
           <div class="mc-f">
-            <label for="mc-tok">MAX TOKEN <span style="color:#5a4f46;">0=∞</span></label>
+            <label for="mc-tok">MAX TOKENS <span style="color:#5a4f46;">0=∞</span></label>
             <input type="number" id="mc-tok" name="max_total_tokens" min="0" step="100000" value="0">
           </div>
         </div>
@@ -188,13 +205,13 @@
         {# Off by default — matches POST /agent/run's `continuous` default. #}
         <label class="mc-opt" style="cursor:pointer;">
           <input type="checkbox" name="continuous" value="1" hidden onchange="mcCheck(this)">
-          <i></i>Kazanandan sonra yeniden başlat
+          <i></i>Restart after a winner
         </label>
       </div>
 
       <div class="mc-drawer-foot">
-        <button type="button" class="mc-btn-ghost" onclick="mcBrief(false)">Vazgeç</button>
-        <button type="button" class="mc-btn-primary" onclick="mcBrief(false)">Uygula</button>
+        <button type="button" class="mc-btn-ghost" onclick="mcBrief(false)">Cancel</button>
+        <button type="button" class="mc-btn-primary" onclick="mcBrief(false)">Apply</button>
       </div>
     </div>
   </form>
@@ -207,15 +224,15 @@
          hx-trigger="load, every 1s"
          hx-target="#agent-result"
          hx-swap="innerHTML">
-      <div class="mc"><div class="empty-state">⏳ Çalışan döngüye bağlanılıyor…</div></div>
+      <div class="mc"><div class="empty-state">⏳ Connecting to the running loop…</div></div>
     </div>
     {% else %}
     <div class="mc mc-idle">
       <div class="empty-state" style="margin:auto;">
         <div style="font-size:30px;color:#e0762e;line-height:1;margin-bottom:8px;">◇</div>
-        <div style="font-weight:700;margin-bottom:4px;">Döngü boşta</div>
+        <div style="font-weight:700;margin-bottom:4px;">Loop idle</div>
         <div style="color:#8a7d71;font-size:12px;">
-          Sağ üstten <b>▶ START</b> — brief'i düzenlemek için <b>✎ brief</b>.
+          Press <b>▶ START</b> at the top right — <b>✎ brief</b> to edit the brief.
         </div>
       </div>
     </div>
@@ -353,6 +370,18 @@
   };
   window.mcCheck = function (input) {
     input.parentElement.classList.toggle('on', input.checked);
+  };
+  // Model rozeti, drawer'daki picker'ı yansıtır. Bir koşu canlıyken cockpit
+  // fragment'i aynı slotu OOB ile ezer (koşan model kazanır) — bu yüzden
+  // rozet metni burada picker'ın etiketinden türetilir, sabit yazılmaz.
+  window.mcModel = function (select) {
+    var slot = document.getElementById('mc-model-slot');
+    if (!slot) return;
+    var opt = select.options[select.selectedIndex];
+    if (!opt) return;
+    // "Fable 5 (varsayılan)" → "Fable 5"; "OR · x/y" olduğu gibi kalır.
+    slot.textContent = '⬢ ' + opt.text.replace(/\s*\(varsayılan\)\s*$/, '');
+    slot.title = opt.value || '{{ llm_model_id }}';
   };
   // The cockpit is a fixed-height, non-scrolling screen, so it needs to know
   // how much vertical chrome sits above it (topbar, content padding, mode

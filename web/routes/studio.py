@@ -4,7 +4,8 @@
 Wiki References
 ---------------
 See: [[strategy_and_actor]], [[backtesting_guide]], [[webapp_module_map]],
-[[auto_mission_control]] (AUTO sekmesinin kokpit yüzeyi)
+[[auto_mission_control]] (AUTO sekmesinin kokpit yüzeyi),
+[[model_secici_ve_gorunurluk]] (model picker + rozet)
 
 The merged Compose + Backtest surface. This module owns only the ``GET /studio``
 entry point that renders ``studio.html`` with the UNION of both pages' contexts;
@@ -213,6 +214,9 @@ def page(request: Request):
         "strategy_templates": STRATEGY_TEMPLATES,
         # ── AUTO cockpit: model picker (Claude + varsa OpenRouter) ──
         "llm_models": _llm_models(),
+        # ── Model rozeti: SIMPLE/PRO uygulama varsayılanını kullanır, AUTO'da
+        #    bu yalnız başlangıç değeri (picker/koşu üzerine yazar) ──
+        **llm_badge(),
     }
     # Preserve strategy.py's manual render + cookie set (drafts session depends
     # on nautlab_sid; session_id above mints it, we set it if absent).
@@ -228,6 +232,18 @@ def _llm_models():
     from agent import selectable_models
 
     return selectable_models()
+
+
+def llm_badge() -> dict[str, str]:
+    """Ekranlarda "hangi model" rozetinin context'i.
+
+    Uygulama varsayılanını (kredi fallback'i devredeyse onu) çözer; SIMPLE/PRO
+    yüzeyleri her zaman bunu kullanır. Şablonlarda ``llm_model_label`` /
+    ``llm_model_id``.
+    """
+    from agent import model_id, model_label
+
+    return {"llm_model_label": model_label(), "llm_model_id": model_id()}
 
 
 def _bybit_symbols():

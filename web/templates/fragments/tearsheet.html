@@ -1,0 +1,234 @@
+{# ══ Tear sheet ═══════════════════════════════════════════════════════════
+   One backtest's performance sheet, loaded into the global overlay in
+   base.html. Render model: web/tearsheet.py :: tearsheet_view() — this file is
+   presentation only.
+
+   Every DOM id here is prefixed `tsh-` and the Chart.js handles hang off
+   window.__tsh*: the overlay opens ON TOP of screens that already own
+   #equity-data / #equity-single / window.__eq (the live backtest result), and
+   sharing either would destroy the chart underneath. ── #}
+{% if ts.error %}
+<div class="tsh-empty">{{ ts.error }}</div>
+{% else %}
+
+<div class="tsh">
+  <header class="tsh-head">
+    <div>
+      <div class="tsh-title">{{ ts.title }}</div>
+      <div class="tsh-sub">{{ ts.subtitle }}</div>
+    </div>
+    {% if ts.has_starting_cash %}
+    <div class="tsh-cash">
+      <span class="tsh-k">Starting cash</span>
+      <span class="tsh-v">{{ ts.starting_cash }}</span>
+    </div>
+    {% endif %}
+  </header>
+
+  {# ── Identity: what exactly was measured ── #}
+  {% if ts.ident %}
+  <div class="tsh-ident">
+    {% for k, v in ts.ident %}
+    <div class="tsh-ident-cell">
+      <span class="tsh-k">{{ k }}</span>
+      <span class="tsh-v" title="{{ v }}">{{ v }}</span>
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  {# ── KPI grid ── #}
+  {% if ts.kpis %}
+  <div class="tsh-kpis">
+    {% for kpi in ts.kpis %}
+    <div class="tsh-kpi">
+      <span class="tsh-k">{{ kpi.label }}</span>
+      <span class="tsh-kpi-v {{ kpi.tone }}">{{ kpi.value }}</span>
+      {% if kpi.key == "n_trades" and ts.wins_losses %}
+      <span class="tsh-kpi-sub">{{ ts.wins_losses }}</span>
+      {% endif %}
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  {# ── Curves. Data rides on the element; the builders below read it, so the
+       fragment stays reload-safe (HTMX re-inserts the whole node). ── #}
+  <div id="tsh-data"
+       data-pts='{{ ts.equity|tojson }}'
+       data-dates='{{ ts.equity_dates|tojson }}'
+       data-mtm='{{ ts.equity_mtm|tojson|forceescape }}'
+       data-pnl='{{ ts.pnl }}'></div>
+
+  {% if ts.has_equity %}
+  <div class="tsh-sec">
+    <span class="tsh-k">Equity</span>
+    <span class="tsh-k" id="tsh-mtm-badge" style="display:none;">mark-to-market</span>
+  </div>
+  <div class="tsh-chart" style="height:210px;"><canvas id="tsh-equity"></canvas></div>
+
+  <div class="tsh-sec"><span class="tsh-k">Drawdown</span></div>
+  <div class="tsh-chart" style="height:80px;"><canvas id="tsh-dd"></canvas></div>
+
+  {% if ts.has_monthly %}
+  <div class="tsh-sec"><span class="tsh-k">Monthly returns</span></div>
+  <div id="tsh-monthly" style="overflow-x:auto;"></div>
+  {% endif %}
+  {% else %}
+  <div class="tsh-empty">No equity curve was stored for this run.</div>
+  {% endif %}
+
+  {% if ts.notes %}
+  <ul class="tsh-notes">
+    {% for n in ts.notes %}<li>{{ n }}</li>{% endfor %}
+  </ul>
+  {% endif %}
+</div>
+
+<script>
+(function () {
+  var el = document.getElementById("tsh-data");
+  if (!el || typeof Chart === "undefined") return;
+  var pts   = JSON.parse(el.dataset.pts   || "[]");
+  var dates = JSON.parse(el.dataset.dates || "[]");
+  var pnl   = parseFloat(el.dataset.pnl || "0");
+  var mtm = [];
+  try { mtm = JSON.parse(el.dataset.mtm || "[]"); } catch (e) {}
+  // Prefer the bar-resolution MTM series: the Max Drawdown KPI shown above is
+  // computed from it, so drawing the realized step-curve would contradict it.
+  if (mtm.length > 1) {
+    dates = mtm.map(function (p) { return (p[0] || "").slice(0, 16).replace("T", " "); });
+    pts   = mtm.map(function (p) { return p[1]; });
+    var badge = document.getElementById("tsh-mtm-badge");
+    if (badge) badge.style.display = "";
+  }
+
+  var MONO = { family: "JetBrains Mono", size: 10 };
+  var TIP = {
+    backgroundColor: "#0a0b0d", borderColor: "#23262c", borderWidth: 1,
+    titleFont: { family: "JetBrains Mono", size: 11 },
+    bodyFont: { family: "JetBrains Mono", size: 12 },
+  };
+  function destroy(k) {
+    if (window[k] && typeof window[k].destroy === "function") window[k].destroy();
+    window[k] = null;
+  }
+
+  var eq = document.getElementById("tsh-equity");
+  if (eq && pts.length > 1) {
+    destroy("__tshEq");
+    var up = pnl >= 0;
+    window.__tshEq = new Chart(eq, {
+      type: "line",
+      data: {
+        labels: pts.map(function (_, i) { return dates[i] || i; }),
+        datasets: [{
+          data: pts,
+          borderColor: up ? "#4ade80" : "#f87171",
+          backgroundColor: up ? "rgba(74,222,128,0.18)" : "rgba(248,113,113,0.15)",
+          borderWidth: 2, fill: true, pointRadius: 0, tension: 0.15,
+        }],
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false, animation: false,
+        plugins: {
+          legend: { display: false },
+          tooltip: Object.assign({
+            callbacks: {
+              title: function (it) { return it[0].label || ("Point " + it[0].dataIndex); },
+              label: function (c) { return c.parsed.y.toLocaleString(undefined, { maximumFractionDigits: 2 }); },
+            },
+          }, TIP),
+        },
+        scales: {
+          x: { grid: { color: "#1a1d21", drawTicks: false },
+               ticks: { color: "#7d848f", font: MONO, maxRotation: 0, autoSkip: true, maxTicksLimit: 9, padding: 8 } },
+          y: { position: "right", grid: { color: "#1a1d21" },
+               ticks: { color: "#7d848f", font: MONO, padding: 6 } },
+        },
+      },
+    });
+  }
+
+  var ddc = document.getElementById("tsh-dd");
+  if (ddc && pts.length > 1) {
+    destroy("__tshDd");
+    var peak = pts[0];
+    var dd = pts.map(function (v) {
+      peak = Math.max(peak, v);
+      return peak > 0 ? (v - peak) / peak * 100 : 0;
+    });
+    window.__tshDd = new Chart(ddc, {
+      type: "line",
+      data: {
+        labels: dd.map(function (_, i) { return i; }),
+        datasets: [{
+          data: dd, borderColor: "#f87171",
+          backgroundColor: "rgba(242,92,92,0.22)",
+          borderWidth: 1, fill: true, pointRadius: 0, tension: 0.1,
+        }],
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false, animation: false,
+        plugins: {
+          legend: { display: false },
+          tooltip: Object.assign({
+            callbacks: { title: function () { return ""; },
+                         label: function (c) { return c.parsed.y.toFixed(2) + "%"; } },
+          }, TIP),
+        },
+        scales: {
+          x: { display: false },
+          y: { position: "right", max: 0, grid: { color: "#1a1d21" },
+               ticks: { color: "#7d848f", font: { family: "JetBrains Mono", size: 9 },
+                        callback: function (v) { return v.toFixed(0) + "%"; }, maxTicksLimit: 3 } },
+        },
+      },
+    });
+  }
+
+  // Monthly returns: first→last equity within each calendar month.
+  var host = document.getElementById("tsh-monthly");
+  if (host && pts.length > 1) {
+    var monthly = {};
+    for (var i = 0; i < pts.length; i++) {
+      var d = dates[i];
+      if (!d) continue;
+      var dt = new Date(d);
+      if (isNaN(dt)) continue;
+      var key = dt.getUTCFullYear() + "-" + dt.getUTCMonth();
+      if (!(key in monthly)) monthly[key] = { first: pts[i], last: pts[i] };
+      monthly[key].last = pts[i];
+    }
+    var ret = {};
+    for (var k in monthly) {
+      ret[k] = monthly[k].first > 0
+        ? (monthly[k].last - monthly[k].first) / monthly[k].first * 100 : 0;
+    }
+    var years = Object.keys(monthly).map(function (x) { return +x.split("-")[0]; });
+    years = years.filter(function (v, idx, a) { return a.indexOf(v) === idx; }).sort();
+    if (!years.length) { host.innerHTML = ""; return; }
+    var MON  = ["J","F","M","A","M","J","J","A","S","O","N","D"];
+    var MONF = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+    var html = '<div class="tsh-heat">';
+    html += "<div></div>";
+    for (var m = 0; m < 12; m++) html += '<div class="tsh-heat-h">' + MON[m] + "</div>";
+    for (var yi = 0; yi < years.length; yi++) {
+      var y = years[yi];
+      html += '<div class="tsh-heat-h">' + y + "</div>";
+      for (var mo = 0; mo < 12; mo++) {
+        var v = ret[y + "-" + mo];
+        if (v === undefined) { html += '<div class="tsh-heat-c empty"></div>'; continue; }
+        var a = Math.min(Math.abs(v) / 7, 1) * 0.5 + 0.08;
+        var bg = v >= 0 ? "rgba(61,220,151," + a + ")" : "rgba(255,93,108," + a + ")";
+        var txt = Math.abs(v) > 2.2 ? (v >= 0 ? "+" : "") + v.toFixed(0) : "";
+        html += '<div class="tsh-heat-c" style="background:' + bg + '" title="' +
+                MONF[mo] + " " + y + " · " + (v >= 0 ? "+" : "") + v.toFixed(2) + '%">' +
+                txt + "</div>";
+      }
+    }
+    host.innerHTML = html + "</div>";
+  }
+})();
+</script>
+{% endif %}

@@ -17,6 +17,8 @@
     </button>
     {% if not loop.last %}<span class="sw-rail-sep"></span>{% endif %}
     {% endfor %}
+    {# Sihirbazın her AI adımı (describe/chat) bu modeli kullanır. #}
+    {% include "fragments/model_badge.html" %}
   </div>
 
   {# ══ Step 1 · Choose a strategy ══════════════════════════════════════════ #}

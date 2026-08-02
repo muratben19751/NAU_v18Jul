@@ -26,6 +26,10 @@
   <div class="panel-header">
     <div class="panel-title">Result · {{ last.spec_name }}</div>
     <div class="spacer"></div>
+    {% if last.log_ts %}
+    <button type="button" class="tsh-link" title="Tear sheet — this run's performance sheet"
+            onclick="openTearsheet('/tearsheet?src=log&ts=' + encodeURIComponent('{{ last.log_ts }}'))">📈</button>
+    {% endif %}
     <span class="text-muted text-mono" style="font-size:11px;">Nautilus {{ last.runner or 'BacktestEngine' }}</span>
   </div>
   <div class="panel-body">

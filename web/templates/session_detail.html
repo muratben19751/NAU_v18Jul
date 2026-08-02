@@ -186,6 +186,8 @@
               <th style="text-align:right;padding:5px 8px;color:var(--text-muted);">Win%</th>
               <th style="text-align:right;padding:5px 8px;color:var(--text-muted);">Max DD</th>
               <th style="text-align:right;padding:5px 8px;color:var(--text-muted);">Score</th>
+              <th style="text-align:center;padding:5px 8px;color:var(--text-muted);"
+                  title="Tear sheet — this iteration's performance sheet"></th>
             </tr>
           </thead>
           <tbody>
@@ -203,6 +205,12 @@
             <td style="padding:5px 8px;text-align:right;">{{ "%.1f"|format(m.win_rate * 100) if m.win_rate else "—" }}%</td>
             <td style="padding:5px 8px;text-align:right;color:var(--pnl-down);">{{ "%.1f"|format(m.max_dd * 100) if m.max_dd else "—" }}%</td>
             <td style="padding:5px 8px;text-align:right;font-weight:600;">{{ "%.4f"|format(bt.score) if bt.score and bt.score > -999 else "—" }}</td>
+            <td style="padding:5px 8px;text-align:center;">
+              {% if is_valid %}
+              <button type="button" class="tsh-link" title="Tear sheet"
+                      onclick="openTearsheet('/tearsheet?src=session&run_id={{ run_id }}&i={{ bt.ev_i }}')">📈</button>
+              {% endif %}
+            </td>
           </tr>
           {% endfor %}
           </tbody>

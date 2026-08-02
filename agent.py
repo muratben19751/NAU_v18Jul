@@ -5,9 +5,9 @@ Returns a dict:
 
 Wiki References
 ---------------
-_(app-specific — outside wiki scope)_
-
-App-specific; outside wiki scope (LLM parameter proposer, not a Nautilus concept).
+See: [[model_secici_ve_gorunurluk]] (model seçici, canlı OpenRouter kataloğu,
+model adının çözülmesi). Geri kalanı app-specific; wiki kapsamı dışında (LLM
+parametre önericisi, bir Nautilus kavramı değil).
 """
 
 from __future__ import annotations
@@ -57,6 +57,16 @@ SELECTABLE_MODELS = (
     "claude-haiku-4-5",
 )
 
+# Ekranlarda model adını yazmak için — id'ler kullanıcıya gösterilecek kadar
+# okunur değil ("claude-fable-5" → "Fable 5").
+_MODEL_LABELS = {
+    "claude-fable-5": "Fable 5",
+    "claude-opus-5": "Opus 5",
+    "claude-opus-4-8": "Opus 4.8",
+    "claude-sonnet-5": "Sonnet 5",
+    "claude-haiku-4-5": "Haiku 4.5",
+}
+
 
 def set_thread_model(model: str | None) -> None:
     """Pin THIS thread's LLM calls to ``model``; None/unknown clears the pin.
@@ -71,28 +81,123 @@ def set_thread_model(model: str | None) -> None:
 
 
 # Model seçici seçenekleri. OpenRouter girdileri yalnız OPENROUTER_API_KEY
-# ayarlıyken görünür; liste NAUTILUS_OPENROUTER_MODELS (virgüllü OpenRouter
-# id'leri) ile özelleştirilir. Fiyat tablosunda olmayan modellerin maliyeti
-# rozet/defterde dürüstçe "?" kalır (uydurma sayı yok).
+# ayarlıyken görünür (anahtarsız seçim zaten çalışmaz); liste canlı olarak
+# openrouter.ai kataloğundan gelir. Fiyat tablosunda olmayan modellerin
+# maliyeti rozet/defterde dürüstçe "?" kalır (uydurma sayı yok).
 _DEFAULT_OPENROUTER_MODELS = (
     "deepseek/deepseek-chat,google/gemini-2.5-flash,openai/gpt-4o-mini"
 )
+
+# Canlı katalog. Süreç içi cache — bir sayfa render'ı ağ turuna beklememeli.
+# Başarısız çekim de (kısa süre) cache'lenir ki kapalı/engelli bir uç nokta her
+# render'ı yavaşlatmasın; o durumda liste yukarıdaki statik üçlüye düşer —
+# uydurma id'ye ASLA değil.
+OPENROUTER_MODELS_URL = os.environ.get(
+    "OPENROUTER_MODELS_URL", "https://openrouter.ai/api/v1/models"
+)
+_OR_CATALOG_TTL = 3600.0
+_OR_CATALOG_FAIL_TTL = 60.0
+_or_catalog: list[tuple[str, str]] = []
+_or_catalog_at = 0.0
+_or_catalog_lock = threading.Lock()
+
+
+def _fetch_openrouter_catalog() -> list[tuple[str, str]]:
+    """openrouter.ai'nin servis ettiği metin modelleri — [(id, görünen ad)]."""
+    import urllib.request
+
+    req = urllib.request.Request(
+        OPENROUTER_MODELS_URL, headers={"Accept": "application/json"}
+    )
+    key = os.environ.get("OPENROUTER_API_KEY", "").strip()
+    if key:
+        # Uç nokta anahtarsız da çalışır; anahtarla hesabın gördüğü liste gelir.
+        req.add_header("Authorization", f"Bearer {key}")
+    timeout = float(os.environ.get("OPENROUTER_MODELS_TIMEOUT", "6"))
+    with urllib.request.urlopen(req, timeout=timeout) as r:  # noqa: S310
+        payload = json.loads(r.read().decode("utf-8"))
+
+    out: list[tuple[str, str]] = []
+    for m in payload.get("data") or []:
+        mid = (m.get("id") or "").strip()
+        if not mid:
+            continue
+        arch = m.get("architecture") or {}
+        # Metin girip metin çıkarabilen uçlar; görüntü/ses-only modeller bu
+        # uygulamanın promptlarını çalıştıramaz.
+        ins = arch.get("input_modalities") or ["text"]
+        outs = arch.get("output_modalities") or ["text"]
+        if "text" not in ins or "text" not in outs:
+            continue
+        out.append((mid, (m.get("name") or mid).strip()))
+    out.sort(key=lambda t: t[0])
+    return out
+
+
+def openrouter_catalog(force: bool = False) -> list[tuple[str, str]]:
+    """Cache'li openrouter.ai kataloğu; çekim başarısızsa boş liste."""
+    global _or_catalog, _or_catalog_at
+    now = time.monotonic()
+    with _or_catalog_lock:
+        ttl = _OR_CATALOG_TTL if _or_catalog else _OR_CATALOG_FAIL_TTL
+        if not force and _or_catalog_at and (now - _or_catalog_at) < ttl:
+            return _or_catalog
+        try:
+            _or_catalog = _fetch_openrouter_catalog()
+            logging.info("OpenRouter kataloğu: %d model", len(_or_catalog))
+        except Exception as e:
+            logging.warning("OpenRouter kataloğu çekilemedi: %s", e)
+            _or_catalog = []
+        _or_catalog_at = now
+        return _or_catalog
+
+
+def _openrouter_options() -> list[tuple[str, str]]:
+    """OpenRouter picker satırları — canlı katalog, yoksa statik yedek.
+
+    NAUTILUS_OPENROUTER_MODELS (virgüllü id listesi) verilmişse liste ona
+    sabitlenir ve ağa hiç çıkılmaz.
+    """
+    pinned = os.environ.get("NAUTILUS_OPENROUTER_MODELS", "").strip()
+    if pinned:
+        rows = [(s.strip(), s.strip()) for s in pinned.split(",") if s.strip()]
+    else:
+        rows = openrouter_catalog() or [
+            (s, s) for s in _DEFAULT_OPENROUTER_MODELS.split(",")
+        ]
+    return [(f"or:{mid}", f"OR · {name}") for mid, name in rows]
 
 
 def selectable_models() -> list[tuple[str, str]]:
     """Model picker options as (form value, label); "" = app default."""
     out = [
-        ("", "Fable 5 (varsayılan)"),
+        ("", f"{_MODEL_LABELS.get(MODEL, MODEL)} (varsayılan)"),
         ("claude-opus-5", "Opus 5"),
         ("claude-sonnet-5", "Sonnet 5"),
         ("claude-haiku-4-5", "Haiku 4.5"),
     ]
     if os.environ.get("OPENROUTER_API_KEY", "").strip():
-        ids = os.environ.get("NAUTILUS_OPENROUTER_MODELS", _DEFAULT_OPENROUTER_MODELS)
-        for mid in (s.strip() for s in ids.split(",")):
-            if mid:
-                out.append((f"or:{mid}", f"OR · {mid}"))
+        out.extend(_openrouter_options())
     return out
+
+
+def model_label(model: str | None = None) -> str:
+    """Bir model id'sinin / picker değerinin okunur adı.
+
+    "" veya None = "uygulama varsayılanı": çözülüp gerçek model adı döner, ki
+    arayüzdeki rozet "default" gibi bir kelime yerine hep gerçek bir model
+    adlandırsın (kredi fallback'i devredeyse onu — bu bir fatura gerçeği).
+    """
+    m = (model or "").strip() or current_model()
+    if m.startswith("or:"):
+        # Hangi hesabın faturalandığı adın parçası — OpenRouter ayrı bir hesap.
+        return f"OR · {m[3:]}"
+    return _MODEL_LABELS.get(m, m)
+
+
+def model_id(model: str | None = None) -> str:
+    """``model_label`` ile aynı çözüm, ama ham id ("or:" öneki korunur)."""
+    return (model or "").strip() or current_model()
 
 
 def current_model() -> str:

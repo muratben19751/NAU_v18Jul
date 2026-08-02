@@ -144,6 +144,23 @@ render edilir (konfigürasyon formuna aitler) ve hiçbir token'ı miras almadıl
 meşru olarak `0.0` olabilir; `state.get("started_at") or now` bu durumda geçen
 süreyi sıfırlıyordu. `is None` kontrolü ile düzeltildi — birim test bunu yakaladı.
 
+## Sonraki tur — model adı ve tear sheet (2026-08-02)
+
+Kokpit iki ek bilgi taşımaya başladı:
+
+- **BRIEF rayının `model` satırı artık `"default"` yazmıyor.** Boş seçim
+  sunucuda gerçek modele çözülüyor (`mission_view` → `agent.model_label`), üst
+  bara da bir rozet eklendi. Rozet idle'da drawer'daki picker'ı yansıtır,
+  koşarken kokpit fragment'i aynı slota OOB swap yaparak koşan modeli yazar —
+  **canlı olan kazanır**. Gerekçe: [[model_secici_ve_gorunurluk]].
+- **Aday kartları tear sheet açıyor.** Her iterasyon satırına, o koşunun
+  `backtest_log` kaydına giden bir link kondu; anahtar, iterasyon loglanırken
+  `log_backtest()`'ten dönen `ts` (aday sözlüğünde `ts` alanı). Boşsa link
+  basılmaz — kırık link yerine link yok. Gerekçe: [[tear_sheet_overlay]].
+
+Overlay `base.html`'de yaşadığı için saniyede bir dönen `#agent-result` swap'i
+onu yok etmez; kapatınca kokpit kaldığı yerden görünür.
+
 <!-- BACKLINKS:BEGIN -->
 ## Referenced by
 
