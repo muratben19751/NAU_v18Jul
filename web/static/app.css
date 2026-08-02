@@ -2109,17 +2109,17 @@ body.page-studio .empty-state { padding: 12px 12px; }
 body.page-studio .hero-main { padding: 9px 11px; }
 
 /* ============================================================================
-   STUDIO — width containment (scoped)
-   Everything felt "too wide" because .content has no max-width and flexes to
-   the full viewport, so on a wide monitor every panel stretches edge-to-edge
-   and lines get uncomfortably long. Cap the content column and center it, and
-   pull in the widest inner grids so forms/tables don't sprawl.
+   STUDIO — full-bleed content (scoped)
+   The column used to be capped at 1160px and centered, which left large empty
+   gutters on wide monitors. The studio is a dense cockpit, not prose, so it
+   now uses the full width; only the inner grid ratios stay biased so forms
+   and tables don't sprawl.
    ========================================================================== */
 
-/* Cap the working column at a comfortable width and center it. */
+/* Full width — no centering gutters. */
 body.page-studio .content {
-  max-width: 1160px;
-  margin-inline: auto;
+  max-width: none;
+  margin-inline: 0;
   width: 100%;
 }
 
