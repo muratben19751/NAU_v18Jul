@@ -166,6 +166,107 @@ class TestLoopBudget:
             _test_execute_generated(src, require_max_lookback=True)
 
 
+class TestCostGate:
+    """The COST axis of the allowlist: work that no downstream guard can stop.
+
+    The loop budget only instruments While/For/comprehensions, and the smoke
+    harness's `join(timeout=2.0)` cannot preempt a thread holding the GIL inside
+    one bytecode — so anything expensive without a loop node has to be refused
+    statically, at validation time.
+    """
+
+    @staticmethod
+    def _src(body: str) -> str:
+        return (
+            "def max_lookback(params):\n"
+            "    return 10\n"
+            "def evaluate(state, block, closes, indicators, portfolio):\n"
+            f"{body}"
+            "    return None\n"
+        )
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            "    x = 9 ** 9 ** 9\n",  # the classic: exponent is itself a Pow
+            "    x = 3 ** (3 * 10 ** 7 + len(closes))\n",  # computed exponent
+            "    x = closes[-1] ** len(closes)\n",  # variable exponent
+            "    x = 2 ** 65\n",  # literal, over MAX_POW_EXPONENT
+        ],
+    )
+    def test_pow_bomb_rejected(self, body):
+        from codegate import GeneratedCodeError, validate_generated_code
+
+        with pytest.raises(GeneratedCodeError, match="exponent"):
+            validate_generated_code(self._src(body))
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            # Every `**` here has the literal exponent 64, so the exponent rule
+            # alone lets it through — the VALUE is what explodes (10**262144,
+            # and 64x more per extra level).
+            "    x = ((10 ** 64) ** 64) ** 64\n",
+            # No loop node to instrument, one C-level call, ~8GB.
+            "    x = list(range(10 ** 9))\n",
+            "    x = sum(range(10 ** 9))\n",
+            "    x = [0] * 10 ** 9\n",
+            "    x = 1e9 * 1e9\n",
+        ],
+    )
+    def test_oversized_literal_rejected(self, body):
+        from codegate import GeneratedCodeError, validate_generated_code
+
+        with pytest.raises(GeneratedCodeError, match="literal value"):
+            validate_generated_code(self._src(body))
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            "    x = (closes[-1] - closes[-2]) ** 2\n",  # variance term
+            "    x = closes[-1] ** 0.5\n",  # stdev
+            "    x = 1e-9 + closes[-1]\n",  # epsilon
+            "    x = 9999.0 if closes else 0.0\n",  # sentinel (the on-disk max)
+            "    x = [c for c in range(len(closes))]\n",  # data-sized range
+            "    x = 60 * 24 * 365\n",  # bars per year — folds to 525600
+        ],
+    )
+    def test_real_block_shapes_still_pass(self, body):
+        from codegate import validate_generated_code
+
+        validate_generated_code(self._src(body))
+
+    def test_validation_of_a_bomb_is_itself_cheap(self):
+        """The check must not become the bomb: rejecting is bottom-up, so no
+        intermediate above the ceiling is ever computed."""
+        import time
+
+        from codegate import GeneratedCodeError, validate_generated_code
+
+        src = self._src("    x = (((((10 ** 64) ** 64) ** 64) ** 64) ** 64)\n")
+        t0 = time.perf_counter()
+        with pytest.raises(GeneratedCodeError):
+            validate_generated_code(src)
+        assert time.perf_counter() - t0 < 1.0
+
+    def test_stored_blocks_all_survive_the_ceiling(self):
+        """The ceiling is calibrated against real code, not guessed: every block
+        on disk must still validate (they top out at a 9999 sentinel)."""
+        import custom_block_store as cbs
+        from codegate import validate_generated_code
+
+        checked = 0
+        for info in cbs.list_custom():
+            path = cbs.module_path(info["name"])
+            try:
+                src = path.read_text(encoding="utf-8")
+            except OSError:
+                continue
+            validate_generated_code(src)
+            checked += 1
+        assert checked >= 1, "no stored custom block found"
+
+
 def _fake_strategy(closes, highs=None, lows=None):
     return SimpleNamespace(
         _highs=highs or [c + 0.5 for c in closes],

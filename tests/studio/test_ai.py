@@ -192,6 +192,29 @@ def test_double_loop_blocked_while_running(client, monkeypatch):
     assert r.status_code == 422 and "already running" in r.text
 
 
+def test_unknown_block_scope_is_rejected_before_anything_is_stored(client, monkeypatch):
+    """`block` is copied into the row with model_copy, which SKIPS validation.
+
+    An unchecked value therefore does not just fail this request — it persists a
+    row whose `block` no longer satisfies Suggestion's Literal, and every later
+    read raises ValidationError. That bricks the page, including the dismiss
+    button that would remove the row, so there is no way back from inside the app.
+    """
+    _mock_llm(client, monkeypatch, [_sugg()])
+    r = client.post(f"/studio/{SID}/ai/suggest", data={"block": "not_a_block"})
+    assert r.status_code == 422 and "unknown block" in r.text
+    assert client.store.pending_suggestions(SID) == []
+    # The page still renders — nothing poisonous was written.
+    assert client.get(f"/studio/{SID}").status_code == 200
+
+
+def test_fieldless_patch_on_unknown_block_is_422_not_500(client):
+    """set_block_attr only inspects `block` when it has something to set, so a
+    PATCH carrying no field at all used to reach the renderer unchecked."""
+    r = client.patch(f"/studio/{SID}/blocks/not_a_block", data={})
+    assert r.status_code == 422 and "unknown block" in r.text
+
+
 @pytest.mark.skipif(
     os.environ.get("STUDIO_LLM_SMOKE") != "1", reason="live LLM smoke test disabled"
 )

@@ -303,6 +303,116 @@ def safe_builtins() -> dict:
     return d
 
 
+# Largest exponent a block may raise something to. Every `**` in the 622 stored
+# blocks is a small literal — `** 2` for a variance term, `** 0.5` for a standard
+# deviation — so this ceiling costs real code nothing.
+MAX_POW_EXPONENT = 64
+
+
+def _check_pow(node: ast.BinOp) -> None:
+    """Reject `**` unless the exponent is a small literal.
+
+    `9 ** 9 ** 9` passes every other rule here: Pow is an allowed node, the
+    operands are Constants, nothing is imported, no attribute or builtin is
+    touched. It is also a single uninterruptible CPython operation, so NONE of
+    the guards downstream can stop it — the loop-budget injector only
+    instruments While/For/comprehensions (there is no loop here), and the smoke
+    harness's `t.join(timeout=2.0)` cannot preempt a thread that holds the GIL
+    inside one bytecode. Measured: the join never returns and the whole server
+    process wedges until SIGKILL.
+
+    A variable exponent is refused for the same reason: `closes[0] ** x` is
+    unbounded at validation time, and the value is attacker-chosen.
+    """
+    exp = node.right
+    # -2 and similar arrive as UnaryOp(USub, Constant) rather than a Constant.
+    if isinstance(exp, ast.UnaryOp) and isinstance(exp.op, (ast.USub, ast.UAdd)):
+        exp = exp.operand
+    if not isinstance(exp, ast.Constant) or not isinstance(exp.value, (int, float)):
+        raise GeneratedCodeError(
+            "the exponent of `**` must be a numeric literal "
+            f"(<= {MAX_POW_EXPONENT}); a computed exponent is unbounded. "
+            "Use math.sqrt / math.log for anything more involved."
+        )
+    if isinstance(exp.value, bool) or abs(exp.value) > MAX_POW_EXPONENT:
+        raise GeneratedCodeError(
+            f"`**` exponent {exp.value!r} exceeds the limit of {MAX_POW_EXPONENT}"
+        )
+
+
+# Ceiling on any number a block can spell out with literals alone. The 268
+# stored blocks top out at 9999 (periods, thresholds, a 9999 sentinel), so this
+# leaves two orders of magnitude of headroom while keeping literal-sized work
+# small: the biggest list a block can ask for outright is ~1M elements.
+MAX_LITERAL_MAGNITUDE = 1_000_000
+
+_FOLD_DEPTH = 12
+
+
+def _fold_literal(node: ast.AST, depth: int = 0) -> int | float | None:
+    """Value of a literal-only arithmetic expression, or None if not literal.
+
+    Raises GeneratedCodeError as soon as any INTERMEDIATE exceeds
+    ``MAX_LITERAL_MAGNITUDE``. Two jobs in one rule:
+
+    - It closes the resource holes ``_check_pow`` does not see. That check only
+      constrains the exponent, so a chained base slips through: every ``**`` in
+      ``((10**64)**64)**64`` has the literal exponent 64 and passes, yet the
+      value is 10**262144 — and one more level costs 64× again (measured: four
+      levels = 14.5 s, 55 Mbit). The same gap covers container bombs the AST is
+      otherwise blind to, ``list(range(10**9))`` / ``[0] * 10**9``, which the
+      loop budget cannot instrument either (no loop node, one C-level call).
+    - Rejecting bottom-up keeps VALIDATION itself cheap. Because no operand may
+      exceed the ceiling and no exponent may exceed ``MAX_POW_EXPONENT``, the
+      largest product this ever computes is 1e6**64 — a few hundred digits. The
+      check can never become the bomb it is meant to stop.
+    """
+    if depth > _FOLD_DEPTH:
+        return None
+
+    def _bounded(v: int | float) -> int | float:
+        if abs(v) > MAX_LITERAL_MAGNITUDE:
+            raise GeneratedCodeError(
+                f"literal value {v!r} exceeds the limit of "
+                f"{MAX_LITERAL_MAGNITUDE:,}; sizes this large are never a "
+                "period, a threshold or a window."
+            )
+        return v
+
+    if isinstance(node, ast.Constant):
+        if isinstance(node.value, bool) or not isinstance(node.value, (int, float)):
+            return None
+        return _bounded(node.value)
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.USub, ast.UAdd)):
+        val = _fold_literal(node.operand, depth + 1)
+        if val is None:
+            return None
+        return -val if isinstance(node.op, ast.USub) else val
+    if isinstance(node, ast.BinOp):
+        left = _fold_literal(node.left, depth + 1)
+        right = _fold_literal(node.right, depth + 1)
+        if left is None or right is None:
+            return None
+        ops = {
+            ast.Add: lambda a, b: a + b,
+            ast.Sub: lambda a, b: a - b,
+            ast.Mult: lambda a, b: a * b,
+            ast.Pow: lambda a, b: a**b,
+        }
+        fn = ops.get(type(node.op))
+        if fn is None:
+            return None  # Div/Mod/bitwise: cannot grow, or not worth folding
+        if isinstance(node.op, ast.Pow) and abs(right) > MAX_POW_EXPONENT:
+            return None  # _check_pow rejects this node on its own
+        try:
+            return _bounded(fn(left, right))
+        except GeneratedCodeError:
+            raise
+        except Exception:
+            return None  # overflow / type error — not our call to make here
+    return None
+
+
 def validate_generated_code(src: str) -> ast.Module:
     """Parse ``src`` and enforce the whitelist. Returns the AST on success.
 
@@ -339,6 +449,10 @@ def validate_generated_code(src: str) -> ast.Module:
     for node in ast.walk(tree):
         if not isinstance(node, _ALLOWED_NODES):
             raise GeneratedCodeError(f"disallowed node: {type(node).__name__}")
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Pow):
+            _check_pow(node)
+        if isinstance(node, (ast.Constant, ast.UnaryOp, ast.BinOp)):
+            _fold_literal(node)
         # Reject any `__dunder__` identifier — blocks the __class__/__globals__ escape.
         if isinstance(node, ast.Name):
             if node.id.startswith("_"):

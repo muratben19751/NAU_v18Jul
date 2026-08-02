@@ -14,7 +14,6 @@ Covered:
 from __future__ import annotations
 
 import time
-from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
@@ -289,59 +288,53 @@ class TestMsScoreFactor:
 # futures are collected (not dropped), the timed-out unit becomes an in-band 'unit timeout',
 # the pool is rebuilt and accepts the next batch.
 # ===========================================================================
-_PROBE_HELPER_SRC = """
-def probe_run_unit(unit):
-    import time
-    s = float(unit.get("_probe_sleep", 0.0))
-    if s:
-        time.sleep(s)
-    return {"key": unit["key"], "metrics": {"ret": 1.0}, "error": None, "n_trades": 3}
-"""
-
-
 class TestRunUnitsTimeout:
     def test_timeout_collects_done_and_rebuilds_pool(self, pool, monkeypatch):  # noqa: F811
-        # Write the helper module to disk so spawn workers can import it from the
-        # repo root (probe_run_unit is importable on its own, no heavy import).
-        repo = Path(__file__).resolve().parents[1]
-        helper = repo / "_probe_unit_tmp.py"
-        helper.write_text(_PROBE_HELPER_SRC, encoding="utf-8")
-        try:
-            import _probe_unit_tmp  # importable from the repo root
+        # `probe_run_unit` pickles by reference, so every spawn worker imports
+        # the module to unpickle the call item — it therefore has to be a file
+        # that already exists (see tests/_probe_unit.py for what writing it at
+        # call time raced with).
+        import _probe_unit
 
-            monkeypatch.setattr(PE, "_run_unit", _probe_unit_tmp.probe_run_unit)
+        monkeypatch.setattr(PE, "_run_unit", _probe_unit.probe_run_unit)
 
-            # Stall the PARENT side PAST the timeout budget: after the first fast
-            # future is yielded, progress_cb sleeps here while the remaining fast
-            # futures fall into "done but not yielded" state → M300 branch.
-            def _stall_cb(done, total, key):
-                time.sleep(3.5)
+        # Warm the pool FIRST. Workers spawn lazily on the first submit, and
+        # `pythonw` startup plus the module imports can eat most of the 2s budget
+        # below — a fast unit that has not started yet legitimately comes back
+        # with the timeout payload, and the assertion fails for a reason that has
+        # nothing to do with the M300 branch under test. Paying that cost outside
+        # the measured window makes the timing assumption hold on a loaded box.
+        pool.run_units([{"key": "warmup"}], timeout_s=60.0)
 
-            units = [
-                {"key": "slow", "_probe_sleep": 7.0},  # exceeds the timeout
-                {"key": "f1"},
-                {"key": "f2"},
-                {"key": "f3"},
-                {"key": "f4"},
-            ]
-            out = pool.run_units(units, progress_cb=_stall_cb, timeout_s=2.0)
+        # Stall the PARENT side PAST the timeout budget: after the first fast
+        # future is yielded, progress_cb sleeps here while the remaining fast
+        # futures fall into "done but not yielded" state → M300 branch.
+        def _stall_cb(done, total, key):
+            time.sleep(3.5)
 
-            # (1) no completed key was dropped
-            assert set(out) == {"slow", "f1", "f2", "f3", "f4"}
-            # (2) fast units carry the REAL payload (M300 revert → timeout payload → blows up)
-            for k in ("f1", "f2", "f3", "f4"):
-                assert out[k]["metrics"] == {"ret": 1.0}, k
-                assert not out[k].get("error"), k
-            # (3) slow unit in-band timeout
-            assert "unit timeout" in out["slow"]["error"]
-            assert out["slow"]["metrics"] is None
-            # (4) pool was rebuilt → next batch is accepted
-            out2 = pool.run_units([{"key": "g1"}, {"key": "g2"}], timeout_s=30.0)
-            assert set(out2) == {"g1", "g2"}
-            assert out2["g1"]["metrics"] == {"ret": 1.0}
-            assert out2["g2"]["metrics"] == {"ret": 1.0}
-        finally:
-            helper.unlink(missing_ok=True)
+        units = [
+            {"key": "slow", "_probe_sleep": 7.0},  # exceeds the timeout
+            {"key": "f1"},
+            {"key": "f2"},
+            {"key": "f3"},
+            {"key": "f4"},
+        ]
+        out = pool.run_units(units, progress_cb=_stall_cb, timeout_s=2.0)
+
+        # (1) no completed key was dropped
+        assert set(out) == {"slow", "f1", "f2", "f3", "f4"}
+        # (2) fast units carry the REAL payload (M300 revert → timeout payload → blows up)
+        for k in ("f1", "f2", "f3", "f4"):
+            assert out[k]["metrics"] == {"ret": 1.0}, k
+            assert not out[k].get("error"), k
+        # (3) slow unit in-band timeout
+        assert "unit timeout" in out["slow"]["error"]
+        assert out["slow"]["metrics"] is None
+        # (4) pool was rebuilt → next batch is accepted
+        out2 = pool.run_units([{"key": "g1"}, {"key": "g2"}], timeout_s=30.0)
+        assert set(out2) == {"g1", "g2"}
+        assert out2["g1"]["metrics"] == {"ret": 1.0}
+        assert out2["g2"]["metrics"] == {"ret": 1.0}
 
 
 # ===========================================================================

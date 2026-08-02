@@ -192,7 +192,6 @@ def _preview_signals(code: str, meta: dict, role_hint: str) -> dict:
     Shared by both the generate and the AI-edit flows (single source of truth).
     """
     try:
-        import builtins as _builtins_mod
         import math as _math
         import statistics as _stats
 
@@ -200,9 +199,8 @@ def _preview_signals(code: str, meta: dict, role_hint: str) -> dict:
 
         import indicators as _ind_mod
         from codegate import (
-            _ALLOWED_BUILTINS,
             compile_with_loop_budget,
-            has_builtin,
+            safe_builtins,
             safe_module_proxy,
             validate_generated_code,
         )
@@ -222,11 +220,14 @@ def _preview_signals(code: str, meta: dict, role_hint: str) -> dict:
 
         validate_generated_code(code)  # dunder/import/loop gates
         _ALLOWED: dict = {
-            "__builtins__": {
-                k: getattr(_builtins_mod, k)
-                for k in _ALLOWED_BUILTINS
-                if has_builtin(k)
-            },
+            # Same builtins the smoke and on-disk loader use. Rebuilding the
+            # dict here from _ALLOWED_BUILTINS alone left out RuntimeError,
+            # which the injected loop-budget guard raises: a `while True` block
+            # died with `NameError: RuntimeError is not defined`, the preview's
+            # blanket except swallowed it, and every bar silently returned None
+            # — an empty preview that reads as "works" instead of "loop budget
+            # exceeded".
+            "__builtins__": safe_builtins(),
             # Read-only proxies (see codegate.safe_module_proxy): this preview
             # exec's inside the web-server process, so handing out the live
             # modules would let one generated block rewrite `ind.calc_rsi` for

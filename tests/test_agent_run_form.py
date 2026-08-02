@@ -150,6 +150,29 @@ def test_openrouter_thread_pin_and_routing(monkeypatch):
     agent.set_thread_model(None)
 
 
+def test_openrouter_pin_survives_the_claude_credit_fallback(monkeypatch):
+    """The credit fallback is a billing fact, but only inside Claude's billing.
+
+    `_active_model` is set when CLAUDE runs out of credit. It used to be checked
+    first, so a run pinned to OpenRouter silently went back to Claude — breaking
+    the feature at the exact moment it is useful ("Claude is out, switch to OR")
+    and walking the call straight back into the same wall.
+    """
+    import agent
+
+    monkeypatch.setattr(agent, "_active_model", agent.FALLBACK_MODEL)
+
+    # A plain preference still loses to the billing fact…
+    agent.set_thread_model("claude-haiku-4-5")
+    assert agent.current_model() == agent.FALLBACK_MODEL
+    # …but a different provider is a different account.
+    agent.set_thread_model("or:deepseek/deepseek-chat")
+    assert agent.current_model() == "or:deepseek/deepseek-chat"
+
+    agent.set_thread_model(None)
+    assert agent.current_model() == agent.FALLBACK_MODEL
+
+
 def test_selectable_models_openrouter_entries(monkeypatch):
     import agent
 

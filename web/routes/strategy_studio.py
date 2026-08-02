@@ -36,6 +36,7 @@ from collections import OrderedDict
 from collections.abc import Iterator
 from contextlib import ExitStack, contextmanager
 from datetime import UTC, datetime
+from typing import get_args
 
 from fastapi import APIRouter, BackgroundTasks, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, PlainTextResponse, Response
@@ -189,6 +190,14 @@ _BLOCK_TEMPLATE = {
     "allocation": ("studio/_allocation_block.html", {}),
 }
 
+# The block names a SUGGESTION may carry — a strictly smaller set than
+# _BLOCK_TEMPLATE. Derived from the model rather than restated so the two cannot
+# drift: anything stored outside this set makes the row unreadable on the way
+# back in (Suggestion.block is a Literal).
+_SUGGESTION_BLOCKS: frozenset[str] = frozenset(
+    get_args(Suggestion.model_fields["block"].annotation)
+)
+
 
 _SYMBOLS_TTL_S = 60.0
 _symbols_cache: (
@@ -339,11 +348,22 @@ def _render_block(
     return HTMLResponse(html)
 
 
+class UnknownBlock(KeyError):
+    """A block name that has no template. Raised instead of a bare KeyError so
+    callers can turn it into a 422 rather than letting it surface as a 500."""
+
+
 def _block_html(
     request: Request, defn: StrategyDefinition, block: str, oob: bool = False
 ) -> str:
     if block in ("sub_entry", "sub_exit"):
         block = "regime"  # sub rules live inside the card
+    if block not in _BLOCK_TEMPLATE:
+        # Reached whenever a block name gets this far unvalidated — a hand-made
+        # request, or a suggestion row whose `block` was written by a path that
+        # skipped validation. Both used to be a KeyError → 500 → HTMX swaps
+        # nothing and the button looks dead.
+        raise UnknownBlock(block)
     tpl, extra = _BLOCK_TEMPLATE[block]
     ctx = _ctx(request, defn, **extra)
     if block == "regime":
@@ -664,7 +684,14 @@ def route_block_attr(
                 set_block_attr(defn, block, match=match, evaluate=evaluate)
     except MutationError as e:
         return PlainTextResponse(str(e), status_code=422)
-    return _render_block(request, defn, block, oob_side=False)
+    try:
+        return _render_block(request, defn, block, oob_side=False)
+    except UnknownBlock:
+        # set_block_attr only inspects `block` when it has something to set, so
+        # a PATCH carrying no field at all reaches the renderer with the name
+        # unchecked. Everything above already 422s on an unknown block; this
+        # keeps the no-op form consistent instead of 500ing.
+        return PlainTextResponse(f"unknown block '{block}'", status_code=422)
 
 
 @router.patch("/studio/{strategy_id}/allocation")
@@ -1275,6 +1302,18 @@ def route_ai_suggest(
 ):
     defn = _load_working(strategy_id)
     scope = block or None
+    # Validate BEFORE anything is stored. `scope` is copied into the suggestion
+    # row verbatim (via model_copy, which skips pydantic validation), so an
+    # unchecked value here does not just fail this request — it persists a row
+    # whose `block` no longer satisfies Suggestion's Literal, and every later
+    # read of that row raises ValidationError. That bricks the strategy page,
+    # including the dismiss button that would remove the row.
+    if scope is not None and scope not in _SUGGESTION_BLOCKS:
+        return PlainTextResponse(
+            f"unknown block '{scope}' (expected one of: "
+            f"{', '.join(sorted(_SUGGESTION_BLOCKS))})",
+            status_code=422,
+        )
     try:
         sid, status = _make_suggestion(defn, ask, scope, "manual")
     except Exception as e:  # noqa: BLE001 — an unusable engine is not a 500

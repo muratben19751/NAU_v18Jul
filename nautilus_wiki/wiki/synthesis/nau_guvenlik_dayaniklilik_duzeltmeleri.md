@@ -12,7 +12,7 @@ related:
   - wiki/synthesis/nau_performans_denetimi.md
   - wiki/synthesis/strategy_studio.md
   - wiki/synthesis/webapp_module_map.md
-last_updated: 2026-07-28
+last_updated: 2026-08-02
 ---
 
 # Güvenlik & Dayanıklılık Düzeltmeleri — 2026-07-25
@@ -223,6 +223,55 @@ import'tan sonra değiştirilemez, (c) testler modül global'lerini monkeypatch'
 (c) bugün çalışıyor; (b) tek-worker kısıtıyla birlikte [[nau_mimari_denetimi]]'ndeki
 H9 (global tek-instance `AppState`) ile aynı ailedendir. Yapılacaksa doğru sıra:
 `deps.py` + FastAPI `Depends` override'ları.
+
+## 10. Maliyet ekseni: beyaz listenin üçüncü sorusu (2026-08-02)
+
+§1 beyaz listenin **ad** ve **bağlam** eksenlerini kapattı. Üçüncü eksen —
+*bu isimle ne kadar pahalıya iş yapılabilir* — bugüne kadar açıktı: düzeltmesi
+silinen macOS dalında (`e980c71`) kalmış, `main`'e hiç girmemişti. Ölçümle
+doğrulandı ve kapatıldı.
+
+**Neden aşağıdaki hiçbir mevcut koruma tutmuyor:**
+
+- **Döngü bütçesi** yalnız `While`/`For`/comprehension düğümlerine guard enjekte
+  eder. Bu ifadelerde döngü düğümü yok → enjekte edilecek yer yok.
+- **Smoke'taki `t.join(timeout=2.0)`** GIL tutan bir thread'i kesemez. Tek büyük
+  tamsayı işlemi bytecode sınırı sunmaz; ana thread guard'ı çalıştırmak için
+  GIL'i geri alamaz bile. Ölçüldü: 2 s vaat eden yol **8.8 s** sürdü, hata yok.
+- **Sabit ifade daha da erken kaçar:** tümüyle literal olan bir ifade `compile()`
+  sırasında katlanır — thread daha kurulmadan, **çağıran thread'de** (10.0 s).
+  Bu, diskteki blokları açılışta derleyen `composer._load_module_from_path`
+  yolunu da vurur; orada thread guard'ı hiç yok, yani **sunucu açılışı** asılır.
+
+**İki kurallı düzeltme (`codegate.py`):**
+
+1. `MAX_POW_EXPONENT = 64` — `**` üssü küçük bir sayısal **literal** olmak
+   zorunda. Hesaplanmış üs de reddedilir (doğrulama anında sınırsız, değeri
+   saldırganın seçimi). `e980c71`'den alındı.
+2. `MAX_LITERAL_MAGNITUDE = 1_000_000` — literal-aritmetiği doğrulama anında
+   katlanır, herhangi bir **ara değer** tavanı aşarsa reddedilir.
+
+İkinci kural neden gerekli: birincisi tek başına yetmiyor. `((10**64)**64)**64`
+ifadesinde **her** `**` literal 64 üssü taşır ve §1'den geçer, ama değer
+10\*\*262144'tür — her ek seviye 64× daha pahalı (ölçüldü: dört seviye **14,5 s**,
+55 Mbit). Aynı boşluk `list(range(10**9))` / `[0] * 10**9` gibi döngü düğümü
+olmayan konteyner bombalarını da kapsıyordu.
+
+Aşağıdan-yukarı reddetmenin ikinci faydası: **doğrulamanın kendisi ucuz kalır.**
+Hiçbir operand tavanı, hiçbir üs 64'ü aşamadığı için hesaplanan en büyük çarpım
+1e6\*\*64 — birkaç yüz basamak. Kontrol, durdurmak için var olduğu bombaya
+dönüşemez.
+
+**Kalibrasyon ve regresyon:** tavan tahminle değil veriyle seçildi — diskteki 268
+bloğun en büyük sayısal literali **9999**, tek `**` kullanımları `** 2` ve
+`** 0.5`. 268/268 blok hâlâ geçiyor (0,14 s). Gerçek boru hattında dört bomba da
+**~0,1 ms**'de reddediliyor, meşru blok uçtan uca 38 ms'de geçiyor.
+Testler: `tests/test_guards_and_indicators.py::TestCostGate`.
+
+`e980c71`'in yanındaki iki 500 hatası da aynı turda `main`'e alındı: doğrulanmamış
+`block` alanının `model_copy` ile diske yazılıp sayfayı okunamaz hâle getirmesi
+(dismiss düğmesi dahil kurtarma yolu yoktu) ve alansız `PATCH`'in bilinmeyen blokta
+500 vermesi → ikisi de 422.
 
 ## İlgili sayfalar
 

@@ -96,10 +96,21 @@ def selectable_models() -> list[tuple[str, str]]:
 
 
 def current_model() -> str:
-    """The model currently in use (FALLBACK_MODEL if fallback has kicked in)."""
+    """The model currently in use (FALLBACK_MODEL if fallback has kicked in).
+
+    The credit fallback is a BILLING fact, so it outranks a preference — but
+    only inside its own billing domain. `_active_model` is set when *Claude*
+    credit runs out; an "or:" pin targets OpenRouter, which is a separate
+    account and unaffected by that. Letting the global flag win there broke the
+    feature exactly when it is needed ("Claude is out of credit, switch to
+    OpenRouter") and sent the call straight back into the same wall.
+    """
+    pin = getattr(_MODEL_OVERRIDE, "model", None)
+    if pin and pin.startswith("or:"):
+        return pin
     if _active_model:
         return _active_model
-    return getattr(_MODEL_OVERRIDE, "model", None) or MODEL
+    return pin or MODEL
 
 
 _CREDIT_EXHAUSTED_SIGNALS = (
