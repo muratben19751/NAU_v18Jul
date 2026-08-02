@@ -58,19 +58,17 @@ _MC_DD_LIMIT = -25.0
 # declared. The result is NOT BOUND to the decision, shown for information only.
 OOS_HOLDOUT_DAYS = 60
 
+# Sealed-holdout warmup lead-in (bars). Custom-block indicators need up to
+# NAU_WINDOW=260 bars before their FIRST signal can exist; running the winner
+# on the bare 60-day slice left coarser TFs below warmup (4h≈120, 1d≈42 bars)
+# → every holdout reported 0 trades and silently validated nothing (2026-08-02
+# vakası). The holdout run gets this many PRE-slice bars purely to warm
+# indicators; METRICS count only entries INSIDE the sealed window.
+HOLDOUT_WARMUP_BARS = 300
+
 # M22 extra circuit breaker: threshold of consecutive winnerless rounds
 # (continuous mode). Counter resets when a winner appears. 0 = off; default 25.
 _WINLESS_ROUND_LIMIT = int(os.environ.get("AGENT_WINLESS_ROUND_LIMIT", "25"))
-
-# L38: model → ($/MTok input, output, cache_read, cache_write). Selected by
-# agent.MODEL; unknown model falls back to Sonnet rates. If the backend is
-# claude-cli / OAuth (subscription), there is NO per-token billing → cost None
-# (UI hides it).
-_MODEL_PRICING: dict[str, tuple[float, float, float, float]] = {
-    "claude-fable-5": (10.0, 50.0, 1.00, 12.50),
-    "claude-sonnet-4-6": (3.0, 15.0, 0.30, 3.75),
-}
-_DEFAULT_PRICING_MODEL = "claude-sonnet-4-6"
 
 # L26: lightweight best-effort SQLite index of winner + robustness moments.
 _AGENT_INDEX_DB = Path.home() / ".cache" / "nautilus_web_app" / "agent_index.db"
@@ -741,6 +739,33 @@ def _split_holdout(df, min_bars: int = 200):
     return trimmed, df[df.index >= cutoff]
 
 
+def _sealed_holdout_stats(
+    trades: list[dict] | None, holdout_start_unix: int
+) -> tuple[int, float, float | None]:
+    """Score ONLY entries inside the sealed window → (n, pnl_fraction, sharpe).
+
+    The holdout run frame carries a warmup lead-in (HOLDOUT_WARMUP_BARS) so
+    indicators can produce signals at all; trades ENTERED before the sealed
+    boundary belong to that lead-in and must not count. ``pnl_fraction`` is
+    against the engine's default 10k capital (the agent recipe sets none);
+    sharpe is per-trade ((mean/std)·√n), None under 2 trades.
+    """
+    pnls = [
+        float(t.get("pnl") or 0.0)
+        for t in (trades or [])
+        if int(t.get("entry_time") or 0) >= holdout_start_unix
+    ]
+    n = len(pnls)
+    pnl_fraction = sum(pnls) / 10_000.0
+    if n < 2:
+        return n, pnl_fraction, None
+    mean = sum(pnls) / n
+    var = sum((p - mean) ** 2 for p in pnls) / n
+    if var <= 0:
+        return n, pnl_fraction, None
+    return n, pnl_fraction, (mean / var**0.5) * n**0.5
+
+
 _INDEX_DB_WARNED = False
 
 
@@ -803,33 +828,26 @@ def _index_insert(
 
 
 def _llm_cost_usd(ti: int, to: int, tcr: int, tcw: int) -> tuple[str, float | None]:
-    """L38: returns (pricing_model, estimated cost USD).
+    """L38: returns (pricing_model, NOTIONAL Anthropic-list cost USD).
 
-    The model is read from agent.MODEL; the price from _MODEL_PRICING (unknown
-    model → Sonnet rates). If the backend is claude-cli / OAuth subscription,
-    there is NO per-token billing → cost None (UI hides the cost line). Backend
-    detection mirrors agent._build_client: NAUTILUS_LLM_BACKEND=api → API;
-    =claude-cli → CLI; auto → API if ANTHROPIC_API_KEY (or ~/.nautilus_proxy_key)
-    exists, otherwise CLI.
+    Pricing comes from ``token_ledger.cost_usd`` — the same single source the
+    sidebar badge uses (unlabeled cache writes price at the CLI's 1h TTL).
+    Subscription/CLI calls are not billed per token; this is a money SCALE for
+    the run, not an invoice — the old code returned None on the CLI backend,
+    which left every run's cost line permanently empty. None now only means an
+    unpriced model. The model is ``current_model()`` (thread pin dahil).
     """
     try:
-        from agent import MODEL as model
+        from agent import current_model
+
+        model = current_model()
     except Exception:
-        model = _DEFAULT_PRICING_MODEL
-    pi, po, pcr, pcw = _MODEL_PRICING.get(model, _MODEL_PRICING[_DEFAULT_PRICING_MODEL])
-    backend = os.environ.get("NAUTILUS_LLM_BACKEND", "auto").strip().lower()
-    if backend == "claude-cli":
-        return model, None
-    if backend != "api":
-        has_key = bool(os.environ.get("ANTHROPIC_API_KEY", ""))
-        if not has_key:
-            try:
-                has_key = (Path.home() / ".nautilus_proxy_key").exists()
-            except Exception:
-                has_key = False
-        if not has_key:  # auto → no key → claude CLI (subscription)
-            return model, None
-    return model, (ti * pi + to * po + tcr * pcr + tcw * pcw) / 1_000_000
+        model = "claude-fable-5"
+    import token_ledger
+
+    return model, token_ledger.cost_usd(
+        {"input": ti, "output": to, "cache_read": tcr, "cache_write": tcw}, model
+    )
 
 
 def _run_full_robustness(
@@ -1281,7 +1299,8 @@ def _agent_worker(
             # the holdout slice is stored in holdout_cache and used ONLY in a
             # single validation run after the winner is declared.
             tf_cache: dict[str, pd.DataFrame] = {}  # interval → trimmed_df
-            holdout_cache: dict[str, pd.DataFrame | None] = {}  # interval → sealed df
+            # interval → (warmup lead-in + sealed df, sealed start ts) | None
+            holdout_cache: dict[str, tuple[pd.DataFrame, pd.Timestamp] | None] = {}
 
             def _load_tf(iv: str) -> pd.DataFrame:
                 if iv in tf_cache:
@@ -1304,6 +1323,16 @@ def _agent_worker(
                 # from the iteration + robustness phases. Skip if remaining data < 200 bars.
                 trimmed, hold_df = _split_holdout(df)
                 if hold_df is not None:
+                    # Holdout RUN frame = warmup lead-in + sealed slice; the
+                    # sealed boundary rides along so scoring counts only
+                    # in-window entries (indicators need ~NAU_WINDOW bars
+                    # before the first signal — the bare slice produced
+                    # 0-trade holdouts on 4h/1d, validating nothing).
+                    _lead = df[df.index < hold_df.index[0]].tail(HOLDOUT_WARMUP_BARS)
+                    holdout_cache[iv] = (
+                        pd.concat([_lead, hold_df]),
+                        hold_df.index[0],
+                    )
                     df = trimmed
                     tf_cache[iv] = df
                     _add_step(
@@ -1313,12 +1342,12 @@ def _agent_worker(
                         f"withheld until a winner is declared — {len(df):,} bars remaining",
                     )
                 else:
+                    holdout_cache[iv] = None
                     tf_cache[iv] = df
                     _add_step(
                         run_id,
                         f"⚠ insufficient data for holdout ({iv}) — sealed OOS skipped",
                     )
-                holdout_cache[iv] = hold_df
                 _tl_end(run_id, _tl_key, status="ok", n_bars=len(df))
                 return df
 
@@ -2152,12 +2181,13 @@ def _agent_worker(
             # is only reported (an unbiased forward-looking estimate +
             # selection-bias detector); it is not bound to any decision.
             winner_holdout = None
-            _hold_df = holdout_cache.get(winner_iv)  # H4: the winner's TF
-            if _hold_df is not None and not _hold_df.empty:
+            _hold = holdout_cache.get(winner_iv)  # H4: the winner's TF
+            if _hold is not None:
+                _hold_run_df, _hold_start = _hold
                 try:
                     _hold_res = run_backtest_guarded(
                         winner_spec,
-                        _hold_df,
+                        _hold_run_df,
                         _recipe(winner_iv),
                         iteration_id=999,
                         rationale="sealed holdout (L32)",
@@ -2166,19 +2196,40 @@ def _agent_worker(
                     )
                     _hm = _hold_res.metrics or {}
                     if _hold_res.error is None and _hm:
-                        winner_holdout = {
-                            "sharpe": _hm.get("sharpe"),
-                            "pnl_pct": _hm.get("pnl_pct"),
-                            "n_trades": _hm.get("n_trades"),
-                            "days": OOS_HOLDOUT_DAYS,
-                        }
-                        _add_step(
-                            run_id,
-                            f"🔒 Sealed OOS ({OOS_HOLDOUT_DAYS}d): "
-                            f"Sharpe {_hm.get('sharpe', 0):.2f} · "
-                            f"PnL {100 * (_hm.get('pnl_pct') or 0):.1f}% · "
-                            f"{_hm.get('n_trades', 0)} trades (not bound to decision)",
+                        # Score only entries INSIDE the sealed window — the
+                        # lead-in bars exist purely for indicator warmup.
+                        _n, _pnl_fr, _sharpe = _sealed_holdout_stats(
+                            _hold_res.trades, int(_hold_start.timestamp())
                         )
+                        winner_holdout = {
+                            "sharpe": round(_sharpe, 4)
+                            if _sharpe is not None
+                            else None,
+                            "pnl_pct": round(_pnl_fr, 6),
+                            "n_trades": _n,
+                            "days": OOS_HOLDOUT_DAYS,
+                            "warmup_bars": HOLDOUT_WARMUP_BARS,
+                            # 0 trades = the window produced no entries at
+                            # all — that is NOT a neutral pass, it means the
+                            # layer measured nothing. Surfaced as a warning.
+                            "measured": _n > 0,
+                        }
+                        if _n == 0:
+                            _add_step(
+                                run_id,
+                                f"⚠ Sealed OOS ({OOS_HOLDOUT_DAYS}d): 0 trades "
+                                "— ÖLÇÜLEMEDİ (mühürlü pencerede hiç giriş "
+                                "üretilmedi; warmup lead-in dahil)",
+                            )
+                        else:
+                            _sh_txt = f"{_sharpe:.2f}" if _sharpe is not None else "—"
+                            _add_step(
+                                run_id,
+                                f"🔒 Sealed OOS ({OOS_HOLDOUT_DAYS}d): "
+                                f"Sharpe {_sh_txt} · "
+                                f"PnL {100 * _pnl_fr:.1f}% · "
+                                f"{_n} trades (not bound to decision)",
+                            )
                         _session_log(
                             run_id,
                             "holdout_result",

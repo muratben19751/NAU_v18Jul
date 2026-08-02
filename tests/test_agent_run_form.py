@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import threading
 
+import pytest
 from fastapi.testclient import TestClient
 
 
@@ -82,6 +83,42 @@ def test_model_pick_reaches_worker_and_thread_pin(monkeypatch):
     agent.set_thread_model("uydurma-model")
     assert agent.current_model() == agent.MODEL
     agent.set_thread_model(None)
+
+
+def test_sealed_holdout_stats_counts_only_in_window_entries():
+    import web.routes.agent_backtest as ab
+
+    start = 1_000_000
+    trades = [
+        {"entry_time": start - 50, "pnl": 500.0},  # lead-in (warmup) — sayılmaz
+        {"entry_time": start + 10, "pnl": 100.0},
+        {"entry_time": start + 20, "pnl": -50.0},
+        {"entry_time": start + 30, "pnl": 150.0},
+    ]
+    n, pnl_fr, sharpe = ab._sealed_holdout_stats(trades, start)
+    assert n == 3
+    assert pnl_fr == (100.0 - 50.0 + 150.0) / 10_000.0
+    assert sharpe is not None and sharpe > 0
+    # 0 işlem → ölçüm yok: n=0, sharpe None (uyarı yolunu tetikler).
+    n0, pnl0, sh0 = ab._sealed_holdout_stats(
+        [{"entry_time": start - 1, "pnl": 9.9}], start
+    )
+    assert (n0, pnl0, sh0) == (0, 0.0, None)
+    assert ab._sealed_holdout_stats(None, start) == (0, 0.0, None)
+
+
+def test_llm_cost_usd_is_notional_not_none(monkeypatch):
+    import agent
+    import web.routes.agent_backtest as ab
+
+    agent.set_thread_model(None)
+    model, cost = ab._llm_cost_usd(1_000_000, 0, 0, 0)
+    assert model == agent.MODEL
+    # Fable list price $10/MTok input — notional cost artık CLI'da da dolu.
+    assert cost == pytest.approx(10.0)
+    # 1h-TTL cache yazımı ×2 kuralı ledger'la aynı kaynaktan gelir.
+    _, wcost = ab._llm_cost_usd(0, 0, 0, 1_000_000)
+    assert wcost == pytest.approx(20.0)
 
 
 def test_bad_dates_rejected_before_worker(monkeypatch):
