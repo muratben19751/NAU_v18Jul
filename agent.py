@@ -59,8 +59,40 @@ SELECTABLE_MODELS = (
 
 
 def set_thread_model(model: str | None) -> None:
-    """Pin THIS thread's LLM calls to ``model``; None/unknown clears the pin."""
-    _MODEL_OVERRIDE.model = model if model in SELECTABLE_MODELS else None
+    """Pin THIS thread's LLM calls to ``model``; None/unknown clears the pin.
+
+    ``or:<openrouter-id>`` biçimi de geçerlidir — o thread'in çağrıları
+    varsayılan backend yerine OpenRouter'a yönlenir (bkz. _create_message).
+    """
+    ok = model in SELECTABLE_MODELS or (
+        isinstance(model, str) and model.startswith("or:") and len(model) > 3
+    )
+    _MODEL_OVERRIDE.model = model if ok else None
+
+
+# Model seçici seçenekleri. OpenRouter girdileri yalnız OPENROUTER_API_KEY
+# ayarlıyken görünür; liste NAUTILUS_OPENROUTER_MODELS (virgüllü OpenRouter
+# id'leri) ile özelleştirilir. Fiyat tablosunda olmayan modellerin maliyeti
+# rozet/defterde dürüstçe "?" kalır (uydurma sayı yok).
+_DEFAULT_OPENROUTER_MODELS = (
+    "deepseek/deepseek-chat,google/gemini-2.5-flash,openai/gpt-4o-mini"
+)
+
+
+def selectable_models() -> list[tuple[str, str]]:
+    """Model picker options as (form value, label); "" = app default."""
+    out = [
+        ("", "Fable 5 (varsayılan)"),
+        ("claude-opus-5", "Opus 5"),
+        ("claude-sonnet-5", "Sonnet 5"),
+        ("claude-haiku-4-5", "Haiku 4.5"),
+    ]
+    if os.environ.get("OPENROUTER_API_KEY", "").strip():
+        ids = os.environ.get("NAUTILUS_OPENROUTER_MODELS", _DEFAULT_OPENROUTER_MODELS)
+        for mid in (s.strip() for s in ids.split(",")):
+            if mid:
+                out.append((f"or:{mid}", f"OR · {mid}"))
+    return out
 
 
 def current_model() -> str:
@@ -133,6 +165,15 @@ def _create_message(client, _purpose: str = "", **kwargs):
     """
     global _active_model
     model = current_model()
+    if model.startswith("or:"):
+        # Koşu-başına OpenRouter yolu (thread pin "or:<id>"): varsayılan
+        # backend'e dokunmadan bu çağrı OpenRouter'a gider. Fable→Opus kredi
+        # fallback'i Claude'a özgüdür — burada uygulanmaz; hata çağırana düşer
+        # (çağıranların kendi graceful fallback'leri var).
+        or_model = model[3:]
+        resp = _get_openrouter_client().messages.create(model=or_model, **kwargs)
+        _ledger_record(resp, or_model, _purpose)
+        return resp
     try:
         resp = client.messages.create(model=model, **kwargs)
         _ledger_record(resp, model, _purpose)
@@ -519,6 +560,58 @@ def _find_claude_cli() -> str | None:
     return shutil.which("claude")
 
 
+def _build_openrouter_client() -> _OpenRouterClient:
+    """OpenRouter istemcisi — OPENROUTER_API_KEY gerekli.
+
+    Hem tüm-uygulama backend'i (NAUTILUS_LLM_BACKEND=openrouter) hem de
+    model seçicinin koşu-başına "or:<id>" yolu bu kurucuyu paylaşır.
+    """
+    api_key = os.environ.get("OPENROUTER_API_KEY", "").strip()
+    if not api_key:
+        raise RuntimeError(
+            "OpenRouter model seçildi ama OPENROUTER_API_KEY ayarlı değil."
+        )
+
+    # openai paketi sadece bu backend kullanılınca gerekir.
+    try:
+        from openai import OpenAI
+    except Exception as e:
+        raise RuntimeError(
+            "OpenRouter backend requires the `openai` package. Install with: pip install openai"
+        ) from e
+
+    base_url = os.environ.get(
+        "OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"
+    ).strip()
+    extra_headers: dict[str, str] = {}
+    referer = os.environ.get("OPENROUTER_HTTP_REFERER", "").strip()
+    if referer:
+        extra_headers["HTTP-Referer"] = referer
+    title = os.environ.get("OPENROUTER_X_TITLE", "").strip()
+    if title:
+        extra_headers["X-Title"] = title
+
+    logging.info("LLM backend: openrouter (%s)", base_url)
+    return _OpenRouterClient(
+        OpenAI(base_url=base_url, api_key=api_key),
+        extra_headers=extra_headers,
+    )
+
+
+_or_client: _OpenRouterClient | None = None
+_or_client_lock = threading.Lock()
+
+
+def _get_openrouter_client() -> _OpenRouterClient:
+    """Thread-safe OpenRouter singleton — "or:" model pinlerinin arka ucu."""
+    global _or_client
+    if _or_client is None:
+        with _or_client_lock:
+            if _or_client is None:
+                _or_client = _build_openrouter_client()
+    return _or_client
+
+
 def _build_client() -> Anthropic | _ClaudeCLIClient | _OpenRouterClient:
     """Backend selection (NAUTILUS_LLM_BACKEND env var):
 
@@ -530,36 +623,7 @@ def _build_client() -> Anthropic | _ClaudeCLIClient | _OpenRouterClient:
     backend = os.environ.get("NAUTILUS_LLM_BACKEND", "auto").strip().lower()
 
     if backend == "openrouter":
-        api_key = os.environ.get("OPENROUTER_API_KEY", "").strip()
-        if not api_key:
-            raise RuntimeError(
-                "NAUTILUS_LLM_BACKEND=openrouter but OPENROUTER_API_KEY is not set."
-            )
-
-        # openai paketi sadece bu backend seçilince gerekir.
-        try:
-            from openai import OpenAI
-        except Exception as e:
-            raise RuntimeError(
-                "OpenRouter backend requires the `openai` package. Install with: pip install openai"
-            ) from e
-
-        base_url = os.environ.get(
-            "OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"
-        ).strip()
-        extra_headers: dict[str, str] = {}
-        referer = os.environ.get("OPENROUTER_HTTP_REFERER", "").strip()
-        if referer:
-            extra_headers["HTTP-Referer"] = referer
-        title = os.environ.get("OPENROUTER_X_TITLE", "").strip()
-        if title:
-            extra_headers["X-Title"] = title
-
-        logging.info("LLM backend: openrouter (%s)", base_url)
-        return _OpenRouterClient(
-            OpenAI(base_url=base_url, api_key=api_key),
-            extra_headers=extra_headers,
-        )
+        return _build_openrouter_client()
 
     # Hyperspace AI proxy takes priority; falls back to direct Anthropic.
     # The proxy key must be set via ANTHROPIC_API_KEY env var or

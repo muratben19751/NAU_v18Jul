@@ -23,10 +23,9 @@
         </label>
         <label class="field">Model
           <select name="model">
-            <option value="" selected>Fable 5 (varsayılan)</option>
-            <option value="claude-opus-5">Opus 5</option>
-            <option value="claude-sonnet-5">Sonnet 5</option>
-            <option value="claude-haiku-4-5">Haiku 4.5</option>
+            {% for mval, mlabel in llm_models %}
+            <option value="{{ mval }}" {% if mval == "" %}selected{% endif %}>{{ mlabel }}</option>
+            {% endfor %}
           </select>
         </label>
         <label class="field">Source

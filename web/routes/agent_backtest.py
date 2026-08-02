@@ -2597,6 +2597,8 @@ async def page(request: Request):
                 active_run_id = rid
                 break
 
+    from agent import selectable_models
+
     return templates.TemplateResponse(
         request,
         "agent_backtest.html",
@@ -2605,6 +2607,7 @@ async def page(request: Request):
             "page_title": "Autonomous Backtest Agent",
             "market": get_market_info(),
             "active_run_id": active_run_id,
+            "llm_models": selectable_models(),
         },
     )
 

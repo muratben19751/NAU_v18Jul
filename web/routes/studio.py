@@ -210,6 +210,8 @@ def page(request: Request):
         "index_symbols": _catalog_index_symbols(),
         # ── Simple-mode wizard context ──
         "strategy_templates": STRATEGY_TEMPLATES,
+        # ── AUTO cockpit: model picker (Claude + varsa OpenRouter) ──
+        "llm_models": _llm_models(),
     }
     # Preserve strategy.py's manual render + cookie set (drafts session depends
     # on nautlab_sid; session_id above mints it, we set it if absent).
@@ -218,6 +220,13 @@ def page(request: Request):
     if not request.cookies.get("nautlab_sid"):
         resp.set_cookie("nautlab_sid", sid, httponly=True, samesite="lax", max_age=3600)
     return resp
+
+
+def _llm_models():
+    """AUTO kokpiti model seçici seçenekleri (Claude + varsa OpenRouter)."""
+    from agent import selectable_models
+
+    return selectable_models()
 
 
 def _bybit_symbols():

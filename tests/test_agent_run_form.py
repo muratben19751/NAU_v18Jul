@@ -121,6 +121,48 @@ def test_llm_cost_usd_is_notional_not_none(monkeypatch):
     assert wcost == pytest.approx(20.0)
 
 
+def test_openrouter_thread_pin_and_routing(monkeypatch):
+    import agent
+
+    # "or:" pinleri geçerli; bilinmeyen düz ad temizlenir.
+    agent.set_thread_model("or:deepseek/deepseek-chat")
+    assert agent.current_model() == "or:deepseek/deepseek-chat"
+
+    captured = {}
+
+    class _FakeMessages:
+        def create(self, *, model, **kw):
+            captured["model"] = model
+
+            class _R:
+                content = []
+                usage = None
+
+            return _R()
+
+    class _FakeOR:
+        messages = _FakeMessages()
+
+    monkeypatch.setattr(agent, "_get_openrouter_client", lambda: _FakeOR())
+    # client argümanı OR yolunda kullanılmaz — sahte nesne yeterli.
+    agent._create_message(object(), max_tokens=5, messages=[])
+    assert captured["model"] == "deepseek/deepseek-chat"  # or: öneki soyuldu
+    agent.set_thread_model(None)
+
+
+def test_selectable_models_openrouter_entries(monkeypatch):
+    import agent
+
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    vals = [v for v, _ in agent.selectable_models()]
+    assert "" in vals and not any(v.startswith("or:") for v in vals)
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
+    monkeypatch.setenv("NAUTILUS_OPENROUTER_MODELS", "foo/bar, baz/qux")
+    vals = [v for v, _ in agent.selectable_models()]
+    assert "or:foo/bar" in vals and "or:baz/qux" in vals
+
+
 def test_catalog_summary_compact_generated_and_ttl_memo(monkeypatch):
     import agent
     import composer
