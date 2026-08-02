@@ -186,6 +186,98 @@ def test_selectable_models_openrouter_entries(monkeypatch):
     assert "or:foo/bar" in vals and "or:baz/qux" in vals
 
 
+def test_selectable_models_free_only(monkeypatch):
+    """Picker varsayılanda yalnız ücretsiz OpenRouter uçlarını listeler."""
+    import agent
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
+    monkeypatch.delenv("NAUTILUS_OPENROUTER_MODELS", raising=False)
+    monkeypatch.setattr(
+        agent,
+        "openrouter_catalog",
+        lambda force=False: [
+            ("paid/one", "Paid One", False),
+            ("free/one:free", "Free One", True),
+        ],
+    )
+
+    monkeypatch.delenv("NAUTILUS_OPENROUTER_FREE_ONLY", raising=False)
+    vals = [v for v, _ in agent.selectable_models()]
+    assert "or:free/one:free" in vals
+    assert "or:paid/one" not in vals
+
+    # Kapatınca tüm katalog döner.
+    monkeypatch.setenv("NAUTILUS_OPENROUTER_FREE_ONLY", "0")
+    vals = [v for v, _ in agent.selectable_models()]
+    assert "or:free/one:free" in vals and "or:paid/one" in vals
+
+
+def test_selectable_models_paid_extra_alongside_free(monkeypatch):
+    """Ücretsizler + elle izin verilen paralı uç; paralı olan etiketinde söyler."""
+    import agent
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
+    monkeypatch.delenv("NAUTILUS_OPENROUTER_MODELS", raising=False)
+    monkeypatch.delenv("NAUTILUS_OPENROUTER_FREE_ONLY", raising=False)
+    monkeypatch.setattr(
+        agent,
+        "openrouter_catalog",
+        lambda force=False: [
+            ("free/one:free", "Free One", True),
+            ("paid/wanted", "Paid Wanted", False),
+            ("paid/other", "Paid Other", False),
+        ],
+    )
+    monkeypatch.setenv("NAUTILUS_OPENROUTER_EXTRA_MODELS", "paid/wanted")
+
+    rows = dict(agent.selectable_models())
+    assert "or:free/one:free" in rows
+    assert "or:paid/wanted" in rows, "elle eklenen uç listede olmalı"
+    assert "or:paid/other" not in rows, "istenmeyen paralı uç sızmamalı"
+    # Düz <select>'lerde optgroup yok; ayrım işareti etikettedir.
+    assert rows["or:paid/wanted"].endswith(" · paralı")
+    assert not rows["or:free/one:free"].endswith(" · paralı")
+    # Arayüz bunu ayrı bir gruba koyabilsin diye ayrıca değer olarak da bildirilir.
+    assert agent.openrouter_paid_extras() == ["or:paid/wanted"]
+
+    # Katalogda olmayan bir id sessizce düşürülmez; paralı varsayılır.
+    monkeypatch.setenv("NAUTILUS_OPENROUTER_EXTRA_MODELS", "ghost/model")
+    rows = dict(agent.selectable_models())
+    assert rows["or:ghost/model"] == "OR · ghost/model · paralı"
+
+    # Ücretsiz bir uç EXTRA'da tekrarlanırsa iki kez listelenmez.
+    monkeypatch.setenv("NAUTILUS_OPENROUTER_EXTRA_MODELS", "free/one:free")
+    vals = [v for v, _ in agent.selectable_models()]
+    assert vals.count("or:free/one:free") == 1
+    assert agent.openrouter_paid_extras() == []
+
+    # Tüm-katalog modunda ayrı grup anlamsız — zaten hepsi listede.
+    monkeypatch.setenv("NAUTILUS_OPENROUTER_FREE_ONLY", "0")
+    monkeypatch.setenv("NAUTILUS_OPENROUTER_EXTRA_MODELS", "paid/wanted")
+    assert agent.openrouter_paid_extras() == []
+    assert [v for v, _ in agent.selectable_models()].count("or:paid/wanted") == 1
+
+
+def test_openrouter_free_flag_and_fallback(monkeypatch):
+    """Ücretsizlik ham fiyattan okunur; katalog boşsa yedek de paralı olamaz."""
+    import agent
+
+    assert agent._is_free({"prompt": "0", "completion": "0"})
+    assert not agent._is_free({"prompt": "0", "completion": "0.0000002"})
+    # Eksik/bozuk fiyat ücretsiz sayılmaz — şüphe faturaya değil listeye yazılır.
+    assert not agent._is_free({"prompt": "0"})
+    assert not agent._is_free({})
+    assert not agent._is_free({"prompt": "free", "completion": "0"})
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
+    monkeypatch.delenv("NAUTILUS_OPENROUTER_MODELS", raising=False)
+    monkeypatch.delenv("NAUTILUS_OPENROUTER_FREE_ONLY", raising=False)
+    monkeypatch.setattr(agent, "openrouter_catalog", lambda force=False: [])
+    vals = [v for v, _ in agent.selectable_models() if v.startswith("or:")]
+    assert vals, "katalog çekilemeyince statik yedek listelenmeli"
+    assert all(v.endswith(":free") or v == "or:openrouter/free" for v in vals)
+
+
 def test_catalog_summary_compact_generated_and_ttl_memo(monkeypatch):
     import agent
     import composer

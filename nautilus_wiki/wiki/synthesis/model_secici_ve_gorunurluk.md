@@ -1,7 +1,7 @@
 ---
 title: Model seçici ve model görünürlüğü
 type: synthesis
-summary: Hangi LLM'in koştuğu her ekranda çözülmüş adıyla yazılır; OpenRouter listesi openrouter.ai kataloğundan canlı gelir, çekim başarısızsa statik yedeğe düşer — asla uydurma id'ye.
+summary: Hangi LLM'in koştuğu her ekranda çözülmüş adıyla yazılır; OpenRouter listesi openrouter.ai kataloğundan canlı gelir, varsayılanda ücretsiz uçlarla sınırlıdır ve çekim başarısızsa statik yedeğe düşer — asla uydurma ya da sürpriz-faturalı id'ye.
 sources:
   - https://github.com/nautechsystems/nautilus_trader
   - https://openrouter.ai/api/v1/models
@@ -54,6 +54,65 @@ uygulamanın promptlarını çalıştıramaz). Ölçüm: 341 model.
 
 Yan etki: 341 satırlık düz bir `<select>` kullanılamaz; picker `Claude` ve
 `OpenRouter · openrouter.ai (N)` optgroup'larına ayrıldı.
+
+## Ücretsiz filtresi (varsayılan)
+
+337 satırın 17'si ücretsiz. Kullanıcı listeyi bunlarla sınırlamak isteyince
+filtre **fiyat alanından** kuruldu, id desenine bakılarak değil: `pricing.prompt`
+ve `pricing.completion` ikisi de `0` ise uç ücretsizdir. `:free` son eki iyi bir
+sezgidir ama tam değildir — `openrouter/free` (Free Models Router) o eki taşımaz
+ama ücretsizdir; tersi de mümkün olduğu için desen eşleme fatura riski taşır.
+
+Üç karar bu filtreyi taşıyor:
+
+1. **Bayrak cache'e girer, filtre render'da uygulanır** — katalog artık
+   `(id, ad, ücretsiz mi)` tutar. `NAUTILUS_OPENROUTER_FREE_ONLY` çevrildiğinde
+   yeni bir ağ turu gerekmez, liste anında değişir.
+2. **Bilinmeyen fiyat = paralı** — eksik ya da ayrıştırılamayan `pricing` alanı
+   ücretsiz **sayılmaz**. Şüphe listeye yazılır, faturaya değil.
+3. **Yedek de ücretsiz olmalı** — free-only modda katalog çekilemezse eski statik
+   üçlü (`deepseek/deepseek-chat`, …) kullanılamaz: hepsi paralı. Ayrı bir
+   `_DEFAULT_OPENROUTER_FREE_MODELS` yedeği var. Aksi hâlde "ücretsiz" yazan bir
+   grup sessizce fatura yazardı — bu, sayfanın geri kalanındaki dürüstlük
+   kuralının (uydurma id yok, uydurma fiyat yok) fatura tarafındaki karşılığı.
+
+`NAUTILUS_OPENROUTER_MODELS` pin'i filtreden **muaf**: açıkça yazılmış bir id,
+kullanıcının bilinçli tercihidir.
+
+### Ücretsizler + seçili paralılar
+
+"Hepsi ücretsiz" ile "hepsi açık" arasında üçüncü bir istek çıktı: *ücretsizler +
+Kimi K3*. Pin (`NAUTILUS_OPENROUTER_MODELS`) bunu karşılamıyor, çünkü listenin
+**yerine** geçer ve ağa çıkmaz — bir id eklemek için 17 ücretsizi elle yazmak
+gerekirdi. Ayrı bir anahtar eklendi:
+
+| Anahtar | Anlamı |
+|---|---|
+| `NAUTILUS_OPENROUTER_MODELS` | Liste **bu** olsun; ağa çıkma (test izolasyonu) |
+| `NAUTILUS_OPENROUTER_EXTRA_MODELS` | Ücretsizlere **ek olarak** bunlar da gelsin |
+
+İkisi ayrı tutuldu çünkü pin'in "ağa hiç çıkmaz" özelliği testlerin ağdan
+bağımsızlığını taşıyor; onu toplamalı yapmak o garantiyi bozardı.
+
+Paralı ek **iki ayrı yerde** işaretlenir, çünkü iki farklı yüzey var:
+
+- **Etikette** (`OR · MoonshotAI: Kimi K3 · paralı`) — `agent_backtest.html` gibi
+  optgroup'suz düz `<select>`lerde tek ayrım işareti budur.
+- **Ayrı optgroup'ta** (`OpenRouter · elle eklenen — PARALI (1)`) — kokpitte.
+  "ücretsiz (17)" başlıklı bir grubun içinde paralı bir satır dursaydı **başlık
+  yalan söylerdi**; sayım da yanlış olurdu.
+
+Katalogda bulunmayan bir ek id sessizce düşürülmez: ham id'siyle ve "paralı"
+işaretiyle listelenir. Kullanıcının yazdığı bir id'yi yok saymak, bu sayfanın
+açılışındaki sessiz-gizleme hatasının aynısı olurdu.
+
+Optgroup başlığı durumu yazar (`… — ücretsiz (17)` / `… — tümü (337)`); şablon
+bayrağı `web/routes/studio.py :: _llm_or_free_only` üzerinden alır. Sessiz bir
+filtre, sayfanın açılışındaki "sessiz gizleme" hatasının tekrarı olurdu.
+
+Açık kalan: modalite filtresi `text` **içeren** çıktıyı kabul ettiği için
+`google/lyria-3-*` (müzik, `text+audio`) ücretsiz listesinde görünüyor — 337
+içinde göze batmıyordu, 17 içinde batıyor.
 
 ## Adı sunucuda çözmek
 

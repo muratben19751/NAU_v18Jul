@@ -214,6 +214,8 @@ def page(request: Request):
         "strategy_templates": STRATEGY_TEMPLATES,
         # ── AUTO cockpit: model picker (Claude + varsa OpenRouter) ──
         "llm_models": _llm_models(),
+        "llm_or_free_only": _llm_or_free_only(),
+        "llm_or_paid_extras": _llm_or_paid_extras(),
         # ── Model rozeti: SIMPLE/PRO uygulama varsayılanını kullanır, AUTO'da
         #    bu yalnız başlangıç değeri (picker/koşu üzerine yazar) ──
         **llm_badge(),
@@ -232,6 +234,20 @@ def _llm_models():
     from agent import selectable_models
 
     return selectable_models()
+
+
+def _llm_or_free_only() -> bool:
+    """OpenRouter grubu ücretsizlerle mi sınırlı — başlık bunu dürüstçe yazar."""
+    from agent import openrouter_free_only
+
+    return openrouter_free_only()
+
+
+def _llm_or_paid_extras() -> set[str]:
+    """Ücretsiz listeye elle eklenmiş paralı satırlar — kendi optgroup'unda."""
+    from agent import openrouter_paid_extras
+
+    return set(openrouter_paid_extras())
 
 
 def llm_badge() -> dict[str, str]:

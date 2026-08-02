@@ -6,8 +6,8 @@ Returns a dict:
 Wiki References
 ---------------
 See: [[model_secici_ve_gorunurluk]] (model seçici, canlı OpenRouter kataloğu,
-model adının çözülmesi). Geri kalanı app-specific; wiki kapsamı dışında (LLM
-parametre önericisi, bir Nautilus kavramı değil).
+ücretsiz filtresi, model adının çözülmesi). Geri kalanı app-specific; wiki
+kapsamı dışında (LLM parametre önericisi, bir Nautilus kavramı değil).
 """
 
 from __future__ import annotations
@@ -84,8 +84,16 @@ def set_thread_model(model: str | None) -> None:
 # ayarlıyken görünür (anahtarsız seçim zaten çalışmaz); liste canlı olarak
 # openrouter.ai kataloğundan gelir. Fiyat tablosunda olmayan modellerin
 # maliyeti rozet/defterde dürüstçe "?" kalır (uydurma sayı yok).
+#
+# Varsayılan: yalnız ÜCRETSİZ uçlar listelenir (openrouter.ai fiyatlandırmasında
+# girdi ve çıktı 0). NAUTILUS_OPENROUTER_FREE_ONLY=0 tüm kataloğu geri getirir.
 _DEFAULT_OPENROUTER_MODELS = (
     "deepseek/deepseek-chat,google/gemini-2.5-flash,openai/gpt-4o-mini"
+)
+# Katalog çekilemediğinde free-only modun yedeği. Yedek olarak PARALI bir id'ye
+# ASLA düşülmez: "ücretsiz" diye seçilen bir model sessizce fatura yazmasın.
+_DEFAULT_OPENROUTER_FREE_MODELS = (
+    "openrouter/free,openai/gpt-oss-20b:free,google/gemma-4-31b-it:free"
 )
 
 # Canlı katalog. Süreç içi cache — bir sayfa render'ı ağ turuna beklememeli.
@@ -97,13 +105,30 @@ OPENROUTER_MODELS_URL = os.environ.get(
 )
 _OR_CATALOG_TTL = 3600.0
 _OR_CATALOG_FAIL_TTL = 60.0
-_or_catalog: list[tuple[str, str]] = []
+_or_catalog: list[tuple[str, str, bool]] = []
 _or_catalog_at = 0.0
 _or_catalog_lock = threading.Lock()
 
 
-def _fetch_openrouter_catalog() -> list[tuple[str, str]]:
-    """openrouter.ai'nin servis ettiği metin modelleri — [(id, görünen ad)]."""
+def _is_free(pricing: dict) -> bool:
+    """openrouter.ai fiyatlandırmasına göre uç ücretsiz mi?
+
+    Fiyatlar string gelir ("0", "0.00000009"). Eksik/ayrıştırılamayan alan
+    ücretsiz SAYILMAZ — bilinmeyen fiyat paralı varsayılır ki free-only liste
+    yanlışlıkla fatura yazan bir seçenek göstermesin.
+    """
+    try:
+        return all(float(pricing[k]) == 0.0 for k in ("prompt", "completion"))
+    except (KeyError, TypeError, ValueError):
+        return False
+
+
+def _fetch_openrouter_catalog() -> list[tuple[str, str, bool]]:
+    """openrouter.ai metin modelleri — [(id, görünen ad, ücretsiz mi)].
+
+    Ücretsizlik bayrağı burada, ham fiyattan hesaplanır ve cache'e girer; böylece
+    free-only anahtarını çevirmek yeni bir ağ turu gerektirmez.
+    """
     import urllib.request
 
     req = urllib.request.Request(
@@ -117,7 +142,7 @@ def _fetch_openrouter_catalog() -> list[tuple[str, str]]:
     with urllib.request.urlopen(req, timeout=timeout) as r:  # noqa: S310
         payload = json.loads(r.read().decode("utf-8"))
 
-    out: list[tuple[str, str]] = []
+    out: list[tuple[str, str, bool]] = []
     for m in payload.get("data") or []:
         mid = (m.get("id") or "").strip()
         if not mid:
@@ -129,12 +154,14 @@ def _fetch_openrouter_catalog() -> list[tuple[str, str]]:
         outs = arch.get("output_modalities") or ["text"]
         if "text" not in ins or "text" not in outs:
             continue
-        out.append((mid, (m.get("name") or mid).strip()))
+        out.append(
+            (mid, (m.get("name") or mid).strip(), _is_free(m.get("pricing") or {}))
+        )
     out.sort(key=lambda t: t[0])
     return out
 
 
-def openrouter_catalog(force: bool = False) -> list[tuple[str, str]]:
+def openrouter_catalog(force: bool = False) -> list[tuple[str, str, bool]]:
     """Cache'li openrouter.ai kataloğu; çekim başarısızsa boş liste."""
     global _or_catalog, _or_catalog_at
     now = time.monotonic()
@@ -152,20 +179,88 @@ def openrouter_catalog(force: bool = False) -> list[tuple[str, str]]:
         return _or_catalog
 
 
+def openrouter_free_only() -> bool:
+    """Picker yalnız ücretsiz OpenRouter uçlarını mı listeler? (varsayılan: evet)
+
+    NAUTILUS_OPENROUTER_FREE_ONLY=0 (veya false/no/off) tüm kataloğu açar.
+    """
+    raw = os.environ.get("NAUTILUS_OPENROUTER_FREE_ONLY", "").strip().lower()
+    return raw not in ("0", "false", "no", "off")
+
+
+def openrouter_extra_models() -> list[str]:
+    """Ücretsiz filtresine RAĞMEN listelenecek id'ler (NAUTILUS_OPENROUTER_EXTRA_MODELS).
+
+    "Ücretsizler + şu paralı uç" senaryosu için. ``NAUTILUS_OPENROUTER_MODELS``
+    pin'inden farkı: pin listenin YERİNE geçer ve ağa çıkmaz; bu ise listeye
+    EKLENİR, adını canlı katalogdan alır ve etiketinde paralı olduğu yazar.
+    """
+    raw = os.environ.get("NAUTILUS_OPENROUTER_EXTRA_MODELS", "").strip()
+    return [s.strip() for s in raw.split(",") if s.strip()]
+
+
+def openrouter_paid_extras() -> list[str]:
+    """Ücretsiz listeye elle eklenmiş PARALI satırların picker değerleri.
+
+    Arayüz bunları ayrı bir optgroup'ta gösterir: "ücretsiz (17)" başlıklı bir
+    grubun içinde paralı bir satır durursa başlık yalan söyler. Tüm-katalog
+    modunda ayrım anlamsız (zaten her şey listede) — boş döner.
+    """
+    if not openrouter_free_only():
+        return []
+    free_by_id = {mid: free for mid, _, free in openrouter_catalog()}
+    return [
+        f"or:{m}" for m in openrouter_extra_models() if not free_by_id.get(m, False)
+    ]
+
+
+def _or_row(mid: str, name: str, is_free: bool) -> tuple[str, str]:
+    """Bir picker satırı; paralı uç etiketinde bunu SÖYLER.
+
+    Rozet düz `<select>`lerde (optgroup'suz yüzeyler) tek ayrım işareti — ücretsiz
+    sanılan bir seçim fatura yazmasın.
+    """
+    return (f"or:{mid}", f"OR · {name}" + ("" if is_free else " · paralı"))
+
+
 def _openrouter_options() -> list[tuple[str, str]]:
     """OpenRouter picker satırları — canlı katalog, yoksa statik yedek.
 
+    Varsayılanda yalnız ücretsiz uçlar listelenir (bkz. ``openrouter_free_only``);
+    ``NAUTILUS_OPENROUTER_EXTRA_MODELS`` ile açıkça izin verilenler bunlara eklenir.
     NAUTILUS_OPENROUTER_MODELS (virgüllü id listesi) verilmişse liste ona
-    sabitlenir ve ağa hiç çıkılmaz.
+    sabitlenir, ağa hiç çıkılmaz ve — açık bir tercih olduğu için — ücretsiz
+    filtresinden geçmez.
     """
     pinned = os.environ.get("NAUTILUS_OPENROUTER_MODELS", "").strip()
     if pinned:
         rows = [(s.strip(), s.strip()) for s in pinned.split(",") if s.strip()]
-    else:
-        rows = openrouter_catalog() or [
-            (s, s) for s in _DEFAULT_OPENROUTER_MODELS.split(",")
-        ]
-    return [(f"or:{mid}", f"OR · {name}") for mid, name in rows]
+        return [(f"or:{mid}", f"OR · {name}") for mid, name in rows]
+
+    free_only = openrouter_free_only()
+    catalog = openrouter_catalog()
+    rows = [(mid, name, free) for mid, name, free in catalog if free or not free_only]
+    if not rows:
+        fallback = (
+            _DEFAULT_OPENROUTER_FREE_MODELS if free_only else _DEFAULT_OPENROUTER_MODELS
+        )
+        # Yedek listenin ücretsizliği free-only modda kurgu gereği doğru; tüm-katalog
+        # modunda eski üçlü paralıdır ve etiketi bunu yazmalı.
+        rows = [(s, s, free_only) for s in fallback.split(",")]
+
+    out = [_or_row(mid, name, free) for mid, name, free in rows]
+
+    # Açıkça izin verilenler. Katalogda yoksa ham id ile yine de gösterilir:
+    # sessizce düşürmek, kullanıcının yazdığı bir id'yi yok saymak olurdu.
+    listed = {mid for mid, _, _ in rows}
+    by_id = {mid: (name, free) for mid, name, free in catalog}
+    for mid in openrouter_extra_models():
+        if mid in listed:
+            continue
+        listed.add(mid)
+        name, free = by_id.get(mid, (mid, False))
+        out.append(_or_row(mid, name, free))
+    return out
 
 
 def selectable_models() -> list[tuple[str, str]]:

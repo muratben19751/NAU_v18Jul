@@ -107,7 +107,10 @@
           <div class="mc-f">
             <label for="mc-model">MODEL</label>
             {# Claude + (anahtar varsa) openrouter.ai'nin CANLI kataloğu —
-               yüzlerce satır olabildiği için iki optgroup'a ayrılır. #}
+               varsayılanda yalnız ücretsiz uçlar (NAUTILUS_OPENROUTER_FREE_ONLY=0
+               tümünü açar). NAUTILUS_OPENROUTER_EXTRA_MODELS ile elle eklenen
+               PARALI uçlar ayrı bir optgroup'ta durur: "ücretsiz (N)" başlıklı
+               grubun içinde paralı bir satır olsaydı başlık yalan söylerdi. #}
             <select id="mc-model" name="model" onchange="mcModel(this)">
               <optgroup label="Claude">
                 {% for mval, mlabel in llm_models if not mval.startswith("or:") %}
@@ -115,10 +118,20 @@
                 {% endfor %}
               </optgroup>
               {% set or_models = [] %}
-              {% for m in llm_models if m[0].startswith("or:") %}{% set _ = or_models.append(m) %}{% endfor %}
+              {% set or_extras = [] %}
+              {% for m in llm_models if m[0].startswith("or:") %}
+                {% set _ = (or_extras if m[0] in llm_or_paid_extras else or_models).append(m) %}
+              {% endfor %}
               {% if or_models %}
-              <optgroup label="OpenRouter · openrouter.ai ({{ or_models | length }})">
+              <optgroup label="OpenRouter · openrouter.ai — {% if llm_or_free_only %}ücretsiz{% else %}tümü{% endif %} ({{ or_models | length }})">
                 {% for mval, mlabel in or_models %}
+                <option value="{{ mval }}">{{ mlabel }}</option>
+                {% endfor %}
+              </optgroup>
+              {% endif %}
+              {% if or_extras %}
+              <optgroup label="OpenRouter · elle eklenen — PARALI ({{ or_extras | length }})">
+                {% for mval, mlabel in or_extras %}
                 <option value="{{ mval }}">{{ mlabel }}</option>
                 {% endfor %}
               </optgroup>
