@@ -399,6 +399,18 @@ def _set_robustness_scan(run_id: str, current: int, total: int) -> None:
 # ── Core helpers ──────────────────────────────────────────────────────────────
 
 
+def _spark_points(curve, n: int = 40) -> list[float]:
+    """Downsample an equity curve to at most ``n`` points for the cockpit
+    sparkline. Keeps first/last so the visual slope stays honest."""
+    if not curve:
+        return []
+    pts = [float(v) for v in curve if v is not None]
+    if len(pts) <= n:
+        return [round(v, 4) for v in pts]
+    step = (len(pts) - 1) / (n - 1)
+    return [round(pts[int(round(i * step))], 4) for i in range(n)]
+
+
 def _proposal_to_spec(proposal: dict):
     """Convert propose_composed_strategy output to ComposedStrategySpec."""
     from composer import ComposedStrategySpec, SignalBlock, new_spec_id
@@ -1683,11 +1695,16 @@ def _agent_worker(
                                 "pnl": m_bt.get("pnl"),
                                 "pnl_pct": m_bt.get("pnl_pct"),
                                 "sharpe": m_bt.get("sharpe"),
+                                "profit_factor": m_bt.get("profit_factor"),
                                 "max_dd": m_bt.get("max_dd"),
                                 "win_rate": m_bt.get("win_rate"),
                                 "n_trades": m_bt.get("n_trades", 0),
                                 "avg_dur": m_bt.get("avg_duration_mins"),
                                 "error": r.error,
+                                # AUTO Mission Control sparkline: the raw curve
+                                # can hold 100k+ points — downsample to ~40 so
+                                # a 1s poll never ships a megabyte of JSON.
+                                "equity": _spark_points(r.equity_curve),
                             }
                         )
                 # Session log: backtest result (including equity_curve)
@@ -2636,6 +2653,7 @@ async def run(
     range_end: str = Form(default=""),
     tfs: list[str] = Form(default=[]),
     model: str = Form(default=""),
+    view: str = Form(default=""),
 ):
     from server import get_market_info, templates
 
@@ -2743,6 +2761,30 @@ async def run(
             "tokens_cache_write": 0,
             # For the live backtest results table (agent screen top panel)
             "backtest_results": [],
+            # AUTO Mission Control: read-only BRIEF rail + budget gauges.
+            # Snapshotted at start so the cockpit never re-derives the request
+            # form; the worker only reads it.
+            "brief": {
+                "symbol": instrument_id if is_external else symbol,
+                "category": category,
+                "model": model.strip(),
+                "robustness": "Strict" if is_strict else "Relaxed",
+                "range": (
+                    f"{range_start or '…'} → {range_end or '…'}"
+                    if (range_start or range_end)
+                    else "max"
+                ),
+                "range_start": range_start,
+                "range_end": range_end,
+                "iterations": n_iterations,
+                "guidance": hint.strip(),
+                "tfs": list(chosen) or [interval],
+                "intervals": list(intervals),
+                "continuous": is_continuous,
+            },
+            "started_at": datetime.now(UTC).timestamp(),
+            "max_hours": max_hours,
+            "max_total_tokens": max_total_tokens,
             # Timeline spans (SVG Gantt — see _tl_begin/_tl_end)
             "timeline": [],
         },
@@ -2789,6 +2831,15 @@ async def run(
             "phases": [dict(p) for p in _raw0["phases"]],
             "steps": list(_raw0["steps"]),
         }
+    if view == "mission":
+        from web.mission import mission_view
+
+        return templates.TemplateResponse(
+            request,
+            "fragments/auto_mission.html",
+            {"mv": mission_view(_initial_state, run_id=run_id)},
+        )
+
     return templates.TemplateResponse(
         request,
         "fragments/agent_progress.html",
@@ -2871,10 +2922,22 @@ async def progress(request: Request, run_id: str):
     from server import get_market_info, templates
     from web.viewmodels import iteration_row
 
+    # AUTO Mission Control asks for its own fragment (?view=mission); the
+    # standalone /agent page keeps the classic vertical progress view. Same
+    # state, two presentations — no duplicated polling endpoint.
+    is_mission = request.query_params.get("view") == "mission"
+
     with _AGENT_LOCK:
         raw = _AGENT_PROGRESS.get(run_id)
         if raw is None:
             # Run already cleaned up or unknown — return terminal no-poll frame
+            if is_mission:
+                return HTMLResponse(
+                    "<div id='agent-progress-panel' class='mc'>"
+                    "<div class='empty-state' style='margin:auto;'>"
+                    f"{_terminal_message(run_id)}"
+                    "</div></div>"
+                )
             return HTMLResponse(
                 "<div id='agent-progress-panel'>"
                 "<div class='panel'><div class='panel-body empty-state'>"
@@ -2904,6 +2967,13 @@ async def progress(request: Request, run_id: str):
             "backtest_results": list(raw.get("backtest_results") or []),
             # Shallow copies — the worker mutates concurrently.
             "timeline": [dict(sp) for sp in raw.get("timeline") or []],
+            # AUTO Mission Control inputs. Snapshotted at run start and
+            # never mutated by the worker, but copied here so the cockpit
+            # always renders one consistent frame.
+            "brief": dict(raw.get("brief") or {}),
+            "started_at": raw.get("started_at"),
+            "max_hours": raw.get("max_hours", 0.0),
+            "max_total_tokens": raw.get("max_total_tokens", 0),
         }
 
     # If continuous mode has PERMANENTLY finished, stop polling — otherwise the
@@ -2947,6 +3017,15 @@ async def progress(request: Request, run_id: str):
         "cost_usd": round(_cost_usd, 4) if _cost_usd is not None else None,
         "cost_eur": round(_cost_usd * _USD_EUR, 4) if _cost_usd is not None else None,
     }
+
+    if is_mission:
+        from web.mission import mission_view
+
+        mv = mission_view(state, run_id=run_id, token_info=token_info)
+        mv["error"] = state.get("error")
+        return templates.TemplateResponse(
+            request, "fragments/auto_mission.html", {"mv": mv}
+        )
 
     if state["done"] and state["winner_result"] is not None:
         result = state["winner_result"]

@@ -34,125 +34,188 @@
   {% include "fragments/studio_simple.html" %}
 </div>
 
-{# ══ OTONOM cockpit ═══════════════════════════════════════════════════════ #}
+{# ══ AUTO — Mission Control ═══════════════════════════════════════════════
+   Single non-scrolling cockpit (design_handoff_auto_mission_control, 1c).
+   The run configuration is NOT a page-level form any more: it lives in the
+   left slide-over (#mc-brief-form) and is summarised read-only in the BRIEF
+   rail rendered by fragments/auto_mission.html. START/STOP live in the AUTO
+   top bar. The form still posts to the unchanged POST /agent/run. ── #}
 <div class="lab-modepanel" id="lab-modepanel-otonom" role="tabpanel">
-  <div class="panel cockpit-hero">
-    <div class="panel-body">
-      <form hx-post="/agent/run"
-            hx-target="#agent-result"
-            hx-swap="innerHTML"
-            hx-indicator="#agent-spinner"
-            class="cockpit-form">
-        <div class="cockpit-head">
-          <div>
-            <div class="section-title" style="margin:0 0 2px;">Autonomous Research Loop</div>
-            <div class="text-muted" style="font-size:12px;">
-              Claude generates a strategy → backtests it N times → puts the best through the robustness test → adds it to the catalog.
-            </div>
-          </div>
-          <div class="cockpit-actions">
-            <button class="btn btn-primary" type="submit">▶ Start</button>
-            <span class="htmx-indicator text-muted mono" id="agent-spinner" style="font-size:11px;">
-              starting the loop…
-            </span>
-          </div>
+
+  <form id="mc-brief-form"
+        hx-post="/agent/run"
+        hx-target="#agent-result"
+        hx-swap="innerHTML"
+        hx-indicator="#agent-spinner">
+    <input type="hidden" name="view" value="mission">
+
+    <div class="mc-topbar">
+      <div style="display:flex;align-items:center;gap:12px;">
+        <span class="mc-label" style="letter-spacing:.18em;">STRATEGY STUDIO /</span>
+        <span class="mc-label" style="color:#e0762e;letter-spacing:.18em;">AUTO</span>
+        <span class="mc-edit" onclick="mcBrief(true)">✎ brief</span>
+      </div>
+      <div style="display:flex;align-items:center;gap:12px;">
+        <span class="htmx-indicator mc-cost" id="agent-spinner">döngü başlatılıyor…</span>
+        {# Both slots are refreshed by the cockpit fragment's hx-swap-oob. #}
+        <span class="mc-cost" id="mc-cost-slot"></span>
+        <span id="mc-run-slot">
+          {% if active_run_id %}
+          <button type="button" class="mc-run-btn"
+                  hx-post="/agent/stop/{{ active_run_id }}"
+                  hx-target="this" hx-swap="outerHTML">■ STOP</button>
+          {% else %}
+          <button type="submit" class="mc-run-btn start">▶ START</button>
+          {% endif %}
+        </span>
+      </div>
+    </div>
+
+    {# ── Brief slide-over: the full run configuration ── #}
+    <div class="mc-scrim" onclick="mcBrief(false)"></div>
+    <div class="mc-drawer" role="dialog" aria-label="Brief'i düzenle">
+      <div class="mc-drawer-head">
+        <div>
+          <div class="mc-drawer-title">BRIEF'İ DÜZENLE</div>
+          <div class="mc-drawer-sub">Boş guidance = tam otonom araştırma.</div>
+        </div>
+        <button type="button" class="mc-drawer-x" onclick="mcBrief(false)">✕</button>
+      </div>
+
+      <div class="mc-drawer-body">
+        <div class="mc-f">
+          <label for="mc-hint">GUIDANCE</label>
+          <input type="text" id="mc-hint" name="hint"
+                 placeholder="e.g. momentum + RSI, EMA cross…">
         </div>
 
-        <div class="cockpit-controls">
-          <label class="field cockpit-hint">Guidance <span class="text-muted" style="font-weight:400;">(blank = fully autonomous)</span>
-            <input type="text" name="hint" placeholder="e.g. momentum + RSI, EMA cross, supertrend…">
-          </label>
-          <label class="field">Symbol
-            <select name="symbol">
+        <div class="mc-grid2">
+          <div class="mc-f">
+            <label for="mc-symbol">SYMBOL</label>
+            <select id="mc-symbol" name="symbol">
               <option value="BTCUSDT" selected>BTCUSDT</option>
               <option value="ETHUSDT">ETHUSDT</option>
               <option value="SOLUSDT">SOLUSDT</option>
-              {# Noktalı id = external katalog (route otomatik terfi ettirir). #}
-              <option value="QQQ.NASDAQ">QQQ (Nasdaq)</option>
+              {# Dotted id = external catalog (the route promotes it). #}
+              <option value="QQQ.NASDAQ">QQQ.NASDAQ</option>
             </select>
-          </label>
-          <label class="field">Model
-            <select name="model">
+          </div>
+          <div class="mc-f">
+            <label for="mc-model">MODEL</label>
+            <select id="mc-model" name="model">
               {% for mval, mlabel in llm_models %}
               <option value="{{ mval }}" {% if mval == "" %}selected{% endif %}>{{ mlabel }}</option>
               {% endfor %}
             </select>
-          </label>
-          <label class="field">Category
-            <select name="category">
+          </div>
+        </div>
+
+        <div class="mc-f">
+          <div style="display:flex;justify-content:space-between;">
+            <span class="mc-f-label">TIMEFRAME</span>
+            <span style="font-size:9.5px;color:#5a4f46;">birden fazla seçilebilir</span>
+          </div>
+          <div class="mc-tfs">
+            {% for code, lbl in [("5","5M"), ("15","15M"), ("60","1H"), ("240","4H"), ("D","1D")] %}
+            <label class="mc-tf {{ 'on' if code == '60' }}">
+              <input type="checkbox" name="tfs" value="{{ code }}" hidden
+                     {% if code == "60" %}checked{% endif %}
+                     onchange="mcTf(this)">
+              {{ lbl }}
+            </label>
+            {% endfor %}
+          </div>
+        </div>
+
+        <div class="mc-grid2">
+          <div class="mc-f">
+            <label for="mc-category">CATEGORY</label>
+            <select id="mc-category" name="category">
               <option value="linear" selected>linear</option>
               <option value="spot">spot</option>
             </select>
-          </label>
-          <label class="field">Timeframe <span class="text-muted" style="font-weight:400;font-size:10px;">(birden fazla seçilebilir)</span>
-            <span class="chip-row" style="margin-top:4px;">
-              {% for code, lbl in [("5","5m"), ("15","15m"), ("60","1h"), ("240","4h"), ("D","1d")] %}
-              <label class="chip-choice">
-                <input type="checkbox" name="tfs" value="{{ code }}"
-                       {% if code == "60" %}checked{% endif %}>
-                {{ lbl }}
-              </label>
-              {% endfor %}
-            </span>
-          </label>
-          <label class="field">Start <span class="text-muted" style="font-weight:400;font-size:10px;">(boş = en geniş)</span>
-            <input type="date" name="range_start">
-          </label>
-          <label class="field">End
-            <input type="date" name="range_end">
-          </label>
-          <button type="button" class="btn btn-max" style="margin-bottom:2px;"
-                  title="Seçili sembol+TF önbellek/katalog kapsamının tamamını doldur"
-                  onclick="var tf=(this.form.querySelector('input[name=tfs]:checked')||{}).value||'60',
-                    s=this.form.symbol.value,
-                    g={'1':'1-MINUTE','5':'5-MINUTE','15':'15-MINUTE','60':'1-HOUR','240':'4-HOUR','D':'1-DAY'}[tf]||'1-DAY';
-                    nlMaxRange(this, s.indexOf('.')>-1
-                      ? {source:'external', instrument_id:s, granularity:g}
-                      : {source:'bybit', symbol:s, category: this.form.category.value, interval: tf},
-                      this.form.range_start, this.form.range_end)">MAX</button>
-          <label class="field" style="max-width:150px;">
-            Iterations <span class="text-muted" style="font-weight:400;" id="iter-val">5</span>
-            <input type="range" name="n_iterations" min="2" max="15" value="5"
-                   oninput="document.getElementById('iter-val').textContent=this.value">
-          </label>
-          <label class="field">Robustness
-            <select name="strict_mode">
+          </div>
+          <div class="mc-f">
+            <label for="mc-strict">ROBUSTNESS</label>
+            <select id="mc-strict" name="strict_mode">
               <option value="strict" selected>Strict</option>
               <option value="relaxed">Relaxed</option>
             </select>
-          </label>
-          <label class="field" style="max-width:110px;">Max saat <span class="text-muted" style="font-weight:400;font-size:10px;">(0 = sınırsız)</span>
-            <input type="number" name="max_hours" min="0" step="0.5" value="0">
-          </label>
-          <label class="field" style="max-width:140px;">Max token <span class="text-muted" style="font-weight:400;font-size:10px;">(0 = sınırsız)</span>
-            <input type="number" name="max_total_tokens" min="0" step="100000" value="0">
-          </label>
-          <label class="field cockpit-check">
-            <input type="checkbox" name="continuous" value="1">
-            <span>Run continuously <span class="text-muted">(restart after a winner)</span></span>
-          </label>
+          </div>
         </div>
-      </form>
+
+        <div class="mc-f">
+          <div style="display:flex;justify-content:space-between;align-items:baseline;">
+            <span class="mc-f-label">TARİH ARALIĞI</span>
+            <button type="button" class="mc-edit" style="border:0;background:none;"
+                    title="Seçili sembol+TF kapsamının tamamını doldur"
+                    onclick="var f=this.form,
+                      tf=(f.querySelector('input[name=tfs]:checked')||{}).value||'60',
+                      s=f.symbol.value,
+                      g={'1':'1-MINUTE','5':'5-MINUTE','15':'15-MINUTE','60':'1-HOUR','240':'4-HOUR','D':'1-DAY'}[tf]||'1-DAY';
+                      nlMaxRange(this, s.indexOf('.')>-1
+                        ? {source:'external', instrument_id:s, granularity:g}
+                        : {source:'bybit', symbol:s, category:f.category.value, interval:tf},
+                        f.range_start, f.range_end)">MAX</button>
+          </div>
+          <div style="display:flex;gap:8px;align-items:center;">
+            <input type="date" name="range_start" style="flex:1;">
+            <span style="color:#5a4f46;">→</span>
+            <input type="date" name="range_end" style="flex:1;">
+          </div>
+        </div>
+
+        <div class="mc-f">
+          <div style="display:flex;justify-content:space-between;align-items:baseline;">
+            <span class="mc-f-label">ITERATIONS</span>
+            <span id="mc-iter-val" style="font-size:13px;color:#e0762e;font-weight:700;">5</span>
+          </div>
+          <input class="mc-range" type="range" name="n_iterations" min="2" max="15" value="5"
+                 oninput="document.getElementById('mc-iter-val').textContent=this.value">
+        </div>
+
+        <div class="mc-grid2">
+          <div class="mc-f">
+            <label for="mc-hours">MAX SAAT <span style="color:#5a4f46;">0=∞</span></label>
+            <input type="number" id="mc-hours" name="max_hours" min="0" step="0.5" value="0">
+          </div>
+          <div class="mc-f">
+            <label for="mc-tok">MAX TOKEN <span style="color:#5a4f46;">0=∞</span></label>
+            <input type="number" id="mc-tok" name="max_total_tokens" min="0" step="100000" value="0">
+          </div>
+        </div>
+
+        {# Off by default — matches POST /agent/run's `continuous` default. #}
+        <label class="mc-opt" style="cursor:pointer;">
+          <input type="checkbox" name="continuous" value="1" hidden onchange="mcCheck(this)">
+          <i></i>Kazanandan sonra yeniden başlat
+        </label>
+      </div>
+
+      <div class="mc-drawer-foot">
+        <button type="button" class="mc-btn-ghost" onclick="mcBrief(false)">Vazgeç</button>
+        <button type="button" class="mc-btn-primary" onclick="mcBrief(false)">Uygula</button>
+      </div>
     </div>
-  </div>
+  </form>
 
   <div id="agent-result">
     {% if active_run_id %}
     {# Auto-reconnect to a running loop (restart/refresh/started elsewhere). #}
     <div id="agent-progress-panel"
-         hx-get="/agent/progress/{{ active_run_id }}"
+         hx-get="/agent/progress/{{ active_run_id }}?view=mission"
          hx-trigger="load, every 1s"
          hx-target="#agent-result"
          hx-swap="innerHTML">
-      <div class="panel"><div class="panel-body empty-state">⏳ Connecting to the running loop…</div></div>
+      <div class="mc"><div class="empty-state">⏳ Çalışan döngüye bağlanılıyor…</div></div>
     </div>
     {% else %}
-    <div class="panel cockpit-idle">
-      <div class="panel-body empty-state">
-        <div class="cockpit-idle-mark">◇</div>
-        <div style="font-weight:600;margin-bottom:2px;">Loop idle</div>
-        <div class="text-muted" style="font-size:12px;">
-          Press <b>▶ Start</b> above — let Claude search for and test strategies on its own.
+    <div class="mc mc-idle">
+      <div class="empty-state" style="margin:auto;">
+        <div style="font-size:30px;color:#e0762e;line-height:1;margin-bottom:8px;">◇</div>
+        <div style="font-weight:700;margin-bottom:4px;">Döngü boşta</div>
+        <div style="color:#8a7d71;font-size:12px;">
+          Sağ üstten <b>▶ START</b> — brief'i düzenlemek için <b>✎ brief</b>.
         </div>
       </div>
     </div>
@@ -258,6 +321,7 @@
     document.querySelectorAll('.lab-modepanel').forEach(p =>
       p.classList.toggle('active', p.id === 'lab-modepanel-' + mode));
     swMoveNodes(mode === 'simple');
+    if (mode === 'otonom' && window.mcFit) requestAnimationFrame(window.mcFit);
     try { localStorage.setItem('studioMode', mode); } catch (e) {}
   };
 
@@ -271,6 +335,50 @@
     var mode = running ? 'otonom' : (valid[saved] ? saved : 'simple');
     labMode(mode);
   })();
+
+  // ── AUTO Mission Control: brief slide-over + chip toggles ───────────────
+  //    The drawer holds the real run form; the cockpit rail only mirrors it.
+  window.mcBrief = function (open) {
+    document.body.classList.toggle('mc-brief-open', !!open);
+  };
+  // Timeframe chips: multi-select, but never let the user clear them all —
+  // POST /agent/run would silently fall back to the single `interval` default.
+  window.mcTf = function (input) {
+    var boxes = document.querySelectorAll('#mc-brief-form input[name=tfs]');
+    var on = Array.prototype.filter.call(boxes, function (b) { return b.checked; });
+    if (on.length === 0) { input.checked = true; }
+    Array.prototype.forEach.call(boxes, function (b) {
+      b.parentElement.classList.toggle('on', b.checked);
+    });
+  };
+  window.mcCheck = function (input) {
+    input.parentElement.classList.toggle('on', input.checked);
+  };
+  // The cockpit is a fixed-height, non-scrolling screen, so it needs to know
+  // how much vertical chrome sits above it (topbar, content padding, mode
+  // switch, AUTO bar). Measuring beats hardcoding: those heights change with
+  // the density rules and with wrapping at narrow widths.
+  window.mcFit = function () {
+    var mc = document.querySelector('#lab-modepanel-otonom .mc');
+    if (!mc || mc.offsetParent === null) return;
+    var top = mc.getBoundingClientRect().top;
+    // 12px breathing room below so the panel border is not flush with the edge.
+    document.documentElement.style.setProperty('--mc-offset', (top + 12) + 'px');
+  };
+  window.addEventListener('resize', function () { window.mcFit(); });
+  document.body.addEventListener('htmx:afterSwap', function (e) {
+    if (e.target && e.target.id === 'agent-result') window.mcFit();
+  });
+
+  // Esc closes the drawer (standard dialog affordance).
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape') window.mcBrief(false);
+  });
+  // Starting a run closes the drawer so the cockpit is visible immediately.
+  document.body.addEventListener('htmx:afterRequest', function (e) {
+    var p = e.detail && e.detail.pathInfo && e.detail.pathInfo.requestPath;
+    if (p === '/agent/run') window.mcBrief(false);
+  });
 
   // Catalog → Backtest handoff: "▶ Bununla backtest" (catalog_list.html) sets
   // this and switches tab; picks the saved spec in the backtest #spec-picker.

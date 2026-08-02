@@ -38,3 +38,6 @@ data_downloads/
 studio.db
 studio.db-wal
 studio.db-shm
+
+# Playwright scratch dir for scripts/check_auto_cockpit.py (screenshots + temp)
+.pwtmp/

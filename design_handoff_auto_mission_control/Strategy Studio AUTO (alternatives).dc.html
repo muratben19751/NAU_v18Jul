@@ -1,0 +1,441 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet data-dc-atomics><meta name="design_doc_mode" content="canvas"><link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet"><style>body{margin:0;background:#0d0b0a;font-family:'JetBrains Mono',ui-monospace,Menlo,monospace}.dv-turn{padding:40px 44px 32px;border-bottom:1px solid rgba(255,255,255,.08);scroll-margin-top:16px}.dv-thd{display:flex;align-items:baseline;gap:10px;margin:0 0 20px}.dv-tid{font:700 10px 'JetBrains Mono',monospace;padding:3px 7px;background:#e0762e;color:#160f0a;border-radius:4px;text-decoration:none}.dv-tname{font:500 13px/1.2 'JetBrains Mono',monospace;color:#e9e1d7}.dv-opts{display:flex;flex-wrap:wrap;gap:32px;align-items:flex-start}.dv-opt{flex:none;display:flex;flex-direction:column;gap:9px;scroll-margin-top:16px}.dv-oid{font:700 10.5px 'JetBrains Mono',monospace;padding:3px 7px;background:rgba(255,255,255,.1);color:#e9e1d7;border-radius:5px;text-decoration:none}.dv-olabel{display:flex;align-items:baseline;gap:8px;font:400 11px/1.3 'JetBrains Mono',monospace;color:rgba(233,225,215,.55)}.dv-card{max-width:100%;border:1px solid rgba(255,255,255,.1);border-radius:8px;box-shadow:0 8px 32px rgba(0,0,0,.5);overflow:hidden}.dv-opt:target .dv-oid{background:#e0762e;color:#160f0a}.dv-next{margin:22px 0 0;font:12px/1.5 'JetBrains Mono',monospace;color:rgba(233,225,215,.45)}a{color:#e0762e}a:hover{color:#f19351}</style></helmet>
+
+<section class="dv-turn" id="t1">
+<div class="dv-thd"><a class="dv-tid" href="#t1">1</a><span class="dv-tname">AUTO ekranı — tek ekran (1400 × 860, scroll yok)</span></div>
+<div class="dv-opts">
+
+<div class="dv-opt" id="1a">
+<div class="dv-olabel"><a class="dv-oid" href="#1a">1a</a>Split cockpit — setup solda sabit kolon, sağda canlı çalışma</div>
+<div class="dv-card" style="width:1400px">
+<div style="width:1400px;height:860px;display:flex;background:#141010;color:#e9e1d7;font:13px/1.45 'JetBrains Mono',ui-monospace,monospace">
+
+<div style="width:208px;flex:none;display:flex;flex-direction:column;background:#100c0a;border-right:1px solid #2a211b">
+<div style="display:flex;gap:10px;align-items:flex-start;padding:16px 14px;border-bottom:1px solid #2a211b">
+<div style="width:26px;height:26px;flex:none;border-radius:50%;background:#e0762e;display:flex;align-items:center;justify-content:center;color:#160f0a;font-size:14px;font-weight:700">◕</div>
+<div><div style="font-size:11.5px;font-weight:700;letter-spacing:.06em">NAUTILUS·LAB</div><div style="font-size:9px;letter-spacing:.12em;color:#8a7d71;margin-top:3px">AUTONOMOUS<br>BACKTEST AGENT</div></div>
+</div>
+<div style="display:flex;flex-direction:column;padding:10px 8px;gap:2px">
+<div style="display:flex;gap:10px;align-items:center;padding:7px 10px;border-radius:4px;color:#a2958a;font-size:12px">▦ Dashboard</div>
+<div style="display:flex;gap:10px;align-items:center;padding:7px 10px;border-radius:4px;color:#a2958a;font-size:12px">▤ Data</div>
+<div style="display:flex;gap:10px;align-items:center;padding:7px 10px;border-radius:4px;background:#2b1c12;color:#e0762e;font-size:12px;box-shadow:inset 2px 0 0 #e0762e">◈ Strategy Studio</div>
+<div style="display:flex;gap:10px;align-items:center;padding:7px 10px;border-radius:4px;color:#a2958a;font-size:12px">⛭ Strategy Builder</div>
+<div style="display:flex;gap:10px;align-items:center;padding:7px 10px;border-radius:4px;color:#a2958a;font-size:12px">▢ Wiki</div>
+<div style="display:flex;gap:10px;align-items:center;padding:7px 10px;border-radius:4px;color:#a2958a;font-size:12px">⌁ Strategy Lab</div>
+<div style="display:flex;gap:10px;align-items:center;padding:7px 10px;border-radius:4px;color:#a2958a;font-size:12px">▥ Reports</div>
+<div style="display:flex;gap:10px;align-items:center;padding:7px 10px;border-radius:4px;color:#a2958a;font-size:12px">◉ Agent</div>
+<div style="display:flex;gap:10px;align-items:center;padding:7px 10px;border-radius:4px;color:#a2958a;font-size:12px">≡ Session Logs</div>
+</div>
+<div style="flex:1"></div>
+<div style="margin:12px;padding:12px;border:1px solid #2a211b;border-radius:6px;background:#161110">
+<div style="font-size:9px;letter-spacing:.14em;color:#8a7d71">ENGINE</div>
+<div style="display:flex;align-items:center;gap:6px;margin-top:6px;font-size:11px;color:#5ec9a0">● BUSY</div>
+<div style="font-size:10px;color:#8a7d71;margin-top:4px">Claude Fable 5 · Nautilus</div>
+<div style="height:1px;background:#2a211b;margin:10px 0"></div>
+<div style="display:flex;justify-content:space-between;font-size:10px;color:#8a7d71"><span>TOKENS</span><span style="color:#e0762e">11.5K $0.23</span></div>
+<div style="display:flex;justify-content:space-between;font-size:10px;color:#8a7d71;margin-top:3px"><span>Σ</span><span>20.9M · $338.50</span></div>
+</div>
+</div>
+
+<div style="flex:1;min-width:0;display:flex;flex-direction:column">
+<div style="height:50px;flex:none;display:flex;align-items:center;justify-content:space-between;padding:0 18px;border-bottom:1px solid #2a211b;background:#100c0a">
+<div style="font-size:11.5px;letter-spacing:.16em;color:#c9bdb2">STRATEGY STUDIO</div>
+<div style="display:flex;gap:0;border:1px solid #2a211b;border-radius:5px;overflow:hidden">
+<div style="padding:6px 14px;font-size:11px;color:#8a7d71">✦ SIMPLE</div>
+<div style="padding:6px 14px;font-size:11px;color:#8a7d71;border-left:1px solid #2a211b">⌘ PRO</div>
+<div style="padding:6px 14px;font-size:11px;color:#160f0a;background:#e0762e;font-weight:700;border-left:1px solid #2a211b">● AUTO</div>
+</div>
+</div>
+
+<div style="flex:1;min-height:0;display:grid;grid-template-columns:344px 1fr">
+
+<div style="border-right:1px solid #2a211b;background:#161110;display:flex;flex-direction:column;min-height:0">
+<div style="padding:14px 16px 10px;border-bottom:1px solid #2a211b">
+<div style="font-size:10px;letter-spacing:.14em;color:#e0762e">AUTONOMOUS RESEARCH LOOP</div>
+<div style="font-size:10.5px;color:#8a7d71;margin-top:5px;line-height:1.5">Strateji üret → N kez backtest → en iyisini robustness'a sok → kataloğa ekle.</div>
+</div>
+<div style="flex:1;overflow:hidden;padding:14px 16px;display:flex;flex-direction:column;gap:13px">
+
+<div style="display:flex;flex-direction:column;gap:5px">
+<div style="font-size:9.5px;letter-spacing:.12em;color:#8a7d71">GUIDANCE <span style="color:#5a4f46">(BOŞ = TAM OTONOM)</span></div>
+<div style="height:32px;border:1px solid #33281f;border-radius:4px;background:#0f0c0b;display:flex;align-items:center;padding:0 10px;font-size:11.5px;color:#5a4f46">momentum + RSI, EMA cross…</div>
+</div>
+
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+<div style="display:flex;flex-direction:column;gap:5px"><div style="font-size:9.5px;letter-spacing:.12em;color:#8a7d71">SYMBOL</div><div style="height:32px;border:1px solid #33281f;border-radius:4px;background:#0f0c0b;display:flex;align-items:center;justify-content:space-between;padding:0 10px;font-size:12px">BTCUSDT<span style="color:#8a7d71">▾</span></div></div>
+<div style="display:flex;flex-direction:column;gap:5px"><div style="font-size:9.5px;letter-spacing:.12em;color:#8a7d71">MODEL</div><div style="height:32px;border:1px solid #33281f;border-radius:4px;background:#0f0c0b;display:flex;align-items:center;justify-content:space-between;padding:0 10px;font-size:12px">Fable 5<span style="color:#8a7d71">▾</span></div></div>
+</div>
+
+<div style="display:flex;flex-direction:column;gap:5px">
+<div style="display:flex;justify-content:space-between"><div style="font-size:9.5px;letter-spacing:.12em;color:#8a7d71">TIMEFRAME</div><div style="font-size:9.5px;color:#5a4f46">çoklu seçim</div></div>
+<div style="display:flex;gap:6px">
+<div style="flex:1;height:30px;border:1px solid #33281f;border-radius:4px;display:flex;align-items:center;justify-content:center;font-size:11px;color:#8a7d71">5M</div>
+<div style="flex:1;height:30px;border:1px solid #33281f;border-radius:4px;display:flex;align-items:center;justify-content:center;font-size:11px;color:#8a7d71">15M</div>
+<div style="flex:1;height:30px;border:1px solid #e0762e;border-radius:4px;display:flex;align-items:center;justify-content:center;font-size:11px;color:#e0762e;background:#2b1c12">1H</div>
+<div style="flex:1;height:30px;border:1px solid #33281f;border-radius:4px;display:flex;align-items:center;justify-content:center;font-size:11px;color:#8a7d71">4H</div>
+<div style="flex:1;height:30px;border:1px solid #33281f;border-radius:4px;display:flex;align-items:center;justify-content:center;font-size:11px;color:#8a7d71">1D</div>
+</div>
+</div>
+
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+<div style="display:flex;flex-direction:column;gap:5px"><div style="font-size:9.5px;letter-spacing:.12em;color:#8a7d71">CATEGORY</div><div style="height:32px;border:1px solid #33281f;border-radius:4px;background:#0f0c0b;display:flex;align-items:center;justify-content:space-between;padding:0 10px;font-size:12px">linear<span style="color:#8a7d71">▾</span></div></div>
+<div style="display:flex;flex-direction:column;gap:5px"><div style="font-size:9.5px;letter-spacing:.12em;color:#8a7d71">ROBUSTNESS</div><div style="height:32px;border:1px solid #33281f;border-radius:4px;background:#0f0c0b;display:flex;align-items:center;justify-content:space-between;padding:0 10px;font-size:12px">Strict<span style="color:#8a7d71">▾</span></div></div>
+</div>
+
+<div style="display:flex;flex-direction:column;gap:5px">
+<div style="display:flex;justify-content:space-between;align-items:baseline"><div style="font-size:9.5px;letter-spacing:.12em;color:#8a7d71">DATE RANGE</div><div style="font-size:9.5px;color:#e0762e">MAX</div></div>
+<div style="display:flex;gap:8px;align-items:center">
+<div style="flex:1;height:32px;border:1px solid #33281f;border-radius:4px;background:#0f0c0b;display:flex;align-items:center;padding:0 10px;font-size:11.5px;color:#5a4f46">start</div>
+<div style="color:#5a4f46">→</div>
+<div style="flex:1;height:32px;border:1px solid #33281f;border-radius:4px;background:#0f0c0b;display:flex;align-items:center;padding:0 10px;font-size:11.5px;color:#5a4f46">end</div>
+</div>
+</div>
+
+<div style="display:flex;flex-direction:column;gap:7px">
+<div style="display:flex;justify-content:space-between;align-items:baseline"><div style="font-size:9.5px;letter-spacing:.12em;color:#8a7d71">ITERATIONS</div><div style="font-size:13px;color:#e0762e;font-weight:700">5</div></div>
+<div style="position:relative;height:4px;border-radius:2px;background:#2a211b">
+<div style="position:absolute;left:0;top:0;bottom:0;width:22%;background:#e0762e;border-radius:2px"></div>
+<div style="position:absolute;left:22%;top:-5px;width:14px;height:14px;margin-left:-7px;border-radius:50%;background:#e0762e;border:2px solid #161110"></div>
+</div>
+</div>
+
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+<div style="display:flex;flex-direction:column;gap:5px"><div style="font-size:9.5px;letter-spacing:.12em;color:#8a7d71">MAX SAAT <span style="color:#5a4f46">0=∞</span></div><div style="height:32px;border:1px solid #33281f;border-radius:4px;background:#0f0c0b;display:flex;align-items:center;padding:0 10px;font-size:12px">0</div></div>
+<div style="display:flex;flex-direction:column;gap:5px"><div style="font-size:9.5px;letter-spacing:.12em;color:#8a7d71">MAX TOKEN <span style="color:#5a4f46">0=∞</span></div><div style="height:32px;border:1px solid #33281f;border-radius:4px;background:#0f0c0b;display:flex;align-items:center;padding:0 10px;font-size:12px">0</div></div>
+</div>
+
+<div style="display:flex;gap:9px;align-items:center;font-size:11px;color:#c9bdb2">
+<div style="width:14px;height:14px;border:1px solid #e0762e;border-radius:3px;background:#2b1c12;display:flex;align-items:center;justify-content:center;color:#e0762e;font-size:10px">✓</div>
+Kazanandan sonra yeniden başlat
+</div>
+
+<div style="flex:1"></div>
+
+<div style="border-top:1px dashed #2a211b;padding-top:12px;display:flex;flex-direction:column;gap:9px">
+<div style="font-size:9.5px;letter-spacing:.14em;color:#8a7d71">BU KOŞU</div>
+<div style="display:flex;justify-content:space-between;font-size:11px;color:#c9bdb2"><span style="color:#8a7d71">iterasyon</span><span>3 / 5</span></div>
+<div style="height:3px;background:#2a211b;border-radius:2px"><div style="width:52%;height:3px;background:#e0762e;border-radius:2px"></div></div>
+<div style="display:flex;justify-content:space-between;font-size:11px;color:#c9bdb2"><span style="color:#8a7d71">süre</span><span>2m 03s</span></div>
+<div style="display:flex;justify-content:space-between;font-size:11px;color:#c9bdb2"><span style="color:#8a7d71">token</span><span>11.5K · $0.23</span></div>
+<div style="display:flex;justify-content:space-between;font-size:11px;color:#c9bdb2"><span style="color:#8a7d71">üretilen aday</span><span>4</span></div>
+<div style="display:flex;justify-content:space-between;font-size:11px;color:#c9bdb2"><span style="color:#8a7d71">robustness geçen</span><span style="color:#5ec9a0">1</span></div>
+</div>
+</div>
+
+<div style="padding:12px 16px;border-top:1px solid #2a211b;display:flex;gap:10px">
+<div style="flex:1;height:38px;border-radius:5px;background:#e0762e;color:#160f0a;font-weight:700;font-size:12px;letter-spacing:.1em;display:flex;align-items:center;justify-content:center;gap:8px">■ STOP</div>
+<div style="width:38px;height:38px;border-radius:5px;border:1px solid #33281f;display:flex;align-items:center;justify-content:center;color:#8a7d71">⟳</div>
+</div>
+</div>
+
+<div style="display:flex;flex-direction:column;min-height:0;min-width:0">
+<div style="flex:none;display:flex;align-items:center;justify-content:space-between;padding:11px 18px;border-bottom:1px solid #2a211b;background:#100c0a">
+<div style="display:flex;align-items:center;gap:14px">
+<div style="display:flex;align-items:center;gap:7px;padding:4px 10px;border:1px solid #2f5f4c;border-radius:20px;background:#15241e;color:#5ec9a0;font-size:11px">● RUNNING</div>
+<div style="font-size:11px;color:#8a7d71">iterasyon <span style="color:#e9e1d7">3</span>/5 · geçen süre <span style="color:#e9e1d7">2m 03s</span></div>
+</div>
+<div style="display:flex;align-items:center;gap:16px;font-size:11px;color:#8a7d71">
+<div>en iyi sharpe <span style="color:#5ec9a0">1.84</span></div>
+<div>aday <span style="color:#e9e1d7">4</span></div>
+</div>
+</div>
+
+<div style="flex:none;padding:14px 18px;border-bottom:1px solid #2a211b">
+<div style="display:flex;justify-content:space-between;margin-bottom:10px"><div style="font-size:10px;letter-spacing:.14em;color:#c9bdb2">⏱ TIMELINE</div><div style="font-size:10px;color:#5a4f46">bir bara tıkla → adım detayı</div></div>
+<div style="display:flex;font-size:9.5px;color:#5a4f46;margin-bottom:6px;padding-left:86px"><div style="flex:1">13:28:30</div><div style="flex:1">13:29:00</div><div style="flex:1">13:29:30</div><div style="flex:1">13:30:00</div></div>
+<div style="display:flex;flex-direction:column;gap:5px">
+<div style="display:flex;align-items:center;gap:10px"><div style="width:76px;text-align:right;font-size:9.5px;color:#8a7d71">DATA</div><div style="flex:1;position:relative;height:11px;background:#191312;border-radius:2px"><div style="position:absolute;left:0;top:0;bottom:0;width:.5%;background:#5ec9a0"></div><div style="position:absolute;left:30%;top:0;bottom:0;width:.5%;background:#5ec9a0"></div><div style="position:absolute;left:61%;top:0;bottom:0;width:.5%;background:#5ec9a0"></div><div style="position:absolute;left:65%;top:0;bottom:0;width:.5%;background:#5ec9a0"></div><div style="position:absolute;left:68%;top:0;bottom:0;width:.5%;background:#5ec9a0"></div></div></div>
+<div style="display:flex;align-items:center;gap:10px"><div style="width:76px;text-align:right;font-size:9.5px;color:#8a7d71">LLM</div><div style="flex:1;position:relative;height:11px;background:#191312;border-radius:2px"><div style="position:absolute;left:0;top:0;bottom:0;width:.5%;background:#5ec9a0"></div><div style="position:absolute;left:30%;top:0;bottom:0;width:.5%;background:#5ec9a0"></div><div style="position:absolute;left:61%;top:0;bottom:0;width:.5%;background:#5ec9a0"></div></div></div>
+<div style="display:flex;align-items:center;gap:10px"><div style="width:76px;text-align:right;font-size:9.5px;color:#8a7d71">BACKTEST</div><div style="flex:1;position:relative;height:11px;background:#191312;border-radius:2px"><div style="position:absolute;left:0;top:0;bottom:0;width:30%;background:#d9a441"></div><div style="position:absolute;left:30.5%;top:0;bottom:0;width:31%;background:#5ec9a0"></div><div style="position:absolute;left:62%;top:0;bottom:0;width:6%;background:#5ec9a0"></div><div style="position:absolute;left:68.5%;top:0;bottom:0;width:2%;background:#d9a441"></div></div></div>
+<div style="display:flex;align-items:center;gap:10px"><div style="width:76px;text-align:right;font-size:9.5px;color:#8a7d71">ROBUSTNESS</div><div style="flex:1;position:relative;height:11px;background:#191312;border-radius:2px"><div style="position:absolute;left:70%;top:0;bottom:0;width:16%;background:#d9a441"></div><div style="position:absolute;left:86%;top:0;bottom:0;width:9%;background:#5ec9a0"></div><div style="position:absolute;left:95%;top:0;bottom:0;width:5%;background:#b4543a"></div></div></div>
+</div>
+</div>
+
+<div style="flex:1;min-height:0;padding:12px 18px 0;display:flex;flex-direction:column;gap:6px;position:relative;overflow:hidden">
+<div style="display:flex;justify-content:space-between;margin-bottom:2px"><div style="font-size:10px;letter-spacing:.14em;color:#c9bdb2">CANLI ADIMLAR</div><div style="font-size:10px;color:#5a4f46">otomatik kaydırma ●</div></div>
+<div style="display:flex;align-items:center;gap:10px;padding:8px 12px;border:1px solid #2a211b;border-radius:5px;background:#161110;font-size:11.5px"><span style="color:#5ec9a0">✓</span><span style="color:#c9bdb2">Data: QQQ.NASDAQ 1-HOUR</span><span style="color:#5a4f46">·</span><span style="color:#8a7d71">0s · 28,681 bar</span></div>
+<div style="display:flex;align-items:center;gap:10px;padding:8px 12px;border:1px solid #2a211b;border-radius:5px;background:#161110;font-size:11.5px"><span style="color:#5ec9a0">✓</span><span style="color:#c9bdb2">Data: QQQ.NASDAQ 1-DAY</span><span style="color:#5a4f46">·</span><span style="color:#8a7d71">0s · 4,107 bar</span></div>
+<div style="display:flex;align-items:center;gap:10px;padding:8px 12px;border:1px solid #2a211b;border-radius:5px;background:#161110;font-size:11.5px"><span style="color:#5ec9a0">✓</span><span style="color:#c9bdb2">Initial strategy (Claude)</span><span style="color:#5a4f46">·</span><span style="color:#8a7d71">12s · 3.2K token</span></div>
+<div style="display:flex;align-items:center;gap:10px;padding:8px 12px;border:1px solid #2a211b;border-radius:5px;background:#161110;font-size:11.5px"><span style="color:#5ec9a0">✓</span><span style="color:#c9bdb2">Custom block generation</span><span style="color:#5a4f46">·</span><span style="color:#8a7d71">4s</span></div>
+<div style="display:flex;align-items:center;gap:10px;padding:8px 12px;border:1px solid #e0762e;border-radius:5px;background:#1d1410;font-size:11.5px"><span style="color:#e0762e">▸</span><span style="color:#e9e1d7">Backtest #3 · walk-forward</span><span style="color:#5a4f46">·</span><span style="color:#e0762e">çalışıyor 18s</span><div style="flex:1"></div><div style="width:90px;height:4px;border-radius:2px;background:#2a211b"><div style="width:62%;height:4px;border-radius:2px;background:#e0762e"></div></div></div>
+<div style="display:flex;align-items:center;gap:10px;padding:8px 12px;border:1px solid #2a211b;border-radius:5px;background:#131010;font-size:11.5px;opacity:.5"><span style="color:#5a4f46">○</span><span style="color:#8a7d71">Robustness: Monte Carlo ×500</span></div>
+<div style="display:flex;align-items:center;gap:10px;padding:8px 12px;border:1px solid #2a211b;border-radius:5px;background:#131010;font-size:11.5px;opacity:.28"><span style="color:#5a4f46">○</span><span style="color:#8a7d71">Kataloğa ekle</span></div>
+<div style="position:absolute;left:0;right:0;bottom:0;height:46px;background:linear-gradient(180deg,rgba(20,16,16,0),#141010)"></div>
+</div>
+
+<div style="flex:none;display:flex;align-items:center;gap:18px;padding:10px 18px;border-top:1px solid #2a211b;background:#100c0a">
+<div style="font-size:10px;letter-spacing:.12em;color:#8a7d71">EN İYİ ADAY</div>
+<div style="font-size:11.5px;color:#e9e1d7">EMA-cross + RSI filter · 1H</div>
+<div style="flex:1"></div>
+<div style="display:flex;gap:20px;font-size:11px"><div style="color:#8a7d71">SHARPE <span style="color:#5ec9a0">1.84</span></div><div style="color:#8a7d71">PF <span style="color:#e9e1d7">1.62</span></div><div style="color:#8a7d71">MAXDD <span style="color:#b4543a">-11.4%</span></div><div style="color:#8a7d71">TRADES <span style="color:#e9e1d7">318</span></div></div>
+</div>
+</div>
+
+</div>
+</div>
+</div>
+</div>
+</div>
+
+<div class="dv-opt" id="1b">
+<div class="dv-olabel"><a class="dv-oid" href="#1b">1b</a>Command bar — ayarlar üstte tek satır özet, ekran sonuçlara ayrılmış</div>
+<div class="dv-card" style="width:1400px">
+<div style="width:1400px;height:860px;display:flex;background:#141010;color:#e9e1d7;font:13px/1.45 'JetBrains Mono',ui-monospace,monospace">
+
+<div style="width:60px;flex:none;display:flex;flex-direction:column;align-items:center;gap:4px;padding:14px 0;background:#100c0a;border-right:1px solid #2a211b">
+<div style="width:30px;height:30px;border-radius:50%;background:#e0762e;display:flex;align-items:center;justify-content:center;color:#160f0a;font-size:15px;font-weight:700;margin-bottom:10px">◕</div>
+<div style="width:36px;height:32px;display:flex;align-items:center;justify-content:center;color:#8a7d71">▦</div>
+<div style="width:36px;height:32px;display:flex;align-items:center;justify-content:center;color:#8a7d71">▤</div>
+<div style="width:36px;height:32px;display:flex;align-items:center;justify-content:center;color:#e0762e;background:#2b1c12;border-radius:5px">◈</div>
+<div style="width:36px;height:32px;display:flex;align-items:center;justify-content:center;color:#8a7d71">⛭</div>
+<div style="width:36px;height:32px;display:flex;align-items:center;justify-content:center;color:#8a7d71">▢</div>
+<div style="width:36px;height:32px;display:flex;align-items:center;justify-content:center;color:#8a7d71">⌁</div>
+<div style="width:36px;height:32px;display:flex;align-items:center;justify-content:center;color:#8a7d71">▥</div>
+<div style="width:36px;height:32px;display:flex;align-items:center;justify-content:center;color:#8a7d71">◉</div>
+<div style="flex:1"></div>
+<div style="font-size:9px;color:#5ec9a0">●</div>
+<div style="font-size:8.5px;color:#8a7d71;writing-mode:vertical-rl;letter-spacing:.1em;margin-top:6px">11.5K · $0.23</div>
+</div>
+
+<div style="flex:1;min-width:0;display:flex;flex-direction:column">
+
+<div style="flex:none;display:flex;align-items:center;justify-content:space-between;padding:0 18px;height:48px;border-bottom:1px solid #2a211b;background:#100c0a">
+<div style="display:flex;align-items:center;gap:18px">
+<div style="font-size:11.5px;letter-spacing:.16em;color:#c9bdb2">STRATEGY STUDIO</div>
+<div style="display:flex;border:1px solid #2a211b;border-radius:5px;overflow:hidden">
+<div style="padding:5px 12px;font-size:10.5px;color:#8a7d71">SIMPLE</div>
+<div style="padding:5px 12px;font-size:10.5px;color:#8a7d71;border-left:1px solid #2a211b">PRO</div>
+<div style="padding:5px 12px;font-size:10.5px;color:#160f0a;background:#e0762e;font-weight:700;border-left:1px solid #2a211b">AUTO</div>
+</div>
+</div>
+<div style="display:flex;align-items:center;gap:10px">
+<div style="display:flex;align-items:center;gap:7px;padding:4px 11px;border:1px solid #2f5f4c;border-radius:20px;background:#15241e;color:#5ec9a0;font-size:10.5px">● RUNNING · 2m 03s</div>
+<div style="padding:6px 14px;border-radius:5px;border:1px solid #6b3a2c;background:#241512;color:#d9755d;font-size:11px;font-weight:700">■ STOP</div>
+</div>
+</div>
+
+<div style="flex:none;display:flex;align-items:center;gap:8px;padding:11px 18px;border-bottom:1px solid #2a211b;background:#181312">
+<div style="font-size:9.5px;letter-spacing:.14em;color:#e0762e;margin-right:4px">BRIEF</div>
+<div style="padding:5px 10px;border:1px solid #33281f;border-radius:20px;background:#0f0c0b;font-size:11px">BTCUSDT</div>
+<div style="padding:5px 10px;border:1px solid #33281f;border-radius:20px;background:#0f0c0b;font-size:11px">linear</div>
+<div style="padding:5px 10px;border:1px solid #e0762e;border-radius:20px;background:#2b1c12;color:#e0762e;font-size:11px">1H</div>
+<div style="padding:5px 10px;border:1px solid #33281f;border-radius:20px;background:#0f0c0b;font-size:11px">Fable 5</div>
+<div style="padding:5px 10px;border:1px solid #33281f;border-radius:20px;background:#0f0c0b;font-size:11px">5 iterasyon</div>
+<div style="padding:5px 10px;border:1px solid #33281f;border-radius:20px;background:#0f0c0b;font-size:11px">Strict</div>
+<div style="padding:5px 10px;border:1px solid #33281f;border-radius:20px;background:#0f0c0b;font-size:11px">max aralık</div>
+<div style="padding:5px 10px;border:1px solid #33281f;border-radius:20px;background:#0f0c0b;font-size:11px;color:#8a7d71">token ∞</div>
+<div style="padding:5px 10px;border:1px solid #33281f;border-radius:20px;background:#0f0c0b;font-size:11px;color:#8a7d71">guidance: yok</div>
+<div style="flex:1"></div>
+<div style="padding:6px 12px;border:1px solid #33281f;border-radius:5px;font-size:11px;color:#c9bdb2">✎ Brief'i düzenle</div>
+</div>
+
+<div style="flex:none;padding:12px 18px;border-bottom:1px solid #2a211b;background:#141010">
+<div style="display:flex;align-items:center;gap:12px;margin-bottom:10px">
+<div style="font-size:10px;letter-spacing:.14em;color:#c9bdb2">DÖNGÜ</div>
+<div style="flex:1;display:flex;gap:4px">
+<div style="flex:1;height:26px;border-radius:3px;background:#1c2a24;border:1px solid #2f5f4c;display:flex;align-items:center;justify-content:center;font-size:10px;color:#5ec9a0">#1 · 1.12</div>
+<div style="flex:1;height:26px;border-radius:3px;background:#1c2a24;border:1px solid #2f5f4c;display:flex;align-items:center;justify-content:center;font-size:10px;color:#5ec9a0">#2 · 1.84 ★</div>
+<div style="flex:1;height:26px;border-radius:3px;background:#2b1c12;border:1px solid #e0762e;display:flex;align-items:center;justify-content:center;font-size:10px;color:#e0762e">#3 · çalışıyor</div>
+<div style="flex:1;height:26px;border-radius:3px;background:#191312;border:1px solid #2a211b;display:flex;align-items:center;justify-content:center;font-size:10px;color:#5a4f46">#4</div>
+<div style="flex:1;height:26px;border-radius:3px;background:#191312;border:1px solid #2a211b;display:flex;align-items:center;justify-content:center;font-size:10px;color:#5a4f46">#5</div>
+</div>
+</div>
+<div style="display:flex;flex-direction:column;gap:4px">
+<div style="display:flex;align-items:center;gap:10px"><div style="width:74px;text-align:right;font-size:9px;color:#8a7d71">DATA</div><div style="flex:1;position:relative;height:9px;background:#191312;border-radius:2px"><div style="position:absolute;left:0;width:.6%;top:0;bottom:0;background:#5ec9a0"></div><div style="position:absolute;left:30%;width:.6%;top:0;bottom:0;background:#5ec9a0"></div><div style="position:absolute;left:61%;width:.6%;top:0;bottom:0;background:#5ec9a0"></div><div style="position:absolute;left:66%;width:.6%;top:0;bottom:0;background:#5ec9a0"></div></div></div>
+<div style="display:flex;align-items:center;gap:10px"><div style="width:74px;text-align:right;font-size:9px;color:#8a7d71">LLM</div><div style="flex:1;position:relative;height:9px;background:#191312;border-radius:2px"><div style="position:absolute;left:1%;width:2%;top:0;bottom:0;background:#5ec9a0"></div><div style="position:absolute;left:31%;width:2%;top:0;bottom:0;background:#5ec9a0"></div><div style="position:absolute;left:62%;width:2%;top:0;bottom:0;background:#5ec9a0"></div></div></div>
+<div style="display:flex;align-items:center;gap:10px"><div style="width:74px;text-align:right;font-size:9px;color:#8a7d71">BACKTEST</div><div style="flex:1;position:relative;height:9px;background:#191312;border-radius:2px"><div style="position:absolute;left:3%;width:27%;top:0;bottom:0;background:#d9a441"></div><div style="position:absolute;left:33%;width:28%;top:0;bottom:0;background:#5ec9a0"></div><div style="position:absolute;left:64%;width:8%;top:0;bottom:0;background:#e0762e"></div></div></div>
+<div style="display:flex;align-items:center;gap:10px"><div style="width:74px;text-align:right;font-size:9px;color:#8a7d71">ROBUSTNESS</div><div style="flex:1;position:relative;height:9px;background:#191312;border-radius:2px"><div style="position:absolute;left:58%;width:6%;top:0;bottom:0;background:#5ec9a0"></div></div></div>
+</div>
+</div>
+
+<div style="flex:1;min-height:0;display:grid;grid-template-columns:1fr 380px">
+
+<div style="min-height:0;display:flex;flex-direction:column;border-right:1px solid #2a211b;position:relative;overflow:hidden">
+<div style="flex:none;display:flex;justify-content:space-between;padding:11px 18px 8px"><div style="font-size:10px;letter-spacing:.14em;color:#c9bdb2">AKTİVİTE</div><div style="display:flex;gap:12px;font-size:10px;color:#5a4f46"><span style="color:#e0762e">hepsi</span><span>data</span><span>llm</span><span>backtest</span></div></div>
+<div style="flex:1;min-height:0;padding:0 18px;display:flex;flex-direction:column;gap:5px">
+<div style="display:flex;gap:12px;padding:7px 12px;border-left:2px solid #2f5f4c;background:#161110;font-size:11.5px"><span style="color:#5a4f46">13:29:41</span><span style="color:#5ec9a0">✓</span><span style="color:#c9bdb2">Data: QQQ.NASDAQ 1-HOUR · 28,681 bar</span></div>
+<div style="display:flex;gap:12px;padding:7px 12px;border-left:2px solid #2f5f4c;background:#161110;font-size:11.5px"><span style="color:#5a4f46">13:29:44</span><span style="color:#5ec9a0">✓</span><span style="color:#c9bdb2">Data: QQQ.NASDAQ 1-DAY · 4,107 bar</span></div>
+<div style="display:flex;gap:12px;padding:7px 12px;border-left:2px solid #7b6a3c;background:#161110;font-size:11.5px"><span style="color:#5a4f46">13:29:52</span><span style="color:#d9a441">◆</span><span style="color:#c9bdb2">LLM: strateji #3 üretildi · 3.2K token</span></div>
+<div style="display:flex;gap:12px;padding:7px 12px;border-left:2px solid #2f5f4c;background:#161110;font-size:11.5px"><span style="color:#5a4f46">13:29:58</span><span style="color:#5ec9a0">✓</span><span style="color:#c9bdb2">Custom block generation · 4s</span></div>
+<div style="display:flex;gap:12px;padding:7px 12px;border-left:2px solid #e0762e;background:#1d1410;font-size:11.5px"><span style="color:#5a4f46">13:30:02</span><span style="color:#e0762e">▸</span><span style="color:#e9e1d7">Backtest #3 çalışıyor · 62%</span><div style="flex:1"></div><div style="width:70px;height:4px;background:#2a211b;border-radius:2px;align-self:center"><div style="width:62%;height:4px;background:#e0762e;border-radius:2px"></div></div></div>
+<div style="display:flex;gap:12px;padding:7px 12px;border-left:2px solid #2a211b;background:#131010;font-size:11.5px;opacity:.45"><span style="color:#5a4f46">--:--:--</span><span style="color:#5a4f46">○</span><span style="color:#8a7d71">Robustness: Monte Carlo ×500</span></div>
+<div style="display:flex;gap:12px;padding:7px 12px;border-left:2px solid #2a211b;background:#131010;font-size:11.5px;opacity:.3"><span style="color:#5a4f46">--:--:--</span><span style="color:#5a4f46">○</span><span style="color:#8a7d71">Walk-forward doğrulama</span></div>
+<div style="display:flex;gap:12px;padding:7px 12px;border-left:2px solid #2a211b;background:#131010;font-size:11.5px;opacity:.2"><span style="color:#5a4f46">--:--:--</span><span style="color:#5a4f46">○</span><span style="color:#8a7d71">Kataloğa ekle</span></div>
+</div>
+<div style="position:absolute;left:0;right:0;bottom:0;height:60px;background:linear-gradient(180deg,rgba(20,16,16,0),#141010)"></div>
+</div>
+
+<div style="min-height:0;display:flex;flex-direction:column;background:#161110">
+<div style="flex:none;display:flex;justify-content:space-between;padding:11px 16px 8px"><div style="font-size:10px;letter-spacing:.14em;color:#c9bdb2">ADAYLAR</div><div style="font-size:10px;color:#5a4f46">sharpe ▾</div></div>
+<div style="flex:1;min-height:0;padding:0 14px;display:flex;flex-direction:column;gap:8px">
+
+<div style="border:1px solid #e0762e;border-radius:6px;background:#1d1410;padding:11px 12px">
+<div style="display:flex;justify-content:space-between;align-items:center"><div style="font-size:11.5px;color:#e9e1d7">#2 EMA-cross + RSI</div><div style="font-size:10px;color:#e0762e">★ LİDER</div></div>
+<div style="display:flex;gap:14px;margin-top:8px;font-size:10.5px">
+<div style="color:#8a7d71">SHARPE<br><span style="color:#5ec9a0;font-size:14px">1.84</span></div>
+<div style="color:#8a7d71">PF<br><span style="color:#e9e1d7;font-size:14px">1.62</span></div>
+<div style="color:#8a7d71">MAXDD<br><span style="color:#b4543a;font-size:14px">-11.4%</span></div>
+<div style="color:#8a7d71">TRADE<br><span style="color:#e9e1d7;font-size:14px">318</span></div>
+</div>
+<div style="margin-top:10px;height:40px;border-radius:3px;background:#0f0c0b;overflow:hidden"><svg viewBox="0 0 320 40" preserveAspectRatio="none" style="width:100%;height:40px;display:block"><polyline points="0,34 32,30 64,32 96,23 128,26 160,17 192,20 224,11 256,13 288,6 320,4" fill="none" stroke="#5ec9a0" stroke-width="1.5"></polyline></svg></div>
+</div>
+
+<div style="border:1px solid #2a211b;border-radius:6px;background:#141010;padding:10px 12px">
+<div style="display:flex;justify-content:space-between"><div style="font-size:11.5px;color:#c9bdb2">#1 Donchian breakout</div><div style="font-size:11px;color:#5ec9a0">1.12</div></div>
+<div style="display:flex;gap:12px;margin-top:6px;font-size:10px;color:#8a7d71"><span>PF 1.24</span><span>DD -18.2%</span><span>412 trade</span></div>
+</div>
+<div style="border:1px solid #2a211b;border-radius:6px;background:#141010;padding:10px 12px">
+<div style="display:flex;justify-content:space-between"><div style="font-size:11.5px;color:#c9bdb2">#0 Baseline buy&hold</div><div style="font-size:11px;color:#8a7d71">0.61</div></div>
+<div style="display:flex;gap:12px;margin-top:6px;font-size:10px;color:#8a7d71"><span>PF 1.05</span><span>DD -34.0%</span><span>1 trade</span></div>
+</div>
+<div style="border:1px dashed #2a211b;border-radius:6px;background:#131010;padding:10px 12px;display:flex;justify-content:space-between;align-items:center">
+<div style="font-size:11.5px;color:#8a7d71">#3 üretiliyor…</div><div style="font-size:10px;color:#e0762e">▸ backtest</div>
+</div>
+</div>
+<div style="flex:none;padding:12px 14px;border-top:1px solid #2a211b;display:flex;gap:8px">
+<div style="flex:1;height:34px;border-radius:5px;border:1px solid #33281f;color:#c9bdb2;font-size:11px;display:flex;align-items:center;justify-content:center">Karşılaştır</div>
+<div style="flex:1;height:34px;border-radius:5px;background:#e0762e;color:#160f0a;font-weight:700;font-size:11px;display:flex;align-items:center;justify-content:center">Kataloğa ekle</div>
+</div>
+</div>
+
+</div>
+</div>
+</div>
+</div>
+</div>
+
+<div class="dv-opt" id="1c">
+<div class="dv-olabel"><a class="dv-oid" href="#1c">1c</a>Mission control — büyük durum odağı, ayarlar slide-over'da</div>
+<div class="dv-card" style="width:1400px">
+<div style="width:1400px;height:860px;display:flex;flex-direction:column;background:#0f0c0b;color:#e9e1d7;font:13px/1.45 'JetBrains Mono',ui-monospace,monospace">
+
+<div style="flex:none;height:46px;display:flex;align-items:center;justify-content:space-between;padding:0 20px;border-bottom:1px solid #241c17">
+<div style="display:flex;align-items:center;gap:14px">
+<div style="width:22px;height:22px;border-radius:50%;background:#e0762e;display:flex;align-items:center;justify-content:center;color:#160f0a;font-size:12px;font-weight:700">◕</div>
+<div style="font-size:11px;letter-spacing:.18em;color:#8a7d71">NAUTILUS·LAB / STRATEGY STUDIO /</div>
+<div style="font-size:11px;letter-spacing:.18em;color:#e0762e">AUTO</div>
+</div>
+<div style="display:flex;align-items:center;gap:12px;font-size:10.5px;color:#8a7d71">
+<span>SIMPLE</span><span>PRO</span><span style="padding:4px 10px;border-radius:4px;background:#2b1c12;color:#e0762e">AUTO</span>
+<div style="width:1px;height:16px;background:#241c17"></div>
+<span>11.5K · $0.23</span>
+<div style="padding:5px 12px;border-radius:4px;border:1px solid #6b3a2c;background:#241512;color:#d9755d;font-size:10.5px;font-weight:700">■ STOP</div>
+</div>
+</div>
+
+<div style="flex:1;min-height:0;display:grid;grid-template-columns:250px 1fr 300px">
+
+<div style="border-right:1px solid #241c17;display:flex;flex-direction:column;min-height:0;background:#120e0d">
+<div style="padding:14px 16px 10px;display:flex;justify-content:space-between;align-items:baseline"><div style="font-size:9.5px;letter-spacing:.16em;color:#8a7d71">BRIEF</div><div style="font-size:10px;color:#e0762e">✎ değiştir</div></div>
+<div style="padding:0 16px;display:flex;flex-direction:column;gap:0">
+<div style="display:flex;justify-content:space-between;padding:7px 0;border-bottom:1px dashed #241c17;font-size:11px"><span style="color:#8a7d71">symbol</span><span>BTCUSDT</span></div>
+<div style="display:flex;justify-content:space-between;padding:7px 0;border-bottom:1px dashed #241c17;font-size:11px"><span style="color:#8a7d71">category</span><span>linear</span></div>
+<div style="display:flex;justify-content:space-between;padding:7px 0;border-bottom:1px dashed #241c17;font-size:11px"><span style="color:#8a7d71">timeframe</span><span style="color:#e0762e">1H</span></div>
+<div style="display:flex;justify-content:space-between;padding:7px 0;border-bottom:1px dashed #241c17;font-size:11px"><span style="color:#8a7d71">model</span><span>Fable 5</span></div>
+<div style="display:flex;justify-content:space-between;padding:7px 0;border-bottom:1px dashed #241c17;font-size:11px"><span style="color:#8a7d71">range</span><span>max</span></div>
+<div style="display:flex;justify-content:space-between;padding:7px 0;border-bottom:1px dashed #241c17;font-size:11px"><span style="color:#8a7d71">robustness</span><span>Strict</span></div>
+<div style="display:flex;justify-content:space-between;padding:7px 0;border-bottom:1px dashed #241c17;font-size:11px"><span style="color:#8a7d71">limitler</span><span style="color:#8a7d71">∞ / ∞</span></div>
+<div style="display:flex;justify-content:space-between;padding:7px 0;font-size:11px"><span style="color:#8a7d71">guidance</span><span style="color:#5a4f46">— otonom</span></div>
+</div>
+<div style="margin:14px 16px;padding:10px 12px;border:1px solid #241c17;border-radius:6px;background:#151110">
+<div style="font-size:9.5px;letter-spacing:.14em;color:#8a7d71;margin-bottom:8px">BÜTÇE</div>
+<div style="display:flex;justify-content:space-between;font-size:10.5px;color:#c9bdb2;margin-bottom:5px"><span>süre</span><span>2m 03s</span></div>
+<div style="height:3px;background:#241c17;border-radius:2px;margin-bottom:9px"><div style="width:34%;height:3px;background:#5ec9a0;border-radius:2px"></div></div>
+<div style="display:flex;justify-content:space-between;font-size:10.5px;color:#c9bdb2;margin-bottom:5px"><span>token</span><span>11.5K</span></div>
+<div style="height:3px;background:#241c17;border-radius:2px"><div style="width:17%;height:3px;background:#e0762e;border-radius:2px"></div></div>
+</div>
+<div style="flex:1"></div>
+<div style="padding:0 16px 14px;display:flex;flex-direction:column;gap:7px">
+<div style="display:flex;gap:9px;align-items:center;font-size:10.5px;color:#c9bdb2"><div style="width:13px;height:13px;border:1px solid #e0762e;border-radius:3px;background:#2b1c12;color:#e0762e;font-size:9px;display:flex;align-items:center;justify-content:center">✓</div>Kazanandan sonra yeniden başlat</div>
+<div style="display:flex;gap:9px;align-items:center;font-size:10.5px;color:#8a7d71"><div style="width:13px;height:13px;border:1px solid #33281f;border-radius:3px"></div>Bittiğinde bildir</div>
+</div>
+</div>
+
+<div style="min-height:0;display:flex;flex-direction:column;padding:22px 26px;gap:18px">
+<div style="display:flex;align-items:center;gap:22px">
+<div style="width:96px;height:96px;flex:none;border-radius:50%;background:conic-gradient(#e0762e 0turn .62turn,#241c17 .62turn 1turn);display:flex;align-items:center;justify-content:center">
+<div style="width:76px;height:76px;border-radius:50%;background:#0f0c0b;display:flex;flex-direction:column;align-items:center;justify-content:center"><div style="font-size:19px;font-weight:700;color:#e0762e">62%</div><div style="font-size:8.5px;color:#8a7d71;letter-spacing:.1em">ADIM</div></div>
+</div>
+<div style="min-width:0">
+<div style="font-size:9.5px;letter-spacing:.18em;color:#8a7d71">ŞU AN</div>
+<div style="font-size:27px;line-height:1.15;font-weight:700;margin-top:6px;letter-spacing:-.01em">Backtest #3 · walk-forward</div>
+<div style="font-size:11.5px;color:#8a7d71;margin-top:8px">EMA-cross + RSI filter · 28,681 bar · 18s geçti · tahmini 11s</div>
+</div>
+<div style="flex:1"></div>
+<div style="text-align:right"><div style="font-size:9.5px;letter-spacing:.16em;color:#8a7d71">İTERASYON</div><div style="font-size:34px;font-weight:700;line-height:1.1">3<span style="color:#5a4f46;font-size:19px">/5</span></div></div>
+</div>
+
+<div style="display:flex;gap:0;align-items:stretch;border:1px solid #241c17;border-radius:6px;overflow:hidden;background:#120e0d">
+<div style="flex:1;padding:12px 14px;border-right:1px solid #241c17;background:#15201b"><div style="font-size:9.5px;color:#8a7d71;letter-spacing:.1em">DATA</div><div style="font-size:12px;color:#5ec9a0;margin-top:5px">✓ 5 set yüklendi</div></div>
+<div style="flex:1;padding:12px 14px;border-right:1px solid #241c17;background:#15201b"><div style="font-size:9.5px;color:#8a7d71;letter-spacing:.1em">STRATEJİ</div><div style="font-size:12px;color:#5ec9a0;margin-top:5px">✓ üretildi</div></div>
+<div style="flex:1;padding:12px 14px;border-right:1px solid #241c17;background:#231710"><div style="font-size:9.5px;color:#e0762e;letter-spacing:.1em">BACKTEST</div><div style="font-size:12px;color:#e0762e;margin-top:5px">▸ çalışıyor</div></div>
+<div style="flex:1;padding:12px 14px;border-right:1px solid #241c17"><div style="font-size:9.5px;color:#5a4f46;letter-spacing:.1em">ROBUSTNESS</div><div style="font-size:12px;color:#5a4f46;margin-top:5px">bekliyor</div></div>
+<div style="flex:1;padding:12px 14px"><div style="font-size:9.5px;color:#5a4f46;letter-spacing:.1em">KATALOG</div><div style="font-size:12px;color:#5a4f46;margin-top:5px">bekliyor</div></div>
+</div>
+
+<div style="flex:1;min-height:0;border:1px solid #241c17;border-radius:6px;background:#120e0d;display:flex;flex-direction:column;overflow:hidden;position:relative">
+<div style="flex:none;display:flex;justify-content:space-between;padding:11px 14px 8px;border-bottom:1px solid #241c17"><div style="font-size:9.5px;letter-spacing:.16em;color:#c9bdb2">KONSOL</div><div style="font-size:10px;color:#5a4f46">2m 03s · 24 adım</div></div>
+<div style="flex:1;min-height:0;padding:10px 14px;display:flex;flex-direction:column;gap:3px;font-size:11.5px">
+<div style="display:flex;gap:12px"><span style="color:#5a4f46">13:29:41</span><span style="color:#5ec9a0">data</span><span style="color:#c9bdb2">QQQ.NASDAQ 1-HOUR · 28,681 bar</span></div>
+<div style="display:flex;gap:12px"><span style="color:#5a4f46">13:29:44</span><span style="color:#5ec9a0">data</span><span style="color:#c9bdb2">QQQ.NASDAQ 1-DAY · 4,107 bar</span></div>
+<div style="display:flex;gap:12px"><span style="color:#5a4f46">13:29:52</span><span style="color:#d9a441">llm&nbsp;</span><span style="color:#c9bdb2">strateji #3 taslağı · 3.2K token</span></div>
+<div style="display:flex;gap:12px"><span style="color:#5a4f46">13:29:58</span><span style="color:#d9a441">llm&nbsp;</span><span style="color:#c9bdb2">custom block generation · 4s</span></div>
+<div style="display:flex;gap:12px"><span style="color:#5a4f46">13:30:02</span><span style="color:#e0762e">test</span><span style="color:#e9e1d7">backtest #3 başladı · walk-forward 4 kat</span></div>
+<div style="display:flex;gap:12px"><span style="color:#5a4f46">13:30:14</span><span style="color:#e0762e">test</span><span style="color:#8a7d71">kat 2/4 tamamlandı · sharpe 1.71</span></div>
+<div style="display:flex;gap:12px"><span style="color:#5a4f46">13:30:19</span><span style="color:#e0762e">▸</span><span style="color:#8a7d71">kat 3/4 çalışıyor<span style="color:#e0762e">▊</span></span></div>
+</div>
+<div style="position:absolute;left:0;right:0;bottom:0;height:40px;background:linear-gradient(180deg,rgba(18,14,13,0),#120e0d)"></div>
+</div>
+</div>
+
+<div style="border-left:1px solid #241c17;display:flex;flex-direction:column;min-height:0;background:#120e0d">
+<div style="padding:14px 14px 10px;display:flex;justify-content:space-between;align-items:baseline"><div style="font-size:9.5px;letter-spacing:.16em;color:#8a7d71">İTERASYONLAR</div><div style="font-size:10px;color:#5a4f46">3/5</div></div>
+<div style="flex:1;min-height:0;padding:0 12px;display:flex;flex-direction:column;gap:8px">
+
+<div style="border:1px solid #2f5f4c;border-radius:6px;background:#15201b;padding:10px 11px">
+<div style="display:flex;justify-content:space-between;align-items:center"><div style="font-size:11px;color:#e9e1d7">#2 EMA-cross + RSI</div><div style="font-size:10px;color:#5ec9a0">★ 1.84</div></div>
+<svg viewBox="0 0 260 44" preserveAspectRatio="none" style="width:100%;height:44px;margin-top:8px"><polyline points="0,38 26,34 52,36 78,26 104,29 130,20 156,23 182,13 208,15 234,7 260,4" fill="none" stroke="#5ec9a0" stroke-width="1.5"></polyline></svg>
+<div style="display:flex;gap:10px;font-size:9.5px;color:#8a7d71;margin-top:4px"><span>PF 1.62</span><span>DD -11.4%</span><span>318 tr</span></div>
+</div>
+
+<div style="border:1px solid #241c17;border-radius:6px;background:#151110;padding:10px 11px">
+<div style="display:flex;justify-content:space-between;align-items:center"><div style="font-size:11px;color:#c9bdb2">#1 Donchian breakout</div><div style="font-size:10px;color:#8a7d71">1.12</div></div>
+<svg viewBox="0 0 260 34" preserveAspectRatio="none" style="width:100%;height:34px;margin-top:8px"><polyline points="0,28 26,24 52,29 78,21 104,26 130,18 156,22 182,17 208,20 234,14 260,12" fill="none" stroke="#8a7d71" stroke-width="1.5"></polyline></svg>
+<div style="display:flex;gap:10px;font-size:9.5px;color:#8a7d71;margin-top:4px"><span>PF 1.24</span><span>DD -18.2%</span><span>412 tr</span></div>
+</div>
+
+<div style="border:1px solid #e0762e;border-radius:6px;background:#1d1410;padding:10px 11px">
+<div style="display:flex;justify-content:space-between;align-items:center"><div style="font-size:11px;color:#e9e1d7">#3 Vol-breakout + ATR</div><div style="font-size:10px;color:#e0762e">▸ 62%</div></div>
+<div style="height:3px;background:#2a211b;border-radius:2px;margin-top:10px"><div style="width:62%;height:3px;background:#e0762e;border-radius:2px"></div></div>
+<div style="font-size:9.5px;color:#8a7d71;margin-top:7px">kat 3/4 · ara sharpe 1.71</div>
+</div>
+
+<div style="border:1px dashed #241c17;border-radius:6px;padding:9px 11px;font-size:10.5px;color:#5a4f46">#4 sırada</div>
+<div style="border:1px dashed #241c17;border-radius:6px;padding:9px 11px;font-size:10.5px;color:#5a4f46">#5 sırada</div>
+</div>
+<div style="padding:12px 12px;border-top:1px solid #241c17">
+<div style="height:34px;border-radius:5px;background:#e0762e;color:#160f0a;font-weight:700;font-size:11px;display:flex;align-items:center;justify-content:center">Lideri kataloğa ekle</div>
+</div>
+</div>
+
+</div>
+</div>
+</div>
+</div>
+
+</div>
+<p class="dv-next">Sonraki adım fikirleri: "<a class="dv-oid" href="#1b">1b</a>'yi al ama <a class="dv-oid" href="#1a">1a</a>'daki tam sidebar ile" · "<a class="dv-oid" href="#1c">1c</a>'nin brief panelini slide-over yap" · "yeni yönler dene"</p>
+</section>
+
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:1500,&quot;height&quot;:1000}}"></script>
+</body>
+</html>

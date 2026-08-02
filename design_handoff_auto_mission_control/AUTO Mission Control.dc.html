@@ -1,0 +1,303 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet data-dc-atomics><link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet"><style>html,body{margin:0;height:100%;background:#0f0c0b;font-family:'JetBrains Mono',ui-monospace,Menlo,monospace;overflow:hidden}a{color:#e0762e}a:hover{color:#f19351}@keyframes blink{0%,49%{opacity:1}50%,100%{opacity:0}}</style></helmet>
+
+<div style="position:fixed;inset:0;display:flex;flex-direction:column;background:#0f0c0b;color:#e9e1d7;font:13px/1.45 'JetBrains Mono',ui-monospace,monospace">
+
+<div style="flex:none;height:48px;display:flex;align-items:center;justify-content:space-between;padding:0 20px;border-bottom:1px solid #241c17">
+<div style="display:flex;align-items:center;gap:14px">
+<div style="width:22px;height:22px;border-radius:50%;background:#e0762e;display:flex;align-items:center;justify-content:center;color:#160f0a;font-size:12px;font-weight:700">◕</div>
+<div style="font-size:11px;letter-spacing:.18em;color:#8a7d71">NAUTILUS·LAB / STRATEGY STUDIO /</div>
+<div style="font-size:11px;letter-spacing:.18em;color:#e0762e">AUTO</div>
+</div>
+<div style="display:flex;align-items:center;gap:12px;font-size:10.5px;color:#8a7d71">
+<div style="padding:4px 10px;border-radius:4px;cursor:pointer">SIMPLE</div>
+<div style="padding:4px 10px;border-radius:4px;cursor:pointer">PRO</div>
+<div style="padding:4px 10px;border-radius:4px;background:#2b1c12;color:#e0762e">AUTO</div>
+<div style="width:1px;height:16px;background:#241c17"></div>
+<div>{{ tokenLabel }}</div>
+<div onClick="{{ toggleRun }}" style="padding:6px 14px;border-radius:4px;border:1px solid #6b3a2c;background:#241512;color:#d9755d;font-size:10.5px;font-weight:700;cursor:pointer;user-select:none" style-hover="background:#301a15">{{ runBtnLabel }}</div>
+</div>
+</div>
+
+<div style="flex:1;min-height:0;display:grid;grid-template-columns:minmax(190px,240px) minmax(360px,1fr) minmax(230px,300px)">
+
+<div style="border-right:1px solid #241c17;display:flex;flex-direction:column;min-height:0;background:#120e0d">
+<div style="padding:16px 16px 10px;display:flex;justify-content:space-between;align-items:baseline">
+<div style="font-size:9.5px;letter-spacing:.16em;color:#8a7d71">BRIEF</div>
+<div onClick="{{ openBrief }}" style="font-size:10px;color:#e0762e;cursor:pointer;user-select:none">✎ değiştir</div>
+</div>
+<div style="padding:0 16px;display:flex;flex-direction:column">
+<div style="display:flex;justify-content:space-between;padding:7px 0;border-bottom:1px dashed #241c17;font-size:11px"><span style="color:#8a7d71">symbol</span><span>{{ brief.symbol }}</span></div>
+<div style="display:flex;justify-content:space-between;padding:7px 0;border-bottom:1px dashed #241c17;font-size:11px"><span style="color:#8a7d71">category</span><span>{{ brief.category }}</span></div>
+<div style="display:flex;justify-content:space-between;padding:7px 0;border-bottom:1px dashed #241c17;font-size:11px"><span style="color:#8a7d71">timeframe</span><span style="color:#e0762e">{{ tfLabel }}</span></div>
+<div style="display:flex;justify-content:space-between;padding:7px 0;border-bottom:1px dashed #241c17;font-size:11px"><span style="color:#8a7d71">model</span><span>{{ brief.model }}</span></div>
+<div style="display:flex;justify-content:space-between;padding:7px 0;border-bottom:1px dashed #241c17;font-size:11px"><span style="color:#8a7d71">range</span><span>{{ brief.range }}</span></div>
+<div style="display:flex;justify-content:space-between;padding:7px 0;border-bottom:1px dashed #241c17;font-size:11px"><span style="color:#8a7d71">robustness</span><span>{{ brief.robustness }}</span></div>
+<div style="display:flex;justify-content:space-between;padding:7px 0;border-bottom:1px dashed #241c17;font-size:11px"><span style="color:#8a7d71">iterasyon</span><span>{{ brief.iterations }}</span></div>
+<div style="display:flex;justify-content:space-between;padding:7px 0;font-size:11px"><span style="color:#8a7d71">guidance</span><span style="color:#5a4f46">{{ guidanceLabel }}</span></div>
+</div>
+
+<div style="margin:16px;padding:11px 12px;border:1px solid #241c17;border-radius:6px;background:#151110">
+<div style="font-size:9.5px;letter-spacing:.14em;color:#8a7d71;margin-bottom:9px">BÜTÇE</div>
+<div style="display:flex;justify-content:space-between;font-size:10.5px;color:#c9bdb2;margin-bottom:5px"><span>süre</span><span>{{ elapsedLabel }}</span></div>
+<div style="height:3px;background:#241c17;border-radius:2px;margin-bottom:10px"><div style="height:3px;background:#5ec9a0;border-radius:2px;width:{{ timePct }}%"></div></div>
+<div style="display:flex;justify-content:space-between;font-size:10.5px;color:#c9bdb2;margin-bottom:5px"><span>token</span><span>{{ tokenShort }}</span></div>
+<div style="height:3px;background:#241c17;border-radius:2px"><div style="height:3px;background:#e0762e;border-radius:2px;width:{{ tokenPct }}%"></div></div>
+</div>
+
+<div style="flex:1"></div>
+
+<div style="padding:0 16px 16px;display:flex;flex-direction:column;gap:9px">
+<div onClick="{{ toggleLoop }}" style="display:flex;gap:9px;align-items:center;font-size:10.5px;color:#c9bdb2;cursor:pointer;user-select:none"><div style="width:13px;height:13px;border-radius:3px;display:flex;align-items:center;justify-content:center;font-size:9px;border:1px solid {{ loopBorder }};background:{{ loopBg }};color:#e0762e">{{ loopMark }}</div>Kazanandan sonra yeniden başlat</div>
+<div onClick="{{ toggleNotify }}" style="display:flex;gap:9px;align-items:center;font-size:10.5px;color:#c9bdb2;cursor:pointer;user-select:none"><div style="width:13px;height:13px;border-radius:3px;display:flex;align-items:center;justify-content:center;font-size:9px;border:1px solid {{ notifyBorder }};background:{{ notifyBg }};color:#e0762e">{{ notifyMark }}</div>Bittiğinde bildir</div>
+</div>
+</div>
+
+<div style="min-height:0;display:flex;flex-direction:column;padding:clamp(14px,2vh,24px) clamp(16px,2vw,28px);gap:clamp(12px,1.8vh,18px)">
+<div style="flex:none;display:flex;align-items:center;gap:clamp(14px,2vw,24px)">
+<div style="width:clamp(70px,7vw,100px);height:clamp(70px,7vw,100px);flex:none;border-radius:50%;display:flex;align-items:center;justify-content:center;background:{{ ringBg }}">
+<div style="width:78%;height:78%;border-radius:50%;background:#0f0c0b;display:flex;flex-direction:column;align-items:center;justify-content:center"><div style="font-size:19px;font-weight:700;color:#e0762e">{{ progressLabel }}</div><div style="font-size:8.5px;color:#8a7d71;letter-spacing:.1em">ADIM</div></div>
+</div>
+<div style="min-width:0">
+<div style="display:flex;align-items:center;gap:10px"><div style="font-size:9.5px;letter-spacing:.18em;color:#8a7d71">ŞU AN</div><div style="font-size:9.5px;letter-spacing:.1em;padding:2px 8px;border-radius:20px;border:1px solid {{ statusBorder }};background:{{ statusBg }};color:{{ statusColor }}">{{ statusLabel }}</div></div>
+<div style="font-size:clamp(17px,2.1vw,28px);line-height:1.15;font-weight:700;margin-top:8px;letter-spacing:-.01em;text-wrap:pretty">{{ headline }}</div>
+<div style="font-size:11.5px;color:#8a7d71;margin-top:8px;text-wrap:pretty">{{ subline }}</div>
+</div>
+<div style="flex:1;min-width:8px"></div>
+<div style="text-align:right;flex:none"><div style="font-size:9.5px;letter-spacing:.16em;color:#8a7d71">İTERASYON</div><div style="font-size:clamp(24px,2.6vw,36px);font-weight:700;line-height:1.1">{{ iter }}<span style="color:#5a4f46;font-size:.55em">{{ iterOf }}</span></div></div>
+</div>
+
+<div style="flex:none;display:flex;flex-wrap:nowrap;align-items:stretch;border:1px solid #241c17;border-radius:6px;overflow:hidden;background:#120e0d">
+<div style="flex:1 1 0;min-width:0;padding:9px 10px;border-right:1px solid #241c17;background:#15201b"><div style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:9px;color:#8a7d71;letter-spacing:.1em">DATA</div><div style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:11.5px;color:#5ec9a0;margin-top:4px">✓ 5 set</div></div>
+<div style="flex:1 1 0;min-width:0;padding:9px 10px;border-right:1px solid #241c17;background:#15201b"><div style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:9px;color:#8a7d71;letter-spacing:.1em">STRATEJİ</div><div style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:11.5px;color:#5ec9a0;margin-top:4px">✓ üretildi</div></div>
+<div style="flex:1 1 0;min-width:0;padding:9px 10px;border-right:1px solid #241c17;background:#231710"><div style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:9px;color:#e0762e;letter-spacing:.1em">BACKTEST</div><div style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:11.5px;color:#e0762e;margin-top:4px">{{ backtestState }}</div></div>
+<div style="flex:1 1 0;min-width:0;padding:9px 10px;border-right:1px solid #241c17"><div style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:9px;color:#5a4f46;letter-spacing:.1em">ROBUSTNESS</div><div style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:11.5px;color:#5a4f46;margin-top:4px">bekliyor</div></div>
+<div style="flex:1 1 0;min-width:0;padding:9px 10px"><div style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:9px;color:#5a4f46;letter-spacing:.1em">KATALOG</div><div style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:11.5px;color:#5a4f46;margin-top:4px">bekliyor</div></div>
+</div>
+
+<div style="flex:1 1 200px;min-height:130px;border:1px solid #241c17;border-radius:6px;background:#120e0d;display:flex;flex-direction:column;overflow:hidden;position:relative">
+<div style="flex:none;display:flex;justify-content:space-between;padding:11px 14px 9px;border-bottom:1px solid #241c17"><div style="font-size:9.5px;letter-spacing:.16em;color:#c9bdb2">KONSOL</div><div style="font-size:10px;color:#5a4f46">{{ consoleMeta }}</div></div>
+<div style="flex:1;min-height:0;overflow:hidden;padding:10px 14px;display:flex;flex-direction:column-reverse;gap:3px;font-size:11.5px">
+<div style="display:flex;gap:12px;align-items:center;opacity:{{ caretOpacity }}"><span style="color:#5a4f46">{{ nowLabel }}</span><span style="color:#e0762e">▸</span><span style="color:#8a7d71">{{ tailLine }}</span><span style="color:#e0762e;animation:blink 1s steps(1) infinite">▊</span></div>
+<sc-for list="{{ lines }}" as="ln" hint-placeholder-count="7">
+<div style="display:flex;gap:12px"><span style="color:#5a4f46">{{ ln.t }}</span><span style="width:34px;color:{{ ln.c }}">{{ ln.k }}</span><span style="color:#c9bdb2">{{ ln.m }}</span></div>
+</sc-for>
+</div>
+<div style="position:absolute;left:0;right:0;top:38px;height:34px;background:linear-gradient(180deg,#120e0d,rgba(18,14,13,0));pointer-events:none"></div>
+</div>
+</div>
+
+<div style="border-left:1px solid #241c17;display:flex;flex-direction:column;min-height:0;background:#120e0d">
+<div style="padding:16px 14px 10px;display:flex;justify-content:space-between;align-items:baseline"><div style="font-size:9.5px;letter-spacing:.16em;color:#8a7d71">İTERASYONLAR</div><div style="font-size:10px;color:#5a4f46">{{ iterOfLabel }}</div></div>
+<div style="flex:1;min-height:0;overflow-y:auto;overflow-x:hidden;scrollbar-width:none;padding:0 12px;display:flex;flex-direction:column;gap:8px">
+
+<div style="border:1px solid #2f5f4c;border-radius:6px;background:#15201b;padding:10px 11px">
+<div style="display:flex;justify-content:space-between;align-items:center"><div style="font-size:11px;color:#e9e1d7">#2 EMA-cross + RSI</div><div style="font-size:10px;color:#5ec9a0">★ 1.84</div></div>
+<svg viewBox="0 0 260 46" preserveAspectRatio="none" style="width:100%;height:46px;margin-top:8px;display:block"><polyline points="0,40 26,35 52,37 78,27 104,30 130,21 156,24 182,14 208,16 234,8 260,4" fill="none" stroke="#5ec9a0" stroke-width="1.5"></polyline></svg>
+<div style="display:flex;gap:10px;font-size:9.5px;color:#8a7d71;margin-top:5px"><span>PF 1.62</span><span>DD -11.4%</span><span>318 tr</span></div>
+</div>
+
+<div style="border:1px solid #241c17;border-radius:6px;background:#151110;padding:10px 11px">
+<div style="display:flex;justify-content:space-between;align-items:center"><div style="font-size:11px;color:#c9bdb2">#1 Donchian breakout</div><div style="font-size:10px;color:#8a7d71">1.12</div></div>
+<svg viewBox="0 0 260 36" preserveAspectRatio="none" style="width:100%;height:36px;margin-top:8px;display:block"><polyline points="0,30 26,25 52,31 78,22 104,27 130,19 156,23 182,18 208,21 234,15 260,12" fill="none" stroke="#8a7d71" stroke-width="1.5"></polyline></svg>
+<div style="display:flex;gap:10px;font-size:9.5px;color:#8a7d71;margin-top:5px"><span>PF 1.24</span><span>DD -18.2%</span><span>412 tr</span></div>
+</div>
+
+<div style="border:1px solid #e0762e;border-radius:6px;background:#1d1410;padding:10px 11px">
+<div style="display:flex;justify-content:space-between;align-items:center"><div style="font-size:11px;color:#e9e1d7">#3 Vol-breakout + ATR</div><div style="font-size:10px;color:#e0762e">{{ activeBadge }}</div></div>
+<div style="height:3px;background:#2a211b;border-radius:2px;margin-top:10px"><div style="height:3px;background:#e0762e;border-radius:2px;width:{{ progress }}%"></div></div>
+<div style="font-size:9.5px;color:#8a7d71;margin-top:8px">{{ activeNote }}</div>
+</div>
+
+<div style="border:1px dashed #241c17;border-radius:6px;padding:9px 11px;font-size:10.5px;color:#5a4f46">#4 sırada</div>
+<div style="border:1px dashed #241c17;border-radius:6px;padding:9px 11px;font-size:10.5px;color:#5a4f46">#5 sırada</div>
+</div>
+<div style="flex:none;padding:12px;border-top:1px solid #241c17">
+<div style="height:36px;border-radius:5px;background:#e0762e;color:#160f0a;font-weight:700;font-size:11px;display:flex;align-items:center;justify-content:center;cursor:pointer;user-select:none" style-hover="background:#f19351">Lideri kataloğa ekle</div>
+</div>
+</div>
+
+</div>
+
+<div style="position:absolute;inset:0;background:rgba(8,6,5,.6);display:{{ briefOverlay }}" onClick="{{ closeBrief }}"></div>
+<div style="position:absolute;top:48px;bottom:0;left:0;width:420px;background:#151110;border-right:1px solid #33281f;box-shadow:24px 0 60px rgba(0,0,0,.55);display:flex;flex-direction:column;transition:transform .22s ease;transform:translateX({{ briefShift }})">
+<div style="flex:none;display:flex;justify-content:space-between;align-items:center;padding:16px 18px;border-bottom:1px solid #241c17">
+<div><div style="font-size:10px;letter-spacing:.16em;color:#e0762e">BRIEF'İ DÜZENLE</div><div style="font-size:10.5px;color:#8a7d71;margin-top:5px">Boş guidance = tam otonom araştırma.</div></div>
+<div onClick="{{ closeBrief }}" style="width:26px;height:26px;border-radius:4px;border:1px solid #33281f;display:flex;align-items:center;justify-content:center;color:#8a7d71;cursor:pointer">✕</div>
+</div>
+<div style="flex:1;min-height:0;overflow:auto;padding:16px 18px;display:flex;flex-direction:column;gap:14px">
+
+<div style="display:flex;flex-direction:column;gap:6px">
+<div style="font-size:9.5px;letter-spacing:.12em;color:#8a7d71">GUIDANCE</div>
+<input type="text" value="{{ brief.guidance }}" onChange="{{ setGuidance }}" placeholder="e.g. momentum + RSI, EMA cross…" style="height:34px;border:1px solid #33281f;border-radius:4px;background:#0f0c0b;color:#e9e1d7;padding:0 10px;font:11.5px 'JetBrains Mono',monospace;outline:none"></input>
+</div>
+
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+<div style="display:flex;flex-direction:column;gap:6px"><div style="font-size:9.5px;letter-spacing:.12em;color:#8a7d71">SYMBOL</div><div style="height:34px;border:1px solid #33281f;border-radius:4px;background:#0f0c0b;display:flex;align-items:center;justify-content:space-between;padding:0 10px;font-size:12px">{{ brief.symbol }}<span style="color:#8a7d71">▾</span></div></div>
+<div style="display:flex;flex-direction:column;gap:6px"><div style="font-size:9.5px;letter-spacing:.12em;color:#8a7d71">MODEL</div><div style="height:34px;border:1px solid #33281f;border-radius:4px;background:#0f0c0b;display:flex;align-items:center;justify-content:space-between;padding:0 10px;font-size:12px">{{ brief.model }}<span style="color:#8a7d71">▾</span></div></div>
+</div>
+
+<div style="display:flex;flex-direction:column;gap:6px">
+<div style="display:flex;justify-content:space-between"><div style="font-size:9.5px;letter-spacing:.12em;color:#8a7d71">TIMEFRAME</div><div style="font-size:9.5px;color:#5a4f46">birden fazla seçilebilir</div></div>
+<div style="display:flex;gap:6px">
+<div onClick="{{ tf5m }}" style="flex:1;height:32px;border-radius:4px;display:flex;align-items:center;justify-content:center;font-size:11px;cursor:pointer;border:1px solid {{ tf5mBorder }};background:{{ tf5mBg }};color:{{ tf5mColor }}">5M</div>
+<div onClick="{{ tf15m }}" style="flex:1;height:32px;border-radius:4px;display:flex;align-items:center;justify-content:center;font-size:11px;cursor:pointer;border:1px solid {{ tf15mBorder }};background:{{ tf15mBg }};color:{{ tf15mColor }}">15M</div>
+<div onClick="{{ tf1h }}" style="flex:1;height:32px;border-radius:4px;display:flex;align-items:center;justify-content:center;font-size:11px;cursor:pointer;border:1px solid {{ tf1hBorder }};background:{{ tf1hBg }};color:{{ tf1hColor }}">1H</div>
+<div onClick="{{ tf4h }}" style="flex:1;height:32px;border-radius:4px;display:flex;align-items:center;justify-content:center;font-size:11px;cursor:pointer;border:1px solid {{ tf4hBorder }};background:{{ tf4hBg }};color:{{ tf4hColor }}">4H</div>
+<div onClick="{{ tf1d }}" style="flex:1;height:32px;border-radius:4px;display:flex;align-items:center;justify-content:center;font-size:11px;cursor:pointer;border:1px solid {{ tf1dBorder }};background:{{ tf1dBg }};color:{{ tf1dColor }}">1D</div>
+</div>
+</div>
+
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+<div style="display:flex;flex-direction:column;gap:6px"><div style="font-size:9.5px;letter-spacing:.12em;color:#8a7d71">CATEGORY</div><div style="height:34px;border:1px solid #33281f;border-radius:4px;background:#0f0c0b;display:flex;align-items:center;justify-content:space-between;padding:0 10px;font-size:12px">{{ brief.category }}<span style="color:#8a7d71">▾</span></div></div>
+<div style="display:flex;flex-direction:column;gap:6px"><div style="font-size:9.5px;letter-spacing:.12em;color:#8a7d71">ROBUSTNESS</div><div style="height:34px;border:1px solid #33281f;border-radius:4px;background:#0f0c0b;display:flex;align-items:center;justify-content:space-between;padding:0 10px;font-size:12px">{{ brief.robustness }}<span style="color:#8a7d71">▾</span></div></div>
+</div>
+
+<div style="display:flex;flex-direction:column;gap:6px">
+<div style="display:flex;justify-content:space-between;align-items:baseline"><div style="font-size:9.5px;letter-spacing:.12em;color:#8a7d71">TARİH ARALIĞI</div><div style="font-size:9.5px;color:#e0762e">MAX</div></div>
+<div style="display:flex;gap:8px;align-items:center">
+<div style="flex:1;height:34px;border:1px solid #33281f;border-radius:4px;background:#0f0c0b;display:flex;align-items:center;padding:0 10px;font-size:11.5px;color:#5a4f46">dd/mm/yyyy</div>
+<div style="color:#5a4f46">→</div>
+<div style="flex:1;height:34px;border:1px solid #33281f;border-radius:4px;background:#0f0c0b;display:flex;align-items:center;padding:0 10px;font-size:11.5px;color:#5a4f46">dd/mm/yyyy</div>
+</div>
+</div>
+
+<div style="display:flex;flex-direction:column;gap:8px">
+<div style="display:flex;justify-content:space-between;align-items:baseline"><div style="font-size:9.5px;letter-spacing:.12em;color:#8a7d71">ITERATIONS</div><div style="font-size:13px;color:#e0762e;font-weight:700">{{ brief.iterations }}</div></div>
+<input type="range" min="1" max="20" value="{{ brief.iterations }}" onChange="{{ setIterations }}" style="width:100%;accent-color:#e0762e;background:transparent"></input>
+</div>
+
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+<div style="display:flex;flex-direction:column;gap:6px"><div style="font-size:9.5px;letter-spacing:.12em;color:#8a7d71">MAX SAAT <span style="color:#5a4f46">0=∞</span></div><div style="height:34px;border:1px solid #33281f;border-radius:4px;background:#0f0c0b;display:flex;align-items:center;padding:0 10px;font-size:12px">0</div></div>
+<div style="display:flex;flex-direction:column;gap:6px"><div style="font-size:9.5px;letter-spacing:.12em;color:#8a7d71">MAX TOKEN <span style="color:#5a4f46">0=∞</span></div><div style="height:34px;border:1px solid #33281f;border-radius:4px;background:#0f0c0b;display:flex;align-items:center;padding:0 10px;font-size:12px">0</div></div>
+</div>
+</div>
+<div style="flex:none;padding:14px 18px;border-top:1px solid #241c17;display:flex;gap:10px">
+<div onClick="{{ closeBrief }}" style="flex:1;height:36px;border-radius:5px;border:1px solid #33281f;color:#c9bdb2;font-size:11px;display:flex;align-items:center;justify-content:center;cursor:pointer">Vazgeç</div>
+<div onClick="{{ closeBrief }}" style="flex:1;height:36px;border-radius:5px;background:#e0762e;color:#160f0a;font-weight:700;font-size:11px;display:flex;align-items:center;justify-content:center;cursor:pointer" style-hover="background:#f19351">Uygula</div>
+</div>
+</div>
+
+</div>
+
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{}">
+class Component extends DCLogic {
+  state = {
+    running: true, progress: 62, iter: 3, elapsed: 123, tokens: 11500,
+    briefOpen: false, loop: true, notify: false,
+    brief: { symbol: 'BTCUSDT', model: 'Fable 5', category: 'linear', robustness: 'Strict', range: 'max', iterations: 5, guidance: '', tfs: ['1H'] },
+    lines: [
+      { t: '13:30:14', k: 'test', c: '#e0762e', m: 'kat 2/4 tamamlandı · ara sharpe 1.71' },
+      { t: '13:30:02', k: 'test', c: '#e0762e', m: 'backtest #3 başladı · walk-forward 4 kat' },
+      { t: '13:29:58', k: 'llm', c: '#d9a441', m: 'custom block generation · 4s' },
+      { t: '13:29:52', k: 'llm', c: '#d9a441', m: 'strateji #3 taslağı · 3.2K token' },
+      { t: '13:29:44', k: 'data', c: '#5ec9a0', m: 'QQQ.NASDAQ 1-DAY · 4,107 bar' },
+      { t: '13:29:41', k: 'data', c: '#5ec9a0', m: 'QQQ.NASDAQ 1-HOUR · 28,681 bar' },
+      { t: '13:29:36', k: 'data', c: '#5ec9a0', m: 'QQQ.NASDAQ 15-MINUTE · 110,489 bar' }
+    ]
+  };
+
+  componentDidMount() {
+    this.timer = setInterval(() => {
+      if (!this.state.running) return;
+      this.setState(s => {
+        let p = s.progress + 2, iter = s.iter, lines = s.lines;
+        if (p >= 100) {
+          p = 4; iter = iter < s.brief.iterations ? iter + 1 : 1;
+          lines = [{ t: this.clock(s.elapsed), k: 'test', c: '#e0762e', m: 'backtest #' + iter + ' başladı · walk-forward 4 kat' }].concat(s.lines).slice(0, 9);
+        }
+        return { progress: p, iter, elapsed: s.elapsed + 1, tokens: s.tokens + 90, lines };
+      });
+    }, 1000);
+  }
+  componentWillUnmount() { clearInterval(this.timer); }
+
+  clock(sec) {
+    const base = 13 * 3600 + 30 * 60 + 16 + (sec - 123);
+    const h = Math.floor(base / 3600) % 24, m = Math.floor(base / 60) % 60, s = base % 60;
+    return [h, m, s].map(n => String(n).padStart(2, '0')).join(':');
+  }
+  fmtTokens(n) { return (n / 1000).toFixed(1) + 'K'; }
+
+  toggleTf(tf) {
+    this.setState(s => {
+      const has = s.brief.tfs.indexOf(tf) > -1;
+      const tfs = has ? s.brief.tfs.filter(x => x !== tf) : s.brief.tfs.concat([tf]);
+      return { brief: Object.assign({}, s.brief, { tfs: tfs.length ? tfs : [tf] }) };
+    });
+  }
+  tfStyle(tf) {
+    const on = this.state.brief.tfs.indexOf(tf) > -1;
+    return { border: on ? '#e0762e' : '#33281f', bg: on ? '#2b1c12' : 'transparent', color: on ? '#e0762e' : '#8a7d71' };
+  }
+
+  renderVals() {
+    const s = this.state, b = s.brief, run = s.running;
+    const mins = Math.floor(s.elapsed / 60), secs = s.elapsed % 60;
+    const tf = ['5M', '15M', '1H', '4H', '1D'].filter(x => b.tfs.indexOf(x) > -1);
+    const t = {};
+    ['5m:5M', '15m:15M', '1h:1H', '4h:4H', '1d:1D'].forEach(pair => {
+      const key = pair.split(':')[0], v = this.tfStyle(pair.split(':')[1]);
+      t['tf' + key + 'Border'] = v.border; t['tf' + key + 'Bg'] = v.bg; t['tf' + key + 'Color'] = v.color;
+      t['tf' + key] = () => this.toggleTf(pair.split(':')[1]);
+    });
+
+    return Object.assign({
+      brief: b,
+      lines: s.lines,
+      progress: run ? s.progress : 0,
+      progressLabel: run ? s.progress + '%' : '—',
+      ringBg: 'conic-gradient(#e0762e 0turn ' + (run ? s.progress / 100 : 0) + 'turn,#241c17 ' + (run ? s.progress / 100 : 0) + 'turn 1turn)',
+      iter: run ? s.iter : '—',
+      iterOf: run ? '/' + b.iterations : '',
+      iterOfLabel: (run ? s.iter : 0) + '/' + b.iterations,
+      statusLabel: run ? 'RUNNING' : 'DURDURULDU',
+      statusColor: run ? '#5ec9a0' : '#8a7d71',
+      statusBg: run ? '#15241e' : '#1a1513',
+      statusBorder: run ? '#2f5f4c' : '#33281f',
+      headline: run ? 'Backtest #' + s.iter + ' · walk-forward' : 'Döngü duraklatıldı',
+      subline: run
+        ? 'Vol-breakout + ATR · 28,681 bar · ' + mins + 'm ' + String(secs).padStart(2, '0') + 's geçti'
+        : 'Devam etmek için sağ üstten START. Şimdiye kadar 3 aday üretildi.',
+      backtestState: run ? '▸ çalışıyor' : 'duraklatıldı',
+      activeBadge: run ? '▸ ' + s.progress + '%' : 'duraklatıldı',
+      activeNote: run ? 'kat 3/4 · ara sharpe 1.71' : 'ilerleme korunuyor',
+      consoleMeta: mins + 'm ' + String(secs).padStart(2, '0') + 's · ' + (18 + s.lines.length) + ' adım',
+      caretOpacity: run ? 1 : 0.25,
+      nowLabel: this.clock(s.elapsed),
+      tailLine: run ? 'kat 3/4 çalışıyor' : 'beklemede',
+      elapsedLabel: mins + 'm ' + String(secs).padStart(2, '0') + 's',
+      timePct: Math.min(100, Math.round(s.elapsed / 6)),
+      tokenLabel: this.fmtTokens(s.tokens) + ' · $' + (s.tokens * 0.00002).toFixed(2),
+      tokenShort: this.fmtTokens(s.tokens),
+      tokenPct: Math.min(100, Math.round(s.tokens / 680)),
+      runBtnLabel: run ? '■ STOP' : '▶ START',
+      toggleRun: () => this.setState(x => ({ running: !x.running })),
+      tfLabel: tf.join(' · '),
+      guidanceLabel: b.guidance ? b.guidance : '— otonom',
+      loopMark: s.loop ? '✓' : '', loopBorder: s.loop ? '#e0762e' : '#33281f', loopBg: s.loop ? '#2b1c12' : 'transparent',
+      notifyMark: s.notify ? '✓' : '', notifyBorder: s.notify ? '#e0762e' : '#33281f', notifyBg: s.notify ? '#2b1c12' : 'transparent',
+      toggleLoop: () => this.setState(x => ({ loop: !x.loop })),
+      toggleNotify: () => this.setState(x => ({ notify: !x.notify })),
+      briefShift: s.briefOpen ? '0' : '-100%',
+      briefOverlay: s.briefOpen ? 'block' : 'none',
+      openBrief: () => this.setState({ briefOpen: true }),
+      closeBrief: () => this.setState({ briefOpen: false }),
+      setGuidance: e => { const v = e.target.value; this.setState(x => ({ brief: Object.assign({}, x.brief, { guidance: v }) })); },
+      setIterations: e => { const v = parseInt(e.target.value, 10); this.setState(x => ({ brief: Object.assign({}, x.brief, { iterations: v }) })); }
+    }, t);
+  }
+}
+
+</script>
+</body>
+</html>
