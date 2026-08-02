@@ -121,6 +121,33 @@ def test_llm_cost_usd_is_notional_not_none(monkeypatch):
     assert wcost == pytest.approx(20.0)
 
 
+def test_catalog_summary_compact_generated_and_ttl_memo(monkeypatch):
+    import agent
+    import composer
+
+    fake = {
+        "ema_cross": {
+            "label": "EMA Cross",
+            "params": {"fast": {"type": "int", "min": 2, "max": 50, "default": 9}},
+        },
+        "agnt_e_zzz_1": {"label": "VWAP Custom", "params": {}},
+        "lab_entry_x": {"label": "Lab Temp", "params": {}},
+    }
+    monkeypatch.setattr(composer, "BLOCK_CATALOG", fake)
+    monkeypatch.setattr(agent, "_catalog_summary_cache", None)
+
+    s = agent._catalog_summary(force=True)
+    assert "ema_cross" in s and "[2..50]" in s  # builtin tam detay
+    assert "- agnt_e_zzz_1: VWAP Custom" in s  # üretilmiş blok tek satır
+    assert "lab_entry_x" not in s  # lab blokları hâlâ gizli
+
+    # TTL memo: katalog değişse bile TTL içinde AYNI metin döner (bayt-sabit
+    # prefix sözleşmesi); force=True taze üretir.
+    fake["agnt_e_zzz_2"] = {"label": "Yeni Blok", "params": {}}
+    assert agent._catalog_summary() == s
+    assert "agnt_e_zzz_2" in agent._catalog_summary(force=True)
+
+
 def test_bad_dates_rejected_before_worker(monkeypatch):
     client, got, done = _client_and_capture(monkeypatch)
     assert client.post("/agent/run", data={"range_start": "kotu"}).status_code == 400

@@ -20,6 +20,7 @@ import shutil
 import subprocess
 import tempfile
 import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -752,15 +753,45 @@ Sensible defaults if you have no strong reason to override: entry_logic="OR" (ST
 """
 
 
-def _catalog_summary() -> str:
+# Katalog özeti TTL memo'su — MALİYET düzeltmesi (2026-08-02): bu özet
+# composed-proposer'ın SYSTEM prompt'una gömülür; AUTO loop her iterasyonda
+# yeni agnt_* bloğu kaydettiğinden özet her çağrıda değişiyor ve ~30K'lık
+# prompt cache'e her seferinde YENİDEN YAZILIYORDU (263 çağrı × ~30K = gecelik
+# yazımların %80'i, cache_read=0). 30 dk'lık dondurma prefix'i bayt-sabit
+# yapar → yazımlar okumaya döner (×2 → ×0.1). Yeni blokların özete ~30 dk
+# gecikmeyle girmesi davranışsal olarak önemsizdir (fikir yolu zaten taze).
+_CATALOG_SUMMARY_TTL_S = 1800.0
+_catalog_summary_cache: tuple[float, str] | None = None
+_catalog_summary_lock = threading.Lock()
+
+
+def _catalog_summary(*, force: bool = False) -> str:
+    global _catalog_summary_cache
+    now = time.monotonic()
+    with _catalog_summary_lock:
+        if (
+            not force
+            and _catalog_summary_cache is not None
+            and now - _catalog_summary_cache[0] < _CATALOG_SUMMARY_TTL_S
+        ):
+            return _catalog_summary_cache[1]
+
     from composer import BLOCK_CATALOG
 
     out = []
+    generated = []
     for k, meta in BLOCK_CATALOG.items():
         # Skip lab-generated temporary blocks — they are EMA/RSI variants
         # that Claude itself produced; showing them biases proposals toward
         # the same family of indicators.
         if k.startswith("lab_entry_") or k.startswith("lab_exit_"):
+            continue
+        # Agent-generated blocks: ONE compact line each (params come from
+        # registered defaults; the validator clamps). Full specs for hundreds
+        # of self-produced variants both bloated the prompt (~100 token/blok)
+        # and biased proposals toward Claude's own past output.
+        if k.startswith("agnt_"):
+            generated.append(f"- {k}: {meta['label']}")
             continue
         params = []
         for pname, pspec in meta["params"].items():
@@ -773,7 +804,20 @@ def _catalog_summary() -> str:
                     f"{pname}: {pspec['type']} [{pspec['min']}..{pspec['max']}] (default {pspec['default']})"
                 )
         out.append(f"- {k} ({meta['label']}): {'; '.join(params)}")
-    return "\n".join(out)
+
+    generated.sort()  # deterministik sıra — prefix kararlılığının parçası
+    if len(generated) > 80:
+        extra = len(generated) - 80
+        generated = generated[:80] + [
+            f"  (+{extra} more generated blocks omitted — defaults apply)"
+        ]
+    if generated:
+        out.append("Generated blocks (params use registered defaults):")
+        out.extend(generated)
+    text = "\n".join(out)
+    with _catalog_summary_lock:
+        _catalog_summary_cache = (now, text)
+    return text
 
 
 def _summarize_composed_history(history: list[Any], catalog: list[Any]) -> str:
@@ -1064,6 +1108,7 @@ Design a new {market_target} composed strategy as specified. Return JSON only.""
     try:
         resp = _create_message(
             client,
+            _purpose="composed",
             max_tokens=900,
             system=system,
             messages=[{"role": "user", "content": user}],
@@ -1411,6 +1456,7 @@ def _call_claude_for_block(user_prompt: str) -> tuple[dict, dict]:
     client = _get_client()
     resp = _create_message(
         client,
+        _purpose="custom_block",
         max_tokens=4000,
         system=CUSTOM_BLOCK_SYSTEM_PROMPT,
         messages=[{"role": "user", "content": user_prompt}],
@@ -2272,6 +2318,7 @@ def _propose_agent_strategy_idea(
         client = _get_client()
         resp = _create_message(
             client,
+            _purpose="idea",
             max_tokens=400,
             messages=[{"role": "user", "content": prompt}],
         )
