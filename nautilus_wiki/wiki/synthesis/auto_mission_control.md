@@ -12,7 +12,7 @@ key_concepts:
 related:
   - wiki/synthesis/webapp_module_map.md
   - wiki/synthesis/strategy_studio.md
-last_updated: 2026-08-02
+last_updated: 2026-08-03
 ---
 
 # AUTO Mission Control kokpiti
@@ -51,6 +51,32 @@ yükseklikli** bir panel. Üç kolon:
 Konfigürasyon 420px'lik **brief slide-over**'ına taşındı (`✎ brief`); START/STOP
 AUTO üst barında. Bu ayrım kasıtlı: koşu sırasında formun ekranda yer kaplaması
 için hiçbir neden yok, ama tek tıkla erişilebilir olmalı.
+
+### Brief'in açılış durumu (2026-08-03)
+
+Döngü boştayken brief **açık** gelir ve fiilen koşulan ayarlarla doludur —
+QQQ.NASDAQ · spot · 1H · Strict · 4 iterasyon · "kazanandan sonra yeniden
+başlat" açık · guidance `adx ve atr ile maksimum kar ve minimum dd`. Boş bir
+formla açılıp her seferinde aynı altı alanı doldurmak, tek tıklık erişimin
+sağladığı kazancı zaten geri veriyordu. Canlı bir koşu varsa çekmece **kapalı**
+kalır: o an görülmesi gereken şey kokpitin kendisidir (`mcInitBrief()`,
+`active_run_id`'ye bakar).
+
+İki alan sabit yazılmaz:
+
+- **DATE RANGE** açılışta MAX düğmesine basılarak doldurulur (`/data/range`).
+  Varsayılan "seçili sembol+TF'nin tam kapsamı"dır; sabit bir tarih çifti
+  katalog büyüdükçe yalan söylerdi (bugün QQQ.NASDAQ 1-HOUR → 2003-09-10 →
+  2026-07-01).
+- **MODEL** varsayılanı `web/routes/studio.py::AUTO_DEFAULT_MODEL`
+  (`or:moonshotai/kimi-k3`) — ama picker'ın içeriği canlı olduğundan
+  (`OPENROUTER_API_KEY`, ücretsiz filtresi, `NAUTILUS_OPENROUTER_EXTRA_MODELS`)
+  seçilmeden önce listede olduğu doğrulanır; yoksa uygulama varsayılanına
+  (`""` = Claude) düşer. Bkz. [[model_secici_ve_gorunurluk]].
+
+`POST /agent/run`'ın **kendi** form varsayılanları değişmedi (`BTCUSDT`,
+`linear`, 5 iterasyon, `continuous` kapalı): bunlar form dışından gelen
+çağrıların sözleşmesi; sürekli moda kendiliğinden girmemeleri gerekir.
 
 **Yükseklik ölçülür, sabitlenmez.** Üstteki kabuk yüksekliği (topbar + content
 padding + mode switch + AUTO barı) yoğunluk kurallarına ve dar ekrandaki

@@ -119,5 +119,6 @@ kalıcı çözüm tavanı modele göre çözmek olurdu.
 <!-- BACKLINKS:BEGIN -->
 ## Referenced by
 
+- [[llm_maliyet_kaldiraclari]]
 - [[model_secici_ve_gorunurluk]]
 <!-- BACKLINKS:END -->

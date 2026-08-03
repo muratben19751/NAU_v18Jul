@@ -27,6 +27,13 @@ from web.shared import session_id
 
 router = APIRouter(prefix="/studio")
 
+# ── AUTO brief'inin açılış varsayılanı ────────────────────────────────────
+# Kokpit brief'i boş bir formla değil, kullanıcının fiilen koşturduğu ayarlarla
+# açılır. Model dışındaki alanların varsayılanı studio.html'de (formun kendi
+# `selected`/`value`'ları); model burada durur çünkü seçenek listesi çalışma
+# anında oluşuyor ve seçili değerin listede OLDUĞU doğrulanmalı.
+AUTO_DEFAULT_MODEL = "or:moonshotai/kimi-k3"
+
 # ── Simple-mode wizard: ready-made strategy templates ──────────────────────
 # Each template's ``description`` is a natural-language brief that feeds the
 # existing ``POST /backtest/describe`` flow (Claude turns it into signal
@@ -152,6 +159,10 @@ def page(request: Request):
     except Exception:
         active_run_id = None
 
+    # Model listesi CANLI (OpenRouter kataloğu + anahtar durumu) — bir kez çöz,
+    # hem picker'ı hem varsayılan seçimi aynı listeden türet.
+    _models = _llm_models()
+
     # Backtest tab: session-scoped last result (Faz 3).
     slot = _last_result_get(sid)
     last_row = None
@@ -213,9 +224,11 @@ def page(request: Request):
         # ── Simple-mode wizard context ──
         "strategy_templates": STRATEGY_TEMPLATES,
         # ── AUTO cockpit: model picker (Claude + varsa OpenRouter) ──
-        "llm_models": _llm_models(),
+        "llm_models": _models,
         "llm_or_free_only": _llm_or_free_only(),
         "llm_or_paid_extras": _llm_or_paid_extras(),
+        # Brief açılışta hangi ucu seçili göstersin (liste canlı → fallback var).
+        "mc_default_model": _mc_default_model(_models),
         # ── Model rozeti: SIMPLE/PRO uygulama varsayılanını kullanır, AUTO'da
         #    bu yalnız başlangıç değeri (picker/koşu üzerine yazar) ──
         **llm_badge(),
@@ -248,6 +261,18 @@ def _llm_or_paid_extras() -> set[str]:
     from agent import openrouter_paid_extras
 
     return set(openrouter_paid_extras())
+
+
+def _mc_default_model(models: list) -> str:
+    """AUTO brief'i açılırken MODEL seçicisinde seçili gelecek uç.
+
+    Picker'ın içeriği CANLI: OpenRouter satırları anahtara, ücretsiz filtresine
+    ve NAUTILUS_OPENROUTER_EXTRA_MODELS'e bağlı. İstenen uç o an listede yoksa
+    uygulama varsayılanına ("" = Claude) düşeriz — aksi halde hiçbir seçeneği
+    işaretlenmemiş bir kutu kalır ve START, kullanıcının görmediği bir modelle
+    koşardı.
+    """
+    return AUTO_DEFAULT_MODEL if any(v == AUTO_DEFAULT_MODEL for v, _ in models) else ""
 
 
 def llm_badge() -> dict[str, str]:

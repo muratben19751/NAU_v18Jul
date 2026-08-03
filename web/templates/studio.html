@@ -90,6 +90,7 @@
         <div class="mc-f">
           <label for="mc-hint">GUIDANCE</label>
           <input type="text" id="mc-hint" name="hint"
+                 value="adx ve atr ile maksimum kar ve minimum dd"
                  placeholder="e.g. momentum + RSI, EMA cross…">
         </div>
 
@@ -97,11 +98,11 @@
           <div class="mc-f">
             <label for="mc-symbol">SYMBOL</label>
             <select id="mc-symbol" name="symbol">
-              <option value="BTCUSDT" selected>BTCUSDT</option>
+              <option value="BTCUSDT">BTCUSDT</option>
               <option value="ETHUSDT">ETHUSDT</option>
               <option value="SOLUSDT">SOLUSDT</option>
               {# Dotted id = external catalog (the route promotes it). #}
-              <option value="QQQ.NASDAQ">QQQ.NASDAQ</option>
+              <option value="QQQ.NASDAQ" selected>QQQ.NASDAQ</option>
             </select>
           </div>
           <div class="mc-f">
@@ -112,9 +113,10 @@
                PARALI uçlar ayrı bir optgroup'ta durur: "ücretsiz (N)" başlıklı
                grubun içinde paralı bir satır olsaydı başlık yalan söylerdi. #}
             <select id="mc-model" name="model" onchange="mcModel(this)">
+              {# Seçili gelen uç mc_default_model (rota çözer; listede yoksa ""). #}
               <optgroup label="Claude">
                 {% for mval, mlabel in llm_models if not mval.startswith("or:") %}
-                <option value="{{ mval }}" {% if mval == "" %}selected{% endif %}>{{ mlabel }}</option>
+                <option value="{{ mval }}" {% if mval == mc_default_model %}selected{% endif %}>{{ mlabel }}</option>
                 {% endfor %}
               </optgroup>
               {% set or_models = [] %}
@@ -125,14 +127,14 @@
               {% if or_models %}
               <optgroup label="OpenRouter · openrouter.ai — {% if llm_or_free_only %}ücretsiz{% else %}tümü{% endif %} ({{ or_models | length }})">
                 {% for mval, mlabel in or_models %}
-                <option value="{{ mval }}">{{ mlabel }}</option>
+                <option value="{{ mval }}" {% if mval == mc_default_model %}selected{% endif %}>{{ mlabel }}</option>
                 {% endfor %}
               </optgroup>
               {% endif %}
               {% if or_extras %}
               <optgroup label="OpenRouter · elle eklenen — PARALI ({{ or_extras | length }})">
                 {% for mval, mlabel in or_extras %}
-                <option value="{{ mval }}">{{ mlabel }}</option>
+                <option value="{{ mval }}" {% if mval == mc_default_model %}selected{% endif %}>{{ mlabel }}</option>
                 {% endfor %}
               </optgroup>
               {% endif %}
@@ -161,8 +163,8 @@
           <div class="mc-f">
             <label for="mc-category">CATEGORY</label>
             <select id="mc-category" name="category">
-              <option value="linear" selected>linear</option>
-              <option value="spot">spot</option>
+              <option value="linear">linear</option>
+              <option value="spot" selected>spot</option>
             </select>
           </div>
           <div class="mc-f">
@@ -177,7 +179,10 @@
         <div class="mc-f">
           <div style="display:flex;justify-content:space-between;align-items:baseline;">
             <span class="mc-f-label">DATE RANGE</span>
-            <button type="button" class="mc-edit" style="border:0;background:none;"
+            {# id: açılışta mcInitBrief() bu düğmeye basar — varsayılan aralık
+               "seçili sembol+TF'nin tam kapsamı" olduğundan sabit tarih yazmak
+               katalog büyüdükçe yalan söylerdi. #}
+            <button type="button" class="mc-edit" id="mc-max" style="border:0;background:none;"
                     title="Fill the full coverage of the selected symbol+TF"
                     onclick="var f=this.form,
                       tf=(f.querySelector('input[name=tfs]:checked')||{}).value||'60',
@@ -198,9 +203,9 @@
         <div class="mc-f">
           <div style="display:flex;justify-content:space-between;align-items:baseline;">
             <span class="mc-f-label">ITERATIONS</span>
-            <span id="mc-iter-val" style="font-size:13px;color:#e0762e;font-weight:700;">5</span>
+            <span id="mc-iter-val" style="font-size:13px;color:#e0762e;font-weight:700;">4</span>
           </div>
-          <input class="mc-range" type="range" name="n_iterations" min="2" max="15" value="5"
+          <input class="mc-range" type="range" name="n_iterations" min="2" max="15" value="4"
                  oninput="document.getElementById('mc-iter-val').textContent=this.value">
         </div>
 
@@ -215,9 +220,10 @@
           </div>
         </div>
 
-        {# Off by default — matches POST /agent/run's `continuous` default. #}
-        <label class="mc-opt" style="cursor:pointer;">
-          <input type="checkbox" name="continuous" value="1" hidden onchange="mcCheck(this)">
+        {# Açılışta AÇIK (POST /agent/run'ın kendi varsayılanı hâlâ kapalı: form
+           dışından gelen çağrılar sürekli moda kendiliğinden girmemeli). #}
+        <label class="mc-opt on" style="cursor:pointer;">
+          <input type="checkbox" name="continuous" value="1" hidden checked onchange="mcCheck(this)">
           <i></i>Restart after a winner
         </label>
       </div>
@@ -396,6 +402,18 @@
     slot.textContent = '⬢ ' + opt.text.replace(/\s*\(varsayılan\)\s*$/, '');
     slot.title = opt.value || '{{ llm_model_id }}';
   };
+  // Brief AÇIK açılır ve varsayılanlarıyla dolu gelir: rozet picker'daki
+  // modeli gösterir, DATE RANGE seçili sembol+TF'nin tam kapsamıyla dolar.
+  // Canlı bir koşu varsa çekmece kapalı kalır — o an görülmesi gereken şey
+  // kokpitin kendisi, üstünü örten bir form değil (rozeti de fragment yazar).
+  (function mcInitBrief() {
+    if ({{ 'true' if active_run_id else 'false' }}) return;
+    var picker = document.getElementById('mc-model');
+    if (picker) window.mcModel(picker);
+    var max = document.getElementById('mc-max');
+    if (max) max.click();
+    window.mcBrief(true);
+  })();
   // The cockpit is a fixed-height, non-scrolling screen, so it needs to know
   // how much vertical chrome sits above it (topbar, content padding, mode
   // switch, AUTO bar). Measuring beats hardcoding: those heights change with

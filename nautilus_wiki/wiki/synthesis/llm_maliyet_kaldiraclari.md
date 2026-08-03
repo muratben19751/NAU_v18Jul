@@ -1,7 +1,7 @@
 ---
 title: LLM maliyet kaldıraçları — AUTO ve Studio token tüketimi
 type: synthesis
-summary: 10 günlük defter denetimi — 21,5M token / ~$346 nominal, %99'u fable-5'te; fatura output ($103) + cache yazımı ($234, 1h TTL ×2). Ölçülen kaldıraçlar sırayla model (sonnet-5 −61%), effort (ek −52%), cache prefix sabitliği; max_tokens CLI yolunda ölü, çağrıların %92'si etiketsiz.
+summary: 10 günlük defter denetimi — 21,5M token / ~$346 nominal, %99'u fable-5'te; fatura output ($103) + cache yazımı ($234, 1h TTL ×2). Ölçülen kaldıraçlar sırayla model (sonnet-5 −61%), effort (ek −52%), cache prefix sabitliği; max_tokens CLI yolunda ölü; kokpit maliyeti OpenRouter koşularında 3,33× şişik (thread-local model pini), çağrıların %92'si etiketsiz.
 sources:
   - https://github.com/muratben19751/NAU_v18Jul
   - https://platform.claude.com/docs/en/pricing
@@ -13,7 +13,7 @@ related:
   - wiki/synthesis/auto_mission_control.md
   - wiki/synthesis/webapp_module_map.md
   - wiki/synthesis/nau_performans_denetimi.md
-last_updated: 2026-08-02
+last_updated: 2026-08-03
 ---
 
 # LLM maliyet kaldıraçları
@@ -102,6 +102,46 @@ isteyen çağrılarda gerçekleşen çıktı medyanı **1091**, p95 **2383**, ma
 `idea`, `narrative`, `lab_idea` çağrılarında veriliyor; kalan altı çağrı noktası
 (`propose_strategy`, breakdown, refine, chat, block_edit, blocks_edit) etiketsiz
 ve **$316,55**'lik kalemi oluşturuyor. Ölçülemeyen kalem optimize edilemiyor.
+
+**Üçüncü tuzak (2026-08-03): kokpitin maliyet göstergesi OpenRouter koşularında
+3,33× şişik.** `_llm_cost_usd` fiyatı `agent.current_model()` ile çözüyor; bu
+değer **thread-local** ve HTTP yoklama thread'inde koşunun pin'i görünmüyor,
+dolayısıyla uygulama varsayılanına (`claude-fable-5`, $10/$50) düşüyor. Kimi K3
+($3/$15) ile koşan `51a9f3ba`'da 32 çağrı / 189.832 token için:
+
+| | tutar |
+|---|---|
+| fable-5 fiyatıyla — ekranda görünen | $5,09 |
+| OpenRouter kimi fiyatıyla — gerçek | $1,53 |
+
+Oran sabit 3,33× ve harmanlanmış $/MTok eğrisi fable-5'i izliyor ($26,8 vs
+$8,04). Okuma hata vermediği için sayı makul görünür, artar, para birimi
+doğrudur — yalnız yanlış fiyat listesinden gelir. Çare: modeli koşu durumuna
+yazıp okuyucuların oradan alması (thread-local'dan yeniden çözmemesi).
+
+## Kimi K3 ↔ Sonnet 5 — aynı birim fiyat, %65 fark (2026-08-03)
+
+OpenRouter'ın canlı ucundan: **kimi-k3 $3/$15**, yani Sonnet 5 listesiyle
+birebir aynı (Sonnet 5 ayrıca 31.08.2026'ya kadar tanıtım fiyatında: $2/$10).
+Defterden ölçülen çağrı-başı maliyet:
+
+| model | çağrı | girdi | çıktı | cache okuma | $/çağrı | çıktı/çağrı |
+|---|---|---|---|---|---|---|
+| kimi-k3 | 54 | 223.331 | 96.994 | **0** | **0,0397** | 1.796 |
+| sonnet-5 (tanıtım) | 29 | **52** | 35.881 | 111.423 | **0,0241** | 1.237 |
+
+Farkı iki kalem sürüyor, ikisi de fiyat listesinde görünmez: **çıktı uzunluğu**
+(çıktı girdinin 5 katı fiyatlı) ve **önbellek**. Kimi'nin 54 çağrısında cache
+okuma/yazma **sıfır** — her çağrı ~4.135 girdi tokenini tam fiyattan yeniden
+gönderiyor; Claude yolunda 29 çağrının toplam ham girdisi 52 token. OpenRouter
+kimi için cache okuma fiyatı ($0,30/MTok) *yayınlıyor*, entegrasyon kullanmıyor.
+Yani önbellek desteği listede var olup senin yolunda hiç açılmamış olabilir;
+bunu liste değil defterin `cache_read` sütunu söyler.
+
+Kalite tarafında Kimi'yi tercih ettirecek ölçülmüş bir gerekçe çıkmadı: tek
+somut şikâyet olan çıkış-bloğu ad↔kod uyuşmazlığı Sonnet 5 oturumlarında da var
+(4/4, 2/4, 2/4) — yani üreticinin değil isteğin kusuru, model değiştirmek
+düzeltmez (bkz. [[kesilme_ve_degrade_gorunurlugu]]).
 
 ## Model pini kalıcı değil
 
