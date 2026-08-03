@@ -60,6 +60,10 @@
           <div class="mc-hero-top">
             <span class="mc-label">NOW</span>
             <span class="mc-pill {{ 'run' if mv.running else 'stop' }}">{{ mv.status_label }}</span>
+            {% if mv.degraded_count %}
+            {# Fazlar ✓ kapansa bile üretilen şey modelin önerisi değilse bu rozet onu söyler. #}
+            <span class="mc-pill degraded" title="{{ mv.degraded_count }} üretim adımı fallback'e düştü ({{ mv.degraded_reasons }}) — sonuçlar modelin önerisi değil">⚠ DEGRADED ×{{ mv.degraded_count }}</span>
+            {% endif %}
           </div>
           <div class="mc-headline">{{ mv.headline }}</div>
           <div class="mc-subline">{{ mv.subline }}</div>

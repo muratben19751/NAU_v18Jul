@@ -327,6 +327,11 @@ def mission_view(
             f"#241c17 {ring / 100:.4f}turn 1turn)"
         ),
         "status_label": "RUNNING" if (running and not stopping) else "STOPPED",
+        # Degradasyon rozeti: kaç üretim adımı fallback'e düştü. Fazlar ✓ kapansa
+        # bile bu sayı >0 ise koşunun ürettiği şey modelin önerisi değildir —
+        # rozet olmadan "başarılı koşu" görüntüsü yalan söyler.
+        "degraded_count": int(state.get("fallback_count") or 0),
+        "degraded_reasons": ", ".join(state.get("fallback_reasons") or []),
         "headline": headline,
         "subline": subline,
         "iter": iter_no,

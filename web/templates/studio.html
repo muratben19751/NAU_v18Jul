@@ -421,6 +421,20 @@
     var p = e.detail && e.detail.pathInfo && e.detail.pathInfo.requestPath;
     if (p === '/agent/run') window.mcBrief(false);
   });
+  // POST /agent/run reddedilen istekleri (geçersiz tarih, seçilen model
+  // çalıştırılamıyor, 50-koşu limiti) gövdesinde AÇIKLAMASIYLA döndürür; htmx
+  // 1.x 4xx'te varsayılan olarak swap ETMEZ, yani o açıklamalar ekrana hiç
+  // ulaşmıyordu — START'a basmak hiçbir şey yapmamış gibi görünüyordu.
+  // Yalnız bu rota için: kendi kendini sonlandıran /agent/progress yoklaması da
+  // 4xx dönebiliyor ve onun gövdesi kokpitin yerine geçmemeli.
+  document.body.addEventListener('htmx:beforeSwap', function (e) {
+    var d = e.detail, cfg = d && d.requestConfig;
+    if (!cfg || cfg.path !== '/agent/run') return;
+    if (d.xhr && d.xhr.status >= 400 && d.xhr.status < 500) {
+      d.shouldSwap = true;
+      d.isError = false;
+    }
+  });
 
   // Catalog → Backtest handoff: "▶ Bununla backtest" (catalog_list.html) sets
   // this and switches tab; picks the saved spec in the backtest #spec-picker.

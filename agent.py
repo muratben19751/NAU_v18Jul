@@ -6,9 +6,13 @@ Returns a dict:
 Wiki References
 ---------------
 See: [[model_secici_ve_gorunurluk]] (model seçici, canlı OpenRouter kataloğu,
-ücretsiz filtresi, model adının çözülmesi), [[llm_maliyet_kaldiraclari]] (defter
+ücretsiz filtresi, model adının çözülmesi, `model_unavailable_reason` ile kapıda
+ret — listelenebilir ≠ çalıştırılabilir), [[llm_maliyet_kaldiraclari]] (defter
 denetimi + maliyet kaldıraçları; `_ClaudeCLIMessages.create`'in `max_tokens`'ı
-düşürdüğü ve `_purpose`suz çağrıların kör alan oluşturduğu buradan izlenir).
+düşürdüğü ve `_purpose`suz çağrıların kör alan oluşturduğu buradan izlenir),
+[[kesilme_ve_degrade_gorunurlugu]] (`max_tokens` tavanı modelin üslubuna bağlıdır;
+`TruncatedResponse` + tek seferlik büyük-tavan denemesi, ve fallback'lerin
+`degraded` işaretiyle sayılıp ekrana taşınması).
 Geri kalanı app-specific; wiki kapsamı dışında (LLM parametre önericisi, bir
 Nautilus kavramı değil).
 """
@@ -298,6 +302,28 @@ def model_id(model: str | None = None) -> str:
     return (model or "").strip() or current_model()
 
 
+def model_unavailable_reason(model: str | None) -> str:
+    """Bu picker değeri neden KOŞAMAZ — koşabiliyorsa "".
+
+    Ağa çıkmaz; yalnız yapılandırmayı yoklar (anahtar var mı, istemci
+    kurulabiliyor mu). Koşu BAŞLAMADAN çağrılır: eksik yapılandırma yüzünden
+    LLM'e hiç ulaşamayan bir AUTO turu, seçilen modelin önerileri yerine
+    "Random … (Claude unavailable)" kompozisyonları üretir ve bunu normal bir
+    koşu gibi gösterir — sessiz bozulma yerine kapıda ret.
+
+    Yalnız "or:" için anlamlı: Claude yolunun ön koşulu (abonelik CLI'ı ya da
+    ANTHROPIC_API_KEY) uygulamanın varsayılan yolu, ayrıca yoklanmaz.
+    """
+    m = (model or "").strip()
+    if not m.startswith("or:"):
+        return ""
+    try:
+        _get_openrouter_client()
+    except Exception as e:  # eksik anahtar / eksik `openai` paketi
+        return str(e)
+    return ""
+
+
 def current_model() -> str:
     """The model currently in use (FALLBACK_MODEL if fallback has kicked in).
 
@@ -365,7 +391,149 @@ def _ledger_record(resp, called_model: str, purpose: str) -> None:
         pass
 
 
+# 429 geri çekilmesi. Toplam ~65 sn: ücretsiz uçların sınırı DAKİKA başına
+# olduğu için bir dakikalık pencereyi kapsamayan bir plan hiçbir işe yaramaz
+# (openai SDK'sının varsayılan ~0.5/1 sn'lik iki denemesi tam olarak bu yüzden
+# yetersiz kalıyordu).
+_OR_RETRY_WAITS = (5.0, 15.0, 45.0)
+
+# Testler beklemeyi burdan yamalar. Global ``time.sleep``'i yamalamak süreçteki
+# BAŞKA thread'leri de uykusuz bırakır (arka plan worker'ları) ve zamanlamaya
+# duyarlı testleri uzaktan kırar — yama yüzeyi modüle ait olmalı.
+_sleep = time.sleep
+
+
+def _is_rate_limited(exc: Exception) -> bool:
+    """429 mı? — `openai` paketi import edilmeden (o bağımlılık opsiyonel)."""
+    return (
+        getattr(exc, "status_code", None) == 429
+        or getattr(exc, "code", None) == 429
+        or type(exc).__name__ == "RateLimitError"
+    )
+
+
+def _retry_after_seconds(exc: Exception) -> float | None:
+    """Sunucunun söylediği bekleme süresi (``Retry-After``), varsa."""
+    headers = getattr(getattr(exc, "response", None), "headers", None)
+    if not headers:
+        return None
+    try:
+        raw = headers.get("retry-after") or headers.get("Retry-After")
+        return float(raw) if raw else None
+    except (AttributeError, TypeError, ValueError):
+        return None
+
+
+def _or_create_with_backoff(or_model: str, **kwargs):
+    """OpenRouter çağrısı; 429'da geri çekilip yeniden dener.
+
+    429 kalıcı bir arıza değil, bir **zamanlama** arızasıdır: ücretsiz uçların
+    dakika başına istek sınırı, ajan döngüsünün patlama şeklindeki çağrı
+    temposuyla uyuşmaz. Yeniden denemeden çağıranın fallback'ine düşmek koşuyu
+    rastgele kompozisyona çevirir ve bunu başarı gibi gösterir — yani sonuçları
+    sessizce çöpe atar.
+
+    Toplam bekleme ``NAUTILUS_OPENROUTER_429_MAX_WAIT`` ile sınırlı (varsayılan
+    75 sn): bir dakikalık pencereyi kapatacak kadar uzun, koşunun STOP'a yanıtını
+    kilitlemeyecek kadar kısa. Sunucu ``Retry-After`` söylüyorsa o kullanılır —
+    tahminimiz sunucunun bilgisini ezmemeli.
+    """
+    budget = float(os.environ.get("NAUTILUS_OPENROUTER_429_MAX_WAIT", "75"))
+    client = _get_openrouter_client()
+    slept = 0.0
+    for i, planned in enumerate(_OR_RETRY_WAITS):
+        try:
+            return client.messages.create(model=or_model, **kwargs)
+        except Exception as e:
+            if not _is_rate_limited(e):
+                raise
+            wait = min(_retry_after_seconds(e) or planned, budget - slept)
+            if wait <= 0:  # bütçe bitti — hata çağırana düşsün
+                raise
+            logging.warning(
+                "OpenRouter 429 (%s) — %.0f sn bekleyip yeniden deneniyor (%d/%d)",
+                or_model,
+                wait,
+                i + 1,
+                len(_OR_RETRY_WAITS),
+            )
+            _sleep(wait)
+            slept += wait
+    return client.messages.create(model=or_model, **kwargs)
+
+
+class TruncatedResponse(RuntimeError):
+    """Yanıt ``max_tokens`` tavanına dayanıp kesildi — model kusuru değil, bütçe.
+
+    Kesilme kendi adıyla gelmezse aşağıda bir ``JSONDecodeError`` olarak görünür
+    ve suçu **modele** atar ("geçerli JSON üretemedi"); oysa cevabı kesen biziz.
+    Bu tip, o yanlış-atfı kapatmak için var: çağıranların fallback açıklamasında
+    ``fallback (TruncatedResponse)`` yazar ve sebep okunabilir kalır.
+    """
+
+
+# Sağlayıcıların "yer kalmadı" cevabı: Anthropic ``max_tokens``, OpenAI-uyumlu
+# uçlar ``length`` der. _ORResponse ikincisini birincisine çevirir.
+_TRUNCATION_STOP_REASONS = ("max_tokens", "length")
+# Kesilmede tavan bir kez bu katsayıyla büyütülüp yeniden denenir. Kesilme kalıcı
+# bir arıza değil bütçe arızasıdır (429 gibi); fallback'e düşmek koşuyu rastgele
+# kompozisyona çevirir. Ödenen bedel bir fazladan çağrı.
+_TRUNCATION_RETRY_SCALE = 4
+_TRUNCATION_RETRY_CAP = 16000
+
+# JSON döndüren üretim çağrılarının tavanları. Eski değerler (composed 900,
+# idea 400) Claude'un kısa JSON'una göre ayarlanmıştı ve önce düşünüp sonra yazan
+# bir modelde (ölçüm: moonshotai/kimi-k3) çıktının TAMAMI tavana dayanıyordu —
+# 5 çağrının 5'i kesildi, 5'i de fallback'e düştü. Tavan, promptun değil ÜRETENİN
+# özelliğine göre kalibre olduğu için bolluk tarafında hata yapılır: kullanılmayan
+# tavan bedava, yarım JSON toptan kayıp.
+MAX_TOKENS_COMPOSED = 4000
+MAX_TOKENS_IDEA = 1500
+
+
+def _was_truncated(resp) -> bool:
+    """Yanıt tavana dayanıp kesildi mi? (bilgi yoksa hayır)"""
+    return (
+        str(getattr(resp, "stop_reason", "") or "").lower() in _TRUNCATION_STOP_REASONS
+    )
+
+
 def _create_message(client, _purpose: str = "", **kwargs):
+    """``_create_message_once`` + kesilmede tek seferlik büyük-tavan denemesi.
+
+    ``max_tokens`` yapılandırılmış çıktı isteyen bir çağrıda maliyet freni değil
+    **doğruluk önkoşuludur**: yarım JSON hiçbir işe yaramaz. Tavanlar bir kez ve
+    o günkü modelin üslubuna göre ayarlanır; önce düşünüp sonra yazan bir modelde
+    aynı tavan sığmaz. Bu yüzden kesilme burada yakalanır, tavan büyütülüp bir kez
+    yeniden denenir, yine sığmazsa ``TruncatedResponse`` fırlatılır — çağıranın
+    fallback'i devreye girer ama sebep artık okunabilir.
+    """
+    resp = _create_message_once(client, _purpose, **kwargs)
+    if not _was_truncated(resp):
+        return resp
+
+    base = int(kwargs.get("max_tokens") or 0)
+    bigger = min(base * _TRUNCATION_RETRY_SCALE, _TRUNCATION_RETRY_CAP)
+    if base <= 0 or bigger <= base:
+        raise TruncatedResponse(
+            f"{_purpose or 'llm'}: yanıt max_tokens={base} tavanında kesildi"
+        )
+
+    logging.warning(
+        "%s: yanıt max_tokens=%d tavanında kesildi — %d ile yeniden deneniyor",
+        _purpose or "llm",
+        base,
+        bigger,
+    )
+    resp = _create_message_once(client, _purpose, **{**kwargs, "max_tokens": bigger})
+    if _was_truncated(resp):
+        raise TruncatedResponse(
+            f"{_purpose or 'llm'}: yanıt max_tokens={bigger} ile de kesildi"
+        )
+    return resp
+
+
+def _create_message_once(client, _purpose: str = "", **kwargs):
     """messages.create + automatic Fable→Opus fallback on credit exhaustion.
 
     The model kwarg is added HERE; callers do not pass a model. On a credit
@@ -382,10 +550,10 @@ def _create_message(client, _purpose: str = "", **kwargs):
     if model.startswith("or:"):
         # Koşu-başına OpenRouter yolu (thread pin "or:<id>"): varsayılan
         # backend'e dokunmadan bu çağrı OpenRouter'a gider. Fable→Opus kredi
-        # fallback'i Claude'a özgüdür — burada uygulanmaz; hata çağırana düşer
-        # (çağıranların kendi graceful fallback'leri var).
+        # fallback'i Claude'a özgüdür — burada uygulanmaz; 429 dışındaki hata
+        # çağırana düşer (çağıranların kendi graceful fallback'leri var).
         or_model = model[3:]
-        resp = _get_openrouter_client().messages.create(model=or_model, **kwargs)
+        resp = _or_create_with_backoff(or_model, **kwargs)
         _ledger_record(resp, or_model, _purpose)
         return resp
     try:
@@ -504,6 +672,9 @@ class _CLIResponse:
     def __init__(self, text: str, usage: dict) -> None:
         self.content = [_CLITextBlock(text)]
         self.usage = _CLIUsage(usage)
+        # CLI'nin max_tokens karşılığı yok (bkz. _ClaudeCLIMessages.create) —
+        # bu yolda tavana dayanıp kesilme olamaz.
+        self.stop_reason = None
 
 
 class _CLIError(RuntimeError):
@@ -705,12 +876,19 @@ class _ORUsage:
 
 class _ORResponse:
     def __init__(
-        self, text: str, prompt_tokens: int = 0, completion_tokens: int = 0
+        self,
+        text: str,
+        prompt_tokens: int = 0,
+        completion_tokens: int = 0,
+        stop_reason: str | None = None,
     ) -> None:
         self.content = [_ORTextBlock(text)]
         self.usage = _ORUsage(
             prompt_tokens=prompt_tokens, completion_tokens=completion_tokens
         )
+        # Anthropic adlandırmasına çevrilir ("length" → "max_tokens"), böylece
+        # _was_truncated tek bir alan okur; bkz. _create_message.
+        self.stop_reason = stop_reason
 
 
 class _OpenRouterMessages:
@@ -753,10 +931,14 @@ class _OpenRouterMessages:
         resp = self._client.chat.completions.create(**req)
         text = (resp.choices[0].message.content or "") if resp.choices else ""
         usage = getattr(resp, "usage", None)
+        finish = (
+            getattr(resp.choices[0], "finish_reason", None) if resp.choices else None
+        )
         return _ORResponse(
             text=text,
             prompt_tokens=getattr(usage, "prompt_tokens", 0),
             completion_tokens=getattr(usage, "completion_tokens", 0),
+            stop_reason="max_tokens" if finish == "length" else finish,
         )
 
 
@@ -949,7 +1131,7 @@ Propose the next strategy + parameters as JSON."""
     try:
         resp = _create_message(
             client,
-            max_tokens=400,
+            max_tokens=MAX_TOKENS_IDEA,
             system=SYSTEM_PROMPT,
             messages=[{"role": "user", "content": user_msg}],
         )
@@ -968,6 +1150,7 @@ Propose the next strategy + parameters as JSON."""
         logging.warning("propose_strategy error: %s", e, exc_info=True)
         fb = _fallback_proposal()
         fb["rationale"] = f"fallback ({type(e).__name__})"
+        fb["degraded"] = type(e).__name__
         return fb
 
 
@@ -1387,7 +1570,7 @@ Design a new {market_target} composed strategy as specified. Return JSON only.""
         resp = _create_message(
             client,
             _purpose="composed",
-            max_tokens=900,
+            max_tokens=MAX_TOKENS_COMPOSED,
             system=system,
             messages=[{"role": "user", "content": user}],
         )
@@ -1411,6 +1594,10 @@ Design a new {market_target} composed strategy as specified. Return JSON only.""
         fb["description"] = (
             fb.get("description", "") + f" · fallback ({type(e).__name__})"
         ).strip()
+        # Makine-okunur bozulma işareti. Açıklamanın kuyruğundaki metni ayrıştırmak
+        # kırılgan; koşu bu alanı sayar ve fazı "degraded" kapatır — fallback bir
+        # koşuyu başarı gibi göstermesin.
+        fb["degraded"] = type(e).__name__
         return fb, None
 
 
@@ -2597,7 +2784,7 @@ def _propose_agent_strategy_idea(
         resp = _create_message(
             client,
             _purpose="idea",
-            max_tokens=400,
+            max_tokens=MAX_TOKENS_IDEA,
             messages=[{"role": "user", "content": prompt}],
         )
         text = "".join(
@@ -2665,7 +2852,13 @@ def _propose_agent_strategy_idea(
                 )
                 scores.append(score)
             idx = scores.index(min(scores))
-        return _FALLBACK_IDEAS[idx]
+        # Bozulma işareti fikirle birlikte taşınır: bu strateji modelin önerisi
+        # DEĞİL, kaynak kodda sabit duran bir dizge. İşaretsiz bırakılırsa makul
+        # bir yedek (ör. "RSI Oversold Reversal") sıralamada gerçek önerilerle
+        # yarışır ve "kazanan" ilan edilir.
+        fb = dict(_FALLBACK_IDEAS[idx])
+        fb["degraded"] = type(e).__name__
+        return fb
 
 
 if __name__ == "__main__":

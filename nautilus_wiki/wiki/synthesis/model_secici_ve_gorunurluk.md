@@ -11,7 +11,8 @@ related:
   - wiki/synthesis/webapp_module_map.md
   - wiki/synthesis/auto_mission_control.md
   - wiki/synthesis/tear_sheet_overlay.md
-last_updated: 2026-08-02
+  - wiki/synthesis/kesilme_ve_degrade_gorunurlugu.md
+last_updated: 2026-08-03
 ---
 
 # Model seçici ve model görünürlüğü
@@ -141,16 +142,111 @@ Aynı turda Compose'daki sabit `"Claude Fable 5 looks at past backtest results�
 cümlesi de etiketten beslenir hâle geldi — varsayılan değiştiğinde (ya da kredi
 fallback'i devreye girdiğinde) yalan söylüyordu.
 
+## Listelenebilir ≠ çalıştırılabilir
+
+Aynı günün son şikâyeti: *"AUTO'da seçtiğim LLM'i kullanmıyor."* Picker 18
+OpenRouter satırı gösteriyordu, seçim koşuya doğru gidiyordu (`brief.model`,
+thread pin, rozet — hepsi doğru), ama **hiçbiri çalışamıyordu**. Koşu kaydı
+(`ae9abbe9`, 19:05 UTC) sebebi bir satırda yazıyordu:
+
+```
+Claude request failed: RuntimeError: OpenRouter backend requires the `openai`
+package. Install with: pip install openai — falling back to builtin
+```
+
+`openai` paketi `pyproject.toml`'da **zorunlu bağımlılık olarak yazılıydı** ama
+sürecin yorumlayıcısında kurulu değildi. Bildirilmiş bağımlılık kurulmuş
+bağımlılık değildir; ve yalnız tek bir kod yolunda (lazy import) kullanılan bir
+paketin eksikliği, o yol denenene kadar hiçbir yerde patlamaz.
+
+Asıl kusur eksik paket değil, **eksikliğin nasıl göründüğü**. Her LLM çağrısı
+düştü, çağıranların graceful fallback'i devreye girdi ve koşu şunları üretti:
+
+```
+"Random desc_e1_295c1327/agnt_e_6a6ab8e4_7"
+"Fallback random composition (Claude unavailable). · fallback (RuntimeError)"
+```
+
+Kokpitte faz **"✓ Generating strategy"** yazıyordu. Yani AUTO, kullanıcının
+seçtiği modele hiç ulaşamadan beş tur rastgele kompozisyon backtest'ledi ve bunu
+başarılı bir koşu gibi gösterdi. Uzun otonom koşuyu ayakta tutmak için tasarlanan
+graceful degradation, **yapılandırma hatasında** yanlış ilaç: kurtarılacak bir
+koşu yok, olmayan bir koşu var.
+
+İki değişiklik:
+
+1. **Kapıda ret.** `agent.model_unavailable_reason(model)` — ağa çıkmadan yalnız
+   yapılandırmayı yoklar (anahtar var mı, istemci kurulabiliyor mu) ve
+   `POST /agent/run` koşuyu **başlatmadan** 400 + sebep döndürür. Sınır dar
+   tutuldu: yalnız `or:` yoklanır, Claude yolu uygulamanın varsayılanıdır.
+2. **Reddin ekrana ulaşması.** htmx 1.9 varsayılanda 4xx'te swap etmez; rotanın
+   *zaten var olan* hata gövdeleri (geçersiz tarih, eksik enstrüman, 50-koşu
+   limiti) AUTO ekranına hiç ulaşmıyordu — START'a basmak hiçbir şey yapmamış
+   gibi görünüyordu. `htmx:beforeSwap` içinde 4xx `shouldSwap = true` yapıldı,
+   **yalnız `/agent/run` için** (kendi kendini sonlandıran `/agent/progress`
+   yoklamasının 4xx gövdesi kokpitin yerine geçmemeli).
+
+İkincisi olmadan birincisi sessiz bozulmayı sessiz redde çevirirdi — kullanıcı
+açısından fark yok.
+
+## 429: kalıcı arıza değil, zamanlama arızası
+
+Paket düzeltmesinden hemen sonra çağrılar sağlayıcıya gerçekten ulaştı ve bu kez
+`429 — Rate limit exceeded: free-models-per-min` döndü: 4 dakikada 11 fallback,
+yine rastgele kompozisyonlar, yine `✓` fazlar. Yani ilk arıza kapandı, aynı
+**sessiz bozulma yolu** ikinci bir sebeple açık kaldı.
+
+Ölçüm, "kredi yükle" refleksini çürüttü: hesapta $10 kredi vardı, harcama $0,
+`is_free_tier: false` — günlük kota (1000/gün) zaten yüksekti ve takılan o
+değildi. Ücretsiz uçların **dakika başına** sınırı krediden bağımsız. Ajan
+döngüsü tanımı gereği seri ve hızlı çağırır; ücretsiz katman tanımı gereği bunu
+reddeder. Bu yüzden ücretsiz uç seçmek, degradasyon yolunu istisna olmaktan
+çıkarıp **varsayılan** yapıyordu.
+
+İki hamle:
+
+1. **Ucuz-ama-paralı uç.** `deepseek/deepseek-v4-flash-0731` ($0.09/$0.18 per
+   Mtok, 1M bağlam) izin listesine eklendi — Kimi K3'ten girişte 33×, çıkışta
+   83× ucuz. Ödenen şey token değil, **oran sınırı**.
+2. **`_or_create_with_backoff`.** 429 kalıcı değil zamanlama arızasıdır;
+   yeniden denemeden çağıranın fallback'ine düşmek koşuyu çöpe çevirir. Plan
+   `(5, 15, 45)` sn — toplamı 65 sn, çünkü sınır **dakika** başına: bir dakikalık
+   pencereyi kapsamayan bir plan hiçbir işe yaramaz. (openai SDK'sının varsayılan
+   iki denemesi ~0.5/1 sn ile geri çekildiği için tam olarak bu yüzden
+   yetersizdi.) `Retry-After` varsa tahminimizi ezer; toplam bekleme
+   `NAUTILUS_OPENROUTER_429_MAX_WAIT` (varsayılan 75 sn) ile sınırlı — bir
+   dakikayı kapatacak kadar uzun, STOP yanıtını kilitlemeyecek kadar kısa.
+   Yalnız 429 yeniden denenir; başka hata beklemeden çağırana düşer.
+
+Not: aynı akışta iki **farklı kaynaklı** 429 görüldü — OpenRouter'ın kendi
+`free-models-per-min`'i ve üst sağlayıcının `Provider returned error`'ı. Aynı
+durum kodu, farklı merci.
+
 ## Açık kalan
 
 Anahtar hâlâ yalnız ortam değişkeninden okunuyor; `ANTHROPIC_API_KEY` için var
 olan `~/.nautilus_proxy_key` dosya yedeğinin OpenRouter karşılığı yok. Süreç
 ortamsız başlatılırsa aynı sessiz boşluk tekrar eder.
 
+Geri çekilme 429'u kapatır ama **sessiz bozulmanın kendisini** kapatmaz: bütçe
+tükendiğinde ya da 429 dışı bir hata geldiğinde koşu hâlâ rastgele kompozisyona
+düşüyor ve faz `✓` ile kapanıyor. Kalan iş, arızayı gizlemeyi bitirmek: fallback
+sayacını koşu durumunda tutmak ve fazı `✓` yerine **"degraded"** işaretlemek —
+koşuyu öldürmeden, ama başarı gibi göstermeden. Bugün iki farklı sebep aynı
+sessiz yola çıktı; üçüncüsü de çıkacak.
+
+> **Çıktı — ve kapandı (2026-08-03).** Üçüncü sebep ertesi gün geldi: `max_tokens`
+> tavanı kimi-k3'ün üslubuna küçük gelip JSON'u kesiyor, hata `JSONDecodeError`
+> kılığında modeli suçluyordu; koşu `362adcd1` 5/5 iterasyonu fallback'le üretip
+> bütün fazları `✓` kapattı. Tavanlar büyütüldü, kesilme `TruncatedResponse`
+> tipini kazandı ve yukarıdaki reçete (sayaç + `degraded` fazı + kokpit rozeti)
+> uygulandı: [[kesilme_ve_degrade_gorunurlugu]].
+
 <!-- BACKLINKS:BEGIN -->
 ## Referenced by
 
 - [[auto_mission_control]]
+- [[kesilme_ve_degrade_gorunurlugu]]
 - [[llm_maliyet_kaldiraclari]]
 - [[webapp_module_map]]
 <!-- BACKLINKS:END -->

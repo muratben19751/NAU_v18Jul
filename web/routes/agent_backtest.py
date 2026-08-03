@@ -177,7 +177,16 @@ def _set_phase(run_id: str, idx: int, detail: str = "") -> None:
     )
 
 
-def _done_phase(run_id: str, idx: int, detail: str = "") -> None:
+def _done_phase(
+    run_id: str, idx: int, detail: str = "", degraded: bool = False
+) -> None:
+    """Fazı kapat. ``degraded=True`` ise ✓ değil ⚠ ile.
+
+    ``status`` yine "done" kalır — ilerleme hesabı (mission_view'daki
+    ``all(s == "done")``) faz akışını sayar, kalitesini değil. Bozulma ayrı bir
+    bayrakla taşınır ki bir fallback koşusu başarı gibi görünmesin ama koşu da
+    yarıda kesilmiş sayılmasın.
+    """
     t = _ts()
     label = _PHASES[idx] if 0 <= idx < len(_PHASES) else str(idx)
     with _AGENT_LOCK:
@@ -186,6 +195,7 @@ def _done_phase(run_id: str, idx: int, detail: str = "") -> None:
             return
         p = s["phases"][idx]
         p["status"] = "done"
+        p["degraded"] = bool(degraded)
         p["detail"] = detail
         p["ts"] = t
     _session_log(
@@ -193,9 +203,29 @@ def _done_phase(run_id: str, idx: int, detail: str = "") -> None:
         "phase_change",
         phase_idx=idx,
         phase_label=label,
-        status="done",
+        status="degraded" if degraded else "done",
         detail=detail,
     )
+
+
+def _mark_degraded(run_id: str, reason: str, what: str) -> str:
+    """Bir üretim adımı fallback'e düştü: say, kaydet, ekrana taşı.
+
+    Sayılmayan bozulma koşuyu başarı gibi gösterir — üretilen şey modelin önerisi
+    değil, rastgele bir kompozisyon ya da kaynak kodda sabit duran bir fikirdir.
+    Sayaç koşu durumunda durur; kokpit ve faz satırı onu okur. ``reason`` çağrının
+    düştüğü istisnanın adıdır (ör. ``TruncatedResponse``).
+    """
+    with _AGENT_LOCK:
+        s = _AGENT_PROGRESS.get(run_id)
+        if s is not None:
+            s["fallback_count"] = int(s.get("fallback_count", 0) or 0) + 1
+            reasons = s.setdefault("fallback_reasons", [])
+            if reason not in reasons:
+                reasons.append(reason)
+    _session_log(run_id, "degraded", what=what, reason=reason)
+    _add_step(run_id, f"  ⚠ degraded · {what} · fallback ({reason})")
+    return reason
 
 
 def _add_step(run_id: str, msg: str) -> None:
@@ -1579,7 +1609,15 @@ def _agent_worker(
             )
 
             spec = _proposal_to_spec(proposal)
-            _tl_end(run_id, f"llm-propose-r{run_number}", status="ok", name=spec.name)
+            degraded = proposal.get("degraded") or ""
+            if degraded:
+                _mark_degraded(run_id, degraded, "initial strategy")
+            _tl_end(
+                run_id,
+                f"llm-propose-r{run_number}",
+                status="warn" if degraded else "ok",
+                name=spec.name,
+            )
             if is_external:
                 _clamp_spec_trade_size(spec)
             spec.trend_filter = trend_filter
@@ -1587,7 +1625,13 @@ def _agent_worker(
             _done_phase(
                 run_id,
                 1,
-                f"✓ {spec.name}" + (" · trend filter ON" if trend_filter else ""),
+                (
+                    f"⚠ degraded ({degraded}) · {spec.name}"
+                    if degraded
+                    else f"✓ {spec.name}"
+                )
+                + (" · trend filter ON" if trend_filter else ""),
+                degraded=bool(degraded),
             )
 
             with _AGENT_LOCK:
@@ -1806,6 +1850,12 @@ def _agent_worker(
                                 )
                                 _add_tokens(run_id, _u)
                                 spec = _proposal_to_spec(proposal)
+                                if proposal.get("degraded"):
+                                    _mark_degraded(
+                                        run_id,
+                                        proposal["degraded"],
+                                        "strategy proposal",
+                                    )
                                 _session_log(
                                     run_id,
                                     "strategy_proposed",
@@ -1822,6 +1872,10 @@ def _agent_worker(
                             )
                             _add_tokens(run_id, _u)
                             spec = _proposal_to_spec(proposal)
+                            if proposal.get("degraded"):
+                                _mark_degraded(
+                                    run_id, proposal["degraded"], "strategy proposal"
+                                )
                             _session_log(
                                 run_id,
                                 "strategy_proposed",
@@ -2449,6 +2503,11 @@ def _generate_custom_spec(
         # counted; since custom generation is the most token-heavy call, the cost
         # and the max_total_tokens budget breaker were seriously undercounting.
         _add_tokens(run_id, idea.get("usage"))
+        # Fikir çağrısı düştüyse buradan çıkan blok, modelin fikri değil kaynak
+        # koddaki sabit bir fikrin kodudur — sayılmazsa makul bir yedek gerçek
+        # önerilerle aynı sıralamada yarışır ve "kazanan" ilan edilir.
+        if idea.get("degraded"):
+            _mark_degraded(run_id, idea["degraded"], "strategy idea")
         entry_label = idea.get("entry_label", "Agent Entry")
         exit_label = idea.get("exit_label", "Agent Exit")
 
@@ -2685,6 +2744,21 @@ async def run(
             status_code=400,
         )
 
+    # Seçilen model gerçekten koşabiliyor mu? Koşamıyorsa (ör. OpenRouter
+    # anahtarı/paketi yok) koşuyu BAŞLATMA: LLM'siz bir AUTO turu, seçilen
+    # modelin önerileri yerine rastgele kompozisyon üretip bunu normal bir koşu
+    # gibi gösteriyor. Ağa çıkmaz — yalnız yapılandırma yoklanır.
+    model = model.strip()
+    from agent import model_label, model_unavailable_reason
+
+    _why = model_unavailable_reason(model)
+    if _why:
+        return HTMLResponse(
+            f"<div class='empty-state'>⚠ {model_label(model)} kullanılamıyor — "
+            f"koşu başlatılmadı.<br><small>{_why}</small></div>",
+            status_code=400,
+        )
+
     n_iterations = max(2, min(15, n_iterations))
     # M22: optional budget ceilings (0 = unlimited — default behavior unchanged).
     max_hours = max(0.0, max_hours)
@@ -2769,6 +2843,11 @@ async def run(
             "tokens_out": 0,
             "tokens_cache_read": 0,
             "tokens_cache_write": 0,
+            # Degradasyon sayacı: kaç üretim adımı fallback'e düştü ve neden.
+            # Bir koşunun "başarılı" görünmesi fazların ✓ kapanmasına bakar; bu
+            # sayaç o görüntünün karşı ağırlığı (bkz. _mark_degraded).
+            "fallback_count": 0,
+            "fallback_reasons": [],
             # For the live backtest results table (agent screen top panel)
             "backtest_results": [],
             # AUTO Mission Control: read-only BRIEF rail + budget gauges.
@@ -2974,6 +3053,8 @@ async def progress(request: Request, run_id: str):
             "tokens_out": raw.get("tokens_out", 0),
             "tokens_cache_read": raw.get("tokens_cache_read", 0),
             "tokens_cache_write": raw.get("tokens_cache_write", 0),
+            "fallback_count": raw.get("fallback_count", 0),
+            "fallback_reasons": list(raw.get("fallback_reasons") or []),
             "backtest_results": list(raw.get("backtest_results") or []),
             # Shallow copies — the worker mutates concurrently.
             "timeline": [dict(sp) for sp in raw.get("timeline") or []],

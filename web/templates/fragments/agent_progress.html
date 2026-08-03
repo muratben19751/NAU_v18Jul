@@ -204,9 +204,10 @@
     </div>
     <div class="panel-body tight">
       {% for p in state.phases %}
-      <div class="phase-row {{ p.status }}" style="display:flex;align-items:baseline;gap:8px;padding:4px 0;border-bottom:1px solid rgba(255,255,255,0.04);">
+      <div class="phase-row {{ p.status }}{% if p.degraded %} degraded{% endif %}" style="display:flex;align-items:baseline;gap:8px;padding:4px 0;border-bottom:1px solid rgba(255,255,255,0.04);">
         <span style="width:14px;text-align:center;flex-shrink:0;">
-          {% if p.status == 'done' %}✓
+          {% if p.status == 'done' and p.degraded %}<span title="fallback — üretilen şey modelin önerisi değil" style="color:#f0b429;">⚠</span>
+          {% elif p.status == 'done' %}✓
           {% elif p.status == 'running' %}<span class="spinner-dot">●</span>
           {% else %}<span style="color:rgba(255,255,255,0.2);">○</span>
           {% endif %}
@@ -214,7 +215,7 @@
         <span class="mono" style="font-size:11px;color:rgba(255,255,255,0.5);flex-shrink:0;width:52px;">
           {% if p.ts %}{{ p.ts }}{% endif %}
         </span>
-        <span style="font-size:12px;{% if p.status == 'running' %}color:#f2f2f2;font-weight:500;{% elif p.status == 'done' %}color:#4ade80;{% else %}color:rgba(255,255,255,0.3);{% endif %}">
+        <span style="font-size:12px;{% if p.status == 'running' %}color:#f2f2f2;font-weight:500;{% elif p.status == 'done' and p.degraded %}color:#f0b429;{% elif p.status == 'done' %}color:#4ade80;{% else %}color:rgba(255,255,255,0.3);{% endif %}">
           {{ p.label }}
         </span>
         {% if p.detail %}

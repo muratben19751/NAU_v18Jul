@@ -2560,6 +2560,9 @@ body.page-builder .content {
   border: 1px solid var(--mc-border-strong); background: #1a1513; color: var(--mc-dim);
 }
 .mc-pill.run { border-color: var(--mc-ok-border); background: #15241e; color: var(--mc-ok); }
+/* Degradasyon rozeti — RUNNING'in yeşiline karşı amber; renk tek ayrım işareti
+   değil, metin de "DEGRADED ×N" yazar. */
+.mc-pill.degraded { border-color: #6b4d12; background: #241d10; color: #f0b429; }
 .mc-headline {
   font-size: clamp(16px,2.1vw,28px); line-height: 1.15; font-weight: 700;
   margin-top: 8px; letter-spacing: -.01em; text-wrap: pretty;
