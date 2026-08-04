@@ -470,19 +470,48 @@ def _thin_curves(obj, cap: int = 40):
     eğrisi) ve 76 oturumda **11,8 GB** disk — tek dosya 4,7 GB. Bu, `/sessions`
     listesinin soğuk açılışını 114 saniyeye çıkaran maliyetin de kaynağı.
 
-    Kural bilinçli olarak geneldir: **yalnız tamamı sayı olan ve `cap`'ten uzun
-    diziler** indirgenir. Sözlükler, dizgeler ve dict listeleri (ör. işlem
-    kayıtları) olduğu gibi korunur — indirgeme bir görselleştirme kaybıdır,
-    adli kayıt kaybı değil. Girdi ASLA değiştirilmez: aynı `rob` sözlüğü karar
-    ve ekran yollarında da kullanılıyor.
+    İndirgenen şey **seri**dir ve seriler bu yükte İKİ biçimde gelir:
+
+    - düz sayı dizisi — ``mc.curves_sample[i]``, ``mc.percentile_curves.p50``
+    - **zaman damgalı çift** dizisi — ``equity_curve_mtm`` şu şekildedir:
+      ``[["2021-06-03T19:00:00+00:00", 10000.0], …]``
+
+    İlk sürüm yalnız birincisini tanıyordu (`all(isinstance(v, (int, float)))`)
+    ve üretimde **en büyük kalemi ıskaladı**: `wfo_windows` 2,39 MB ve
+    `split.*.equity_curve_mtm` 0,35 MB indirgenmeden yazılmaya devam etti,
+    olay 2,97 MB kaldı. Ders: indirgeme kuralı verinin GERÇEK şekline göre
+    yazılmalı — "eğri = sayı listesi" varsayımı doğrulanmamıştı.
+
+    Sözlükler, dizgeler ve dict listeleri (ör. işlem kayıtları) olduğu gibi
+    korunur — indirgeme bir görselleştirme kaybıdır, adli kayıt kaybı değil.
+    Girdi ASLA değiştirilmez: aynı `rob` sözlüğü karar ve ekran yollarında da
+    kullanılıyor.
     """
     if isinstance(obj, dict):
         return {k: _thin_curves(v, cap) for k, v in obj.items()}
     if isinstance(obj, list):
-        if len(obj) > cap and obj and all(isinstance(v, (int, float)) for v in obj):
-            return _spark_points(obj, cap)
+        if len(obj) > cap and obj:
+            if all(
+                isinstance(v, (int, float)) and not isinstance(v, bool) for v in obj
+            ):
+                return _spark_points(obj, cap)
+            if _is_point_series(obj):
+                # Çiftleri BOZMADAN seyrelt: aynı adım mantığı, elemanlar aynen
+                # korunur (zaman damgası + değer birlikte anlamlı).
+                step = (len(obj) - 1) / (cap - 1)
+                return [obj[int(round(i * step))] for i in range(cap)]
         return [_thin_curves(v, cap) for v in obj]
     return obj
+
+
+def _is_point_series(seq) -> bool:
+    """``[[ts, value], …]`` biçiminde bir seri mi? (dict listeleri HARİÇ)"""
+    return all(
+        isinstance(v, (list, tuple))
+        and 2 <= len(v) <= 4
+        and all(isinstance(x, (int, float, str)) for x in v)
+        for v in seq
+    )
 
 
 def _proposal_to_spec(proposal: dict):
@@ -2153,7 +2182,12 @@ def _agent_worker(
                     wf_pass=wf_str,
                     ms_label=ms_label,
                     split=_thin_curves(rob.get("split")),
-                    wfo_windows=_thin_curves(rob.get("wfo_windows")),
+                    # WFO pencereleri 88 adet ve her biri 3 eğri taşıyor (train/
+                    # test/naive) — 40'lık tavanda tek başlarına ~475 KB ediyor.
+                    # Hiçbir şablon bu eğrileri LOG'dan okumuyor (canlı robustness
+                    # yolu ayrı bir veriden çiziyor), yani buradaki tek işlevleri
+                    # adli: pencerenin şeklini görebilmek. 12 nokta buna yeter.
+                    wfo_windows=_thin_curves(rob.get("wfo_windows"), cap=12),
                     mc=_thin_curves(rob.get("mc")),
                     multi_symbol=_thin_curves(rob.get("multi_symbol")),
                 )
