@@ -1,12 +1,28 @@
 #!/usr/bin/env bash
-# Stop hook: her oturum sonunda Claude'a "bu oturumun kalıcı öğrenilenlerini
-# ikinci-beyin vault'una yaz" talimatı enjekte eder. Döngü-güvenli: Claude zaten
-# bir Stop-hook tetiğiyle çalışıyorsa (stop_hook_active=true) hiçbir şey yapmaz.
+# Stop hook — ARTIK BLOKLAMAZ.
+#
+# Eskiden bu hook turun sonunda `decision:"block"` döndürüp Claude'a "ikinci
+# beyne yaz" dedirtiyordu. Sonuç: her turda fazladan bir asistan turu doğuyor,
+# vault yazımının araç çağrıları + rapor satırı asıl cevabın ALTINA düşüyor ve
+# cevabı ekrandan yukarı itiyordu (2026-08-04 kullanıcı geri bildirimi:
+# "cevap yukarıda kaldı, ben bunu istemiyorum").
+#
+# Yeni akış — sıra tersine: burada yalnızca "işlenmemiş tur var" işareti
+# bırakılır; yazma bir SONRAKİ kullanıcı sorusunun başında, cevaptan ÖNCE
+# yapılır (second_brain_trigger.sh). Böylece araç çağrıları hep cevabın
+# üstünde kalır, son söz cevabındır.
+#
+# Bilinen sınır: oturumun SON turu bir sonraki soru gelmediği için işlenmez —
+# o durumda kullanıcı "beyne yaz" tetiğini kullanır.
 input=$(cat)
 active=$(printf '%s' "$input" | jq -r '.stop_hook_active // false' 2>/dev/null)
 if [ "$active" = "true" ]; then
-  exit 0   # döngü önleme: ikinci kez tetiklenmede sessizce geç
+  exit 0   # döngü önleme (artık bloklamıyoruz ama zararsız kalsın)
 fi
+
+sid=$(printf '%s' "$input" | jq -r '.session_id // empty' 2>/dev/null)
+[ -n "$sid" ] || exit 0
+
 # Makine-bağımsız vault seçimi: Mac ve Windows yolları farklı — var olanı kullan.
 VAULT=""
 for v in "$HOME/OneDrive/Desktop/myOBSIDIAN/murat_obsidian" \
@@ -14,17 +30,10 @@ for v in "$HOME/OneDrive/Desktop/myOBSIDIAN/murat_obsidian" \
   if [ -d "$v" ]; then VAULT="$v"; break; fi
 done
 [ -n "$VAULT" ] || exit 0   # vault bu makinede yoksa sessizce geç
-msg="İkinci beyin kontrolü: Bu oturumda KALICI değeri olan bir şey öğrenildiyse "
-msg+="(yeni kaynak, kavram, karar, proje özeti) onu $VAULT vault'una Karpathy "
-msg+="deseniyle yaz — sources/ (immutable, gerekiyorsa) + wiki/ sentez sayfası + "
-msg+="[[bare-name]] bağlar + log.md'ye append — sonra 'cd $VAULT && python "
-msg+="tools/wiki_tools.py backlinks && python tools/wiki_tools.py index && python "
-msg+="tools/wiki_tools.py lint' çalıştır. Bu oturum önemsiz/geçici ise (küçük "
-msg+="düzeltme, sohbet) HİÇBİR ŞEY yazma, sadece kısaca 'ikinci beyne yazılacak "
-msg+="kalıcı bir şey yok' de ve dur. "
-# Rapor kuralı: bu mesaja verilen yanıt turun SON mesajı oluyor; uzun rapor asıl
-# yanıtı ekrandan yukarı itip kullanıcıya kaybettiriyor (2026-08-03 geri bildirimi).
-msg+="RAPOR TEK SATIR OLSUN: '✎ ikinci beyin: N sayfa' biçiminde. Hangi sayfalara "
-msg+="ne yazdığını AÇIKLAMA, madde/liste verme, lint çıktısını dökme — bu mesaja "
-msg+="verdiğin yanıt turun son mesajı olduğu için uzunluğu asıl yanıtı gizliyor."
-jq -n --arg r "$msg" '{decision:"block", reason:$r}'
+
+dir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/.second_brain"
+mkdir -p "$dir" 2>/dev/null || exit 0
+printf '%s\n' "$VAULT" >"$dir/$sid.pending" 2>/dev/null
+# Kapanmayan oturumların artıkları birikmesin.
+find "$dir" -name '*.pending' -mtime +7 -delete 2>/dev/null
+exit 0
