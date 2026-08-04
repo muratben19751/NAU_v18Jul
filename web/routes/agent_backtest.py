@@ -1470,8 +1470,16 @@ def _agent_worker(
         return f"US equity {instrument_id} ({iv} bars, USD cash account)"
 
     # Timeframe of iteration i under the round-robin in the loop below.
+    #
+    # The round offsets the start. Without it the index is `i % len(intervals)`
+    # with `i` restarting at 0 every round, so any timeframe at position >=
+    # n_iterations is NEVER selected — not "tested less often", never at all.
+    # Measured on run 3467219a: 5 timeframes, n_iterations=4, and 1-DAY could
+    # not have been reached by any round of an unbounded continuous loop.
+    # Shifting by the round covers the whole selection over successive rounds
+    # while keeping one timeframe per iteration.
     def _iv_for(i: int) -> str:
-        return intervals[i % len(intervals)]
+        return intervals[(i + run_number - 1) % len(intervals)]
 
     def _recipe(iv: str) -> dict:
         """String recipe from which the sandbox/robustness child rebuilds the instrument."""
@@ -1970,8 +1978,10 @@ def _agent_worker(
                     _add_step(run_id, "  ⏹ Stop signal received — breaking the loop")
                     break
 
-                # Round-robin TF selection
-                iter_iv = intervals[i % len(intervals)]
+                # Round-robin TF selection — one source of truth with the
+                # generation side (_iv_for), which the loop must agree with:
+                # the spec was written for THIS bar.
+                iter_iv = _iv_for(i)
                 iter_df = _load_tf(iter_iv)
                 if is_external:
                     iter_bars_info = {

@@ -42,8 +42,14 @@
    top bar. The form still posts to the unchanged POST /agent/run. ── #}
 <div class="lab-modepanel" id="lab-modepanel-otonom" role="tabpanel">
 
+  {# hx-sync="this:drop": START'a ikinci kez basmak isteği DÜŞÜRÜR, sıraya
+     koymaz. Koruma yokken 2026-08-04'te aynı brief 34 ms arayla iki koşu
+     başlattı (b8d01bc6 + 3467219a): POST /agent/run her isteğe ayrı bir worker
+     thread açıyor, ikisi de sürekli modda ve tavansızdı. Kuyruğa almak da
+     yanlış olurdu — kullanıcı iki koşu değil bir koşu istiyor. #}
   <form id="mc-brief-form"
         hx-post="/agent/run"
+        hx-sync="this:drop"
         hx-target="#agent-result"
         hx-swap="innerHTML"
         hx-indicator="#agent-spinner">

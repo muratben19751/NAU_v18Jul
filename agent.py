@@ -541,6 +541,20 @@ _TRUNCATION_RETRY_CAP = 16000
 MAX_TOKENS_COMPOSED = 4000
 MAX_TOKENS_IDEA = 1500
 
+# Ceilings LEARNED at runtime, keyed by (model, purpose). The retry below is
+# correct but had no memory: measured on run 3467219a, EVERY `idea` and
+# `custom_block` call to moonshotai/kimi-k3 hit the default ceiling and was
+# retried at 4× — 9 and 10 times respectively, a 100% rate. So each generation
+# cost two calls, the first one's output discarded in full.
+#
+# A static default cannot fix this: the right ceiling is a property of the
+# ENDPOINT (how much a model thinks before it writes), and the endpoint is
+# picked per run from a live list. Raising the constants would overshoot for
+# terse models and still undershoot the next verbose one. Remembering the
+# escalation instead costs one truncated call per (model, purpose) per process
+# and nothing after that.
+_LEARNED_MAX_TOKENS: dict[tuple[str, str], int] = {}
+
 
 def _was_truncated(resp) -> bool:
     """Yanıt tavana dayanıp kesildi mi? (bilgi yoksa hayır)"""
@@ -558,12 +572,24 @@ def _create_message(client, _purpose: str = "", **kwargs):
     aynı tavan sığmaz. Bu yüzden kesilme burada yakalanır, tavan büyütülüp bir kez
     yeniden denenir, yine sığmazsa ``TruncatedResponse`` fırlatılır — çağıranın
     fallback'i devreye girer ama sebep artık okunabilir.
+
+    Başarılı büyütme ``_LEARNED_MAX_TOKENS``'a yazılır: aynı (model, amaç) çifti
+    bir daha ilk çağrıyı çöpe atmaz. Ölçüm: kimi-k3'te her `idea`/`custom_block`
+    çağrısı tavana dayanıyordu, yani her üretim iki çağrı ediyordu.
     """
+    base = int(kwargs.get("max_tokens") or 0)
+    key = (current_model(), _purpose or "llm")
+    learned = _LEARNED_MAX_TOKENS.get(key, 0)
+    if learned > base:
+        # This endpoint has already proven it needs the bigger budget. Unused
+        # ceiling is free; a truncated response is a wasted call in full.
+        kwargs = {**kwargs, "max_tokens": learned}
+
     resp = _create_message_once(client, _purpose, **kwargs)
     if not _was_truncated(resp):
         return resp
 
-    base = int(kwargs.get("max_tokens") or 0)
+    base = int(kwargs.get("max_tokens") or 0)  # may have been raised above
     bigger = min(base * _TRUNCATION_RETRY_SCALE, _TRUNCATION_RETRY_CAP)
     if base <= 0 or bigger <= base:
         raise TruncatedResponse(
@@ -571,16 +597,21 @@ def _create_message(client, _purpose: str = "", **kwargs):
         )
 
     logging.warning(
-        "%s: yanıt max_tokens=%d tavanında kesildi — %d ile yeniden deneniyor",
+        "%s: yanıt max_tokens=%d tavanında kesildi — %d ile yeniden deneniyor "
+        "(bu uç için öğrenildi, sonraki çağrılar %d ile başlayacak)",
         _purpose or "llm",
         base,
+        bigger,
         bigger,
     )
     resp = _create_message_once(client, _purpose, **{**kwargs, "max_tokens": bigger})
     if _was_truncated(resp):
+        # Do NOT learn a ceiling that did not work either — the next call would
+        # then pay the big budget AND still truncate.
         raise TruncatedResponse(
             f"{_purpose or 'llm'}: yanıt max_tokens={bigger} ile de kesildi"
         )
+    _LEARNED_MAX_TOKENS[key] = bigger
     return resp
 
 
