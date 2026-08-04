@@ -21,5 +21,10 @@ msg+="[[bare-name]] bağlar + log.md'ye append — sonra 'cd $VAULT && python "
 msg+="tools/wiki_tools.py backlinks && python tools/wiki_tools.py index && python "
 msg+="tools/wiki_tools.py lint' çalıştır. Bu oturum önemsiz/geçici ise (küçük "
 msg+="düzeltme, sohbet) HİÇBİR ŞEY yazma, sadece kısaca 'ikinci beyne yazılacak "
-msg+="kalıcı bir şey yok' de ve dur."
+msg+="kalıcı bir şey yok' de ve dur. "
+# Rapor kuralı: bu mesaja verilen yanıt turun SON mesajı oluyor; uzun rapor asıl
+# yanıtı ekrandan yukarı itip kullanıcıya kaybettiriyor (2026-08-03 geri bildirimi).
+msg+="RAPOR TEK SATIR OLSUN: '✎ ikinci beyin: N sayfa' biçiminde. Hangi sayfalara "
+msg+="ne yazdığını AÇIKLAMA, madde/liste verme, lint çıktısını dökme — bu mesaja "
+msg+="verdiğin yanıt turun son mesajı olduğu için uzunluğu asıl yanıtı gizliyor."
 jq -n --arg r "$msg" '{decision:"block", reason:$r}'

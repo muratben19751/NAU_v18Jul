@@ -286,12 +286,20 @@ def build_tf_bars(
 
 
 def write_manifest(
-    stats: dict[str, dict], *, venue: str = "NASDAQ", catalog_dir: Path | None = None
+    stats: dict[str, dict],
+    *,
+    venue: str = "NASDAQ",
+    catalog_dir: Path | None = None,
+    adjusted: bool = False,
+    source: str = "flatfile:minute_aggs",
+    note: str = "Flat-file (UNADJUSTED) ingest; split olan ticker'larda geçmiş fiyat sıçrar.",
 ) -> int:
     """Manifest EN SONDA (yarım koşum manifest'e yazmaz — NAU_ev sözleşmesi).
 
-    data.py'nin M21 okuyucusu (`_external_manifest`) buradaki `adjusted: false`
-    bayrağını /data rozetine çevirir.
+    data.py'nin M21 okuyucusu (`_external_manifest`) buradaki `adjusted`
+    bayrağını /data rozetine çevirir. Varsayılanlar flat-file yolunundur;
+    `download_massive.py` (REST) aynı yazıcıyı `adjusted=True` ile çağırır —
+    iki kaynak tek manifest sözleşmesini paylaşsın.
     """
     cdir = catalog_dir or data.EQUITY_CATALOG_DIR
     mpath = cdir / "_manifest.json"
@@ -315,11 +323,11 @@ def write_manifest(
             "years": round(span, 2),
             "ok": True,
             "smoke": False,
-            "adjusted": False,
-            "source": "flatfile:minute_aggs",
+            "adjusted": adjusted,
+            "source": source,
             "downloaded_at": now,
             "ingested_at": now,
-            "note": "Flat-file (UNADJUSTED) ingest; split olan ticker'larda geçmiş fiyat sıçrar.",
+            "note": note,
         }
         written += 1
     tmp = mpath.with_suffix(".json.tmp")
