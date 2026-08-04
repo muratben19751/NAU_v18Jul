@@ -102,6 +102,24 @@ bilgiyi yok ederek yapar — ölçülen bir koşuda net pozitif üç adayın iki
 
 Denemek için `AGENT_MIN_TRADES=10` (env, kod değişikliği gerekmez).
 
+## Ölçüm doğrulandı: komisyon brüt kârın tamamını yiyebiliyor
+
+2026-08-04 canlı koşusu (`1376c812`, QQQ 15-DK, `percent_equity` düzeltmesi
+DEVREDE) tablonun mantığını doğrudan gösterdi:
+
+```
+n_trades          4283
+commission_total  8566.69   (IBKR min $1/emir × 2 fill × 4283)
+pnl (net)        -8514.77
+→ brüt PnL          +51.92   → komisyon brütün %16.500'ü
+```
+
+Boyutlandırma düzeltildikten sonra bile **emir başına minimum** yüksek frekansta
+bağlayıcı kısıt olmaya devam ediyor: strateji kötü değil, sıfır kenarlı; hesabı
+bitiren tamamen komisyon tabanı. Bu bilgi artık modele de gidiyor
+([[auto_kapi_ve_geri_bildirim]] §2) — önceden model yalnız net PnL'i görüp bunu
+"kötü fikir" diye okuyordu.
+
 ## Calmar tabanı düşük riski cezalandırıyor
 
 `calmar = pnl_pct / max(|max_dd|, 0.01)` — taban %1. Drawdown'ı %0,3 olan bir
@@ -111,6 +129,7 @@ için** düşük skorlanır. Açık, düzeltilmemiş bulgu.
 <!-- BACKLINKS:BEGIN -->
 ## Referenced by
 
+- [[auto_kapi_ve_geri_bildirim]]
 - [[nau_performans_denetimi]]
 - [[webapp_module_map]]
 <!-- BACKLINKS:END -->

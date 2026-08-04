@@ -173,6 +173,25 @@ def save_custom(name: str, meta: dict, code: str, prompt: str = "") -> Path:
         )
     _ensure_dir()
     path = module_path(name)
+    # Overwriting a name with DIFFERENT code silently rewrites every strategy
+    # that already references it — including ones a robustness scan has already
+    # certified (see the agent's per-round block naming). Legitimate callers do
+    # overwrite (re-saving an edited block), so this is a warning, not a refusal;
+    # what it must never be is invisible.
+    try:
+        if path.exists():
+            _prev = path.read_text(encoding="utf-8")
+            if _prev != code:
+                logging.warning(
+                    "custom block %r overwritten with different code "
+                    "(%d → %d chars) — specs referencing this name now run the "
+                    "new logic",
+                    name,
+                    len(_prev),
+                    len(code),
+                )
+    except OSError:
+        pass
     # H(store): composer reads with read_text(encoding="utf-8"); if encoding is
     # not specified on write, Windows uses the locale (cp1254) → LLM code
     # containing non-ASCII (→, …, typographic quotes) blows up with

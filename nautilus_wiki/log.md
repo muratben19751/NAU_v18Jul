@@ -827,3 +827,15 @@ stratejiyi cezalandiriyor (DD %0,3 olan aday Calmar 1,4 yerine 0,42 aliyor). (b)
 E2E: pozitif 15/16, negatif 16/17 (iki "fail" de test beklentisi hatasiydi). Path traversal,
 XSS, devasa/negatif girdi savunulmus; n_iterations max(2, min(15, n)) ile kelepceleniyor.
 Suit 745 passed / 1 skipped.
+
+## [2026-08-04] ingest | AUTO denetimi — kapı ve geri bildirim düzeltmeleri
+- wiki/synthesis/auto_kapi_ve_geri_bildirim.md (yeni): WFO kapısı naive seriye
+  çevrildi (_wfo_test), modele giden geçmişe TF/max_dd/commission eklendi,
+  timeframe= üretim anında geçiyor, profit_factor işlem bazlı, oturum logu %95 küçüldü.
+- wiki/synthesis/auto_arama_ekonomisi.md: 1376c812 ölçümü (komisyon brütün %16.500'ü).
+
+## [2026-08-04] ingest | Doğrulama koşusu 3cad3325 — dört kusur daha
+- Blok adına tur eklendi (sertifikalanan strateji üzerine yazılıyordu),
+  IS/OOS etiketi üçe ayrıldı, IS_SHARPE_MIN tabanı, HOLDOUT_MIN_TRADES,
+  backtest_result equity çiftinin hizalı seyreltilmesi (_thin_pair).
+- wiki/synthesis/auto_kapi_ve_geri_bildirim.md §4 eklendi.

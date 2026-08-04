@@ -16,6 +16,9 @@ Endpoints:
 Wiki References
 ---------------
 See: [[auto_mission_control]] (AUTO kokpitinin ?view=mission sunumu),
+[[auto_kapi_ve_geri_bildirim]] (kapı hangi seriyi okur — `_wfo_test`, neden
+`test_metrics_naive`; modele giden geçmişte TF/DD/komisyon; oturum logu
+indirgemesi `_compact_wfo_windows` + `_is_progress_noise`),
 [[auto_arama_ekonomisi]] (aramanın işlem ekonomisi: `_clamp_spec_trade_size`
 neden 1 hisseye sabitlemeyip `percent_equity`'ye geçiriyor, komisyon eşiği,
 `_MIN_TRADES` kapısının NAU_ev paritesi ve `_score`'daki çifte ceza),
@@ -30,6 +33,7 @@ import json
 import logging
 import math
 import os
+import re
 import threading
 import time
 import uuid
@@ -84,6 +88,12 @@ OOS_HOLDOUT_DAYS = 60
 # vakası). The holdout run gets this many PRE-slice bars purely to warm
 # indicators; METRICS count only entries INSIDE the sealed window.
 HOLDOUT_WARMUP_BARS = 300
+
+# Entries required inside the sealed window before the holdout counts as
+# MEASURED. Per-trade Sharpe needs two observations for a standard deviation, so
+# one trade cannot produce a dispersion figure at all — it produces a single
+# outcome and the appearance of validation.
+HOLDOUT_MIN_TRADES = 2
 
 # M22 extra circuit breaker: threshold of consecutive winnerless rounds
 # (continuous mode). Counter resets when a winner appears. 0 = off; default 25.
@@ -242,6 +252,27 @@ def _mark_degraded(run_id: str, reason: str, what: str) -> str:
     return reason
 
 
+_PROGRESS_NOISE = re.compile(
+    r"(\b\d+\s*/\s*\d+\s+completed\s*$)|(^\s*window\s+\d+\s+selected:)"
+)
+
+
+def _is_progress_noise(msg: str) -> bool:
+    """Is this a live-only progress tick, not a fact worth archiving?
+
+    The robustness suite emits a counter line every 10 units: a single candidate
+    produces ~900 of them ("WFO train g4/5: 550/768 completed", "WFO test:
+    120/126 completed") plus one "window N selected: {params}" per window. In the
+    audited session that was 33,414 step events / 5.1 MB — and the per-window
+    parameters are already stored structurally in ``wfo_windows[i].params``, so
+    the log kept a second, worse copy.
+
+    They still stream to the live console (the run should look alive); they are
+    simply not written to the session log.
+    """
+    return bool(_PROGRESS_NOISE.search(msg or ""))
+
+
 def _add_step(run_id: str, msg: str) -> None:
     # In a sandbox child, relay the step to the parent (tag matches _run_in_child).
     if _IPC_Q is not None:
@@ -258,7 +289,8 @@ def _add_step(run_id: str, msg: str) -> None:
             # Cap to prevent unbounded memory growth in continuous mode.
             if len(s["steps"]) > 500:
                 s["steps"] = s["steps"][-500:]
-    _session_log(run_id, "step", ts=t, msg=msg)
+    if not _is_progress_noise(msg):
+        _session_log(run_id, "step", ts=t, msg=msg)
 
 
 # ── Timeline (Gantt) span track ───────────────────────────────────────────────
@@ -460,6 +492,32 @@ def _spark_points(curve, n: int = 40) -> list[float]:
     return [round(pts[int(round(i * step))], 4) for i in range(n)]
 
 
+def _thin_pair(values, dates, cap: int = 400) -> tuple[list, list]:
+    """Downsample an equity curve and its date axis on the SAME indices.
+
+    ``_thin_curves`` fixed the robustness payload; the ``backtest_result`` event
+    then became the biggest line in the session log at ~301 KB apiece (measured
+    on run 3cad3325), because ``equity_curve``/``equity_dates`` were written raw
+    — 4,800 points for a single 15-minute iteration. No template reads these
+    back (the session detail page counts the events and reads metrics; the tear
+    sheet draws from the backtest log), so their only job here is forensic
+    shape, and 400 points carry that.
+
+    The two arrays MUST be reduced together: thinning them independently would
+    silently de-align value i from date i, which is worse than dropping either.
+    """
+    vals = list(values or [])
+    dts = list(dates or [])
+    if len(vals) <= cap:
+        return vals, dts
+    step = (len(vals) - 1) / (cap - 1)
+    idx = [int(round(i * step)) for i in range(cap)]
+    out_v = [vals[i] for i in idx]
+    # Dates may be absent or shorter (older records) — only index what exists.
+    out_d = [dts[i] for i in idx if i < len(dts)] if dts else []
+    return out_v, out_d
+
+
 def _thin_curves(obj, cap: int = 40):
     """Oturum loguna yazılacak yapıdaki uzun sayı dizilerini indirger (KOPYA döner).
 
@@ -502,6 +560,70 @@ def _thin_curves(obj, cap: int = 40):
                 return [obj[int(round(i * step))] for i in range(cap)]
         return [_thin_curves(v, cap) for v in obj]
     return obj
+
+
+_WFO_KEEP_METRICS = (
+    "pnl",
+    "pnl_pct",
+    "sharpe",
+    "sharpe_per_trade",
+    "max_dd",
+    "n_trades",
+    "win_rate",
+    "profit_factor",
+)
+
+
+def _compact_wfo_windows(windows) -> list:
+    """WFO windows → the forensic subset, for the session log only.
+
+    ``_thin_curves`` cut this payload from 2.39 MB to 303 KB by shrinking the
+    curves, but the remainder is structural: 88 windows × three ~30-field metric
+    dicts. Nothing reads those fields back from the log — the decision path and
+    the UI both work off the live ``rob`` dict — so the log keeps the window
+    identity, the selected parameters, and the handful of metrics a human would
+    reconstruct the verdict from.
+
+    NOTE both series survive: ``test_metrics`` (re-optimized) and
+    ``test_metrics_naive`` (the spec that gets saved). Dropping the naive one to
+    save bytes would delete exactly the number the gate now decides on — see
+    ``_wfo_test``.
+    """
+    if not isinstance(windows, list):
+        return windows
+
+    def _slim(m):
+        if not isinstance(m, dict):
+            return m
+        return {k: m[k] for k in _WFO_KEEP_METRICS if k in m}
+
+    out = []
+    for w in windows:
+        if not isinstance(w, dict):
+            out.append(w)
+            continue
+        row = {
+            k: w[k]
+            for k in (
+                "window",
+                "train_start",
+                "train_end",
+                "test_start",
+                "test_end",
+                "chosen_params",
+                "train_objective",
+                "test_objective",
+                "objective_metric",
+                "train_n_trades",
+                "test_n_trades",
+            )
+            if k in w
+        }
+        for key in ("train_metrics", "test_metrics", "test_metrics_naive"):
+            if key in w:
+                row[key] = _slim(w[key])
+        out.append(row)
+    return out
 
 
 def _is_point_series(seq) -> bool:
@@ -704,6 +826,30 @@ def _clamp_spec_trade_size(spec):
     return spec
 
 
+def _wfo_test(w: dict) -> dict:
+    """A WFO window's DECISION metric — the metric of the spec that gets SAVED.
+
+    ``run_walk_forward`` re-optimizes the parameters on every window's train
+    slice (GA, backtest_robustness.py) and reports two OOS results:
+
+    - ``test_metrics``       — the RE-OPTIMIZED spec on the test slice
+    - ``test_metrics_naive`` — the UNCHANGED spec (what the agent appends to
+      the catalog and what the user would actually run)
+
+    The gate used to read the first one, so the certificate went to a strategy
+    re-fitted every 3 months while the deployed artifact was never re-fitted.
+    Measured on run 1376c812: one candidate scored a penalized OOS Sharpe of
+    −0.069 optimized (the pass threshold is >0) against −0.896 naive on the same
+    windows — a pass would have shipped something a full point worse than the
+    number that authorized it.
+
+    Fallback: when the spec has no optimizable numeric parameter the WFO builds
+    an empty search space, ``naive_result`` is never run and ``test_metrics`` IS
+    the unoptimized run — so falling back to it keeps the same meaning.
+    """
+    return (w.get("test_metrics_naive") or {}) or (w.get("test_metrics") or {})
+
+
 def _robustness_passed(
     rob: dict, strict: bool = True, run_id: str | None = None
 ) -> bool:
@@ -736,6 +882,15 @@ def _robustness_passed(
     split_label = split.get("overfitting_label", "")
     if split.get("error") or not split_label:
         _skip("IS/OOS", str(split.get("error") or "no label"))
+    elif "ölçülemedi" in split_label:
+        # NOT MEASURED — the ratio could not be formed at all (a Sharpe was
+        # missing, or the in-sample Sharpe was indistinguishable from zero, so
+        # there is no in-sample edge to generalize from). Treated as SKIPPED,
+        # like the multi-symbol criterion has always treated its own
+        # insufficient-data marker; the old single label made one of these a
+        # FAILURE and the other a skip. A real in-sample loss now arrives as
+        # "✗ IS negatif" and still falls through to the failure branch below.
+        _skip("IS/OOS", split_label)
     else:
         evaluated += 1
         # The "robust" and "caution" labels are accepted; a '✗' or the
@@ -748,12 +903,19 @@ def _robustness_passed(
     # 2) Walk-Forward: ≥50% valid windows with positive test PnL.
     # Windows with <3 test trades are statistically unreliable → invalid.
     wfo = rob.get("wfo_windows") or []
+    # `test_n_trades` is kept as the fallback count: a window may carry it
+    # without a metrics dict (older payloads, and the parallel path's slim rows).
     valid_windows = [
         w
         for w in wfo
-        if (w.get("test_n_trades") or w.get("test_metrics", {}).get("n_trades", 0) or 0)
-        >= 3
+        if (_wfo_test(w).get("n_trades") or w.get("test_n_trades") or 0) >= 3
     ]
+    # Does this payload actually HAVE the naive series? If it does, the optimized
+    # aggregate must never be used (that is the bug being fixed). If it doesn't —
+    # a run from before the naive series existed, or a spec with no optimizable
+    # parameter, where the optimized run IS the unmodified spec — the optimized
+    # aggregate is the only measurement there is, and it means the same thing.
+    _has_naive = any((w.get("test_metrics_naive") or {}) for w in wfo)
     if not wfo or not valid_windows:
         _skip(
             "Walk-Forward",
@@ -766,15 +928,18 @@ def _robustness_passed(
         # (_run_full_robustness) does not call wfo_aggregate, so the field was
         # empty and this branch was dead code — compute it INLINE from
         # wfo_windows here. Otherwise fall back to the positive-window ratio.
-        pen = rob.get("oos_sharpe_penalized")
+        # 2026-08-04: the NAIVE series is read (see _wfo_test) — the optimized
+        # aggregate (`oos_sharpe_penalized`) describes a strategy re-fitted every
+        # window, which is not what gets saved.
+        pen = rob.get("oos_sharpe_naive_penalized")
+        if pen is None and not _has_naive:
+            pen = rob.get("oos_sharpe_penalized")
         if pen is None:
             _sh = [
-                float((w.get("test_metrics") or {}).get("sharpe"))
+                float(_wfo_test(w).get("sharpe"))
                 for w in valid_windows
-                if (w.get("test_metrics") or {}).get("sharpe") is not None
-                and math.isfinite(
-                    (w.get("test_metrics") or {}).get("sharpe", float("nan"))
-                )
+                if _wfo_test(w).get("sharpe") is not None
+                and math.isfinite(_wfo_test(w).get("sharpe", float("nan")))
             ]
             if len(_sh) >= 2:
                 _m = sum(_sh) / len(_sh)
@@ -789,11 +954,7 @@ def _robustness_passed(
         if pen is not None:
             wfo_failed = pen <= 0
         else:
-            positive = sum(
-                1
-                for w in valid_windows
-                if (w.get("test_metrics") or {}).get("pnl", 0) > 0
-            )
+            positive = sum(1 for w in valid_windows if _wfo_test(w).get("pnl", 0) > 0)
             wfo_failed = positive / len(valid_windows) < 0.5
         if wfo_failed:
             failed += 1
@@ -895,8 +1056,11 @@ def _sealed_holdout_stats(
     The holdout run frame carries a warmup lead-in (HOLDOUT_WARMUP_BARS) so
     indicators can produce signals at all; trades ENTERED before the sealed
     boundary belong to that lead-in and must not count. ``pnl_fraction`` is
-    against the engine's default 10k capital (the agent recipe sets none);
-    sharpe is per-trade ((mean/std)·√n), None under 2 trades.
+    against the engine's configured starting capital (``_starting_cash()`` — the
+    literal 10_000.0 that used to sit here would have silently misreported the
+    sealed holdout the moment STARTING_CASH changed, and this number is the one
+    unbiased forward estimate the run produces); sharpe is per-trade
+    ((mean/std)·√n), None under 2 trades.
     """
     pnls = [
         float(t.get("pnl") or 0.0)
@@ -904,7 +1068,7 @@ def _sealed_holdout_stats(
         if int(t.get("entry_time") or 0) >= holdout_start_unix
     ]
     n = len(pnls)
-    pnl_fraction = sum(pnls) / 10_000.0
+    pnl_fraction = sum(pnls) / _starting_cash()
     if n < 2:
         return n, pnl_fraction, None
     mean = sum(pnls) / n
@@ -1201,13 +1365,19 @@ def _run_full_robustness(
             progress_fn=pf,
         )
         if wfo:
-            pos = sum(1 for w in wfo if (w.get("test_metrics") or {}).get("pnl", 0) > 0)
-            avg_pnl = sum(
-                (w.get("test_metrics") or {}).get("pnl", 0) for w in wfo
-            ) / len(wfo)
+            # Reported on the SAME series the gate decides on (_wfo_test): the
+            # unchanged spec's OOS windows. Showing the re-optimized count next
+            # to a naive verdict made the two disagree on screen.
+            pos = sum(1 for w in wfo if _wfo_test(w).get("pnl", 0) > 0)
+            avg_pnl = sum(_wfo_test(w).get("pnl", 0) for w in wfo) / len(wfo)
+            pos_opt = sum(
+                1 for w in wfo if (w.get("test_metrics") or {}).get("pnl", 0) > 0
+            )
             _add_step(
                 run_id,
-                f"  → {pos}/{len(wfo)} windows positive · average test PnL={avg_pnl:+.2f} USDT",
+                f"  → {pos}/{len(wfo)} windows positive (saved spec) · "
+                f"average test PnL={avg_pnl:+.2f} USDT · "
+                f"{pos_opt}/{len(wfo)} when re-optimized per window (diagnostic)",
             )
 
         # 4) Monte Carlo (already vectorized numpy — no pool needed)
@@ -1285,12 +1455,23 @@ def _agent_worker(
     from sandbox import run_backtest_guarded, run_robustness_guarded
 
     is_external = source == "external"
-    # Market context passed to the LLM — None on Bybit (existing prompt preserved byte-for-byte).
-    market = (
-        f"US equity {instrument_id} ({'/'.join(intervals)} bars, USD cash account)"
-        if is_external
-        else None
-    )
+
+    def _market_for(iv: str) -> str | None:
+        """Market context passed to the LLM — None on Bybit (existing prompt
+        preserved byte-for-byte).
+
+        Names the ONE bar the next spec will be scored on, not the whole
+        multi-TF list: the loop assigns timeframes round-robin and the caller
+        always knows which one comes next, so there is no reason to make the
+        model guess among four.
+        """
+        if not is_external:
+            return None
+        return f"US equity {instrument_id} ({iv} bars, USD cash account)"
+
+    # Timeframe of iteration i under the round-robin in the loop below.
+    def _iv_for(i: int) -> str:
+        return intervals[i % len(intervals)]
 
     def _recipe(iv: str) -> dict:
         """String recipe from which the sandbox/robustness child rebuilds the instrument."""
@@ -1320,6 +1501,12 @@ def _agent_worker(
         instrument_id=instrument_id,
         max_hours=max_hours,
         max_total_tokens=max_total_tokens,
+        # Which endpoint produced the strategies, and at what thinking budget.
+        # Both live in `brief` for the cockpit but were missing from the session
+        # log, so an archived run could not answer "which model wrote this?" —
+        # the one question a research log has to answer.
+        model=model,
+        effort=effort,
     )
 
     run_number = 0
@@ -1337,6 +1524,19 @@ def _agent_worker(
     # M22: optional budget ceilings (0 = unlimited) + winnerless-round breaker.
     _worker_t0 = time.monotonic()
     _winless_rounds = 0
+
+    # Continuous mode with no ceiling has exactly two brakes: the winnerless-round
+    # breaker and the identical-error breaker. Neither bounds cost — every round
+    # spends LLM calls whether or not it produces a candidate. Say so once, in the
+    # run's own log, instead of letting it be discovered from the bill.
+    if continuous_mode and not max_hours and not max_total_tokens:
+        _add_step(
+            run_id,
+            "⚠ Continuous mode with no time or token ceiling — this run stops "
+            f"only on the stop button, {_WINLESS_ROUND_LIMIT} winnerless rounds, "
+            f"or {_CONSEC_ERR_LIMIT} identical consecutive errors. Set a limit in "
+            "the brief to bound the cost.",
+        )
 
     def _winless_bump() -> bool:
         """Increment the winnerless-round counter; returns True if the limit is exceeded.
@@ -1696,12 +1896,16 @@ def _agent_worker(
                 "Initial strategy (Claude)",
                 round_num=run_number,
             )
+            # Iteration 0 runs on the first TF of the round-robin — tell the model
+            # which bar it is designing for instead of letting it guess.
+            _iv0 = _iv_for(0)
             proposal, _usage1 = propose_composed_strategy(
                 dummy_history,
                 catalog,
                 hint=hint,
                 web_research=web_research,
-                market=market,
+                market=_market_for(_iv0),
+                timeframe=_iv0,
             )
             _add_tokens(run_id, _usage1)
             _session_log(
@@ -1821,6 +2025,10 @@ def _agent_worker(
                 # Add the block type list to the strategy field → Claude sees this info
                 block_types_str = "+".join(b.type for b in spec.blocks)
                 r.strategy = f"composed:{spec.name} [{block_types_str}]"
+                # Stamp the run context onto the result: _summarize_composed_history
+                # reads the timeframe from here. Without it the model saw only
+                # "pnl=-8514" with no idea the spec had been scored on 15m bars.
+                r.bars_info = dict(iter_bars_info)
                 history.append(r)
                 results.append((spec, r, iter_iv))
                 # The returned ts is this iteration's key into the backtest log
@@ -1867,7 +2075,10 @@ def _agent_worker(
                                 "equity": _spark_points(r.equity_curve),
                             }
                         )
-                # Session log: backtest result (including equity_curve)
+                # Session log: backtest result. The equity curve and its date
+                # axis are reduced TOGETHER (see _thin_pair) — raw, they made
+                # this the heaviest event in the log at ~301 KB apiece.
+                _eq_curve, _eq_dates = _thin_pair(r.equity_curve, r.equity_dates)
                 _session_log(
                     run_id,
                     "backtest_result",
@@ -1882,8 +2093,8 @@ def _agent_worker(
                     ],
                     score=round(sc, 4),
                     metrics=r.metrics,
-                    equity_curve=list(r.equity_curve) if r.equity_curve else [],
-                    equity_dates=list(r.equity_dates) if r.equity_dates else [],
+                    equity_curve=_eq_curve,
+                    equity_dates=_eq_dates,
                     n_trades=len(r.trades) if r.trades else 0,
                     bars_info=iter_bars_info,
                     error=r.error,
@@ -1933,6 +2144,11 @@ def _agent_worker(
                         round_num=run_number,
                         iter=next_i + 1,
                     )
+                    # The TF the NEXT iteration will use is already decided by the
+                    # round-robin — pass it down so periods/thresholds are sized
+                    # for that bar rather than for an unknown one.
+                    next_iv = _iv_for(next_i)
+                    next_market = _market_for(next_iv)
                     try:
                         if use_custom:
                             custom_spec = _generate_custom_spec(
@@ -1942,7 +2158,8 @@ def _agent_worker(
                                 history,
                                 used_concepts=used_concepts,
                                 round_num=run_number,
-                                market=market,
+                                market=next_market,
+                                timeframe=next_iv,
                             )
                             if custom_spec is not None:
                                 spec = custom_spec
@@ -1952,7 +2169,11 @@ def _agent_worker(
                                 _add_step(run_id, f"  → {spec.name} (custom)")
                             else:
                                 proposal, _u = propose_composed_strategy(
-                                    history, load_catalog(), hint=hint, market=market
+                                    history,
+                                    load_catalog(),
+                                    hint=hint,
+                                    market=next_market,
+                                    timeframe=next_iv,
                                 )
                                 _add_tokens(run_id, _u)
                                 spec = _proposal_to_spec(proposal)
@@ -1974,7 +2195,11 @@ def _agent_worker(
                                 _add_step(run_id, f"  → {spec.name} (fallback builtin)")
                         else:
                             proposal, _u = propose_composed_strategy(
-                                history, load_catalog(), hint=hint, market=market
+                                history,
+                                load_catalog(),
+                                hint=hint,
+                                market=next_market,
+                                timeframe=next_iv,
                             )
                             _add_tokens(run_id, _u)
                             spec = _proposal_to_spec(proposal)
@@ -2157,9 +2382,8 @@ def _agent_worker(
                 split_label = (rob.get("split") or {}).get("overfitting_label", "?")
                 mc_dd = (rob.get("mc") or {}).get("max_dd_p50", None)
                 wfo = rob.get("wfo_windows") or []
-                wf_pos = sum(
-                    1 for w in wfo if (w.get("test_metrics") or {}).get("pnl", 0) > 0
-                )
+                # Naive series — the one _robustness_passed decided on.
+                wf_pos = sum(1 for w in wfo if _wfo_test(w).get("pnl", 0) > 0)
                 wf_str = f"{wf_pos}/{len(wfo)}" if wfo else "—"
                 ms_label = (rob.get("multi_symbol") or {}).get(
                     "generalization_label", "—"
@@ -2183,11 +2407,10 @@ def _agent_worker(
                     ms_label=ms_label,
                     split=_thin_curves(rob.get("split")),
                     # WFO pencereleri 88 adet ve her biri 3 eğri taşıyor (train/
-                    # test/naive) — 40'lık tavanda tek başlarına ~475 KB ediyor.
-                    # Hiçbir şablon bu eğrileri LOG'dan okumuyor (canlı robustness
-                    # yolu ayrı bir veriden çiziyor), yani buradaki tek işlevleri
-                    # adli: pencerenin şeklini görebilmek. 12 nokta buna yeter.
-                    wfo_windows=_thin_curves(rob.get("wfo_windows"), cap=12),
+                    # test/naive). Eğrileri seyreltmek olayı 2,39 MB'tan 303 KB'a
+                    # indirdi; kalan yük yapısal (88 × 3 × ~30 alan). Log'dan bu
+                    # alanları kimse geri okumuyor → adli çekirdek yeter.
+                    wfo_windows=_compact_wfo_windows(rob.get("wfo_windows")),
                     mc=_thin_curves(rob.get("mc")),
                     multi_symbol=_thin_curves(rob.get("multi_symbol")),
                 )
@@ -2404,17 +2627,23 @@ def _agent_worker(
                             "n_trades": _n,
                             "days": OOS_HOLDOUT_DAYS,
                             "warmup_bars": HOLDOUT_WARMUP_BARS,
-                            # 0 trades = the window produced no entries at
-                            # all — that is NOT a neutral pass, it means the
-                            # layer measured nothing. Surfaced as a warning.
-                            "measured": _n > 0,
+                            # A count, not a boolean question. 0 entries means
+                            # the layer measured nothing; but so, in practice,
+                            # does 1 (run 3cad3325's round-2 winner reported
+                            # measured=True on a SINGLE trade, with sharpe=None
+                            # because a standard deviation needs two). The
+                            # sealed holdout is the run's one unbiased forward
+                            # estimate — claiming it exists on one trade
+                            # overstates it. Below HOLDOUT_MIN_TRADES the flag
+                            # stays False and the count is reported as-is.
+                            "measured": _n >= HOLDOUT_MIN_TRADES,
                         }
-                        if _n == 0:
+                        if _n < HOLDOUT_MIN_TRADES:
                             _add_step(
                                 run_id,
-                                f"⚠ Sealed OOS ({OOS_HOLDOUT_DAYS}d): 0 trades "
-                                "— ÖLÇÜLEMEDİ (mühürlü pencerede hiç giriş "
-                                "üretilmedi; warmup lead-in dahil)",
+                                f"⚠ Sealed OOS ({OOS_HOLDOUT_DAYS}d): {_n} trade "
+                                f"— ÖLÇÜLEMEDİ (en az {HOLDOUT_MIN_TRADES} giriş "
+                                "gerekiyor; warmup lead-in dahil)",
                             )
                         else:
                             _sh_txt = f"{_sharpe:.2f}" if _sharpe is not None else "—"
@@ -2462,9 +2691,9 @@ def _agent_worker(
                 spec_id=winner_spec.id,
                 score=round(_score(winner_result), 4),
                 metrics=winner_result.metrics,
-                equity_curve=list(winner_result.equity_curve)
-                if winner_result.equity_curve
-                else [],
+                equity_curve=_thin_pair(
+                    winner_result.equity_curve, winner_result.equity_dates
+                )[0],
                 bars_info=bars_info,
             )
             _consec_err = 0  # round finished successfully — error streak broken
@@ -2587,6 +2816,7 @@ def _generate_custom_spec(
     used_concepts: list | None = None,
     round_num: int = 1,
     market: str | None = None,
+    timeframe: str = "",
 ):
     """Odd iterations: ask Claude for a novel idea, generate custom entry+exit blocks,
     register them, and return a ComposedStrategySpec built from those blocks.
@@ -2594,9 +2824,10 @@ def _generate_custom_spec(
 
     ``market`` — optional market context (external US equity runs); passed to the
     idea generator, and if None the crypto phrasing is preserved.
+    ``timeframe`` — the bar this spec will be scored on (round-robin, known by
+    the caller); the idea generator sizes its logic for it.
     """
     from agent import (
-        GeneratedCodeError,
         _propose_agent_strategy_idea,
         propose_custom_block,
     )
@@ -2610,7 +2841,11 @@ def _generate_custom_spec(
 
     try:
         idea = _propose_agent_strategy_idea(
-            hint, history, used_concepts=used_concepts, market=market
+            hint,
+            history,
+            used_concepts=used_concepts,
+            market=market,
+            timeframe=timeframe,
         )
         # M1583: the tokens from the idea + custom-block LLM calls should be
         # added to the counters — previously only the builtin proposal was
@@ -2625,8 +2860,17 @@ def _generate_custom_spec(
         entry_label = idea.get("entry_label", "Agent Entry")
         exit_label = idea.get("exit_label", "Agent Exit")
 
-        entry_name = f"agnt_e_{run_id}_{iter_idx}"
-        exit_name = f"agnt_x_{run_id}_{iter_idx}"
+        # The ROUND belongs in the name. Without it, continuous mode reuses the
+        # same identity every round and `save_custom` is last-write-wins: on run
+        # 3cad3325 the name `agnt_e_3cad3325_1` was written 7 times with 7
+        # different bodies. Two winners saved to the catalog in rounds 2 and 4
+        # both pointed at that name, so by round 7 the strategies that had
+        # passed robustness no longer existed — the catalog entry resolved, ran,
+        # and silently executed someone else's logic.
+        # (Names stay within custom_block_store.is_valid_name's 40 chars:
+        #  "agnt_e_" + 8 hex + "_r" + round + "_" + iter ≈ 21.)
+        entry_name = f"agnt_e_{run_id}_r{round_num}_{iter_idx}"
+        exit_name = f"agnt_x_{run_id}_r{round_num}_{iter_idx}"
 
         _add_step(run_id, f"  ⚙ Generating custom entry block: {entry_label}…")
         entry_block = propose_custom_block(entry_label, idea["entry_desc"], "entry")
@@ -2655,11 +2899,17 @@ def _generate_custom_spec(
             pass
 
         # With 50% probability use the best builtin exit from history (instead of custom)
-        # This combines a proven exit mechanism with new entry ideas
+        # This combines a proven exit mechanism with new entry ideas.
+        # SEEDED on (run_id, iteration): an unseeded coin flip made a run
+        # impossible to reproduce — replaying a session could take the other
+        # branch and produce a different strategy, so a finding could not be
+        # re-derived. Same run + same iteration → same branch, while different
+        # iterations and different runs still explore both.
+        import random as _random
+
         best_builtin_exit = _pick_best_exit_from_history(history)
-        use_builtin_exit = (
-            best_builtin_exit is not None and __import__("random").random() < 0.5
-        )
+        _coin = _random.Random(f"{run_id}:{iter_idx}").random()
+        use_builtin_exit = best_builtin_exit is not None and _coin < 0.5
 
         def _extract_params(blk: dict) -> dict:
             raw = blk["meta"].get("params") or {}
@@ -2751,10 +3001,15 @@ def _generate_custom_spec(
             raise RuntimeError(f"Custom spec invalid: {err}")
         return spec
 
-    except (GeneratedCodeError, Exception) as e:
+    except Exception as e:
+        # `except (GeneratedCodeError, Exception)` was the same thing written
+        # twice — Exception already covers GeneratedCodeError. The name is kept
+        # in the message so a code-generation failure stays distinguishable from
+        # an infrastructure one in the log.
         _add_step(
             run_id,
-            f"  ⚠ Could not generate custom block: {e} — falling back to builtin",
+            f"  ⚠ Could not generate custom block ({type(e).__name__}): {e} "
+            "— falling back to builtin",
         )
         return None
 

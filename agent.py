@@ -1362,10 +1362,33 @@ def _summarize_composed_history(history: list[Any], catalog: list[Any]) -> str:
         lines.append("\nRECENT BACKTEST RESULTS (learn from these):")
         for r in history[-8:]:
             m = (r.metrics or {}) if r.error is None else {}
+            bi = getattr(r, "bars_info", None) or {}
+            # The three fields below were missing and each cost the loop a
+            # measurable mistake (audit 2026-08-04, run 1376c812):
+            #   tf   — the timeframe is assigned by round-robin AFTER the spec is
+            #          written, so a proposal tuned for minutes was scored on
+            #          daily bars (one iteration produced a single trade). Without
+            #          it in the feedback the model cannot even see the mismatch.
+            #   dd   — users ask for "minimum drawdown" and the model was never
+            #          shown drawdown; it cannot optimize what it cannot see.
+            #   comm — one iteration paid 8,566 USD of commission on 52 USD of
+            #          gross profit. Net PnL alone reads as "bad strategy"; with
+            #          the commission line it reads as "too many trades".
+            tf = bi.get("interval") or bi.get("granularity") or "?"
             lines.append(
-                f"  · {r.strategy} pnl={m.get('pnl', 'n/a')} sharpe={m.get('sharpe', 'n/a')} "
+                f"  · {r.strategy} tf={tf} pnl={m.get('pnl', 'n/a')} "
+                f"sharpe={m.get('sharpe', 'n/a')} "
+                f"max_dd={m.get('max_dd', 'n/a')} "
+                f"commission={m.get('commission_total', 'n/a')} "
                 f"trades={m.get('n_trades', 'n/a')} winrate={m.get('win_rate', 'n/a')} err={r.error}"
             )
+        lines.append(
+            "  → Read these together: `pnl` is NET of `commission`. If commission "
+            "is a large share of the gross result the strategy trades too often "
+            "for its timeframe — widen the entry filter or move to a slower tf. "
+            "`max_dd` is a fraction and negative (-0.26 = 26% drawdown); a high "
+            "pnl with a deep max_dd is not an improvement."
+        )
         # Show which block types have already been tried so Claude avoids repeating them
         tried_blocks: set[str] = set()
         for r in history:
@@ -1586,12 +1609,53 @@ def _validate_composed(data: dict) -> dict:
     }
 
 
+_TF_HUMAN = {
+    "1": "1-minute",
+    "5": "5-minute",
+    "15": "15-minute",
+    "30": "30-minute",
+    "60": "1-hour",
+    "240": "4-hour",
+    "720": "12-hour",
+    "D": "daily",
+    "1-MINUTE": "1-minute",
+    "5-MINUTE": "5-minute",
+    "15-MINUTE": "15-minute",
+    "30-MINUTE": "30-minute",
+    "1-HOUR": "1-hour",
+    "4-HOUR": "4-hour",
+    "1-DAY": "daily",
+}
+
+
+def _timeframe_line(timeframe: str) -> str:
+    """Prompt line naming the bar this spec will be scored on.
+
+    The AUTO loop picks the timeframe round-robin and it used to do so AFTER the
+    spec came back, so the model wrote indicator periods blind. On daily bars a
+    minute-scale filter fires almost never (audit run 1376c812: a daily
+    iteration opened exactly ONE trade and was disqualified for having <20 —
+    the idea was never tested, only the mismatch was).
+    """
+    tf = (timeframe or "").strip()
+    if not tf:
+        return ""
+    human = _TF_HUMAN.get(tf, tf)
+    return (
+        f"\nTARGET TIMEFRAME: this strategy will be backtested on {human} bars. "
+        "Size every indicator period, threshold and stop for that bar — a filter "
+        "tuned for minutes fires almost never on daily bars, and one tuned for "
+        "days fires on every minute bar and pays commission on each."
+    )
+
+
 def propose_composed_strategy(
     history: list[Any],
     catalog: list[Any],
     hint: str = "",
     web_research: bool = False,
     market: str | None = None,
+    timeframe: str = "",
 ) -> tuple[dict, dict | None]:
     """Ask Claude to design a full composed strategy.
     Returns (strategy_dict, usage_dict | None).
@@ -1599,6 +1663,11 @@ def propose_composed_strategy(
 
     ``market`` — optional market context (e.g. "US equity QQQ.NASDAQ (1-DAY
     bars, USD cash account)"). If None the Bybit BTCUSDT expression is preserved as-is.
+
+    ``timeframe`` — the bar interval this spec will ACTUALLY be scored on. The
+    AUTO loop assigns timeframes round-robin, so the caller knows the target
+    before it asks for the spec; passing it lets the model size periods and
+    thresholds for that bar. Empty = don't mention it (prompt unchanged).
     """
     try:
         client = _get_client()
@@ -1628,8 +1697,9 @@ def propose_composed_strategy(
             web_section = f"\n\n{web_text}"
 
     market_target = market or "BTCUSDT Bybit"
+    tf_line = _timeframe_line(timeframe)
     user = f"""Context:
-{_summarize_composed_history(history, catalog)}{hint_line}{web_section}
+{_summarize_composed_history(history, catalog)}{hint_line}{tf_line}{web_section}
 
 Design a new {market_target} composed strategy as specified. Return JSON only."""
 
@@ -2786,6 +2856,7 @@ def _propose_agent_strategy_idea(
     history: list,
     used_concepts: list | None = None,
     market: str | None = None,
+    timeframe: str = "",
 ) -> dict:
     """Ask Claude for a novel strategy idea (labels + descriptions only, no code).
 
@@ -2793,6 +2864,8 @@ def _propose_agent_strategy_idea(
     exit_label, exit_desc. Falls back to a hardcoded idea on any failure.
 
     ``market`` — optional market context; if None the crypto phrasing is kept.
+    ``timeframe`` — the bar this idea will be scored on (see _timeframe_line);
+    the custom-block path needs it as much as the builtin one.
     """
     history_summary = ""
     if history:
@@ -2836,6 +2909,8 @@ def _propose_agent_strategy_idea(
     else:
         market_tr = "crypto trading"
         market_note = ""
+
+    market_note += _timeframe_line(timeframe)
 
     prompt = _AGENT_IDEA_PROMPT.format(
         market_tr=market_tr,

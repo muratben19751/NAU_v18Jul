@@ -37,6 +37,15 @@ WF_EMBARGO_DAYS = max(0.0, _env_float("NAUTILUS_WF_EMBARGO_DAYS", 2))
 # 'unit timeout'.
 WFO_BATCH_TIMEOUT_S = _env_float("NAUTILUS_WFO_BATCH_TIMEOUT_S", 600.0)
 
+# Smallest in-sample Sharpe the IS/OOS overfitting RATIO may be divided by.
+# The ratio oos_sharpe/in_sharpe is meaningless when the denominator is noise:
+# an in-sample Sharpe of 0.0037 (measured, run 3cad3325) turns an OOS Sharpe of
+# 0.203 into "54.18 → ✓ Robust". Below this floor there is no in-sample edge to
+# generalize FROM, so the criterion reports "not measured" rather than a ratio
+# (a floor on the denominator would keep manufacturing a verdict out of noise).
+# Same family as the Calmar floor in agent_backtest._score.
+IS_SHARPE_MIN = _env_float("NAUTILUS_IS_SHARPE_MIN", 0.05)
+
 
 def _run_many_kw(run_many):
     """Pass timeout_s if run_many supports it (parallel_exec.run_units); silently
@@ -651,6 +660,11 @@ def wfo_aggregate(windows: list[dict]) -> dict:
 
     oos_sharpe_penalized = _penalized(("test_metrics", "sharpe"))
     oos_pnl_penalized = _penalized(("test_metrics", "pnl"))
+    # The same dispersion penalty over the NAIVE series — the unchanged spec is
+    # what the agent saves to the catalog, so this is the number a pass/fail gate
+    # must read (agent_backtest._wfo_test). The optimized aggregate above stays
+    # as the diagnostic "did re-fitting help?".
+    oos_sharpe_naive_penalized = _penalized(("test_metrics_naive", "sharpe"))
     is_obj = [
         w["train_objective"] for w in windows if w.get("train_objective") is not None
     ]
@@ -704,6 +718,12 @@ def wfo_aggregate(windows: list[dict]) -> dict:
         ),
         "oos_pnl_penalized": (
             round(oos_pnl_penalized, 2) if oos_pnl_penalized is not None else None
+        ),
+        # The gate's number: same penalty over the UNCHANGED spec's OOS windows.
+        "oos_sharpe_naive_penalized": (
+            round(oos_sharpe_naive_penalized, 3)
+            if oos_sharpe_naive_penalized is not None
+            else None
         ),
         "param_cv": param_cv,
         "unstable_params": unstable,
@@ -975,9 +995,34 @@ def run_insample_oos_split(
         oos_sharpe = _num(oos_m.get("sortino"))
         metric_used = "Sortino"
 
-    if not in_sharpe or in_sharpe <= 0 or oos_sharpe is None:
+    # 2026-08-04: this used to be ONE branch producing ONE label,
+    # "— (yetersiz veri)", for three different situations. Two of them are not
+    # the same thing at all:
+    #
+    #   * a metric could not be computed  → the criterion was NOT MEASURED
+    #   * the in-sample Sharpe is <= 0    → the strategy LOSES in-sample; that
+    #                                       is a real, measured failure
+    #
+    # The agent gate counted the shared label as a FAILURE, while the very same
+    # "yetersiz" marker on the multi-symbol criterion counted as SKIPPED — two
+    # criteria, one marker, opposite handling. Splitting the labels lets the
+    # gate do the right thing with each (see agent_backtest._robustness_passed).
+    #
+    # The third case is the near-zero denominator: measured on run 3cad3325 a
+    # candidate with in-sample Sharpe 0.0037 (55 trades for +1.10 USD — noise)
+    # divided into an OOS Sharpe of 0.203 and scored 54.18, which the old
+    # thresholds proudly labelled "✓ Robust". A strategy with no in-sample edge
+    # was called robust BECAUSE it had no edge. There is nothing to generalize
+    # from, so the honest verdict is "not measured", not a ratio.
+    if in_sharpe is None or oos_sharpe is None:
         score = None
-        label = "— (yetersiz veri)"
+        label = "— (ölçülemedi: Sharpe/Sortino hesaplanamadı)"
+    elif in_sharpe <= 0:
+        score = None
+        label = "✗ IS negatif (in-sample kenar yok)"
+    elif abs(in_sharpe) < IS_SHARPE_MIN:
+        score = None
+        label = f"— (ölçülemedi: IS Sharpe ~0, |{in_sharpe:.4f}| < {IS_SHARPE_MIN})"
     else:
         score = round(oos_sharpe / in_sharpe, 2)
         if (

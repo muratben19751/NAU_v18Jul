@@ -593,6 +593,7 @@ def _metrics(
             "avg_loss": 0.0,
             # L33: on an empty run use 0.0 instead of NaN (NAU rule; NaN breaks JSON).
             "profit_factor": 0.0,
+            "profit_factor_returns": 0.0,
             "avg_return": float("nan"),
             "volatility": float("nan"),
             "max_winner": 0.0,
@@ -751,6 +752,30 @@ def _metrics(
     if math.isinf(profit_factor):
         profit_factor = 99.0 if profit_factor > 0 else 0.0
 
+    # 2026-08-04: `profit_factor` above is Nautilus' RETURNS-series statistic. It
+    # is not what a trader reads off a backtest card: an audited AUTO iteration
+    # showed PF 20.27 beside a 36% win rate and Sharpe 0.19 — three numbers that
+    # cannot describe the same 671 trades under the usual definition. Compute the
+    # TRADE-level profit factor (gross wins / gross losses over closed positions,
+    # net of commission since `pnls` is realized PnL) and publish that as
+    # `profit_factor`; the returns-series value stays as `profit_factor_returns`
+    # so nothing that depended on it is silently rewritten.
+    profit_factor_returns = profit_factor
+    # `pnls` is a numpy array here (_parse_money_column) — `if pnls:` on an array
+    # raises "truth value ... is ambiguous", so length is checked explicitly.
+    _pnl_arr = np.asarray(pnls, dtype=float)
+    if _pnl_arr.size:
+        _wins = float(_pnl_arr[_pnl_arr > 0].sum())
+        _losses = float(-_pnl_arr[_pnl_arr < 0].sum())
+        if _losses > 0:
+            profit_factor = min(99.0, _wins / _losses)
+        else:
+            # No losing trade at all: the ratio is unbounded → NAU's finite cap,
+            # and 0.0 when there were no wins either (flat book, not perfection).
+            profit_factor = 99.0 if _wins > 0 else 0.0
+    if math.isnan(profit_factor):
+        profit_factor = 0.0
+
     # L19: bar-resolution MTM equity curve (ts, eq) — the realized step-curve
     # in the UI didn't show intra-position dips; max_dd comes from this series,
     # and now the curve can be shown too. >5000 points are uniformly thinned.
@@ -798,6 +823,7 @@ def _metrics(
         "volatility": volatility,
         "avg_return": avg_return,
         "profit_factor": profit_factor,
+        "profit_factor_returns": profit_factor_returns,
         "win_rate": win_rate,
         "max_dd": max_dd,
         # H11: positive-percentage field for the NAU boundary comparison (the
@@ -1715,7 +1741,12 @@ def run_backtest_node(
             "sharpe_nautilus": _sf(returns, "Sharpe Ratio (252 days)"),
             "annualization": 252,
             "sortino": _sf(returns, "Sortino Ratio (252 days)"),
+            # BacktestNode path: no per-trade PnL series is available here,
+            # so both fields carry Nautilus' RETURNS-series statistic. On the
+            # Engine path "profit_factor" is the TRADE-level ratio — do not
+            # compare this field across runners (same caveat as "sharpe").
             "profit_factor": _sf(returns, "Profit Factor"),
+            "profit_factor_returns": _sf(returns, "Profit Factor"),
             "max_dd": float("nan"),  # BacktestNode stats have no Max Drawdown
             "volatility": _sf(returns, "Returns Volatility (252 days)"),
             "long_ratio": _sf(general, "Long Ratio"),
@@ -1921,7 +1952,12 @@ def run_composed_backtest_node(
             "sharpe_nautilus": _sf(returns, "Sharpe Ratio (252 days)"),
             "annualization": 252,
             "sortino": _sf(returns, "Sortino Ratio (252 days)"),
+            # BacktestNode path: no per-trade PnL series is available here,
+            # so both fields carry Nautilus' RETURNS-series statistic. On the
+            # Engine path "profit_factor" is the TRADE-level ratio — do not
+            # compare this field across runners (same caveat as "sharpe").
             "profit_factor": _sf(returns, "Profit Factor"),
+            "profit_factor_returns": _sf(returns, "Profit Factor"),
             "max_dd": float("nan"),  # BacktestNode stats have no Max Drawdown
             "volatility": _sf(returns, "Returns Volatility (252 days)"),
             "long_ratio": _sf(general, "Long Ratio"),
