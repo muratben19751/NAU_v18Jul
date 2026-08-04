@@ -7,6 +7,7 @@ bogus codes are dropped, dates are validated before a worker ever starts.
 
 from __future__ import annotations
 
+import contextlib
 import threading
 
 import pytest
@@ -83,6 +84,130 @@ def test_model_pick_reaches_worker_and_thread_pin(monkeypatch):
     agent.set_thread_model("uydurma-model")
     assert agent.current_model() == agent.MODEL
     agent.set_thread_model(None)
+
+
+def test_effort_pick_reaches_worker_and_thread_pin(monkeypatch):
+    import agent
+
+    client, got, done = _client_and_capture(monkeypatch)
+    r = client.post("/agent/run", data={"effort": "low", "n_iterations": 2})
+    assert r.status_code == 200
+    assert done.wait(5)
+    assert got["effort"] == "low"
+    # Pin: bilinen seviye pinlenir (büyük/küçük harf duyarsız), bilinmeyen temizler.
+    agent.set_thread_effort("MAX")
+    assert agent.current_effort() == "max"
+    agent.set_thread_effort("uydurma")
+    assert agent.current_effort() == ""
+    agent.set_thread_effort(None)
+    assert agent.current_effort() == ""
+
+
+def test_resolve_effort_is_type_safe_and_normalizing():
+    """Setter koşunun İLK adımında worker thread'inde çağrılır — orada patlayamaz.
+
+    Brutal test bunu yakalamıştı: `(effort or "").strip()` bir int'te
+    AttributeError fırlatıyordu, yani form dışından gelen bir çağrı koşuyu daha
+    başlamadan öldürürdü.
+    """
+    from agent import resolve_effort
+
+    for junk in (42, 3.7, True, None, b"low", ["low"], {"a": 1}, object()):
+        assert resolve_effort(junk) == ""
+    for junk in ("uydurma", "low max", "--effort=max", "low; rm -rf /", "düşük", ""):
+        assert resolve_effort(junk) == ""
+    assert resolve_effort("  MAX  ") == "max"
+    assert resolve_effort("LOW") == "low"
+
+
+def test_brief_records_applied_effort_not_requested(monkeypatch):
+    """Kokpit İSTENEN değil UYGULANAN effort'u göstermeli.
+
+    Ayrıştıklarında arayüz koşmayan bir ayarı koşuyor gibi gösterir: form
+    "uydurma" gönderdiğinde pin boşalır, brief yine "uydurma" derse ekran
+    yalan söyler (aynı sınıf: `label` ↔ `meta.label` uyuşmazlığı).
+    """
+    import web.routes.agent_backtest as ab
+
+    client, _got, done = _client_and_capture(monkeypatch)
+    for raw, applied in (
+        ("low", "low"),
+        ("MAX", "max"),
+        ("uydurma", ""),
+        ("low; rm -rf /", ""),
+        ("  high  ", "high"),
+    ):
+        done.clear()
+        assert (
+            client.post(
+                "/agent/run", data={"effort": raw, "n_iterations": 1}
+            ).status_code
+            == 200
+        )
+        assert done.wait(5)
+        run_id = list(ab._AGENT_PROGRESS)[-1]
+        assert (ab._AGENT_PROGRESS[run_id]["brief"] or {}).get("effort") == applied
+
+
+def test_effort_reaches_cli_flag_and_openrouter_body(monkeypatch):
+    """Seçilen effort iki backend'e de GERÇEKTEN geçiyor; seçilmediğinde hiç geçmiyor.
+
+    Kaldıracın kendisi burada: `--effort` bayrağı uzun süre kodda yoktu ve
+    "seçilebiliyor ama uygulanmıyor" bir parametre, çalışmayan bir parametreden
+    daha tehlikeli (ölçüm ona güvenerek yapılır).
+    """
+    import subprocess
+
+    import agent
+
+    seen: dict = {}
+
+    class _Proc:
+        returncode = 0
+        stdout = '{"result":"ok","is_error":false}'
+        stderr = ""
+
+    monkeypatch.setattr(
+        subprocess, "run", lambda cmd, **kw: (seen.update(cmd=list(cmd)), _Proc())[1]
+    )
+
+    def cli_cmd(effort):
+        agent.set_thread_effort(effort)
+        with contextlib.suppress(Exception):  # yanıt gövdesi bu testin konusu değil
+            agent._ClaudeCLIMessages("claude").create(
+                model="claude-sonnet-5", messages=[{"role": "user", "content": "x"}]
+            )
+        return seen["cmd"]
+
+    cmd = cli_cmd("low")
+    assert cmd[cmd.index("--effort") + 1] == "low"
+    assert "--effort" not in cli_cmd(None)
+
+    class _Completions:
+        def create(self, **req):
+            seen["req"] = req
+            msg = type("M", (), {"content": "ok"})()
+            choice = type("C", (), {"message": msg, "finish_reason": "stop"})()
+            usage = type("U", (), {"prompt_tokens": 1, "completion_tokens": 1})()
+            return type("R", (), {"choices": [choice], "usage": usage})()
+
+    client_or = type(
+        "Cl", (), {"chat": type("Ch", (), {"completions": _Completions()})()}
+    )()
+    om = agent._OpenRouterMessages(client_or)
+
+    def or_body(effort):
+        agent.set_thread_effort(effort)
+        om.create(
+            model="moonshotai/kimi-k3", messages=[{"role": "user", "content": "x"}]
+        )
+        return seen["req"].get("extra_body")
+
+    assert or_body("low") == {"reasoning": {"effort": "low"}}
+    # xhigh/max Claude CLI'a özgü — OpenRouter sözlüğünde en yakın üst seviye.
+    assert or_body("xhigh") == {"reasoning": {"effort": "high"}}
+    assert or_body(None) is None
+    agent.set_thread_effort(None)
 
 
 def test_sealed_holdout_stats_counts_only_in_window_entries():

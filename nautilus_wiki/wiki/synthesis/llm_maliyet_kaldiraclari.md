@@ -1,7 +1,7 @@
 ---
 title: LLM maliyet kaldıraçları — AUTO ve Studio token tüketimi
 type: synthesis
-summary: 10 günlük defter denetimi — 21,5M token / ~$346 nominal, %99'u fable-5'te; fatura output ($103) + cache yazımı ($234, 1h TTL ×2). Ölçülen kaldıraçlar sırayla model (sonnet-5 −61%), effort (ek −52%), cache prefix sabitliği; max_tokens CLI yolunda ölü; kokpit maliyeti OpenRouter koşularında 3,33× şişik (thread-local model pini), çağrıların %92'si etiketsiz.
+summary: 10 günlük defter denetimi — 21,5M token / ~$346 nominal, %99'u fable-5'te; fatura output ($103) + cache yazımı ($234, 1h TTL ×2). Ölçülen kaldıraçlar sırayla model (sonnet-5 −61%), effort (ek −52%), cache prefix sabitliği; max_tokens CLI yolunda ölü; --effort 2026-08-04'te bağlandı (seçenek var, üretim ölçümü yok); kokpit maliyeti OpenRouter koşularında 3,33× şişik (thread-local model pini), çağrıların %92'si etiketsiz.
 sources:
   - https://github.com/muratben19751/NAU_v18Jul
   - https://platform.claude.com/docs/en/pricing
@@ -13,7 +13,7 @@ related:
   - wiki/synthesis/auto_mission_control.md
   - wiki/synthesis/webapp_module_map.md
   - wiki/synthesis/nau_performans_denetimi.md
-last_updated: 2026-08-03
+last_updated: 2026-08-04
 ---
 
 # LLM maliyet kaldıraçları
@@ -56,15 +56,26 @@ uzun yanıt yazıyor. Birim fiyata bakarak model seçmek bu iş yükünde yanıl
 44 çağrılık gerçek AUTO koşusu probu doğruladı: `composed` −61% (öngörü −61%),
 `idea` −69%, `custom_block` −53%.
 
-## Kaldıraç 2 — kullanılmayan CLI bayrakları
+## Kaldıraç 2 — CLI bayrakları (effort 2026-08-04'te bağlandı)
 
-`agent.py :: _ClaudeCLIMessages.create` şu an yalnız `--tools ""`,
+`agent.py :: _ClaudeCLIMessages.create` uzun süre yalnız `--tools ""`,
 `--no-session-persistence`, `--strict-mcp-config`, `--system-prompt-file`
-geçiyor. Kullanılmayan üç maliyet kolu:
+geçiyordu.
+
+**`--effort` artık bağlı.** Model pini ile aynı desende, koşu-başına ve
+thread-yerel: `agent.set_thread_effort()` / `current_effort()`, seviyeler
+`low|medium|high|xhigh|max`, süreç geneli varsayılan `NAUTILUS_LLM_EFFORT`.
+Seçim yapılmadıysa bayrak **hiç geçilmez** — ucun kendi varsayılanı korunur,
+"varsayılan"ı bir seviye adıyla taklit etmek yanlış bilgi olurdu. OpenRouter
+yolunda karşılığı `extra_body={"reasoning": {"effort": …}}`; sözlüğü dar
+olduğu için `xhigh|max` → `high`. Kokpitte `EFFORT` seçicisi (brief) ve koşan
+değeri gösteren `effort` satırı var; değer **koşu durumuna** yazılır, thread
+pin'inden yeniden çözülmez (bkz. aşağıdaki üçüncü tuzak).
+
+Kalan iki kol hâlâ kullanılmıyor:
 
 | bayrak | etki |
 |---|---|
-| `--effort low\|medium` | sonnet-5'te ek −52%; fable'da yalnız −11% (getiri modele bağlı) |
 | `--json-schema` | yapılandırılmış çıktı — "JSON only" yönergesi ve bozuk-JSON tekrarları gereksizleşir |
 | `--max-budget-usd` | koşu başına sert tavan |
 
@@ -170,9 +181,11 @@ Deftere 8 sentetik `custom_block` satırı düşmüş (fable-5; `in=10 out=5`, `
 ## Uygulama sırası
 
 1. Altı çağrı noktasına `_purpose` etiketi — %92'lik kör alan görünür olsun.
-2. `--effort` bayrağını CLI çağrısına geçir.
+2. ~~`--effort` bayrağını CLI çağrısına geçir.~~ **Yapıldı (2026-08-04)** — brief'te
+   `EFFORT` seçicisi, iki backend'de de bağlı. Seçenek artık var; **ölçümü yok**:
+   −52% rakamı tek çağrılık probdan geliyor, üretim promptlarıyla doğrulanmadı.
 3. Varsayılanı sonnet-5'e taşı (`NAUTILUS_LLM_MODEL` ya da `MODEL`), fallback'i
-   birlikte gözden geçir.
+   birlikte gözden geçir. Effort ile ÇARPILIR: ölçülen bileşik −81%.
 4. `composed`/`idea` prefix'ini sabitle (`custom_block`'ta uygulanan desen).
 
 <!-- BACKLINKS:BEGIN -->

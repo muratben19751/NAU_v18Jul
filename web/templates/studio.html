@@ -143,6 +143,21 @@
         </div>
 
         <div class="mc-f">
+          <div style="display:flex;justify-content:space-between;align-items:baseline;">
+            <label for="mc-effort">EFFORT</label>
+            {# Modelden AYRI bir maliyet kolu ve onunla ÇARPILIR (ölçülen:
+               sonnet-5 −61%, üstüne low −52% → bileşik −81%). Getirisi modele
+               bağlı olduğu için varsayılan "" — sessizce ucuzlatmıyoruz. #}
+            <span style="font-size:9.5px;color:#5a4f46;">düşünme bütçesi · getirisi modele bağlı</span>
+          </div>
+          <select id="mc-effort" name="effort">
+            {% for eval_, elabel in llm_efforts %}
+            <option value="{{ eval_ }}" {% if eval_ == mc_default_effort %}selected{% endif %}>{{ elabel }}</option>
+            {% endfor %}
+          </select>
+        </div>
+
+        <div class="mc-f">
           <div style="display:flex;justify-content:space-between;">
             <span class="mc-f-label">TIMEFRAME</span>
             <span style="font-size:9.5px;color:#5a4f46;">multiple allowed</span>

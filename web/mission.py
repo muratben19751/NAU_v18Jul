@@ -312,6 +312,9 @@ def mission_view(
         # model adı yazsın diye burada çözülür (agent.model_label).
         "model_label": _model_label(brief.get("model")),
         "model_id": _model_id(brief.get("model")),
+        # Boş effort'u "medium" gibi bir seviyeyle DOLDURMUYORUZ: ucun kendi
+        # varsayılanı sürüme göre değişir, uydurulan seviye yanlış bilgi olur.
+        "effort_label": (brief.get("effort") or "").strip() or "varsayılan",
         "guidance_label": brief.get("guidance") or "— autonomous",
         "elapsed_label": fmt_clock(elapsed),
         "time_pct": pct(elapsed, max_hours * 3600),

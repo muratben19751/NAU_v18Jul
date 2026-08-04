@@ -16,6 +16,11 @@ Endpoints:
 Wiki References
 ---------------
 See: [[auto_mission_control]] (AUTO kokpitinin ?view=mission sunumu),
+[[auto_arama_ekonomisi]] (aramanın işlem ekonomisi: `_clamp_spec_trade_size`
+neden 1 hisseye sabitlemeyip `percent_equity`'ye geçiriyor, komisyon eşiği,
+`_MIN_TRADES` kapısının NAU_ev paritesi ve `_score`'daki çifte ceza),
+[[nau_performans_denetimi]] (`_thin_curves` — oturum loguna yazılan equity
+eğrilerinin indirgenmesi; ham hâli olay başına 3,5 MB yazıyordu),
 [[webapp_module_map]], [[backtesting_guide]], [[strategy_and_actor]]
 """
 
@@ -51,6 +56,15 @@ _AGENT_LOCK = _AGENT_STORE.lock
 # aligned with the NAU_ev backtest optimizer's JUNK_MIN_TRADES=20 threshold (see
 # NAU wiki backtest-optimizer.md: "trade < 20 → eliminated + not stored").
 # L28: adjustable via AGENT_MIN_TRADES env var; default 20 → behavior unchanged.
+#
+# 2026-08-04 denetim notu (değer BİLEREK 20'de bırakıldı): az-işlem cezası
+# `_score` içinde zaten sürekli bir çarpanla da uygulanıyor (`n/(n+20)`), yani
+# eşik ikinci bir cezadır ve bilgiyi yok ederek uygular — ölçülen bir koşuda
+# net pozitif üç adayın ikisi (17'şer işlem) bu kapıda elenmişti. Ancak o
+# koşudaki asıl çarpıklık pozisyon boyutuydu (1 hisse + sabit komisyon →
+# düşük frekansa yapay avantaj); `_clamp_spec_trade_size` düzeltilince bu
+# baskı kalktı. Eşiği düşürmek NAU_ev paritesini bozacağı ve bu bir yöntem
+# kararı olduğu için varsayılan korunuyor. Denemek için: AGENT_MIN_TRADES=10.
 _MIN_TRADES = int(os.environ.get("AGENT_MIN_TRADES", "20"))
 
 # L2: Monte Carlo median drawdown limit (%). Both the _robustness_passed
@@ -446,6 +460,31 @@ def _spark_points(curve, n: int = 40) -> list[float]:
     return [round(pts[int(round(i * step))], 4) for i in range(n)]
 
 
+def _thin_curves(obj, cap: int = 40):
+    """Oturum loguna yazılacak yapıdaki uzun sayı dizilerini indirger (KOPYA döner).
+
+    `backtest_result` yolunda equity eğrileri ~40 noktaya indirgeniyordu ama
+    `robustness_result` yolunda ham yazılıyordu; aynı ders ikinci yüzeye
+    uygulanmamıştı. Bedeli ölçüldü: olay başına **3,5 MB** (88 WFO penceresi ×
+    train/test/naive metrikleri, 50 Monte Carlo eğrisi, 8.605 noktalık ham OOS
+    eğrisi) ve 76 oturumda **11,8 GB** disk — tek dosya 4,7 GB. Bu, `/sessions`
+    listesinin soğuk açılışını 114 saniyeye çıkaran maliyetin de kaynağı.
+
+    Kural bilinçli olarak geneldir: **yalnız tamamı sayı olan ve `cap`'ten uzun
+    diziler** indirgenir. Sözlükler, dizgeler ve dict listeleri (ör. işlem
+    kayıtları) olduğu gibi korunur — indirgeme bir görselleştirme kaybıdır,
+    adli kayıt kaybı değil. Girdi ASLA değiştirilmez: aynı `rob` sözlüğü karar
+    ve ekran yollarında da kullanılıyor.
+    """
+    if isinstance(obj, dict):
+        return {k: _thin_curves(v, cap) for k, v in obj.items()}
+    if isinstance(obj, list):
+        if len(obj) > cap and obj and all(isinstance(v, (int, float)) for v in obj):
+            return _spark_points(obj, cap)
+        return [_thin_curves(v, cap) for v in obj]
+    return obj
+
+
 def _proposal_to_spec(proposal: dict):
     """Convert propose_composed_strategy output to ComposedStrategySpec."""
     from composer import ComposedStrategySpec, SignalBlock, new_spec_id
@@ -592,13 +631,46 @@ EXTERNAL_PEER_BASKET = [
 ]
 
 
+# Hisse senedi koşularında hesabın ne kadarı tek pozisyona girsin (yüzde).
+# Sistem aynı anda tek pozisyon tutar, dolayısıyla "tam yatırım" doğal taban
+# çizgisidir; %5 gibi bir değer $10k hesapta ~2 hisse eder ve sabit komisyonu
+# tekrar bağlayıcı kısıt yapardı.
+AGENT_EQUITY_PCT = float(os.environ.get("AGENT_EQUITY_PCT", "95"))
+
+
 def _clamp_spec_trade_size(spec):
-    """Equity (size_precision=0) requires integer shares — the fractional crypto
-    trade_size the agent produces (0.01) rounds to 0 shares and yields 0 trades.
-    Since spec is a fresh object, in-place mutation is safe; the robustness phase
-    uses the same object too, so fixing it at a single point covers every consumer.
+    """Hisse senedi spec'ini ÖLÇEKLİ boyutlandırmaya geçirir.
+
+    Sorun ikiydi, tarihsel olarak yalnız birincisi çözülmüştü:
+
+    1. Ajan kripto alışkanlığıyla ``trade_size=0.01`` üretiyor; hisse senedinde
+       lot tam sayı (``size_precision=0``) olduğu için bu 0 adede yuvarlanıyor
+       ve backtest hiç işlem açmıyordu.
+    2. Bunu ``1.0``'a sabitlemek 1. sorunu çözdü ama **fiilî üretim boyutunu
+       1 hisseye kilitledi**. QQQ ortalama $220 iken IBKR sabit komisyonu
+       gidiş-dönüş $2 → işlem başına %0,91 gider. Komisyon 200 hisseye kadar
+       SABİT olduğundan 1 hisse, oran açısından mümkün olan EN KÖTÜ boyuttu:
+       ölçüldüğünde kaybeden 10 adayın 8'i yalnız pozisyon çarpanıyla kâra
+       geçiyordu.
+
+    Çare sabit bir adet DEĞİL — ``percent_equity`` modu. Sabit adet bu veri
+    setinde çalışmaz: QQQ 2003'te ~$25, bugün ~$725 (30×). İlk fiyata göre
+    seçilen adet sonda hesabı aşar, son fiyata göre seçilen adet başta
+    mikroskobik kalır. ``percent_equity`` her işlemde ``equity × yüzde / fiyat``
+    hesaplar (composer.py::_compute_qty) ve ``make_qty`` tam sayıya yuvarlar.
+
+    Yalnız "fixed" modda ve ölçek bozuksa (<1) müdahale edilir: ajan bilinçli
+    olarak ``percent_equity``/``atr_target``/``vol_target`` seçtiyse ona
+    dokunulmaz. Spec taze bir nesne olduğu için yerinde değişiklik güvenli;
+    robustness fazı da aynı nesneyi kullanır.
     """
+    if getattr(spec, "trade_size_mode", "fixed") != "fixed":
+        return spec
     if float(spec.trade_size) < 1:
+        spec.trade_size_mode = "percent_equity"
+        spec.trade_size_percent = AGENT_EQUITY_PCT
+        # "fixed"e geri düşülen yollar (fiyat<=0, ATR ısınmamış) için taban:
+        # 0 adet üretip sessizce işlemsiz kalmasın.
         spec.trade_size = 1.0
     return spec
 
@@ -1166,14 +1238,19 @@ def _agent_worker(
     range_start: str = "",
     range_end: str = "",
     model: str = "",
+    effort: str = "",
 ) -> None:
     import pandas as pd
 
-    from agent import propose_composed_strategy, set_thread_model
+    from agent import propose_composed_strategy, set_thread_effort, set_thread_model
 
     # Pin THIS worker thread's LLM calls to the picked model (unknown/"" =
     # app default). Thread-local — concurrent surfaces are unaffected.
     set_thread_model(model or None)
+    # Aynı kapsamda düşünme bütçesi: model kadar büyük bir maliyet kolu ve
+    # ondan bağımsız — ikisi ÇARPILIR (ölçülen: sonnet-5 −61%, üstüne low −52%,
+    # bileşik −81%). "" = CLI/uç kendi varsayılanını uygular.
+    set_thread_effort(effort or None)
     from composer import load_catalog
     from data import _bybit_cache_path
     from sandbox import run_backtest_guarded, run_robustness_guarded
@@ -2059,7 +2136,10 @@ def _agent_worker(
                     "generalization_label", "—"
                 )
 
-                # Session log: full robustness result (including equity curves + multi_symbol)
+                # Session log: robustness sonucunun TAMAMI (split + WFO + MC +
+                # multi_symbol), ama equity eğrileri indirgenmiş — ham hâli olay
+                # başına 3,5 MB yazıyordu (bkz. _thin_curves). Metriklerin
+                # kendisi (pnl, sharpe, pass sayıları) aynen korunur.
                 _session_log(
                     run_id,
                     "robustness_result",
@@ -2072,10 +2152,10 @@ def _agent_worker(
                     overfitting_label=split_label,
                     wf_pass=wf_str,
                     ms_label=ms_label,
-                    split=rob.get("split"),
-                    wfo_windows=rob.get("wfo_windows"),
-                    mc=rob.get("mc"),
-                    multi_symbol=rob.get("multi_symbol"),
+                    split=_thin_curves(rob.get("split")),
+                    wfo_windows=_thin_curves(rob.get("wfo_windows")),
+                    mc=_thin_curves(rob.get("mc")),
+                    multi_symbol=_thin_curves(rob.get("multi_symbol")),
                 )
                 # L26: lightweight SQLite index (best-effort, errors swallowed)
                 _index_insert(
@@ -2722,9 +2802,15 @@ async def run(
     range_end: str = Form(default=""),
     tfs: list[str] = Form(default=[]),
     model: str = Form(default=""),
+    effort: str = Form(default=""),
     view: str = Form(default=""),
 ):
+    from agent import resolve_effort
     from server import get_market_info, templates
+
+    # Form değeri ile FİİLEN uygulanacak değer aynı şey değil — brief'e (yani
+    # kokpitin gösterdiği şeye) çözülmüş hâli yazılır, ham girdi değil.
+    effort = resolve_effort(effort)
 
     # Optional [start, end] data window (blank side = open-ended). Validate up
     # front — a malformed date should fail the request, not the worker thread.
@@ -2857,6 +2943,12 @@ async def run(
                 "symbol": instrument_id if is_external else symbol,
                 "category": category,
                 "model": model.strip(),
+                # Effort KOŞU DURUMUNA yazılır (thread-local'dan yeniden
+                # çözülmez: kokpiti besleyen HTTP thread'i worker'ın pin'ini
+                # göremez — maliyet rozetinin 3,33× şişmesi tam olarak buydu).
+                # Değer route girişinde `resolve_effort`'tan geçti: ekran
+                # istenen değil UYGULANAN ayarı gösterir.
+                "effort": effort,
                 "robustness": "Strict" if is_strict else "Relaxed",
                 "range": (
                     f"{range_start or '…'} → {range_end or '…'}"
@@ -2907,6 +2999,7 @@ async def run(
             range_start=range_start,
             range_end=range_end,
             model=model.strip(),
+            effort=effort.strip(),
         ),
         daemon=True,
     ).start()

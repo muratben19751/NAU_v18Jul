@@ -34,6 +34,12 @@ router = APIRouter(prefix="/studio")
 # anında oluşuyor ve seçili değerin listede OLDUĞU doğrulanmalı.
 AUTO_DEFAULT_MODEL = "or:moonshotai/kimi-k3"
 
+# Aynı brief'in düşünme bütçesi. "" = ucun kendi varsayılanı; seviye listesi
+# çalışma anında oluşmadığı için (sabit sözlük) burada doğrulamaya gerek yok.
+# Varsayılanı "" bırakıyoruz: effort'un getirisi modele bağlı (sonnet-5'te
+# −52%, fable'da −11%) ve seçilmemiş bir kutu sessizce ucuzlatma yapmamalı.
+AUTO_DEFAULT_EFFORT = ""
+
 # ── Simple-mode wizard: ready-made strategy templates ──────────────────────
 # Each template's ``description`` is a natural-language brief that feeds the
 # existing ``POST /backtest/describe`` flow (Claude turns it into signal
@@ -229,6 +235,9 @@ def page(request: Request):
         "llm_or_paid_extras": _llm_or_paid_extras(),
         # Brief açılışta hangi ucu seçili göstersin (liste canlı → fallback var).
         "mc_default_model": _mc_default_model(_models),
+        # ── AUTO kokpiti: effort (düşünme bütçesi) seçici ──
+        "llm_efforts": _llm_efforts(),
+        "mc_default_effort": AUTO_DEFAULT_EFFORT,
         # ── Model rozeti: SIMPLE/PRO uygulama varsayılanını kullanır, AUTO'da
         #    bu yalnız başlangıç değeri (picker/koşu üzerine yazar) ──
         **llm_badge(),
@@ -261,6 +270,18 @@ def _llm_or_paid_extras() -> set[str]:
     from agent import openrouter_paid_extras
 
     return set(openrouter_paid_extras())
+
+
+def _llm_efforts() -> list[tuple[str, str]]:
+    """Effort seçici seçenekleri — [(değer, etiket)].
+
+    İlk satır "" = bayrağı hiç geçme. Bunu bir seviye adıyla ("medium") taklit
+    etmiyoruz: ucun kendi varsayılanı sürümle değişebilir ve kullanıcıya yanlış
+    bir söz vermiş oluruz.
+    """
+    from agent import SELECTABLE_EFFORTS
+
+    return [("", "varsayılan (uç belirler)")] + [(e, e) for e in SELECTABLE_EFFORTS]
 
 
 def _mc_default_model(models: list) -> str:

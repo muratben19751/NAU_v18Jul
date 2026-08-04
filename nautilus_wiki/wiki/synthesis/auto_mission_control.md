@@ -12,7 +12,7 @@ key_concepts:
 related:
   - wiki/synthesis/webapp_module_map.md
   - wiki/synthesis/strategy_studio.md
-last_updated: 2026-08-03
+last_updated: 2026-08-04
 ---
 
 # AUTO Mission Control kokpiti
@@ -77,6 +77,29 @@ kalır: o an görülmesi gereken şey kokpitin kendisidir (`mcInitBrief()`,
 `POST /agent/run`'ın **kendi** form varsayılanları değişmedi (`BTCUSDT`,
 `linear`, 5 iterasyon, `continuous` kapalı): bunlar form dışından gelen
 çağrıların sözleşmesi; sürekli moda kendiliğinden girmemeleri gerekir.
+
+### EFFORT — modelden ayrı ikinci maliyet kolu (2026-08-04)
+
+Brief'te MODEL'in yanına `EFFORT` seçicisi eklendi (`name="effort"`;
+`low|medium|high|xhigh|max`, varsayılan `""`). Model ile **çarpılan** bağımsız
+bir kaldıraç: ölçülen sonnet-5 −61%, üstüne `low` −52%, bileşik −81%
+([[llm_maliyet_kaldiraclari]]).
+
+Üç tasarım kararı:
+
+- **Varsayılan `""` = bayrağı hiç geçme.** Ucun kendi varsayılanını bir seviye
+  adıyla ("medium") taklit etmiyoruz — hangi seviye olduğunu bilmiyoruz ve
+  sürümle değişebilir. Sessiz ucuzlatma da yok: seçim kullanıcınındır.
+- **İki backend, iki sözlük.** Claude CLI'da `--effort <level>`; OpenRouter'da
+  `extra_body={"reasoning": {"effort": …}}` ve sözlüğü dar olduğu için
+  `xhigh|max` → `high`. Akıl yürütmeyen uçlarda OpenRouter alanı yok sayar.
+- **Koşan değer state'e yazılır.** `brief["effort"]` koşu başlarken snapshot
+  alınır; kokpitin `effort` satırı oradan okur. `current_effort()`'u HTTP
+  thread'inden çağırmak, maliyet rozetini 3,33× şişiren hatanın aynısı olurdu
+  (thread-yerel pin başka thread'den varsayılan döner).
+
+Pin `agent.set_thread_effort()` ile worker thread'e konur — model piniyle aynı
+kapsam, yani **koşuyla birlikte ölür**. Kalıcı tercih için `NAUTILUS_LLM_EFFORT`.
 
 **Yükseklik ölçülür, sabitlenmez.** Üstteki kabuk yüksekliği (topbar + content
 padding + mode switch + AUTO barı) yoğunluk kurallarına ve dar ekrandaki
@@ -191,5 +214,6 @@ onu yok etmez; kapatınca kokpit kaldığı yerden görünür.
 <!-- BACKLINKS:BEGIN -->
 ## Referenced by
 
+- [[auto_arama_ekonomisi]]
 - [[webapp_module_map]]
 <!-- BACKLINKS:END -->

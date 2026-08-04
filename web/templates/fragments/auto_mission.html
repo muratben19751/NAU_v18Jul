@@ -26,6 +26,9 @@
         <div class="mc-brief-row"><span>timeframe</span><span class="acc">{{ mv.tf_label }}</span></div>
         {# Boş seçim "default" değil: mission_view gerçek model adını çözer. #}
         <div class="mc-brief-row"><span>model</span><span class="acc" title="{{ mv.model_id }}">{{ mv.model_label }}</span></div>
+        {# Seçilmemişse ucun kendi varsayılanı koşar — onu bir seviye adıyla
+           yazmıyoruz, çünkü hangi seviye olduğunu bilmiyoruz. #}
+        <div class="mc-brief-row"><span>effort</span><span>{{ mv.effort_label }}</span></div>
         <div class="mc-brief-row"><span>range</span><span>{{ mv.brief.range }}</span></div>
         <div class="mc-brief-row"><span>robustness</span><span>{{ mv.brief.robustness }}</span></div>
         <div class="mc-brief-row"><span>iterations</span><span>{{ mv.brief.iterations }}</span></div>

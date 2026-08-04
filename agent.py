@@ -9,7 +9,9 @@ See: [[model_secici_ve_gorunurluk]] (model seçici, canlı OpenRouter kataloğu,
 ücretsiz filtresi, model adının çözülmesi, `model_unavailable_reason` ile kapıda
 ret — listelenebilir ≠ çalıştırılabilir), [[llm_maliyet_kaldiraclari]] (defter
 denetimi + maliyet kaldıraçları; `_ClaudeCLIMessages.create`'in `max_tokens`'ı
-düşürdüğü ve `_purpose`suz çağrıların kör alan oluşturduğu buradan izlenir),
+düşürdüğü ve `_purpose`suz çağrıların kör alan oluşturduğu buradan izlenir —
+`set_thread_effort`/`current_effort` ile bağlanan `--effort` de orada: modelden
+bağımsız ve onunla ÇARPILAN ikinci kol),
 [[kesilme_ve_degrade_gorunurlugu]] (`max_tokens` tavanı modelin üslubuna bağlıdır;
 `TruncatedResponse` + tek seferlik büyük-tavan denemesi, ve fallback'lerin
 `degraded` işaretiyle sayılıp ekrana taşınması).
@@ -85,6 +87,55 @@ def set_thread_model(model: str | None) -> None:
         isinstance(model, str) and model.startswith("or:") and len(model) > 3
     )
     _MODEL_OVERRIDE.model = model if ok else None
+
+
+# ── Effort (düşünme bütçesi) ───────────────────────────────────────────────
+# Modelden AYRI bir maliyet kolu: aynı modelde `low` ↔ varsayılan farkı
+# sonnet-5'te ölçülen −52% (fable'da −11% — getirisi modele bağlı, ölçmeden
+# varsayma). Model pini gibi thread-local: LLM çağrısı koşuyu yürüten worker
+# thread'inde yapılır, dolayısıyla pin'i okuyan yer onu yazan yerle aynıdır.
+# (Maliyet ROZETİ başka thread'den okunduğu için aynı deseni oraya taşımayın —
+# bkz. _llm_cost_usd'nin thread-local tuzağı.)
+_EFFORT_OVERRIDE = threading.local()
+
+# Claude CLI'ın `--effort <level>` sözlüğü. "" = bayrağı hiç geçme (CLI kendi
+# varsayılanını kullanır) — "varsayılan"ı bir seviye adıyla taklit etmek yanlış
+# olurdu, CLI'ın varsayılanı sürümle değişebilir.
+SELECTABLE_EFFORTS = ("low", "medium", "high", "xhigh", "max")
+
+# Süreç geneli varsayılan. Thread pin'i koşuyla birlikte ölür; kalıcı bir
+# tercih isteniyorsa kapsam burasıdır (model tarafındaki NAUTILUS_LLM_MODEL'in
+# kardeşi).
+EFFORT = os.environ.get("NAUTILUS_LLM_EFFORT", "").strip().lower()
+if EFFORT and EFFORT not in SELECTABLE_EFFORTS:
+    logging.warning("NAUTILUS_LLM_EFFORT=%r geçersiz — yok sayıldı", EFFORT)
+    EFFORT = ""
+
+
+def resolve_effort(effort: str | None) -> str:
+    """Bir effort girdisinin GERÇEKTEN uygulanacak hâli ("" = bayrak geçilmez).
+
+    Tek doğruluk kaynağı: hem thread pini hem de kokpitin gösterdiği değer
+    buradan geçer. Ayrı ayrı çözülselerdi ikisi ayrışırdı — form "uydurma"
+    gönderdiğinde pin "" olur ama ekran "uydurma" yazardı, yani arayüz
+    koşmayan bir ayarı koşuyor gibi gösterirdi.
+
+    Tip kontrolü şart: setter koşunun İLK adımında, worker thread'inin içinde
+    çağrılıyor; `.strip()`'i korumasız bırakmak form dışından gelen bir int'te
+    AttributeError fırlatıp koşuyu daha başlamadan öldürürdü.
+    """
+    e = effort.strip().lower() if isinstance(effort, str) else ""
+    return e if e in SELECTABLE_EFFORTS else ""
+
+
+def set_thread_effort(effort: str | None) -> None:
+    """Pin THIS thread's effort level; geçersiz/str-olmayan pin'i temizler."""
+    _EFFORT_OVERRIDE.effort = resolve_effort(effort)
+
+
+def current_effort() -> str:
+    """Bu thread'in effort seviyesi — pin yoksa süreç varsayılanı, o da yoksa ""."""
+    return getattr(_EFFORT_OVERRIDE, "effort", "") or EFFORT
 
 
 # Model seçici seçenekleri. OpenRouter girdileri yalnız OPENROUTER_API_KEY
@@ -733,6 +784,13 @@ class _ClaudeCLIMessages:
             "--strict-mcp-config",
         ]
 
+        # Düşünme bütçesi. Bayrağı YALNIZ seçildiğinde geç: "" olduğunda CLI
+        # kendi varsayılanını uygular ve komut satırı bugünkü davranışla
+        # birebir aynı kalır.
+        effort = current_effort()
+        if effort:
+            cmd += ["--effort", effort]
+
         # The system prompt is passed via a file: on Windows the command line
         # over the .cmd shim is limited to ~8K chars; prompts containing the
         # catalog can exceed that.
@@ -925,6 +983,15 @@ class _OpenRouterMessages:
         }
         if max_tokens and max_tokens > 0:
             req["max_tokens"] = int(max_tokens)
+        # OpenRouter'ın karşılığı `reasoning.effort` ve sözlüğü daha dar
+        # (low/medium/high); Claude CLI'a özgü xhigh/max en yakın üst seviyeye
+        # düşer. OpenAI SDK'sı bilinmeyen üst-düzey anahtarı reddeder, bu yüzden
+        # extra_body ile gider. Akıl yürütmeyen uçlarda OpenRouter alanı yok
+        # sayar — o durumda çağrı bugünküyle aynı kalır, hata vermez.
+        effort = current_effort()
+        if effort:
+            or_effort = "high" if effort in ("xhigh", "max") else effort
+            req["extra_body"] = {"reasoning": {"effort": or_effort}}
         if self._extra_headers:
             req["extra_headers"] = self._extra_headers
 

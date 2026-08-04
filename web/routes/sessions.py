@@ -3,11 +3,21 @@
 Endpoints:
     GET /sessions          Session list
     GET /sessions/{run_id} Single session detail
+
+Wiki References
+---------------
+Bkz: [[nau_performans_denetimi]] (2026-08-04 ikinci turu: liste sayfası her
+satırı `json.loads` ettiği için soğuk render 114 sn'ydi; `_session_summary`
+artık olay adını ve `ts`'i satır başından regex ile okur, tam parse yalnız
+gövdesi gereken dört olay için yapılır — kalan maliyet parse değil I/O),
+[[webapp_module_map]] (bu modülün rolü ve tear-sheet indeksi).
+Geri kalanı app-spesifik; Nautilus kavramı değil.
 """
 
 from __future__ import annotations
 
 import json
+import re
 from collections import deque
 from datetime import datetime
 from pathlib import Path
@@ -46,6 +56,19 @@ _STRUCTURAL_EVENTS = frozenset(
         "custom_block_error",
     }
 )
+
+# ── Liste özetinin ucuz yolu ──────────────────────────────────────────────
+# Yazıcı (agent_backtest._session_log) kaydı json.dumps ile serileştirir ve
+# "ts" ile "event"i ilk iki anahtar olarak koyar; dolayısıyla ikisi de satırın
+# başındadır. Bu pencere onları tam parse etmeden okumaya yeter.
+_HEAD_SCAN = 400
+_EVENT_RE = re.compile(r'"event"\s*:\s*"([A-Za-z_]+)"')
+_TS_RE = re.compile(r'"ts"\s*:\s*"([^"]{0,40})"')
+
+# Özet için GÖVDESİ gereken olaylar — yalnız bunlar tam parse edilir. Kalan
+# olaylar (step/backtest_result/robustness_result/…) sadece SAYILIR, ki
+# 3,5 MB'lık bir robustness satırı adını saymak için parse edilmesin.
+_BODY_NEEDED = frozenset({"session_start", "session_end", "token_snapshot", "winner"})
 
 
 def _read_events(run_id: str, max_lines: int | None = None) -> tuple[list[dict], bool]:
@@ -243,12 +266,35 @@ def _session_summary(run_id: str) -> dict:
             line = line.strip()
             if not line:
                 continue
-            try:
-                e = json.loads(line)
-            except Exception:
-                continue
-            ev = e.get("event", "")
-            _ts = e.get("ts", "")
+            # Liste sayfası bu döngüde yalnız (a) olay adlarını sayar ve (b) son
+            # ISO zaman damgasını okur; ikisi de satırın ilk ~100 baytındadır
+            # (yazıcı "ts" ve "event"i ilk iki anahtar olarak koyar). Her satıra
+            # json.loads uygulamak, 3,5 MB'lık robustness satırlarını yalnız
+            # ADINI saymak için tam parse etmek demekti — /sessions'ın soğuk
+            # açılışını 114 saniyeye çıkaran maliyet buydu. Tam parse artık
+            # SADECE gövdesi gereken dört olay için yapılır.
+            head = line[:_HEAD_SCAN]
+            m_ev = _EVENT_RE.search(head)
+            e: dict | None = None
+            if m_ev is None:
+                # Beklenmeyen biçim → doğruluk hızdan önce gelir, eski yola dön.
+                try:
+                    e = json.loads(line)
+                except Exception:
+                    continue
+                ev = e.get("event", "")
+                _ts = e.get("ts", "")
+            else:
+                ev = m_ev.group(1)
+                m_ts = _TS_RE.search(head)
+                _ts = m_ts.group(1) if m_ts else ""
+                if ev in _BODY_NEEDED:
+                    try:
+                        e = json.loads(line)
+                    except Exception:
+                        continue
+                else:
+                    e = None
             # M251: step events' ts is 'HH:MM:SS' (dateless — _add_step overwrites
             # ISO); if the last line was a step, ts_end appeared as a clock value and
             # broke elapsed. Update last_ts only from FULL ISO ts's (containing a date)

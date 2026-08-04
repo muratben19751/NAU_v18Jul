@@ -779,3 +779,51 @@ OPS NOTU: calisma agacinda bu oturumdan ONCE var olan izlenmeyen dosyalar duruyo
 - 2026-08-03 (2) — download_massive.py: US-equity verisi artik yerel arsiv olmadan REST'ten inebiliyor. Kullanici bir Massive (massive.com) API anahtari verdi; olculen sey once anahtarin NE oldugu oldu: api.massive.com ve api.polygon.io ayni yaniti donduruyor (Massive = Polygon'un yeni markasi), yani mevcut ingest_equities.py'nin bekledigi flat-file semasiyla ayni saglayici. Ama flat-file kokU (E:\MarketData\massive-flatfiles) bu makinede YOK ve flat-file erisimi ayri S3 kimlik bilgisi ister — elde yalnizca REST anahtari var. Bu yuzden yeni modul ingest_equities'in yerine gecmiyor, KARDESI oluyor: Faz B (RTH TF resample) ve Faz C (manifest en sonda) ayni fonksiyonlardan cagriliyor, yalniz Faz A REST'e bakiyor. Anahtarin plan penceresi olculdu (varsayim degil, probe): dakika-bar 2024-08-05 OK / 2023-08-01 403 NOT_AUTHORIZED -> ~2 yil gecmis; art arda cagrida 3. istek 429 -> 5 istek/dk. Bu iki sinir tasarimi belirledi: _Pacer (60/rpm bekleme + Retry-After/ustel geri cekilme) ve "plan disi yil koşumu dusurmez" kurali — 403 alan yil loglanip atlanir, manifest yalniz gercekten inen araligi yazar (yarim veri tam gorunmesin; ayni oturumdaki degrade-gorunurlugu dersinin veri tarafi). REST yolunun kazanci: veri ADJUSTED, yani flat-file yolunun bilinen split-sicramasi yok; write_manifest bu yuzden adjusted/source/note parametreleri aldi ve iki kaynak tek manifest yazicisini paylasiyor. Anahtar repoya yazilmadi: yalniz MASSIVE_API_KEY/POLYGON_API_KEY ortam degiskeni + Authorization: Bearer basligi (URL'de gitmez, logda gorunmez). Dogrulama olcumle: HOOD 2026-07 gercek indirme -> 16.337 dakika bar / 22 gunluk bar; turetilen 1-DAY etiketleri flat-file'dan gelen AA ile AYNI konvansiyonda (gun bar'i ertesi gece yarisina etiketlenir — build_tf_bars right-label'inin bilinen davranisi, yeni kod bunu degistirmiyor); gunluk kapanislar Massive'in kendi gunluk bar'lariyla bir gun kaydirmali olarak ~1 kurus icinde ortusuyor. 4 yeni test (sahte _get ile: right-label+RTH+adjusted manifest, next_url sayfalama, plan-disi yil atlama, anahtarsiz calistirma) — 7 passed. Sayfalar: webapp_module_map (download_massive.py satiri), README veri kaynaklari. Acik: flat-file (S3) yolu bu anahtarla acilmiyor; 2 yildan eski gecmis ve ~12.400 ticker'lik toplu ingest icin ya plan yukseltmesi ya da flat-file abonelik kimlik bilgisi gerekiyor.
 
 - 2026-08-03 (2) — wiki-sync: AUTO brief varsayilanlari (studio.html form + web/routes/studio.py::AUTO_DEFAULT_MODEL) webapp_module_map studio.py satirina ve auto_mission_control'e islendi. Ayrica llm_maliyet_kaldiraclari'na iki ekleme: (a) UCUNCU OLCUM TUZAGI — kokpitin maliyet gostergesi OpenRouter kosularinda 3,33x sisik; _llm_cost_usd fiyati current_model() ile cozuyor, o thread-local ve HTTP yoklama thread'inde kosunun pin'i gorunmedigi icin uygulama varsayilanina (fable-5 $10/$50) dusuyor. Kosu 51a9f3ba, 32 cagri/189.832 token: ekranda $5,09, gercek $1,53. Care: modeli kosu durumuna yazip okuyucularin oradan almasi. (b) Kimi K3 <-> Sonnet 5 olcumu: OpenRouter kimi $3/$15 = Sonnet 5 listesiyle BIREBIR ayni (sonnet ayrica 31.08'e kadar $2/$10 tanitim); olculen cagri-basi maliyet kimi $0,0397 (54 cagri) vs sonnet $0,0241 (29 cagri). Farki iki kalem suruyor: cikti uzunlugu (1.796 vs 1.237 tok/cagri) ve onbellek (kimi'nin 54 cagrisinda cache_read=cache_write=0; claude yolunda 29 cagrinin toplam ham girdisi 52 token). OpenRouter kimi icin cache fiyati yayinliyor, entegrasyon kullanmiyor. Kalite tarafinda kimi'yi tercih ettirecek olculmus gerekce yok; cikis-blogu ad-kod uyusmazligi Sonnet 5 oturumlarinda da var (4/4, 2/4, 2/4) -> uretici degil ISTEK kusuru.
+
+- 2026-08-03 (3) — download_flatfiles.py: S3 flat-file aynasi + olculen kapsam ayrimi. Kullanici Flat Files kimlik bilgilerini verdi ("kalanlari buradan indir" — 9 sembolun 2024 oncesi gecmisi ve kalan ~12.400 ticker). Sonuc kullanicinin bekledigi gibi CIKMADI ve bunu ancak olcum gosterdi: kimlik bilgileri GECERLI (LIST 200, imza kabul), ama GET her us_stocks_sip datasetinde (day/minute/trades/quotes, 2003'ten 2026'ya denenen her tarihte) 403 NOT_AUTHORIZED donuyor; crypto/forex/futures/options da 403; yalniz us_indices/ 200 veriyor. Iki bagimsiz istemciyle dogrulandi (boto3 + curl --aws-sigv4), gövde {"status":"NOT_AUTHORIZED","message":"forbidden"} — yani REST tarafindaki plan hatasiyla ayni sinif. Ders: LISTELEME ile INDIRME ayri yetkiler; "arsivi goruyorum" erisimi kanitlamiyor (5.759 dosya / 84,9 GB us_stocks_sip listelenebiliyor ama tek bayti inmiyor). Kullaniciya secenek sunuldu, us_indices/minute_aggs_v1 (904 dosya / 119,4 GB, 2023-02-14 -> 2026-07-31) secildi. Modul: yerel yol = S3 key yolu; .part + os.replace ile yarim dosya asil adiyla kalmaz; yeniden kosumda boyutu tutan atlanir, tutmayan yeniden iner (119 GB'in kesintiden sonra bastan inmemesi buna bagli); 403 yeniden DENENMEZ (FlatFileError) cunku ag hatasi degil kapsam. Hiz olcumunun kendi dersi: tek dosya 0,9 MB/s, 12 paralel ranged GET 12,4 MB/s olculdu ve plan buna gore yapildi — gercek ayna 48,5 MB/s kostu, cunku boto3 download_file dosya BASINA multipart esszamanlilik kuruyor; tek-akis probu toplam kapasiteyi olcmuyor, tahmini 2,7 saatten 41 dakikaya dustu. 6 test (sahte S3: yol aynasi, tam dosya atlanir, yarim dosya yeniden iner, 403 yapilandirma hatasi + artik birakmaz, yil suzgeci, kimlik bilgisi yoklugu). boto3 yeni bagimlilik. Sayfalar: webapp_module_map (yeni satir), README (veri kaynaklari). Not: us_indices verisi INDEX_ROOT'un bekledigi values_v1 semasiyla ayni (ticker,value,timestamp) — minute_aggs ise ticker,open,close,high,low,window_start (hacim YOK, 13.326 index ticker'i); ingest tarafi henuz yazilmadi.
+
+## 2026-08-04 — Bes eksenli review + uc duzeltme
+
+Mimari/kod/performans/algoritma/E2E taramasi yapildi; bulgular olculdu ve ucu duzeltildi.
+
+YENI SAYFA [[auto_arama_ekonomisi]]. AUTO'nun "hicbir aday gecemiyor" sonucu stratejilerden
+degil BOYUTLANDIRMADAN geliyordu: LLM kripto aliskanligiyla trade_size=0.01 uretiyor, hisse
+senedinde 0 adede yuvarlaniyor, `_clamp_spec_trade_size` 1.0'a sabitliyordu. QQQ ortalama $220
++ IBKR Fixed (max(adet*0.005, 1)) => gidis-donus $2 => islem basina %0,91 vergi. Ustelik
+komisyon 200 hisseye kadar SABIT, yani 1 hisse oran olarak mumkun olan en kotu boyut. Olculdu:
+ayni sinyal/ayni islemler, yalniz pozisyon carpani -> kaybeden 10 adayin 8'i kara geciyor.
+Duzeltme sabit adet DEGIL `percent_equity` (AGENT_EQUITY_PCT, vars. %95); sabit adet QQQ'nun
+30x fiyat araliginda (2003 ~$25, bugun ~$725) calismaz. Komisyon orani %0,91 -> ~%0,02.
+ACIK UC: pozisyon buyuyunce drawdown da dolar olarak buyur; kazanc net P&L'in ISARET
+DEGISTIRMESINDEN geliyor, risk-getiri oraninin iyilesmesinden degil (Calmar ~korunur).
+
+KARAR — `_MIN_TRADES` 20'de BIRAKILDI. `_score` az-islem cezasini zaten surekli bir carpanla
+(n/(n+20)) uyguluyor, ustune n<20 -> -inf sert kapisi var ve bu ikinci ceza bilgiyi yok ederek
+uyguluyor (bir kosuda net pozitif uc adayin ikisi, 17'ser islem, hic degerlendirilmeden elendi).
+20->10 denendi, `test_threshold_is_nau_aligned` kirildi: deger NAU_ev optimizer'inin
+JUNK_MIN_TRADES=20 esigiyle BILINCLI parite, yani kusur degil yontem karari. Ayrica gerekce de
+curudu — esigi kurcalama sebebi sabit komisyonun dusuk frekansa verdigi yapay avantajdi,
+boyutlandirma duzeltilince o baski kalkti. Geri alindi; secenek AGENT_MIN_TRADES=10 ile acik.
+
+PERFORMANS ([[nau_performans_denetimi]] ikinci tur bolumu). (P1) `robustness_result` olay basina
+3,5 MB yaziyordu (wfo_windows 2,43 MB + mc.curves_sample 0,44 + 8.605 noktalik ham OOS egrisi);
+76 oturum = 11,8 GB, en buyugu 4,7 GB. Kok neden YUZEY BASINA uygulanmis duzeltme: equity
+indirgeme `backtest_result` yolunda vardi, `robustness_result` yolunda yoktu. `_thin_curves`
+eklendi — yalniz tamami sayi olan ve 40'tan uzun dizileri indirger, dict listeleri ve metrikler
+korunur, girdi degismez. (P2) `_session_summary` her satiri json.loads ediyordu (3,5 MB'lik
+satirlari yalniz ADINI saymak icin); artik olay adi + ts satirin ilk 400 baytindan regex ile
+okunuyor, tam parse yalniz dort olay icin. /sessions soguk 114 s -> 19 s; fonksiyon A/B ile
+(regex hic eslesmeyecek hale getirilip eski yol zorlanarak) BIREBIR esdeger dogrulandi.
+KALAN BORC: 19 s'nin tamami I/O — P1 yeni buyumeyi durdurur, mevcut 11,8 GB'i kucultmez; eski
+loglarin arsivlenmesi ~1 sn'ye indirir. `_SUMMARY_CACHE` surec ici oldugu icin her restart
+soguk maliyeti geri getiriyor.
+
+ACIK, DUZELTILMEMIS: (a) `calmar = pnl_pct / max(|max_dd|, 0.01)` tabani dusuk riskli
+stratejiyi cezalandiriyor (DD %0,3 olan aday Calmar 1,4 yerine 0,42 aliyor). (b) /studio yaniti
+1,73 MB. (c) agent_backtest.py 3.279 satir — route+worker+skorlama+robustness+SQLite tek modulde.
+(d) Escalisan AUTO kosusu sinirlamasi yok (ProgressStore(50) bellegi korur, CPU/token'i degil).
+(e) Fix 1'in gercek etkisi OLCULMEDI — yeni bir AUTO kosusu gerekiyor.
+
+E2E: pozitif 15/16, negatif 16/17 (iki "fail" de test beklentisi hatasiydi). Path traversal,
+XSS, devasa/negatif girdi savunulmus; n_iterations max(2, min(15, n)) ile kelepceleniyor.
+Suit 745 passed / 1 skipped.

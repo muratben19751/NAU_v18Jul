@@ -1,7 +1,7 @@
 ---
 title: nautilus_web_app Performans Denetimi (2026-07)
 type: synthesis
-summary: nautilus_web_app'in runtime-performans denetimi — 50 ham bulgu, çekişmeli-doğrulama sonrası 31 doğrulanmış darboğaz. En yüksek ROI: LLM prompt-caching yokluğu; en sert kısıt: NAU_WINDOW=260 sabit-pencere paritesi incremental indikatörleri kilitler.
+summary: nautilus_web_app'in runtime-performans denetimi — 50 ham bulgu, 31 doğrulanmış darboğaz (2026-07); en yüksek ROI LLM prompt-caching, en sert kısıt NAU_WINDOW=260 paritesi. 2026-08-04 ikinci turu sayfa/disk ölçtü: /sessions 114 s → 19 s, robustness_result 3,5 MB/olay indirgendi (11,8 GB birikmişti).
 key_concepts:
   - single_threaded_core
   - crash_only_design
@@ -10,8 +10,9 @@ sources:
   - https://github.com/muratben19751/NAU_v18Jul
 related:
   - wiki/synthesis/webapp_module_map.md
+  - wiki/synthesis/auto_arama_ekonomisi.md
   - wiki/synthesis/backtesting_guide.md
-last_updated: 2026-07-21
+last_updated: 2026-08-04
 ---
 
 # nautilus_web_app Performans Denetimi — 2026-07-21
@@ -86,6 +87,54 @@ performans-tarafı devamıdır: **hız için strateji doğruluğunu feda etme.**
 Dikkat gerektiren (invalidasyon/off-by-one): `data.py`/`web/routes/backtest.py` mtime-keyed
 cache'leri custom-block durumu + dir-mtime anahtarına katmalı; WFO pencere label-slice
 inclusive-end off-by-one'a dikkat.
+
+## İkinci tur — 2026-08-04 (ölçülmüş, düzeltildi)
+
+İlk denetim CPU sıcak-yoluna bakmıştı; bu tur **sayfa gecikmesi + disk** ölçtü
+(TestClient, aynı süreç, n=5). İki bulgu ve ikisi de kapatıldı.
+
+| sayfa | önce (soğuk) | sonra (soğuk) | sıcak |
+|---|---|---|---|
+| `/sessions` | **114.298 ms** | **19.000 ms** | 17 ms |
+| `/studio` | 459 ms | — | 35 ms (1,73 MB yanıt) |
+| `/data` | 1.094 ms | — | 141 ms |
+
+### P1 — `robustness_result` olay başına 3,5 MB yazıyordu
+
+76 oturum dosyası **11,8 GB** (en büyüğü 4,7 GB / 304.933 satır). Tek satırın
+dağılımı: `wfo_windows[]` 2,43 MB (88 pencere × train/test/naive, her biri
+equity eğrisiyle), `mc.curves_sample[]` 0,44 MB (50 eğri),
+`split.oos_metrics.equity_curve_mtm[]` 0,35 MB (**8.605 ham nokta**),
+`split.in_sample_metrics…` 0,21 MB.
+
+Kök neden **yüzey başına uygulanmış bir düzeltme**: equity eğrilerinin ~40
+noktaya indirgenmesi `backtest_result` yolunda vardı, `robustness_result`
+yolunda yoktu. Çare `_thin_curves` (`web/routes/agent_backtest.py`): yalnız
+**tamamı sayı olan ve 40'tan uzun** dizileri indirger; sözlükleri, dizgeleri ve
+dict listelerini (işlem kayıtları) korur, girdiyi **değiştirmez** (aynı `rob`
+sözlüğü karar ve ekran yollarında da kullanılıyor). Test verisinde
+0,46 MB → 44 KB; metrikler, 88 pencere ve 50 MC eğrisinin sayısı aynen kalır.
+
+### P2 — `_session_summary` her satırı JSON parse ediyordu
+
+Fonksiyonun docstring'i "read only key events" diyordu ama gövde her satıra
+`json.loads` uyguluyordu — 3,5 MB'lık robustness satırlarını yalnız **adını**
+saymak için. Çare (`web/routes/sessions.py`): olay adı ve `ts` satırın ilk 400
+baytından regex ile okunur (yazıcı ikisini ilk iki anahtar olarak koyar); tam
+parse yalnız gövdesi gereken dört olay için yapılır
+(`session_start`, `session_end`, `token_snapshot`, `winner`). Beklenmeyen biçimde
+eski yola düşülür — doğruluk hızdan önce.
+
+Doğrulama fonksiyonun kendisiyle A/B yapıldı (`_EVENT_RE` hiç eşleşmeyecek hale
+getirilip eski yol zorlandı): **tüm alanlar birebir aynı**, dosya başına
+4,4–5,9× hız.
+
+> Kalan 19 saniye **parse değil I/O**: 11,8 GB'ın okunması. P1 yeni büyümeyi
+> durdurur ama mevcut dosyaları küçültmez; eski logların arşivlenmesi bunu
+> ~1 sn'ye indirir. `_SUMMARY_CACHE` (mtime+size) sıcak yolu zaten kurtarıyor,
+> ama süreç içi olduğu için her restart soğuk maliyeti geri getirir.
+
+Algoritmik tarafın bulguları ayrı sayfada: [[auto_arama_ekonomisi]].
 
 ## Metodoloji
 
