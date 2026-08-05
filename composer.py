@@ -1251,6 +1251,16 @@ _load_custom_blocks()
 # --------------------------------------------------------------------------
 
 
+def _signal_matches_role(role: str, result) -> bool:
+    """Interpret a block output using the role's exact signal vocabulary."""
+
+    if role == "entry":
+        return result in ("long", "short")
+    if role == "exit":
+        return result == "exit"
+    return False
+
+
 @dataclass
 class SignalBlock:
     type: BlockType
@@ -1297,6 +1307,10 @@ class ComposedStrategySpec:
     # Delay fill: execute entry on next bar's open instead of signal bar's close
     # Eliminates same-bar look-ahead bias; default True for more realistic execution
     delay_fill: bool = True
+    # Deterministic adverse fill model. AUTO enables this so selection,
+    # robustness and holdout all pay one tick on aggressive fills; manual/legacy
+    # specs remain backward compatible unless explicitly enabled.
+    model_slippage: bool = False
 
     def to_dict(self) -> dict:
         d = asdict(self)
@@ -1336,6 +1350,7 @@ class ComposedStrategySpec:
             trend_interval=str(d.get("trend_interval", "60")),
             trend_ema_period=int(d.get("trend_ema_period", 50)),
             delay_fill=bool(d.get("delay_fill", True)),
+            model_slippage=bool(d.get("model_slippage", False)),
         )
 
     def validate(self) -> str | None:
@@ -1347,6 +1362,16 @@ class ComposedStrategySpec:
             reg_entry = BLOCK_REGISTRY.get(b.type)
             if reg_entry is None:
                 return f"Unknown block type: {b.type}"
+            # Custom blocks generated for AUTO carry their semantic role in
+            # metadata. A saved exit block must never be re-used as an entry
+            # (or vice versa): the function may still execute, but its return
+            # vocabulary has a different meaning and can manufacture trades.
+            declared_role = (reg_entry.get("meta") or {}).get("role")
+            if declared_role in ("entry", "exit") and b.role != declared_role:
+                return (
+                    f"Custom block {b.type!r} is declared for role "
+                    f"{declared_role!r}, not {b.role!r}."
+                )
             v = reg_entry.get("validate")
             if v is not None:
                 # Carry the L25 isolation into validate too: give the custom validate
@@ -2309,7 +2334,11 @@ class ComposedStrategy(Strategy):
         exit_fires_per: list[bool] = []
         for i, b in self._exit_blocks:
             r = self._eval_block(i, b, closes)
-            exit_fires_per.append(bool(r))
+            # Role contract is deliberately exact. ``bool('long')`` used to
+            # turn an entry-style custom block into an exit signal, so malformed
+            # generated code could pass smoke/runtime and still win a backtest.
+            # Only the exit vocabulary's affirmative value may close a position.
+            exit_fires_per.append(_signal_matches_role("exit", r))
 
         if self.spec.entry_logic == "AND":
             long_fires = bool(self._entry_blocks) and all(long_fires_per)

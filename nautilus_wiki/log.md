@@ -839,3 +839,30 @@ Suit 745 passed / 1 skipped.
   IS/OOS etiketi üçe ayrıldı, IS_SHARPE_MIN tabanı, HOLDOUT_MIN_TRADES,
   backtest_result equity çiftinin hizalı seyreltilmesi (_thin_pair).
 - wiki/synthesis/auto_kapi_ve_geri_bildirim.md §4 eklendi.
+
+## [2026-08-05] ingest | AUTO 360° canlı inceleme — başlangıç kaydı
+- Yeni sayfa: [[auto_360_canli_review_iyilestirmeleri]]. `6432552f` ve `bf598e4f`
+  koşularının rol sözleşmesi, WFO kapısı, multi-symbol fail-fast, sealed holdout,
+  HTTP 402 devre kesici, token/maliyet ve JSONL büyümesi kanıtları kaydedildi.
+- Durum: düzeltme öncesi taban. Uygulanan kod ve test sonuçları aynı sayfaya ikinci
+  güncellemede eklenecek.
+
+## [2026-08-05] ingest | AUTO 360° iyileştirmeleri — uygulandı ve doğrulandı
+- Rol kontratı fail-closed; degraded finalist winner olamaz; terminal 401/402/403
+  devreyi açar; WFO `%50 + penalized Sharpe`; multi-symbol kesin ret fail-fast.
+- Sealed holdout katalogdan önce: `n>=20`, pozitif PnL/Sharpe/excess ve timeframe
+  başına tek kullanım. Buy-and-hold benchmark ve AUTO'ya deterministik 1-tick
+  slippage eklendi; bilinen unadjusted hisse verisi reddediliyor.
+- Sürekli mod varsayılanı 4 saat/250k token; model-kimliği maliyet tutarlılığı,
+  run-id RNG seed'i, nested JSONL curve thinning ve tur sayacı düzeltildi.
+- Kusurlu iki koşunun 14/14 winner spec'i tam yedekle karantinaya taşındı
+  (aktif katalog 850 → 836).
+- Doğrulama: 763 passed, 1 skipped; PM2 restart, `/studio` HTTP 200.
+- Ayrıntı: [[auto_360_canli_review_iyilestirmeleri]].
+
+## [2026-08-05] maintain | AUTO 360° Wiki son senkronizasyonu
+- Aktif katalog yeniden doğrulandı: 836 kayıt; karantinadaki 14 kayıt aktif
+  kataloğa geri dönmemiştir.
+- PM2 `nautilus` online, unstable restart 0; `/studio` HTTP 200.
+- Canlı izleme otomasyonunun artık mevcut olmadığı doğrulandı. Sonraki inceleme
+  adjusted veriyle yapılacak yeni AUTO koşusuna bağlandı.

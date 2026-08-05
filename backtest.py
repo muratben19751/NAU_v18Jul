@@ -22,7 +22,7 @@ from decimal import Decimal
 import numpy as np
 import pandas as pd
 from nautilus_trader.backtest.engine import BacktestEngine, BacktestEngineConfig
-from nautilus_trader.backtest.models import FeeModel, MakerTakerFeeModel
+from nautilus_trader.backtest.models import FeeModel, FillModel, MakerTakerFeeModel
 from nautilus_trader.config import LoggingConfig
 from nautilus_trader.model import (
     Bar,
@@ -113,10 +113,12 @@ def _bybit_fees_bps(symbol: str, market_symbol: str) -> tuple[float, float]:
     )
 
 
-# Slippage INTENTIONALLY not modeled: Nautilus FillModel is probabilistic
-# (breaks the deterministic backtest); the constant stays only for external
-# analysis/tests.
-SLIPPAGE_BPS: float = 2.0  # ~1 tick slippage estimate per fill (not modeled)
+# AUTO enables Nautilus' adverse one-tick slippage on every aggressive fill.
+# ``prob_slippage=1`` plus a pinned seed is deterministic; a probabilistic
+# unseeded FillModel would make ranking/replay irreproducible. This bps constant
+# remains an external-analysis approximation, not the engine's tick-sized input.
+SLIPPAGE_BPS: float = 2.0
+SLIPPAGE_RANDOM_SEED: int = 42
 
 # Interactive Brokers — US stock/ETF (e.g. QQQ) commission. IBKR Pro "Fixed"
 # plan: fixed fee per share, minimum per order, and a cap as a percentage of
@@ -1339,6 +1341,11 @@ def run_composed_backtest(
             # Commission by instrument type: crypto→Bybit maker/taker,
             # US stock/ETF (QQQ etc.)→Interactive Brokers Fixed (see _fee_model_for).
             fee_model=_fee,
+            fill_model=(
+                FillModel(prob_slippage=1.0, random_seed=SLIPPAGE_RANDOM_SEED)
+                if getattr(spec, "model_slippage", False)
+                else None
+            ),
         )
         engine.add_instrument(active_instrument)
 

@@ -33,6 +33,51 @@ import time
 from pathlib import Path
 from typing import Any
 
+
+class TerminalLLMError(RuntimeError):
+    """Non-retryable provider failure (credit/auth/permission)."""
+
+
+def is_terminal_llm_error(exc: BaseException) -> bool:
+    """Return True when fallback/retry cannot possibly heal the provider call.
+
+    OpenAI-compatible SDKs do not share one exception class, so inspect the
+    stable HTTP status plus a conservative message fallback. Rate limits (429),
+    timeouts and 5xx responses remain retryable; credit/auth failures do not.
+    """
+
+    status = getattr(exc, "status_code", None)
+    response = getattr(exc, "response", None)
+    if status is None and response is not None:
+        status = getattr(response, "status_code", None)
+    if status in (401, 402, 403):
+        return True
+    text = f"{type(exc).__name__}: {exc}".lower()
+    markers = (
+        "insufficient credit",
+        "insufficient_credit",
+        "payment required",
+        "invalid api key",
+        "authentication failed",
+        "not authorized",
+        "permission denied",
+    )
+    return any(marker in text for marker in markers)
+
+
+_random_ctx = threading.local()
+
+
+def set_thread_random_seed(seed: str | int | None) -> None:
+    """Pin deterministic fallback exploration to the current AUTO worker."""
+
+    _random_ctx.rng = random.Random(str(seed)) if seed is not None else None
+
+
+def _fallback_rng():
+    return getattr(_random_ctx, "rng", None) or random
+
+
 from anthropic import Anthropic
 
 from app_constants import NO_WINDOW_FLAGS
@@ -1453,23 +1498,25 @@ def _summarize_composed_history(history: list[Any], catalog: list[Any]) -> str:
 def _fallback_composed() -> dict:
     from composer import BLOCK_CATALOG
 
+    rng = _fallback_rng()
+
     # Exclude exit-only blocks (e.g. atr_stop) from entry selection to avoid
     # _validate_composed forcing role="exit" → zero entry blocks → ValueError.
     exit_only = {"atr_stop"}
     all_types = list(BLOCK_CATALOG.keys())
     entry_types = [t for t in all_types if t not in exit_only]
-    entry_type = random.choice(entry_types)
-    exit_type = random.choice([t for t in all_types if t != entry_type] or all_types)
+    entry_type = rng.choice(entry_types)
+    exit_type = rng.choice([t for t in all_types if t != entry_type] or all_types)
 
     def _rand_params(btype: str) -> dict:
         p = {}
         for pname, pspec in BLOCK_CATALOG[btype]["params"].items():
             if pspec["type"] == "int":
-                p[pname] = random.randint(pspec["min"], pspec["max"])
+                p[pname] = rng.randint(pspec["min"], pspec["max"])
             elif pspec["type"] == "float":
-                p[pname] = round(random.uniform(pspec["min"], pspec["max"]), 1)
+                p[pname] = round(rng.uniform(pspec["min"], pspec["max"]), 1)
             else:
-                p[pname] = random.choice(pspec["options"])
+                p[pname] = rng.choice(pspec["options"])
         return p
 
     def _fix_fast_slow(btype: str, params: dict) -> dict:
@@ -1576,6 +1623,12 @@ def _validate_composed(data: dict) -> dict:
         if role not in ("entry", "exit"):
             continue
         meta = BLOCK_CATALOG[btype]
+        declared_role = meta.get("role")
+        if declared_role in ("entry", "exit") and role != declared_role:
+            # Do not silently coerce a custom block into the opposite role.
+            # Dropping it lets the existing missing-entry/missing-exit logic
+            # reject or repair the proposal without changing signal semantics.
+            continue
         params = {}
         for pname, pspec in meta["params"].items():
             raw = (b.get("params") or {}).get(pname, pspec["default"])
@@ -1766,6 +1819,8 @@ Design a new {market_target} composed strategy as specified. Return JSON only.""
         # kırılgan; koşu bu alanı sayar ve fazı "degraded" kapatır — fallback bir
         # koşuyu başarı gibi göstermesin.
         fb["degraded"] = type(e).__name__
+        fb["degraded_detail"] = str(e)[:500]
+        fb["degraded_terminal"] = is_terminal_llm_error(e)
         return fb, None
 
 
@@ -1787,7 +1842,10 @@ from codegate import (
 
 
 def _test_execute_generated(
-    src: str, meta: dict | None = None, require_max_lookback: bool = False
+    src: str,
+    meta: dict | None = None,
+    require_max_lookback: bool = False,
+    role_hint: str = "entry",
 ) -> None:
     """Compile + execute the module in an isolated namespace, then invoke
     evaluate() once with harmless inputs to catch runtime errors (NameError,
@@ -1871,7 +1929,7 @@ def _test_execute_generated(
     class _Block:
         def __init__(self, params):
             self.params = params
-            self.role = "entry"
+            self.role = role_hint
             self.type = "custom"
 
     class _Portfolio:
@@ -1923,8 +1981,13 @@ def _test_execute_generated(
         ) from error_holder[0]
     out = result_holder[0] if result_holder else None
 
-    if out not in (None, "long", "short", "exit"):
-        raise GeneratedCodeError(f"evaluate() returned invalid value: {out!r}")
+    allowed = {None, "long", "short"} if role_hint == "entry" else {None, "exit"}
+    if out not in allowed:
+        expected = "None/'long'/'short'" if role_hint == "entry" else "None/'exit'"
+        raise GeneratedCodeError(
+            f"evaluate() violated the {role_hint} role contract: returned {out!r}; "
+            f"expected {expected}"
+        )
 
 
 CUSTOM_BLOCK_SYSTEM_PROMPT = """You are a Python code generator for a trading strategy composer.
@@ -2421,6 +2484,10 @@ Return the JSON only."""
             for k, v in _u.items():
                 _acc_usage[k] = _acc_usage.get(k, 0) + v
         except Exception as e:
+            if is_terminal_llm_error(e):
+                raise TerminalLLMError(
+                    f"terminal LLM provider failure: {type(e).__name__}: {e}"
+                ) from e
             last_error = f"Claude request failed: {type(e).__name__}: {e}"
             user_prompt = f"Previous request failed ({type(e).__name__}). {user_prompt}"
             continue
@@ -2445,9 +2512,19 @@ Return the JSON only."""
             user_prompt = f"Your last output was invalid: {last_error}. Fix and return valid JSON."
             continue
 
+        # Persist the provenance contract with the block. The composer validates
+        # this metadata whenever a spec assigns the block to a role.
+        meta = dict(meta)
+        meta["role"] = role_hint
+
         try:
             _validate_generated_code(code)
-            _test_execute_generated(code, meta=meta, require_max_lookback=True)
+            _test_execute_generated(
+                code,
+                meta=meta,
+                require_max_lookback=True,
+                role_hint=role_hint,
+            )
         except GeneratedCodeError as e:
             last_error = str(e)
             user_prompt = (
@@ -3031,6 +3108,8 @@ def _propose_agent_strategy_idea(
         # yarışır ve "kazanan" ilan edilir.
         fb = dict(_FALLBACK_IDEAS[idx])
         fb["degraded"] = type(e).__name__
+        fb["degraded_detail"] = str(e)[:500]
+        fb["degraded_terminal"] = is_terminal_llm_error(e)
         return fb
 
 

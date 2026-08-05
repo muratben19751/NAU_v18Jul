@@ -58,6 +58,7 @@ def test_bogus_tf_codes_fall_back_to_single_interval(monkeypatch):
 
 
 def test_dotted_symbol_promotes_to_external_with_mapped_tfs(monkeypatch):
+    monkeypatch.setenv("AGENT_ALLOW_UNADJUSTED", "1")
     client, got, done = _client_and_capture(monkeypatch)
     r = client.post(
         "/agent/run",

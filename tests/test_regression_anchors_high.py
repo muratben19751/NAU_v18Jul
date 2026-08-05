@@ -183,7 +183,10 @@ class TestRobustnessPassed:
         # 3 criteria are ACTUALLY evaluated (IS/OOS, WFO, MC), none of them failed.
         return {
             "split": {"overfitting_label": "✓ Robust"},
-            "wfo_windows": [{"test_n_trades": 5}],
+            "wfo_windows": [
+                {"test_n_trades": 5, "test_metrics": {"pnl": 1.0}},
+                {"test_n_trades": 5, "test_metrics": {"pnl": -1.0}},
+            ],
             "oos_sharpe_penalized": 1.0,
             "mc": {"max_dd_p50": -10.0},
         }

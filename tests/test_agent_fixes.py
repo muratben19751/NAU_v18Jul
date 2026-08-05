@@ -193,12 +193,10 @@ class TestWinnerSessionEnd:
 
         src = inspect.getsource(ab._agent_worker)
         # session_end must come after the 'winner' log and before the continuous-return
-        wi = src.find('"winner",')
+        wi = src.find('"winner" if promotion_passed else "finalist_rejected"')
         assert wi != -1
         tail = src[wi : wi + 2000]
-        assert 'outcome="winner"' in tail, (
-            "no session_end(outcome='winner') on the winner path"
-        )
+        assert 'outcome="winner" if promotion_passed else "promotion_rejected"' in tail
 
 
 class TestTerminalMessage:

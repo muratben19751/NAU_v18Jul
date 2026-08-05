@@ -16,6 +16,9 @@ last_updated: 2026-08-04
 
 # AUTO'nun kapısı ve geri bildirimi
 
+2026-08-05 canlı üretim takip denetimi ve kapıların ikinci sertleştirme turu için
+[[auto_360_canli_review_iyilestirmeleri]] sayfasına bakın.
+
 2026-08-04'te canlı bir AUTO koşusu (`1376c812`, QQQ.NASDAQ, 4 TF, relaxed,
 sürekli mod) izlenerek yapılan denetim. [[auto_arama_ekonomisi]] aramanın
 *maliyet* tarafını ele alıyor; bu sayfa *karar* tarafını.
@@ -157,5 +160,6 @@ sayısının katı seçmek gerekir.
 <!-- BACKLINKS:BEGIN -->
 ## Referenced by
 
+- [[auto_360_canli_review_iyilestirmeleri]]
 - [[auto_arama_ekonomisi]]
 <!-- BACKLINKS:END -->

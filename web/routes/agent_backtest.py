@@ -93,7 +93,23 @@ HOLDOUT_WARMUP_BARS = 300
 # MEASURED. Per-trade Sharpe needs two observations for a standard deviation, so
 # one trade cannot produce a dispersion figure at all — it produces a single
 # outcome and the appearance of validation.
-HOLDOUT_MIN_TRADES = 2
+# A sealed validation sample with only a handful of entries cannot support a
+# promotion decision. Keep the research result visible, but require the same
+# minimum evidence as the main ranking gate before catalog publication.
+HOLDOUT_MIN_TRADES = int(os.environ.get("AGENT_HOLDOUT_MIN_TRADES", "20"))
+HOLDOUT_REQUIRE_POSITIVE_PNL = True
+HOLDOUT_REQUIRE_POSITIVE_SHARPE = True
+HOLDOUT_REQUIRE_POSITIVE_EXCESS = True
+
+# Continuous AUTO is bounded by default. Operators can choose other positive
+# values through the form/env; an explicit zero no longer creates an accidental
+# unbounded bill/worker loop.
+DEFAULT_CONTINUOUS_MAX_HOURS = float(
+    os.environ.get("AGENT_DEFAULT_CONTINUOUS_MAX_HOURS", "4")
+)
+DEFAULT_CONTINUOUS_MAX_TOKENS = int(
+    os.environ.get("AGENT_DEFAULT_CONTINUOUS_MAX_TOKENS", "250000")
+)
 
 # M22 extra circuit breaker: threshold of consecutive winnerless rounds
 # (continuous mode). Counter resets when a winner appears. 0 = off; default 25.
@@ -111,6 +127,10 @@ _IPC_Q = None
 SESSION_LOG_DIR = Path.home() / ".cache" / "nautilus_web_app" / "agent_sessions"
 _SESSION_LOG_LOCKS: dict[str, threading.Lock] = {}
 _SESSION_LOG_META: threading.Lock = threading.Lock()  # guards _SESSION_LOG_LOCKS
+
+
+class AgentBudgetReached(RuntimeError):
+    """Raised between LLM calls when the run's token ceiling is reached."""
 
 
 def _json_safe(obj):
@@ -469,6 +489,25 @@ def _add_tokens(run_id: str, usage: dict | None) -> None:
             )
 
 
+def _enforce_token_budget(run_id: str) -> None:
+    """Stop before another LLM call once the persisted per-run ceiling is hit."""
+
+    with _AGENT_LOCK:
+        s = _AGENT_PROGRESS.get(run_id) or {}
+        cap = int(s.get("max_total_tokens") or 0)
+        used = sum(
+            int(s.get(k) or 0)
+            for k in (
+                "tokens_in",
+                "tokens_out",
+                "tokens_cache_read",
+                "tokens_cache_write",
+            )
+        )
+    if cap > 0 and used >= cap:
+        raise AgentBudgetReached(f"token ceiling ({cap:,}) reached at {used:,}")
+
+
 def _set_robustness_scan(run_id: str, current: int, total: int) -> None:
     with _AGENT_LOCK:
         s = _AGENT_PROGRESS.get(run_id)
@@ -736,7 +775,11 @@ def _score(result) -> float:
     if sharpe is None:
         sharpe = m.get("sharpe") or 0.0  # backward-compat (old metrics dicts)
     # Use explicit None check to avoid treating pnl_pct=0.0 (break-even) as missing
-    _pnl_pct = m.get("pnl_pct")
+    # Rank edge over the investable buy-and-hold baseline when the run stamped
+    # one. Absolute long-market profit is not evidence of strategy alpha.
+    _pnl_pct = m.get("excess_pnl_pct")
+    if _pnl_pct is None:
+        _pnl_pct = m.get("pnl_pct")
     if _pnl_pct is not None:
         pnl_pct = _pnl_pct
     else:
@@ -764,6 +807,27 @@ def _score(result) -> float:
     if n_trades > 2000:
         score += -0.3 * math.log10(n_trades / 2000)
     return score
+
+
+def _stamp_buy_hold_benchmark(result, bars_df) -> None:
+    """Attach deterministic buy-and-hold and excess-return metrics in-place."""
+
+    if result.error or not result.metrics or bars_df is None or len(bars_df) < 2:
+        return
+    try:
+        first = float(bars_df["close"].iloc[0])
+        last = float(bars_df["close"].iloc[-1])
+        if first <= 0 or not math.isfinite(first) or not math.isfinite(last):
+            return
+        benchmark = last / first - 1.0
+        pnl_pct = result.metrics.get("pnl_pct")
+        if pnl_pct is None:
+            pnl_pct = (result.metrics.get("pnl") or 0.0) / _starting_cash()
+        result.metrics["benchmark_return_pct"] = benchmark
+        result.metrics["excess_pnl_pct"] = float(pnl_pct) - benchmark
+        result.metrics["benchmark"] = "buy_and_hold"
+    except (KeyError, TypeError, ValueError, IndexError):
+        return
 
 
 def _rank_results(results: list[tuple]) -> list[tuple]:
@@ -951,11 +1015,13 @@ def _robustness_passed(
                 pen = None
         except (TypeError, ValueError):
             pen = None
-        if pen is not None:
-            wfo_failed = pen <= 0
-        else:
-            positive = sum(1 for w in valid_windows if _wfo_test(w).get("pnl", 0) > 0)
-            wfo_failed = positive / len(valid_windows) < 0.5
+        positive = sum(1 for w in valid_windows if _wfo_test(w).get("pnl", 0) > 0)
+        positive_ratio = positive / len(valid_windows)
+        # UI and gate now implement one contract: at least half of the valid
+        # windows must be profitable. Penalized OOS Sharpe is an additional
+        # stability requirement when available, never an alternative that can
+        # make 0/88 profitable windows pass.
+        wfo_failed = positive_ratio < 0.5 or (pen is not None and pen <= 0)
         if wfo_failed:
             failed += 1
 
@@ -992,6 +1058,28 @@ def _robustness_passed(
             )
         return False
     return True
+
+
+def _multi_symbol_definitive_failure(ms: dict | None) -> bool:
+    """True only for an evaluated, explicit symbol-specific rejection."""
+
+    return "✗" in str((ms or {}).get("generalization_label", ""))
+
+
+def _holdout_promotion_passed(
+    n_trades: int,
+    pnl_pct: float,
+    sharpe: float | None,
+    excess_pnl_pct: float,
+) -> bool:
+    """Single publication policy for sealed holdout results."""
+
+    return bool(
+        n_trades >= HOLDOUT_MIN_TRADES
+        and (not HOLDOUT_REQUIRE_POSITIVE_PNL or pnl_pct > 0)
+        and (not HOLDOUT_REQUIRE_POSITIVE_SHARPE or (sharpe is not None and sharpe > 0))
+        and (not HOLDOUT_REQUIRE_POSITIVE_EXCESS or excess_pnl_pct > 0)
+    )
 
 
 def _ms_score_factor(rob: dict | None) -> float:
@@ -1139,7 +1227,9 @@ def _index_insert(
             logging.warning("could not write agent_index.db (logged once)")
 
 
-def _llm_cost_usd(ti: int, to: int, tcr: int, tcw: int) -> tuple[str, float | None]:
+def _llm_cost_usd(
+    ti: int, to: int, tcr: int, tcw: int, model: str = ""
+) -> tuple[str, float | None]:
     """L38: returns (pricing_model, NOTIONAL Anthropic-list cost USD).
 
     Pricing comes from ``token_ledger.cost_usd`` — the same single source the
@@ -1149,12 +1239,13 @@ def _llm_cost_usd(ti: int, to: int, tcr: int, tcw: int) -> tuple[str, float | No
     which left every run's cost line permanently empty. None now only means an
     unpriced model. The model is ``current_model()`` (thread pin dahil).
     """
-    try:
-        from agent import current_model
+    if not model:
+        try:
+            from agent import current_model
 
-        model = current_model()
-    except Exception:
-        model = "claude-fable-5"
+            model = current_model()
+        except Exception:
+            model = "claude-fable-5"
     import token_ledger
 
     return model, token_ledger.cost_usd(
@@ -1314,6 +1405,20 @@ def _run_full_robustness(
             f"{ms.get('generalization_label', '?')}",
         )
 
+        # A definitive symbol-specific rejection already fixes the final gate
+        # result. Do not spend minutes on IS/OOS + WFO for an outcome that cannot
+        # change. Return explicit skipped sections so the audit log remains clear.
+        if _multi_symbol_definitive_failure(ms):
+            reason = "skipped after definitive multi-symbol rejection"
+            _add_step(run_id, f"  ⏭ {reason}: IS/OOS, Walk-Forward and Monte Carlo")
+            return {
+                "split": {"error": reason},
+                "wfo_windows": [],
+                "mc": {"error": reason},
+                "multi_symbol": ms,
+                "short_circuit": "multi_symbol",
+            }
+
         # 2) IS/OOS Split
         _add_step(
             run_id,
@@ -1368,14 +1473,23 @@ def _run_full_robustness(
             # Reported on the SAME series the gate decides on (_wfo_test): the
             # unchanged spec's OOS windows. Showing the re-optimized count next
             # to a naive verdict made the two disagree on screen.
-            pos = sum(1 for w in wfo if _wfo_test(w).get("pnl", 0) > 0)
-            avg_pnl = sum(_wfo_test(w).get("pnl", 0) for w in wfo) / len(wfo)
+            valid_wfo = [
+                w
+                for w in wfo
+                if (_wfo_test(w).get("n_trades") or w.get("test_n_trades") or 0) >= 3
+            ]
+            pos = sum(1 for w in valid_wfo if _wfo_test(w).get("pnl", 0) > 0)
+            avg_pnl = (
+                sum(_wfo_test(w).get("pnl", 0) for w in valid_wfo) / len(valid_wfo)
+                if valid_wfo
+                else 0.0
+            )
             pos_opt = sum(
                 1 for w in wfo if (w.get("test_metrics") or {}).get("pnl", 0) > 0
             )
             _add_step(
                 run_id,
-                f"  → {pos}/{len(wfo)} windows positive (saved spec) · "
+                f"  → {pos}/{len(valid_wfo)} valid windows positive (saved spec) · "
                 f"average test PnL={avg_pnl:+.2f} USDT · "
                 f"{pos_opt}/{len(wfo)} when re-optimized per window (diagnostic)",
             )
@@ -1441,7 +1555,13 @@ def _agent_worker(
 ) -> None:
     import pandas as pd
 
-    from agent import propose_composed_strategy, set_thread_effort, set_thread_model
+    from agent import (
+        TerminalLLMError,
+        propose_composed_strategy,
+        set_thread_effort,
+        set_thread_model,
+        set_thread_random_seed,
+    )
 
     # Pin THIS worker thread's LLM calls to the picked model (unknown/"" =
     # app default). Thread-local — concurrent surfaces are unaffected.
@@ -1450,11 +1570,17 @@ def _agent_worker(
     # ondan bağımsız — ikisi ÇARPILIR (ölçülen: sonnet-5 −61%, üstüne low −52%,
     # bileşik −81%). "" = CLI/uç kendi varsayılanını uygular.
     set_thread_effort(effort or None)
+    set_thread_random_seed(run_id)
     from composer import load_catalog
     from data import _bybit_cache_path
     from sandbox import run_backtest_guarded, run_robustness_guarded
 
     is_external = source == "external"
+    if continuous_mode:
+        max_hours = max_hours if max_hours > 0 else DEFAULT_CONTINUOUS_MAX_HOURS
+        max_total_tokens = (
+            max_total_tokens if max_total_tokens > 0 else DEFAULT_CONTINUOUS_MAX_TOKENS
+        )
 
     def _market_for(iv: str) -> str | None:
         """Market context passed to the LLM — None on Bybit (existing prompt
@@ -1515,12 +1641,12 @@ def _agent_worker(
         # the one question a research log has to answer.
         model=model,
         effort=effort,
+        search_seed=run_id,
     )
 
     run_number = 0
-    # 0 = UNLIMITED (user preference): continuous mode stops only via the stop
-    # button OR the circuit breaker. If a safe ceiling is wanted, any positive
-    # number suffices.
+    # Round count itself is not the budget; continuous mode is bounded by the
+    # normalized time/token ceilings plus the two circuit breakers below.
     _MAX_CONTINUOUS_ROUNDS = 0
     # Circuit breaker: the same error text N consecutive rounds → stop. In
     # unlimited mode this is the ONLY automatic safety net (the 886f439b session
@@ -1532,6 +1658,9 @@ def _agent_worker(
     # M22: optional budget ceilings (0 = unlimited) + winnerless-round breaker.
     _worker_t0 = time.monotonic()
     _winless_rounds = 0
+    _degraded_spec_ids: set[str] = set()
+    _holdout_consumed: set[str] = set()
+    _last_started_round = 0
 
     # Continuous mode with no ceiling has exactly two brakes: the winnerless-round
     # breaker and the identical-error breaker. Neither bounds cost — every round
@@ -1652,6 +1781,11 @@ def _agent_worker(
             # filters to the active round.
             _tl_close_open(run_id, status="warn")
             _add_step(run_id, f"━━━ Continuous mode: round {run_number} starting ━━━")
+
+        # Count only rounds that actually enter the work section. The old final
+        # session_end used the pre-incremented run_number, so a stop between
+        # rounds reported one phantom round.
+        _last_started_round = run_number
 
         try:
             # ── Phase 0: Data ────────────────────────────────────────────────────
@@ -1916,6 +2050,7 @@ def _agent_worker(
                 timeframe=_iv0,
             )
             _add_tokens(run_id, _usage1)
+            _enforce_token_budget(run_id)
             _session_log(
                 run_id,
                 "strategy_proposed",
@@ -1930,6 +2065,12 @@ def _agent_worker(
             degraded = proposal.get("degraded") or ""
             if degraded:
                 _mark_degraded(run_id, degraded, "initial strategy")
+                _degraded_spec_ids.add(spec.id)
+                if proposal.get("degraded_terminal"):
+                    raise TerminalLLMError(
+                        proposal.get("degraded_detail")
+                        or f"terminal provider failure: {degraded}"
+                    )
             _tl_end(
                 run_id,
                 f"llm-propose-r{run_number}",
@@ -1940,6 +2081,7 @@ def _agent_worker(
                 _clamp_spec_trade_size(spec)
             spec.trend_filter = trend_filter
             spec.trend_interval = trend_interval
+            spec.model_slippage = True
             _done_phase(
                 run_id,
                 1,
@@ -2035,6 +2177,7 @@ def _agent_worker(
                 # Add the block type list to the strategy field → Claude sees this info
                 block_types_str = "+".join(b.type for b in spec.blocks)
                 r.strategy = f"composed:{spec.name} [{block_types_str}]"
+                _stamp_buy_hold_benchmark(r, iter_df)
                 # Stamp the run context onto the result: _summarize_composed_history
                 # reads the timeframe from here. Without it the model saw only
                 # "pnl=-8514" with no idea the spec had been scored on 15m bars.
@@ -2102,7 +2245,10 @@ def _agent_worker(
                         for b in spec.blocks
                     ],
                     score=round(sc, 4),
-                    metrics=r.metrics,
+                    # Metrics can themselves contain bar-resolution equity
+                    # arrays (equity_curve_mtm/realized). Thin recursively; the
+                    # previous top-level-only reduction left ~47 MB/hour growth.
+                    metrics=_thin_curves(r.metrics, cap=400),
                     equity_curve=_eq_curve,
                     equity_dates=_eq_dates,
                     n_trades=len(r.trades) if r.trades else 0,
@@ -2186,6 +2332,7 @@ def _agent_worker(
                                     timeframe=next_iv,
                                 )
                                 _add_tokens(run_id, _u)
+                                _enforce_token_budget(run_id)
                                 spec = _proposal_to_spec(proposal)
                                 if proposal.get("degraded"):
                                     _mark_degraded(
@@ -2193,6 +2340,12 @@ def _agent_worker(
                                         proposal["degraded"],
                                         "strategy proposal",
                                     )
+                                    _degraded_spec_ids.add(spec.id)
+                                    if proposal.get("degraded_terminal"):
+                                        raise TerminalLLMError(
+                                            proposal.get("degraded_detail")
+                                            or "terminal LLM provider failure"
+                                        )
                                 _session_log(
                                     run_id,
                                     "strategy_proposed",
@@ -2212,11 +2365,18 @@ def _agent_worker(
                                 timeframe=next_iv,
                             )
                             _add_tokens(run_id, _u)
+                            _enforce_token_budget(run_id)
                             spec = _proposal_to_spec(proposal)
                             if proposal.get("degraded"):
                                 _mark_degraded(
                                     run_id, proposal["degraded"], "strategy proposal"
                                 )
+                                _degraded_spec_ids.add(spec.id)
+                                if proposal.get("degraded_terminal"):
+                                    raise TerminalLLMError(
+                                        proposal.get("degraded_detail")
+                                        or "terminal LLM provider failure"
+                                    )
                             _session_log(
                                 run_id,
                                 "strategy_proposed",
@@ -2234,6 +2394,7 @@ def _agent_worker(
                         # winner without a filter. Apply it to every spec.
                         spec.trend_filter = trend_filter
                         spec.trend_interval = trend_interval
+                        spec.model_slippage = True
                         if is_external:
                             _clamp_spec_trade_size(spec)
                         with _AGENT_LOCK:
@@ -2388,13 +2549,26 @@ def _agent_worker(
                     continue
 
                 passed = _robustness_passed(rob, strict=strict_mode, run_id=run_id)
+                if cand_spec.id in _degraded_spec_ids:
+                    passed = False
+                    _add_step(
+                        run_id,
+                        "  ❌ Degraded/fallback candidate is research-only and "
+                        "cannot enter the winner pool",
+                    )
 
                 split_label = (rob.get("split") or {}).get("overfitting_label", "?")
                 mc_dd = (rob.get("mc") or {}).get("max_dd_p50", None)
                 wfo = rob.get("wfo_windows") or []
                 # Naive series — the one _robustness_passed decided on.
-                wf_pos = sum(1 for w in wfo if _wfo_test(w).get("pnl", 0) > 0)
-                wf_str = f"{wf_pos}/{len(wfo)}" if wfo else "—"
+                valid_wfo = [
+                    w
+                    for w in wfo
+                    if (_wfo_test(w).get("n_trades") or w.get("test_n_trades") or 0)
+                    >= 3
+                ]
+                wf_pos = sum(1 for w in valid_wfo if _wfo_test(w).get("pnl", 0) > 0)
+                wf_str = f"{wf_pos}/{len(valid_wfo)}" if valid_wfo else "—"
                 ms_label = (rob.get("multi_symbol") or {}).get(
                     "generalization_label", "—"
                 )
@@ -2567,26 +2741,18 @@ def _agent_worker(
                 _add_step(run_id, "Continuous mode: new round starting…")
                 continue
 
-            _winless_rounds = 0  # M22: winner found — winnerless streak broken
-            _done_phase(run_id, 4, f"✓ Winner: {winner_spec.name}")
+            _done_phase(run_id, 4, f"✓ Robustness finalist: {winner_spec.name}")
 
             # ── Phase 5: Save ────────────────────────────────────────────────────
-            _set_phase(run_id, 5, "Saving to catalog…")
+            _set_phase(run_id, 5, "Running sealed holdout promotion gate…")
             _tl_begin(
                 run_id,
                 "data",
                 f"save-r{run_number}",
-                "Saving winner",
+                "Sealed holdout promotion gate",
                 round_num=run_number,
                 name=winner_spec.name,
             )
-            # M14: locked append_to_catalog instead of lockless load→append→save —
-            # so the winner isn't lost due to a concurrent lab/strategy save.
-            from composer import append_to_catalog
-
-            append_to_catalog(winner_spec)
-            _add_step(run_id, f"✓ {winner_spec.name} → strategy_catalog.json")
-
             # H4/H8: the winner may be on a different TF (winner_iv); cand_iv is
             # the TF of the LAST scanned candidate left over from the loop. The
             # robustness log and the sealed holdout must use the winner's OWN TF —
@@ -2601,16 +2767,19 @@ def _agent_worker(
                 interval=winner_iv,
             )
             _add_step(run_id, "✓ Robustness result → robustness_log.jsonl")
-            _tl_end(run_id, f"save-r{run_number}", status="ok")
-            _done_phase(run_id, 5, f"✓ {winner_spec.name} saved")
-
-            # ── L32: sealed holdout — the winner is run ONCE on the last
-            # OOS_HOLDOUT_DAYS-day slice that NEVER entered selection. The result
-            # is only reported (an unbiased forward-looking estimate +
-            # selection-bias detector); it is not bound to any decision.
+            # Sealed holdout is a publication gate and each timeframe's slice is
+            # consumed at most once per AUTO session. Reusing the same 60 days
+            # for many finalists turns a holdout into another selection set.
             winner_holdout = None
+            promotion_passed = False
+            promotion_reason = "sealed holdout unavailable"
+            promotion_limit_hit = False
             _hold = holdout_cache.get(winner_iv)  # H4: the winner's TF
-            if _hold is not None:
+            if winner_iv in _holdout_consumed:
+                promotion_reason = "sealed holdout already consumed for this timeframe"
+                _add_step(run_id, f"⚠ {promotion_reason} — catalog promotion refused")
+            elif _hold is not None:
+                _holdout_consumed.add(winner_iv)
                 _hold_run_df, _hold_start = _hold
                 try:
                     _hold_res = run_backtest_guarded(
@@ -2629,11 +2798,25 @@ def _agent_worker(
                         _n, _pnl_fr, _sharpe = _sealed_holdout_stats(
                             _hold_res.trades, int(_hold_start.timestamp())
                         )
+                        _sealed_prices = _hold_run_df[
+                            _hold_run_df.index >= _hold_start
+                        ]["close"]
+                        _benchmark_fr = (
+                            float(_sealed_prices.iloc[-1])
+                            / float(_sealed_prices.iloc[0])
+                            - 1.0
+                            if len(_sealed_prices) >= 2
+                            and float(_sealed_prices.iloc[0]) > 0
+                            else 0.0
+                        )
+                        _excess_fr = _pnl_fr - _benchmark_fr
                         winner_holdout = {
                             "sharpe": round(_sharpe, 4)
                             if _sharpe is not None
                             else None,
                             "pnl_pct": round(_pnl_fr, 6),
+                            "benchmark_return_pct": round(_benchmark_fr, 6),
+                            "excess_pnl_pct": round(_excess_fr, 6),
                             "n_trades": _n,
                             "days": OOS_HOLDOUT_DAYS,
                             "warmup_bars": HOLDOUT_WARMUP_BARS,
@@ -2648,7 +2831,13 @@ def _agent_worker(
                             # stays False and the count is reported as-is.
                             "measured": _n >= HOLDOUT_MIN_TRADES,
                         }
+                        promotion_passed = _holdout_promotion_passed(
+                            _n, _pnl_fr, _sharpe, _excess_fr
+                        )
                         if _n < HOLDOUT_MIN_TRADES:
+                            promotion_reason = (
+                                f"only {_n} holdout trades; need {HOLDOUT_MIN_TRADES}"
+                            )
                             _add_step(
                                 run_id,
                                 f"⚠ Sealed OOS ({OOS_HOLDOUT_DAYS}d): {_n} trade "
@@ -2656,13 +2845,27 @@ def _agent_worker(
                                 "gerekiyor; warmup lead-in dahil)",
                             )
                         else:
+                            if _pnl_fr <= 0:
+                                promotion_reason = "sealed holdout PnL is not positive"
+                            elif _sharpe is None or _sharpe <= 0:
+                                promotion_reason = (
+                                    "sealed holdout Sharpe is not positive"
+                                )
+                            elif _excess_fr <= 0:
+                                promotion_reason = (
+                                    "sealed holdout did not beat buy-and-hold"
+                                )
+                            else:
+                                promotion_reason = "passed"
                             _sh_txt = f"{_sharpe:.2f}" if _sharpe is not None else "—"
                             _add_step(
                                 run_id,
                                 f"🔒 Sealed OOS ({OOS_HOLDOUT_DAYS}d): "
                                 f"Sharpe {_sh_txt} · "
                                 f"PnL {100 * _pnl_fr:.1f}% · "
-                                f"{_n} trades (not bound to decision)",
+                                f"Excess {100 * _excess_fr:+.1f}% · "
+                                f"{_n} trades · promotion "
+                                f"{'PASSED' if promotion_passed else 'FAILED'}",
                             )
                         _session_log(
                             run_id,
@@ -2672,12 +2875,41 @@ def _agent_worker(
                             **winner_holdout,
                         )
                     else:
+                        promotion_reason = f"sealed holdout error: {_hold_res.error}"
                         _add_step(
                             run_id,
                             f"⚠ Sealed OOS run returned an error: {_hold_res.error}",
                         )
                 except Exception as _hold_err:
+                    promotion_reason = f"sealed holdout exception: {_hold_err}"
                     _add_step(run_id, f"⚠ Could not run sealed OOS: {_hold_err}")
+
+            if promotion_passed:
+                # M14: locked append only after the independent promotion gate.
+                from composer import append_to_catalog
+
+                append_to_catalog(winner_spec)
+                _add_step(run_id, f"✓ {winner_spec.name} → strategy_catalog.json")
+                _tl_end(run_id, f"save-r{run_number}", status="ok")
+                _done_phase(run_id, 5, f"✓ {winner_spec.name} promoted and saved")
+                _winless_rounds = 0
+            else:
+                _add_step(
+                    run_id,
+                    f"❌ {winner_spec.name} not published: {promotion_reason}",
+                )
+                _session_log(
+                    run_id,
+                    "promotion_rejected",
+                    round=run_number,
+                    spec_id=winner_spec.id,
+                    reason=promotion_reason,
+                )
+                _tl_end(run_id, f"save-r{run_number}", status="warn")
+                _done_phase(
+                    run_id, 5, f"❌ Not published: {promotion_reason}", degraded=True
+                )
+                promotion_limit_hit = _winless_bump()
 
             with _AGENT_LOCK:
                 if run_id in _AGENT_PROGRESS:
@@ -2692,19 +2924,23 @@ def _agent_worker(
                         True  # always set so polling shows result
                     )
 
-            # Session log: winner
+            # Only a promoted artifact is a winner. Rejected finalists keep a
+            # distinct event so session summaries/catalog counts cannot confuse
+            # research output with a publishable strategy.
             _session_log(
                 run_id,
-                "winner",
+                "winner" if promotion_passed else "finalist_rejected",
                 round=run_number,
                 spec_name=winner_spec.name,
                 spec_id=winner_spec.id,
                 score=round(_score(winner_result), 4),
-                metrics=winner_result.metrics,
+                metrics=_thin_curves(winner_result.metrics, cap=400),
                 equity_curve=_thin_pair(
                     winner_result.equity_curve, winner_result.equity_dates
                 )[0],
                 bars_info=bars_info,
+                promoted=promotion_passed,
+                promotion_reason=promotion_reason,
             )
             _consec_err = 0  # round finished successfully — error streak broken
             _last_err_str = None
@@ -2717,9 +2953,13 @@ def _agent_worker(
                     run_id,
                     "session_end",
                     round=run_number,
-                    outcome="winner",
+                    outcome="winner" if promotion_passed else "promotion_rejected",
                     total_rounds=run_number,
                 )
+                return
+
+            if promotion_limit_hit:
+                _winless_stop()
                 return
 
             # In continuous mode: briefly expose the result then continue
@@ -2730,6 +2970,43 @@ def _agent_worker(
                 run_id, f"Continuous mode: round {run_number} completed, continuing…"
             )
 
+        except AgentBudgetReached as e:
+            _tl_close_open(run_id, status="warn")
+            with _AGENT_LOCK:
+                if run_id in _AGENT_PROGRESS:
+                    _AGENT_PROGRESS[run_id]["done"] = True
+                    _AGENT_PROGRESS[run_id]["continuous_finished"] = True
+            _add_step(run_id, f"⏹ Budget: {e} — ending the run gracefully.")
+            _session_log(
+                run_id,
+                "session_end",
+                round=run_number,
+                outcome="budget",
+                reason=str(e),
+                total_rounds=_last_started_round,
+            )
+            return
+        except TerminalLLMError as e:
+            _tl_close_open(run_id, status="fail")
+            err_str = f"{type(e).__name__}: {e}"
+            with _AGENT_LOCK:
+                if run_id in _AGENT_PROGRESS:
+                    _AGENT_PROGRESS[run_id]["error"] = err_str
+                    _AGENT_PROGRESS[run_id]["done"] = True
+                    _AGENT_PROGRESS[run_id]["continuous_finished"] = True
+            _add_step(
+                run_id,
+                f"⏹ Terminal LLM provider failure — AUTO stopped without fallback: {e}",
+            )
+            _session_log(
+                run_id,
+                "session_end",
+                round=run_number,
+                outcome="terminal_llm_error",
+                error=err_str,
+                total_rounds=_last_started_round,
+            )
+            return
         except Exception as e:
             _tl_close_open(run_id, status="fail")
             err_str = f"{type(e).__name__}: {e}"
@@ -2771,7 +3048,7 @@ def _agent_worker(
             _tcr = s.get("tokens_cache_read", 0) or 0
             _tcw = s.get("tokens_cache_write", 0) or 0
             # L38: model-based rates; on subscription CLI the cost is None.
-            _model, _cost_usd = _llm_cost_usd(_ti, _to, _tcr, _tcw)
+            _model, _cost_usd = _llm_cost_usd(_ti, _to, _tcr, _tcw, model=model)
             _session_log(
                 run_id,
                 "token_snapshot",
@@ -2793,7 +3070,12 @@ def _agent_worker(
             # Permanent end: the progress route stops polling when it sees this
             # (a separate flag to distinguish it from the inter-round done=True window).
             _AGENT_PROGRESS[run_id]["continuous_finished"] = True
-    _session_log(run_id, "session_end", outcome="stopped", total_rounds=run_number)
+    _session_log(
+        run_id,
+        "session_end",
+        outcome="stopped",
+        total_rounds=_last_started_round,
+    )
 
 
 def _pick_best_exit_from_history(history: list) -> str | None:
@@ -2838,6 +3120,7 @@ def _generate_custom_spec(
     the caller); the idea generator sizes its logic for it.
     """
     from agent import (
+        TerminalLLMError,
         _propose_agent_strategy_idea,
         propose_custom_block,
     )
@@ -2862,11 +3145,20 @@ def _generate_custom_spec(
         # counted; since custom generation is the most token-heavy call, the cost
         # and the max_total_tokens budget breaker were seriously undercounting.
         _add_tokens(run_id, idea.get("usage"))
+        _enforce_token_budget(run_id)
         # Fikir çağrısı düştüyse buradan çıkan blok, modelin fikri değil kaynak
         # koddaki sabit bir fikrin kodudur — sayılmazsa makul bir yedek gerçek
         # önerilerle aynı sıralamada yarışır ve "kazanan" ilan edilir.
         if idea.get("degraded"):
             _mark_degraded(run_id, idea["degraded"], "strategy idea")
+            if idea.get("degraded_terminal"):
+                raise TerminalLLMError(
+                    idea.get("degraded_detail") or "terminal LLM provider failure"
+                )
+            # A hard-coded idea is useful as a visible diagnostic, but generating
+            # more paid code around it and letting it compete creates a false
+            # autonomous winner. Let the caller use its role-safe builtin path.
+            return None
         entry_label = idea.get("entry_label", "Agent Entry")
         exit_label = idea.get("exit_label", "Agent Exit")
 
@@ -2885,6 +3177,7 @@ def _generate_custom_spec(
         _add_step(run_id, f"  ⚙ Generating custom entry block: {entry_label}…")
         entry_block = propose_custom_block(entry_label, idea["entry_desc"], "entry")
         _add_tokens(run_id, entry_block.get("usage"))
+        _enforce_token_budget(run_id)
         entry_block["name"] = entry_name
         save_custom(entry_name, entry_block["meta"], entry_block["code"], prompt=hint)
         register_custom_from_disk(entry_name)
@@ -2962,6 +3255,7 @@ def _generate_custom_spec(
             _add_step(run_id, f"  ⚙ Generating custom exit block: {exit_label}…")
             exit_block = propose_custom_block(exit_label, idea["exit_desc"], "exit")
             _add_tokens(run_id, exit_block.get("usage"))  # M1583
+            _enforce_token_budget(run_id)
             exit_block["name"] = exit_name
             save_custom(exit_name, exit_block["meta"], exit_block["code"], prompt=hint)
             register_custom_from_disk(exit_name)
@@ -3011,6 +3305,8 @@ def _generate_custom_spec(
             raise RuntimeError(f"Custom spec invalid: {err}")
         return spec
 
+    except (TerminalLLMError, AgentBudgetReached):
+        raise
     except Exception as e:
         # `except (GeneratedCodeError, Exception)` was the same thing written
         # twice — Exception already covers GeneratedCodeError. The name is kept
@@ -3153,6 +3449,11 @@ async def run(
     is_continuous = continuous == "1"
     is_multi_tf = multi_tf == "1"
     use_web_research = web_research == "1"
+    if is_continuous:
+        if max_hours <= 0:
+            max_hours = DEFAULT_CONTINUOUS_MAX_HOURS
+        if max_total_tokens <= 0:
+            max_total_tokens = DEFAULT_CONTINUOUS_MAX_TOKENS
     # App-wide convention: a DOTTED id (QQQ.NASDAQ) is an external-catalog
     # instrument — the studio AUTO cockpit posts it through the plain symbol
     # select, so promote it here instead of requiring a separate source field.
@@ -3176,7 +3477,11 @@ async def run(
     _allowed = ("1", "5", "15", "30", "60", "240", "720", "D")
     chosen = [t for t in tfs if t in _allowed]
     if is_external:
-        from data import EXTERNAL_GRAN_BY_BYBIT_CODE
+        from data import (
+            EXTERNAL_GRAN_BY_BYBIT_CODE,
+            _external_adjusted_flag,
+            _external_bar_dir,
+        )
 
         mapped = [
             EXTERNAL_GRAN_BY_BYBIT_CODE[t]
@@ -3187,6 +3492,24 @@ async def run(
             ["1-HOUR", "4-HOUR", "1-DAY"] if is_multi_tf else (mapped or [ext_interval])
         )
         trend_interval = ext_trend_interval
+        # Known-unadjusted equity series are unsuitable for autonomous strategy
+        # selection: splits/dividends can be ranked as edge. Fail closed before
+        # launching a worker. A deliberate research-only override is available
+        # via env and remains visible in the run log through data.py warnings.
+        if os.environ.get("AGENT_ALLOW_UNADJUSTED", "").strip() != "1":
+            for _iv in intervals:
+                _located = _external_bar_dir(instrument_id, _iv)
+                if (
+                    _located is not None
+                    and _external_adjusted_flag(_located[0], instrument_id) is False
+                ):
+                    return HTMLResponse(
+                        "<div class='empty-state'>⚠ AUTO refused known-unadjusted "
+                        f"equity data for {instrument_id} ({_iv}). Use an adjusted "
+                        "catalog; split/dividend jumps can create false edge. "
+                        "Research-only override: AGENT_ALLOW_UNADJUSTED=1.</div>",
+                        status_code=400,
+                    )
     else:
         intervals = ["60", "240", "D"] if is_multi_tf else (chosen or [interval])
 
@@ -3489,7 +3812,8 @@ async def progress(request: Request, run_id: str):
     _to = state.get("tokens_out", 0) or 0
     _tcr = state.get("tokens_cache_read", 0) or 0
     _tcw = state.get("tokens_cache_write", 0) or 0
-    _model, _cost_usd = _llm_cost_usd(_ti, _to, _tcr, _tcw)
+    _pricing_model = str((raw.get("brief") or {}).get("model") or "")
+    _model, _cost_usd = _llm_cost_usd(_ti, _to, _tcr, _tcw, model=_pricing_model)
     token_info = {
         "input": _ti,
         "output": _to,
