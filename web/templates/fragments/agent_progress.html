@@ -69,6 +69,8 @@
           <th style="text-align:center;padding:7px 8px;font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--text-muted);">TF</th>
           <th style="text-align:right;padding:7px 8px;font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--text-muted);">PnL</th>
           <th style="text-align:right;padding:7px 8px;font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--text-muted);">PnL %</th>
+          <th style="text-align:right;padding:7px 8px;font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--text-muted);" title="Buy-and-hold return over the same training window">Benchmark %</th>
+          <th style="text-align:right;padding:7px 8px;font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--text-muted);" title="Strategy return minus benchmark return">Excess %</th>
           <th style="text-align:right;padding:7px 8px;font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--text-muted);">Sharpe</th>
           <th style="text-align:right;padding:7px 8px;font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--text-muted);">Max DD</th>
           <th style="text-align:right;padding:7px 8px;font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--text-muted);">W.Rate</th>
@@ -96,6 +98,12 @@
         </td>
         <td style="padding:6px 8px;text-align:right;color:{% if bt.pnl_pct is not none and bt.pnl_pct >= 0 %}var(--pnl-up){% elif bt.pnl_pct is not none %}var(--pnl-down){% else %}var(--text-muted){% endif %};">
           {% if bt.pnl_pct is not none and not bt.error %}{{ "%+.2f"|format(bt.pnl_pct * 100) }}%{% else %}—{% endif %}
+        </td>
+        <td style="padding:6px 8px;text-align:right;color:var(--text-muted);">
+          {% if bt.benchmark_return_fraction is not none and not bt.error %}{{ "%+.2f"|format(bt.benchmark_return_fraction * 100) }}%{% else %}—{% endif %}
+        </td>
+        <td style="padding:6px 8px;text-align:right;color:{% if bt.excess_return_fraction is not none and bt.excess_return_fraction >= 0 %}var(--pnl-up){% elif bt.excess_return_fraction is not none %}var(--pnl-down){% else %}var(--text-muted){% endif %};">
+          {% if bt.excess_return_fraction is not none and not bt.error %}{{ "%+.2f"|format(bt.excess_return_fraction * 100) }}%{% else %}—{% endif %}
         </td>
         <td style="padding:6px 8px;text-align:right;">
           {% if bt.sharpe is not none and bt.sharpe == bt.sharpe and not bt.error %}{{ "%.3f"|format(bt.sharpe) }}{% else %}—{% endif %}
@@ -252,10 +260,10 @@
          '≈ estimated'. #}
       {% if token_info.cost_eur is not none %}
       <span class="mono" style="font-size:12px;font-weight:600;color:var(--pnl-up);">
-        ≈ €{{ "%.4f"|format(token_info.cost_eur) }}
+        {% if token_info.cost_source == 'price_table' %}≈ {% endif %}€{{ "%.4f"|format(token_info.cost_eur) }}
       </span>
       <span class="text-muted mono" style="font-size:11px;margin-left:6px;">
-        (${{ "%.4f"|format(token_info.cost_usd) }} · estimated)
+        (${{ "%.4f"|format(token_info.cost_usd) }} · {{ 'provider reported' if token_info.cost_source == 'provider_reported' else 'estimated' }})
       </span>
       {% endif %}
     </div>

@@ -30,6 +30,7 @@ import logging
 import re
 import threading
 import time
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -209,13 +210,19 @@ def save_custom(name: str, meta: dict, code: str, prompt: str = "") -> Path:
     return path
 
 
-def save_custom_batch(blocks: list[dict[str, Any]]) -> list[Path]:
+def save_custom_batch(
+    blocks: list[dict[str, Any]],
+    *,
+    validate: Callable[[], None] | None = None,
+) -> list[Path]:
     """Persist a related set of blocks as one registry transaction.
 
     Files are staged first and the registry is replaced only after every write
-    succeeds.  If anything fails, newly-created files are removed and replaced
-    files are restored.  AUTO uses this for entry/exit pairs so a failed exit
-    can never leave an orphan entry registered.
+    succeeds. ``validate`` runs while the store transaction is still open; AUTO
+    uses it to register the pair in-memory and validate the composed spec. If
+    writing, registration, or validation fails, both files *and registry* are
+    restored. This prevents a half-visible pair or an ``Unknown block type``
+    validation race.
     """
     if not blocks:
         return []
@@ -225,6 +232,7 @@ def save_custom_batch(blocks: list[dict[str, Any]]) -> list[Path]:
     _ensure_dir()
     with _STORE_LOCK:
         reg = _read_registry()
+        old_registry = dict(reg)
         old_files: dict[str, str | None] = {}
         paths: list[Path] = []
         try:
@@ -240,6 +248,8 @@ def save_custom_batch(blocks: list[dict[str, Any]]) -> list[Path]:
                     "prompt": str(item.get("prompt") or ""),
                 }
             _write_registry(reg)
+            if validate is not None:
+                validate()
             return paths
         except Exception:
             for name, previous in old_files.items():
@@ -251,6 +261,10 @@ def save_custom_batch(blocks: list[dict[str, Any]]) -> list[Path]:
                         path.write_text(previous, encoding="utf-8")
                 except OSError:
                     log.exception("could not roll back custom block %s", name)
+            try:
+                _write_registry(old_registry)
+            except OSError:
+                log.exception("could not roll back custom block registry")
             raise
 
 

@@ -379,6 +379,64 @@ izi korur, fakat calisan state'i yeniden kurmaz.
 
 Durum: **kod, test, wiki ve canli servis senkronize**.
 
+## Fable 5 canli kosu sertlestirmesi - 2026-08-06
+
+`d4b86c48` Fable 5 kosusu, veri ve alpha kapilarinin dogru calistigini; ancak
+custom-block uretimi, maliyet atfi ve session muhasebesinde kalan aciklari
+gosterdi:
+
+- 8 aday ve 2 tamamlanmis turda 23 Fable cagrisi, 230.676/250.000 token ve
+  yaklasik 492 sn LLM suresi kaydedildi.
+- Dort custom strateji fallback'e dustu: uc exit blogu `long` dondurdu, bir blok
+  bilinmeyen block type uretti. Sistem prompt'u rol kontratini yeterince sert
+  kilitlemiyor ve ayni semantik hata icin pahali retry yapiliyordu.
+- Kosu ucuncu tura yalniz baslamis olmasina ragmen `session_end` 3/3 raporladi;
+  tamamlanan tur ile baslatilan tur birbirine karisiyordu.
+- CLI'nin raporladigi gercek maliyet tasinmadigi icin Fable maliyeti fiyat
+  tablosu tahmini olarak gorunuyordu.
+- `pnl_pct`, benchmark ve excess alanlari fraction idi; `_pct` adlari ve yuzde
+  isaretsiz UI gosterimi yanlis yorumlanmaya acikti. Adaylarin benchmark altinda
+  kalmasi gercek birim hatasi degildi; bu nedenle robustness/winner olmamasi
+  dogru fail-closed sonucuydu.
+
+### Uygulanan duzeltmeler
+
+- Entry/exit rol kilidi system prompt seviyesine tasindi. Exit blogundaki dogrudan
+  literal `long`/`short` donusleri AST ile yerel olarak `exit`e normalize edilir,
+  yeniden statik/runtime dogrulamadan gecirilir ve gereksiz ikinci LLM cagrisi
+  yapilmaz.
+- Custom-block deneme sayisi en fazla ikiyle sinirlandi; blok basina token tavani
+  eklendi. Tavan doldugunda paid retry durur ve mevcut fail-closed fallback yolu
+  kullanilir.
+- Custom blok ciftinin kaydi transaction haline getirildi. Bloklar staged registry
+  uzerinden register edilmeden StrategySpec dogrulanmaz; herhangi bir hata hem
+  dosyalari hem registry'yi onceki duruma geri alir.
+- Metrik sozlesmesine `benchmark_return_fraction` ve `excess_return_fraction`
+  canonical alanlari eklendi. Legacy alanlar geriye uyumluluk icin korunurken UI
+  degerleri gercek yuzdeye cevirerek `Benchmark %` ve `Excess %` gosterir.
+- CLI `total_cost_usd` degeri artik run muhasebesine tasinir. UI ve session ozeti
+  maliyeti `provider reported` veya `estimated` olarak acikca etiketler.
+- `started_round`, `completed_rounds` ve `total_rounds` ayrildi. `session_end` ile
+  session listesi yalniz tamamlanmis tur sayisini raporlar; aday cikmayan tur da
+  makine-okunur `no_eligible_candidate` sonucuyla kapanir.
+
+### Dogrulama (dorduncu dalga)
+
+- AUTO/agent hedefli regresyon paketi: **85 passed**.
+- Tam paket: **804 passed, 1 skipped**; kalan dort test sandbox'in gercek Nautilus
+  cache dizinine yazma kisitindan etkilenmisti. Ayni dort test gerekli izinde
+  ayrica calistirildi: **4 passed**. Etkin toplam: **808 passed, 1 skipped**.
+- Ruff, Python compile ve `git diff --check`: temiz.
+- Duzeltmelerden sonra `nautilus` kontrollu olarak yeniden baslatildi: PM2
+  `online`, PID `57060`, unstable restart `0`; `/studio` HTTP **200** ve yanit
+  boyutu 1.765.204 byte. Restart logundaki `D:\NAU_ev` mesaji daha once belgelenen
+  kullanilmayan harici-varsayilan yol uyarisi; Massive ingest'in yerel
+  `equity_catalog` koku ayrica otomatik eklenir.
+
+Kalan mimari sinir degismedi: AUTO orkestrasyonu web process bellegindedir;
+PM2 restart yarim kosuyu otomatik surdurmez. Durable queue/checkpoint migrasyonu
+ayri bir servislesme calismasidir.
+
 <!-- BACKLINKS:BEGIN -->
 ## Referenced by
 

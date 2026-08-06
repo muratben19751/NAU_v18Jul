@@ -108,7 +108,9 @@ def test_generated_block_meta_persists_role(monkeypatch):
             "    return None\n"
         ),
     }
-    monkeypatch.setattr(agent, "_call_claude_for_block", lambda prompt: (payload, {}))
+    monkeypatch.setattr(
+        agent, "_call_claude_for_block", lambda prompt, **kwargs: (payload, {})
+    )
     out = agent.propose_custom_block("x", "x", "exit")
     assert out["meta"]["role"] == "exit"
 
@@ -128,6 +130,132 @@ def test_custom_block_pair_is_saved_in_one_registry_transaction(monkeypatch, tmp
     registry = json.loads(store.REGISTRY_FILE.read_text(encoding="utf-8"))
     assert {p.name for p in paths} == {"pair_entry.py", "pair_exit.py"}
     assert set(registry) == {"pair_entry", "pair_exit"}
+
+
+def test_exit_role_literal_is_repaired_without_paid_retry(monkeypatch):
+    import agent
+
+    calls = []
+    payload = {
+        "name": "exit_probe",
+        "meta": {"label": "Exit probe", "params": {}},
+        "code": (
+            "def max_lookback(params):\n    return 2\n\n"
+            "def evaluate(state, block, closes, indicators, portfolio):\n"
+            "    if closes[-1] > closes[-2]:\n"
+            "        return 'long'\n"
+            "    return None\n"
+        ),
+    }
+
+    def fake_call(prompt, **kwargs):
+        calls.append((prompt, kwargs))
+        return payload, {"output_tokens": 100}
+
+    monkeypatch.setattr(agent, "_call_claude_for_block", fake_call)
+    out = agent.propose_custom_block("exit", "exit when price rises", "exit")
+    assert len(calls) == 1
+    assert calls[0][1]["role_hint"] == "exit"
+    assert "return 'exit'" in out["code"]
+    assert out["repair"] == "exit_literal_normalized"
+
+
+def test_custom_block_role_system_prompt_is_role_locked():
+    import agent
+
+    exit_prompt = agent._custom_block_system_prompt("exit")
+    entry_prompt = agent._custom_block_system_prompt("entry")
+    assert "ROLE LOCK — EXIT ONLY" in exit_prompt
+    assert 'strings "long" and "short" are forbidden' in exit_prompt
+    assert "ROLE LOCK — ENTRY ONLY" in entry_prompt
+
+
+def test_custom_block_token_limit_stops_retry(monkeypatch):
+    import agent
+
+    calls = []
+
+    def fake_call(prompt, **kwargs):
+        calls.append(prompt)
+        return {"name": "missing_schema"}, {"output_tokens": 5000}
+
+    monkeypatch.setenv("AGENT_CUSTOM_BLOCK_TOKEN_LIMIT", "4000")
+    monkeypatch.setattr(agent, "_call_claude_for_block", fake_call)
+    with pytest.raises(agent.GeneratedCodeError, match="token limit reached"):
+        agent.propose_custom_block("x", "x", "entry")
+    assert len(calls) == 1
+
+
+def test_custom_batch_validator_failure_rolls_back_registry(monkeypatch, tmp_path):
+    import json
+
+    import custom_block_store as store
+
+    monkeypatch.setattr(store, "STORE_DIR", tmp_path)
+    monkeypatch.setattr(store, "REGISTRY_FILE", tmp_path / "registry.json")
+    store.save_custom("existing", {"role": "entry"}, "x = 1\n")
+
+    def reject():
+        raise RuntimeError("spec invalid")
+
+    with pytest.raises(RuntimeError, match="spec invalid"):
+        store.save_custom_batch(
+            [{"name": "new_entry", "meta": {}, "code": "x = 2\n"}],
+            validate=reject,
+        )
+    registry = json.loads(store.REGISTRY_FILE.read_text(encoding="utf-8"))
+    assert set(registry) == {"existing"}
+    assert not (tmp_path / "new_entry.py").exists()
+
+
+def test_generate_custom_spec_registers_before_validation(monkeypatch, tmp_path):
+    import agent
+    import composer
+    import custom_block_store as store
+    import web.routes.agent_backtest as ab
+
+    monkeypatch.setattr(store, "STORE_DIR", tmp_path / "store")
+    monkeypatch.setattr(store, "REGISTRY_FILE", tmp_path / "store" / "registry.json")
+    monkeypatch.setattr(ab, "SESSION_LOG_DIR", tmp_path / "sessions")
+    monkeypatch.setattr(ab, "_enforce_token_budget", lambda run_id: None)
+    monkeypatch.setattr(ab, "_add_step", lambda *args, **kwargs: None)
+    monkeypatch.setattr(ab, "_session_log", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        agent,
+        "_propose_agent_strategy_idea",
+        lambda *args, **kwargs: {
+            "name": "Custom pair",
+            "description": "pair",
+            "entry_label": "Entry",
+            "entry_desc": "entry",
+            "exit_label": "Exit",
+            "exit_desc": "exit",
+        },
+    )
+
+    def block(label, description, role):
+        returned = "long" if role == "entry" else "exit"
+        return {
+            "name": "ignored",
+            "meta": {"label": label, "params": {}, "role": role},
+            "code": (
+                "def max_lookback(params):\n    return 2\n\n"
+                "def evaluate(state, block, closes, indicators, portfolio):\n"
+                f"    return {returned!r}\n"
+            ),
+            "usage": {},
+        }
+
+    monkeypatch.setattr(agent, "propose_custom_block", block)
+    spec = ab._generate_custom_spec("runx", 1, "hint", [], round_num=1)
+    try:
+        assert spec is not None
+        assert spec.validate() is None
+        assert all(b.type in composer.BLOCK_REGISTRY for b in spec.blocks)
+    finally:
+        for name in ("agnt_e_runx_r1_1", "agnt_x_runx_r1_1"):
+            composer.unregister_custom_block(name)
+            store.delete_custom(name)
 
 
 def test_wfo_requires_half_positive_even_with_positive_penalized_sharpe():
@@ -185,6 +313,8 @@ def test_benchmark_is_stamped_and_score_uses_excess_return():
     bars = pd.DataFrame({"close": [100.0, 120.0]})
     result = _result(pnl_pct=0.1)
     ab._stamp_buy_hold_benchmark(result, bars)
+    assert result.metrics["benchmark_return_fraction"] == pytest.approx(0.2)
+    assert result.metrics["excess_return_fraction"] == pytest.approx(-0.1)
     assert result.metrics["benchmark_return_pct"] == pytest.approx(0.2)
     assert result.metrics["excess_pnl_pct"] == pytest.approx(-0.1)
     assert ab._score(result) < 0
@@ -346,6 +476,56 @@ def test_openrouter_usage_includes_provider_cost():
         "completion_tokens": 5,
         "cost_usd": 0.0123,
     }
+
+
+def test_cli_response_preserves_cli_reported_cost():
+    import agent
+
+    response = agent._CLIResponse(
+        "ok",
+        {"input_tokens": 2, "output_tokens": 3},
+        cost_usd=0.1234,
+    )
+    assert response.usage.cost_usd == pytest.approx(0.1234)
+    assert agent._usage_dict(response)["cost_usd"] == pytest.approx(0.1234)
+
+
+def test_session_summary_prefers_completed_rounds_over_token_snapshot(
+    monkeypatch, tmp_path
+):
+    import json
+
+    import web.routes.sessions as sessions
+
+    monkeypatch.setattr(sessions, "SESSION_LOG_DIR", tmp_path)
+    sessions._SUMMARY_CACHE.clear()
+    events = [
+        {
+            "ts": "2026-08-06T12:00:00+00:00",
+            "event": "session_start",
+            "run_id": "counter",
+        },
+        {
+            "ts": "2026-08-06T12:10:00+00:00",
+            "event": "token_snapshot",
+            "run_id": "counter",
+            "round": 3,
+        },
+        {
+            "ts": "2026-08-06T12:10:01+00:00",
+            "event": "session_end",
+            "run_id": "counter",
+            "round": 3,
+            "started_round": 3,
+            "completed_rounds": 2,
+            "total_rounds": 2,
+            "outcome": "budget",
+        },
+    ]
+    (tmp_path / "counter.jsonl").write_text(
+        "".join(json.dumps(event) + "\n" for event in events), encoding="utf-8"
+    )
+    assert sessions._session_summary("counter")["total_rounds"] == 2
 
 
 def test_openrouter_auto_path_uses_killable_process(monkeypatch):

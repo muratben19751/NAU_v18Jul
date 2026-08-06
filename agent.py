@@ -916,7 +916,7 @@ class _CLITextBlock:
 
 
 class _CLIUsage:
-    def __init__(self, usage: dict) -> None:
+    def __init__(self, usage: dict, cost_usd: float | None = None) -> None:
         self.input_tokens = int(usage.get("input_tokens", 0) or 0)
         self.output_tokens = int(usage.get("output_tokens", 0) or 0)
         self.cache_read_input_tokens = int(usage.get("cache_read_input_tokens", 0) or 0)
@@ -927,12 +927,18 @@ class _CLIUsage:
         # prices at 2× input (not the 5-minute 1.25×); the ledger needs the
         # split to bill writes correctly (see token_ledger.cost_usd).
         self.cache_creation = dict(usage.get("cache_creation") or {})
+        # Claude CLI's result envelope exposes its own notional charge as
+        # ``total_cost_usd``.  Keep that provenance on the normalized response
+        # instead of silently recomputing the same call from a local table.
+        self.cost_usd = float(cost_usd) if cost_usd is not None else None
 
 
 class _CLIResponse:
-    def __init__(self, text: str, usage: dict) -> None:
+    def __init__(
+        self, text: str, usage: dict, cost_usd: float | None = None
+    ) -> None:
         self.content = [_CLITextBlock(text)]
-        self.usage = _CLIUsage(usage)
+        self.usage = _CLIUsage(usage, cost_usd=cost_usd)
         # CLI'nin max_tokens karşılığı yok (bkz. _ClaudeCLIMessages.create) —
         # bu yolda tavana dayanıp kesilme olamaz.
         self.stop_reason = None
@@ -1129,7 +1135,11 @@ class _ClaudeCLIMessages:
                 f"claude CLI error ({envelope.get('subtype')}): {detail[:500]}"
             )
         _record_cli_side_models(envelope, model)
-        return _CLIResponse(envelope.get("result") or "", envelope.get("usage") or {})
+        return _CLIResponse(
+            envelope.get("result") or "",
+            envelope.get("usage") or {},
+            cost_usd=envelope.get("total_cost_usd"),
+        )
 
 
 def _record_cli_side_models(envelope: dict, called_model: str) -> None:
@@ -2522,14 +2532,44 @@ def _usage_dict(resp) -> dict:
     return usage
 
 
-def _call_claude_for_block(user_prompt: str) -> tuple[dict, dict]:
+def _custom_block_system_prompt(role_hint: str) -> str:
+    """Return a role-locked system prompt for one custom-block call.
+
+    The generic prompt documents both return vocabularies.  In live AUTO runs
+    Fable consequently generated entry signals (``long``/``short``) for three
+    exit blocks even though the user prompt named the role.  Repeating the
+    contract at system priority removes that ambiguity.
+    """
+
+    if role_hint == "exit":
+        lock = (
+            "\n\nROLE LOCK — EXIT ONLY:\n"
+            "This call generates an EXIT block. Every firing branch in evaluate() "
+            "must return the literal \"exit\". Non-firing branches return None. "
+            "The strings \"long\" and \"short\" are forbidden anywhere in a "
+            "return statement. Do not infer direction; closing either open side is "
+            "the engine's responsibility."
+        )
+    else:
+        lock = (
+            "\n\nROLE LOCK — ENTRY ONLY:\n"
+            "This call generates an ENTRY block. Every firing branch in evaluate() "
+            "must return the literal \"long\" or \"short\". Non-firing branches "
+            "return None. The string \"exit\" is forbidden in return statements."
+        )
+    return CUSTOM_BLOCK_SYSTEM_PROMPT + lock
+
+
+def _call_claude_for_block(
+    user_prompt: str, *, role_hint: str = "entry"
+) -> tuple[dict, dict]:
     """Returns (parsed_json, usage) — M1583: count custom-block tokens too."""
     client = _get_client()
     resp = _create_message(
         client,
         _purpose="custom_block",
         max_tokens=4000,
-        system=CUSTOM_BLOCK_SYSTEM_PROMPT,
+        system=_custom_block_system_prompt(role_hint),
         messages=[{"role": "user", "content": user_prompt}],
     )
     usage = _usage_dict(resp)
@@ -2542,6 +2582,48 @@ def _call_claude_for_block(user_prompt: str) -> tuple[dict, dict]:
         raise json.JSONDecodeError(
             f"{e.msg} — response snippet: {snippet!r}", e.doc or "", e.pos
         ) from None
+
+
+def _repair_exit_return_literals(src: str) -> str | None:
+    """Safely map literal entry signals to ``exit`` in an exit-only block.
+
+    This is deliberately narrow: only direct literal returns inside
+    ``evaluate`` are changed. Dynamic expressions, helper returns, syntax
+    errors, and entry blocks still go through the normal retry/fallback path.
+    The repaired source is re-run through the full AST and runtime gates by the
+    caller before it can be persisted.
+    """
+
+    import ast
+
+    try:
+        tree = ast.parse(src, filename="<custom_block_repair>")
+    except SyntaxError:
+        return None
+    evaluate = next(
+        (
+            node
+            for node in tree.body
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and node.name == "evaluate"
+        ),
+        None,
+    )
+    if evaluate is None:
+        return None
+    changed = False
+    for node in ast.walk(evaluate):
+        if (
+            isinstance(node, ast.Return)
+            and isinstance(node.value, ast.Constant)
+            and node.value.value in {"long", "short"}
+        ):
+            node.value = ast.copy_location(ast.Constant(value="exit"), node.value)
+            changed = True
+    if not changed:
+        return None
+    ast.fix_missing_locations(tree)
+    return ast.unparse(tree) + "\n"
 
 
 _BREAKDOWN_SYSTEM_PROMPT = """You split a trading-strategy description into DISTINCT
@@ -2861,9 +2943,44 @@ Return the JSON only."""
 
     last_error = None
     _acc_usage: dict = {}
-    for attempt in range(2):
+    try:
+        _attempt_limit = max(
+            1, min(2, int(os.environ.get("AGENT_CUSTOM_BLOCK_MAX_ATTEMPTS", "2")))
+        )
+    except ValueError:
+        _attempt_limit = 2
+    try:
+        _token_limit = max(
+            4_000, int(os.environ.get("AGENT_CUSTOM_BLOCK_TOKEN_LIMIT", "25000"))
+        )
+    except ValueError:
+        _token_limit = 25_000
+
+    def _spent_tokens() -> int:
+        return sum(
+            int(_acc_usage.get(k) or 0)
+            for k in (
+                "input_tokens",
+                "output_tokens",
+                "cache_read_input_tokens",
+                "cache_creation_input_tokens",
+            )
+        )
+
+    def _retry_allowed() -> bool:
+        nonlocal last_error
+        spent = _spent_tokens()
+        if spent >= _token_limit:
+            last_error = (
+                f"{last_error}; custom_block token limit reached "
+                f"({spent:,}/{_token_limit:,})"
+            )
+            return False
+        return True
+
+    for attempt in range(_attempt_limit):
         try:
-            data, _u = _call_claude_for_block(user_prompt)
+            data, _u = _call_claude_for_block(user_prompt, role_hint=role_hint)
             for k, v in _u.items():
                 _acc_usage[k] = _acc_usage.get(k, 0) + v
         except Exception as e:
@@ -2874,6 +2991,8 @@ Return the JSON only."""
                 ) from e
             last_error = f"Claude request failed: {type(e).__name__}: {e}"
             user_prompt = f"Previous request failed ({type(e).__name__}). {user_prompt}"
+            if not _retry_allowed():
+                break
             continue
 
         if (
@@ -2884,6 +3003,8 @@ Return the JSON only."""
         ):
             last_error = f"schema mismatch: missing keys in {list(data.keys()) if isinstance(data, dict) else type(data).__name__}"
             user_prompt = f"Your last output was invalid: {last_error}. Return JSON with keys name/meta/code."
+            if not _retry_allowed():
+                break
             continue
 
         name = str(data["name"]).strip()
@@ -2894,6 +3015,8 @@ Return the JSON only."""
         if not isinstance(meta, dict) or "label" not in meta or "params" not in meta:
             last_error = "meta must have label and params"
             user_prompt = f"Your last output was invalid: {last_error}. Fix and return valid JSON."
+            if not _retry_allowed():
+                break
             continue
 
         # Persist the provenance contract with the block. The composer validates
@@ -2911,19 +3034,49 @@ Return the JSON only."""
             )
         except GeneratedCodeError as e:
             last_error = str(e)
+            # Live Fable runs repeatedly produced otherwise-valid exit code
+            # whose firing branches returned the entry vocabulary.  For direct
+            # literal returns the semantics are unambiguous: an exit condition
+            # firing means ``exit``. Repair locally and re-run every safety gate
+            # instead of paying for another full generation call.
+            if role_hint == "exit" and "role contract" in last_error:
+                repaired = _repair_exit_return_literals(code)
+                if repaired is not None:
+                    try:
+                        _validate_generated_code(repaired)
+                        _test_execute_generated(
+                            repaired,
+                            meta=meta,
+                            require_max_lookback=True,
+                            role_hint=role_hint,
+                        )
+                    except GeneratedCodeError as repair_error:
+                        last_error = f"{last_error}; safe repair failed: {repair_error}"
+                    else:
+                        return {
+                            "name": name,
+                            "meta": meta,
+                            "code": repaired,
+                            "usage": _acc_usage,
+                            "repair": "exit_literal_normalized",
+                        }
             user_prompt = (
                 f"Your last code was REJECTED with this error:\n\n{last_error}\n\n"
+                f"ROLE CONTRACT (still mandatory): {role_contract}\n"
                 "Fix the code and return the same JSON schema. Remember: no imports, "
                 "no leading underscore names, no try/with/lambda/global/nonlocal, only whitelisted "
                 "attributes (.params/.role/.value/.upper/.lower/.middle/.initialized/.get/.keys/"
                 ".values/.items) and only whitelisted builtins."
             )
+            if not _retry_allowed():
+                break
             continue
 
         return {"name": name, "meta": meta, "code": code, "usage": _acc_usage}
 
     raise GeneratedCodeError(
-        f"Claude could not produce valid code after 2 attempts. Last error: {last_error}"
+        f"Claude could not produce valid code after {_attempt_limit} attempts. "
+        f"Last error: {last_error}"
     )
 
 

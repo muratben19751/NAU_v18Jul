@@ -154,6 +154,9 @@ def _candidates(state: dict, running: bool, stopping: bool = False) -> list[dict
                 "spark": _sparkline(pts, h=46 if is_leader else 36),
                 "spark_h": 46 if is_leader else 36,
                 "metrics": [
+                    f"Excess {r['excess_return_fraction'] * 100:+.1f}%"
+                    if r.get("excess_return_fraction") is not None
+                    else "Excess —",
                     f"PF {r['profit_factor']:.2f}"
                     if r.get("profit_factor") is not None
                     else "PF —",
@@ -367,4 +370,7 @@ def _cost_label(token_info: dict | None) -> str:
     ti = token_info or {}
     total = fmt_tokens(ti.get("total"))
     usd = ti.get("cost_usd")
-    return f"{total} · ${usd:.2f}" if usd is not None else total
+    if usd is None:
+        return total
+    suffix = "reported" if ti.get("cost_source") == "provider_reported" else "est."
+    return f"{total} · ${usd:.2f} {suffix}"

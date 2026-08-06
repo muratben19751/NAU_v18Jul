@@ -337,9 +337,15 @@ def _session_summary(run_id: str) -> dict:
     if winner_ev and not end_ev:
         outcome = "winner_found"
 
-    total_rounds = (
-        (tok_ev or {}).get("round") or (end_ev or {}).get("total_rounds") or "?"
-    )
+    # A token snapshot can belong to an admitted-but-incomplete next round.
+    # Session completion fields are authoritative; falling back to snapshot
+    # round recreated the phantom round seen in d4b86c48 (2 completed, shown 3).
+    if end_ev and end_ev.get("completed_rounds") is not None:
+        total_rounds = end_ev["completed_rounds"]
+    elif end_ev and end_ev.get("total_rounds") is not None:
+        total_rounds = end_ev["total_rounds"]
+    else:
+        total_rounds = (tok_ev or {}).get("round") or "?"
 
     summary = {
         "run_id": run_id,
@@ -362,6 +368,7 @@ def _session_summary(run_id: str) -> dict:
         "winner_score": (winner_ev or {}).get("score"),
         "cost_eur": (tok_ev or {}).get("cost_eur"),
         "cost_usd": (tok_ev or {}).get("cost_usd"),
+        "cost_source": (tok_ev or {}).get("cost_source"),
         "has_blocks": (SESSION_LOG_DIR / f"{run_id}_blocks").exists(),
     }
     if cache_key is not None:

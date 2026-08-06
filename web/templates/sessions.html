@@ -81,8 +81,8 @@
       {% if s.cost_eur is not none %}
       {# L38: model-based ESTIMATED cost; field is None on subscription CLI runs → hidden #}
       <span class="mono" style="font-size:11px;font-weight:600;color:var(--amber);margin-left:auto;">
-        ≈ €{{ "%.4f"|format(s.cost_eur) }}
-        <span class="text-muted" style="font-weight:400;"> (${{ "%.4f"|format(s.cost_usd) }} · estimated)</span>
+        {% if s.cost_source == 'price_table' %}≈ {% endif %}€{{ "%.4f"|format(s.cost_eur) }}
+        <span class="text-muted" style="font-weight:400;"> (${{ "%.4f"|format(s.cost_usd) }} · {{ 'provider reported' if s.cost_source == 'provider_reported' else 'estimated' }})</span>
       </span>
       {% endif %}
     </div>

@@ -959,7 +959,9 @@ def _score(result) -> float:
     # Use explicit None check to avoid treating pnl_pct=0.0 (break-even) as missing
     # Rank edge over the investable buy-and-hold baseline when the run stamped
     # one. Absolute long-market profit is not evidence of strategy alpha.
-    _pnl_pct = m.get("excess_pnl_pct")
+    _pnl_pct = m.get("excess_return_fraction")
+    if _pnl_pct is None:
+        _pnl_pct = m.get("excess_pnl_pct")
     if _pnl_pct is None:
         _pnl_pct = m.get("pnl_pct")
     if _pnl_pct is not None:
@@ -998,7 +1000,10 @@ def _pre_robustness_eligible(result) -> bool:
     m = result.metrics
     if int(m.get("n_trades") or 0) < _MIN_TRADES:
         return False
-    values = (m.get("pnl"), m.get("excess_pnl_pct"), m.get("sharpe_per_trade"))
+    excess = m.get("excess_return_fraction")
+    if excess is None:
+        excess = m.get("excess_pnl_pct")
+    values = (m.get("pnl"), excess, m.get("sharpe_per_trade"))
     try:
         pnl, excess, sharpe = (float(v) for v in values)
     except (TypeError, ValueError):
@@ -1020,8 +1025,14 @@ def _stamp_buy_hold_benchmark(result, bars_df) -> None:
         pnl_pct = result.metrics.get("pnl_pct")
         if pnl_pct is None:
             pnl_pct = (result.metrics.get("pnl") or 0.0) / _starting_cash()
+        excess = float(pnl_pct) - benchmark
+        # Canonical names state the stored unit explicitly: these values are
+        # fractions (0.20 == 20%). Keep the legacy *_pct aliases for session and
+        # API compatibility while UI/rendering migrates to the unambiguous keys.
+        result.metrics["benchmark_return_fraction"] = benchmark
+        result.metrics["excess_return_fraction"] = excess
         result.metrics["benchmark_return_pct"] = benchmark
-        result.metrics["excess_pnl_pct"] = float(pnl_pct) - benchmark
+        result.metrics["excess_pnl_pct"] = excess
         result.metrics["benchmark"] = "buy_and_hold"
     except (KeyError, TypeError, ValueError, IndexError):
         return
@@ -1907,6 +1918,7 @@ def _agent_worker(
     _seen_candidate_fingerprints: set[str] = set()
     _zero_trade_families: set[str] = set()
     _last_started_round = 0
+    _completed_rounds = 0
 
     # Continuous mode with no ceiling has exactly two brakes: the winnerless-round
     # breaker and the identical-error breaker. Neither bounds cost — every round
@@ -1949,7 +1961,9 @@ def _agent_worker(
             "session_end",
             round=run_number,
             outcome="winless_limit",
-            total_rounds=run_number,
+            started_round=_last_started_round,
+            completed_rounds=_completed_rounds,
+            total_rounds=_completed_rounds,
         )
 
     while True:
@@ -2000,7 +2014,9 @@ def _agent_worker(
                 round=run_number,
                 outcome="budget",
                 reason=_budget_reason,
-                total_rounds=run_number - 1,
+                started_round=_last_started_round,
+                completed_rounds=_completed_rounds,
+                total_rounds=_completed_rounds,
             )
             return
         if continuous_mode and run_number > 1:
@@ -2488,6 +2504,12 @@ def _agent_worker(
                                 "score": round(sc, 4) if sc > float("-inf") else None,
                                 "pnl": m_bt.get("pnl"),
                                 "pnl_pct": m_bt.get("pnl_pct"),
+                                "benchmark_return_fraction": m_bt.get(
+                                    "benchmark_return_fraction"
+                                ),
+                                "excess_return_fraction": m_bt.get(
+                                    "excess_return_fraction"
+                                ),
                                 "sharpe": m_bt.get("sharpe"),
                                 "profit_factor": m_bt.get("profit_factor"),
                                 "max_dd": m_bt.get("max_dd"),
@@ -2761,10 +2783,20 @@ def _agent_worker(
             if not eligible:
                 _tl_end(run_id, f"rank-r{run_number}", status="warn")
                 _done_phase(run_id, 3, "⚠ No eligible result — all iterations failed")
+                _completed_rounds = run_number
                 if not continuous_mode:
                     with _AGENT_LOCK:
                         if run_id in _AGENT_PROGRESS:
                             _AGENT_PROGRESS[run_id]["done"] = True
+                    _session_log(
+                        run_id,
+                        "session_end",
+                        round=run_number,
+                        outcome="no_eligible_candidate",
+                        started_round=_last_started_round,
+                        completed_rounds=_completed_rounds,
+                        total_rounds=_completed_rounds,
+                    )
                     return
                 _consec_err = 0  # round ended without exception — error streak broken
                 _last_err_str = None
@@ -3032,6 +3064,7 @@ def _agent_worker(
                 _done_phase(
                     run_id, 4, f"✗ None of the {len(eligible)} candidates passed"
                 )
+                _completed_rounds = run_number
                 if not continuous_mode:
                     with _AGENT_LOCK:
                         if run_id in _AGENT_PROGRESS:
@@ -3041,7 +3074,9 @@ def _agent_worker(
                         "session_end",
                         round=run_number,
                         outcome="no_winner",
-                        total_rounds=run_number,
+                        started_round=_last_started_round,
+                        completed_rounds=_completed_rounds,
+                        total_rounds=_completed_rounds,
                     )
                     return
                 _consec_err = 0  # round ended without exception — error streak broken
@@ -3135,6 +3170,8 @@ def _agent_worker(
                             if _sharpe is not None
                             else None,
                             "pnl_pct": round(_pnl_fr, 6),
+                            "benchmark_return_fraction": round(_benchmark_fr, 6),
+                            "excess_return_fraction": round(_excess_fr, 6),
                             "benchmark_return_pct": round(_benchmark_fr, 6),
                             "excess_pnl_pct": round(_excess_fr, 6),
                             "n_trades": _n,
@@ -3273,6 +3310,7 @@ def _agent_worker(
                 promotion_reason=promotion_reason,
             )
             _consec_err = 0  # round finished successfully — error streak broken
+            _completed_rounds = run_number
             _last_err_str = None
 
             if not continuous_mode:
@@ -3284,7 +3322,9 @@ def _agent_worker(
                     "session_end",
                     round=run_number,
                     outcome="winner" if promotion_passed else "promotion_rejected",
-                    total_rounds=run_number,
+                    started_round=_last_started_round,
+                    completed_rounds=_completed_rounds,
+                    total_rounds=_completed_rounds,
                 )
                 return
 
@@ -3318,7 +3358,9 @@ def _agent_worker(
                 "session_end",
                 round=run_number,
                 outcome="stopped",
-                total_rounds=_last_started_round,
+                started_round=_last_started_round,
+                completed_rounds=_completed_rounds,
+                total_rounds=_completed_rounds,
             )
             return
         except AgentBudgetReached as e:
@@ -3334,7 +3376,9 @@ def _agent_worker(
                 round=run_number,
                 outcome="budget",
                 reason=str(e),
-                total_rounds=_last_started_round,
+                started_round=_last_started_round,
+                completed_rounds=_completed_rounds,
+                total_rounds=_completed_rounds,
             )
             return
         except TerminalLLMError as e:
@@ -3355,7 +3399,9 @@ def _agent_worker(
                 round=run_number,
                 outcome="terminal_llm_error",
                 error=err_str,
-                total_rounds=_last_started_round,
+                started_round=_last_started_round,
+                completed_rounds=_completed_rounds,
+                total_rounds=_completed_rounds,
             )
             return
         except Exception as e:
@@ -3372,6 +3418,9 @@ def _agent_worker(
                 round=run_number,
                 outcome="error",
                 error=err_str,
+                started_round=_last_started_round,
+                completed_rounds=_completed_rounds,
+                total_rounds=_completed_rounds,
             )
             if not continuous_mode:
                 break
@@ -3405,7 +3454,9 @@ def _agent_worker(
                 _ti, _to, _tcr, _tcw, model=model
             )
             _cost_usd = _provider_cost if _provider_cost > 0 else _estimated_cost
-            _cost_source = "provider" if _provider_cost > 0 else "price_table"
+            _cost_source = (
+                "provider_reported" if _provider_cost > 0 else "price_table"
+            )
             _session_log(
                 run_id,
                 "token_snapshot",
@@ -3433,7 +3484,9 @@ def _agent_worker(
         run_id,
         "session_end",
         outcome="stopped",
-        total_rounds=_last_started_round,
+        started_round=_last_started_round,
+        completed_rounds=_completed_rounds,
+        total_rounds=_completed_rounds,
     )
 
 
@@ -3488,6 +3541,7 @@ def _generate_custom_spec(
         SignalBlock,
         new_spec_id,
         register_custom_from_disk,
+        unregister_custom_block,
     )
     from custom_block_store import save_custom_batch
 
@@ -3613,13 +3667,11 @@ def _generate_custom_spec(
                 entry_logic="OR",
                 exit_logic="OR",
             )
-        err = spec.validate()
-        if err:
-            raise RuntimeError(f"Custom spec invalid: {err}")
-
-        # Entry and exit form one candidate transaction. Persist only after
-        # both generations and composed-spec validation succeed, otherwise a
-        # stop/error during exit generation leaves an orphan entry behind.
+        # Entry and exit form one candidate transaction. A new custom type must
+        # be registered before ComposedStrategySpec.validate can resolve it;
+        # validating first caused the live ``Unknown block type`` fallback.
+        # save_custom_batch keeps the disk registry transaction open while the
+        # callback registers both types and validates the composed spec.
         generated = [
             {
                 "name": entry_name,
@@ -3629,6 +3681,7 @@ def _generate_custom_spec(
                 "role": "entry",
                 "label": entry_label,
                 "usage": entry_block.get("usage"),
+                "repair": entry_block.get("repair"),
             }
         ]
         if not use_builtin_exit:
@@ -3641,11 +3694,27 @@ def _generate_custom_spec(
                     "role": "exit",
                     "label": exit_label,
                     "usage": exit_block.get("usage"),
+                    "repair": exit_block.get("repair"),
                 }
             )
-        save_custom_batch(generated)
+        registered: list[str] = []
+
+        def _register_and_validate() -> None:
+            try:
+                for block in generated:
+                    register_custom_from_disk(block["name"])
+                    registered.append(block["name"])
+                err = spec.validate()
+                if err:
+                    raise RuntimeError(f"Custom spec invalid: {err}")
+            except Exception:
+                for name in reversed(registered):
+                    unregister_custom_block(name)
+                registered.clear()
+                raise
+
+        save_custom_batch(generated, validate=_register_and_validate)
         for block in generated:
-            register_custom_from_disk(block["name"])
             _add_step(run_id, f"  ✓ {block['role'].title()} block saved: {block['name']}")
             _session_log(
                 run_id,
@@ -3658,6 +3727,7 @@ def _generate_custom_spec(
                 meta=block["meta"],
                 code=block["code"],
                 usage=block["usage"],
+                repair=block.get("repair"),
             )
         try:
             blocks_dir = SESSION_LOG_DIR / f"{run_id}_blocks"
@@ -4236,7 +4306,9 @@ async def progress(request: Request, run_id: str):
         "cache_write": _tcw,
         "total": _ti + _to + _tcr + _tcw,
         "pricing_model": _model,
-        "cost_source": "provider" if _provider_cost > 0 else "price_table",
+        "cost_source": (
+            "provider_reported" if _provider_cost > 0 else "price_table"
+        ),
         "cost_usd": round(_cost_usd, 4) if _cost_usd is not None else None,
         "cost_eur": round(_cost_usd * _USD_EUR, 4) if _cost_usd is not None else None,
     }
