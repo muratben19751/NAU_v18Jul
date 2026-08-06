@@ -59,6 +59,23 @@ class TestPeriodsPerYear:
         assert _periods_per_year(_BarType("MONTH"), equity_inst) == 12
         assert _periods_per_year(_BarType("DAY"), equity_inst) == 252
 
+    def test_equity_intraday_uses_observed_session_bar_count(self):
+        import pandas as pd
+
+        from backtest import _periods_per_year
+
+        class _Spec:
+            def __str__(self):
+                return "1-HOUR-LAST"
+
+        bt = type("BT", (), {"spec": _Spec()})()
+        days = pd.bdate_range("2025-01-02", periods=20, tz="UTC")
+        idx = pd.DatetimeIndex(
+            [day + pd.Timedelta(hours=h) for day in days for h in range(7)]
+        )
+        frame = pd.DataFrame({"close": range(len(idx))}, index=idx)
+        assert _periods_per_year(bt, object(), frame) == 7 * 252
+
 
 class TestToUnixBands:
     """L5: all four bands sec/ms/µs/ns should be classified correctly."""

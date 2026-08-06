@@ -48,6 +48,7 @@ DEFAULT_ENDPOINT = "https://files.massive.com"
 DEFAULT_BUCKET = "flatfiles"
 DEFAULT_DEST = Path(r"E:\MarketData\massive-flatfiles")
 DEFAULT_WORKERS = 16  # ölçülen tavan ~12,4 MB/s; fazlası bölüyor, hızlandırmıyor
+_AUTH_RETRIES = 4  # koşum ortasındaki 403 throttle'dır; ısrar ederse yetkidir
 
 
 class FlatFileError(RuntimeError):
@@ -85,49 +86,102 @@ def make_client(endpoint: str = DEFAULT_ENDPOINT, workers: int = DEFAULT_WORKERS
     )
 
 
+def _key_day(key: str) -> str:
+    """Dosya adının başındaki YYYY-MM-DD (yoksa boş) — gün bazlı süzgecin dayanağı."""
+    name = key.rsplit("/", 1)[-1]
+    stem = name[:10]
+    return stem if len(stem) == 10 and stem[4] == stem[7] == "-" else ""
+
+
 def list_dataset(
-    client, dataset: str, *, bucket: str = DEFAULT_BUCKET, years: range | None = None
+    client,
+    dataset: str,
+    *,
+    bucket: str = DEFAULT_BUCKET,
+    years: range | None = None,
+    start: str = "",
+    end: str = "",
 ) -> list[tuple[str, int]]:
-    """(key, size) listesi. `years` verilirse yol içindeki /YYYY/ ile süzülür."""
+    """(key, size) listesi.
+
+    `years` yol içindeki /YYYY/ ile, `start`/`end` (YYYY-MM-DD) ise dosya
+    adındaki günle süzer — "son 24 ay" gibi yuvarlak pencereler takvim yılına
+    yuvarlanmasın diye. Günü okunamayan key gün süzgecinde elenir.
+    """
     out: list[tuple[str, int]] = []
     for page in client.get_paginator("list_objects_v2").paginate(
         Bucket=bucket, Prefix=f"{dataset.strip('/')}/"
     ):
         for o in page.get("Contents", []):
+            key = o["Key"]
             if years is not None:
-                parts = o["Key"].split("/")
+                parts = key.split("/")
                 if (
                     len(parts) < 4
                     or not parts[-3].isdigit()
                     or int(parts[-3]) not in years
                 ):
                     continue
-            out.append((o["Key"], o["Size"]))
+            if start or end:
+                day = _key_day(key)
+                if not day or (start and day < start) or (end and day > end):
+                    continue
+            out.append((key, o["Size"]))
     return sorted(out)
 
 
+def _http_code(e: Exception) -> int | None:
+    return getattr(e, "response", {}).get("ResponseMetadata", {}).get("HTTPStatusCode")
+
+
 def _fetch_one(client, bucket: str, key: str, size: int, dest: Path) -> int:
-    """Tek nesne → dest/key. Zaten tam inmişse 0 döner (atlandı)."""
+    """Tek nesne → dest/key. Zaten tam inmişse 0 döner (atlandı).
+
+    401/403 iki farklı şey olabildiği için körlemesine ölümcül sayılmaz:
+    dataset aboneliğe kapalıysa `mirror` ön-yoklamada zaten durdurur, koşum
+    ortasındaki 403 ise geçicidir. Ölçüm (2026-08-06): 16 işçiyle 35 MB/s'de
+    5.000. dosyada 403 alındı, aynı key hemen ardından 26/26 başarılı indi —
+    yani throttle. Bu yüzden yetki hatası da geri çekilerek yeniden denenir,
+    ancak ısrar ederse ölümcül sayılır.
+    """
     target = dest / key
     if target.exists() and target.stat().st_size == size:
         return 0
     target.parent.mkdir(parents=True, exist_ok=True)
     part = target.with_suffix(target.suffix + ".part")
+    for attempt in range(_AUTH_RETRIES):
+        try:
+            client.download_file(bucket, key, str(part))
+        except Exception as e:  # noqa: BLE001
+            part.unlink(missing_ok=True)
+            code = _http_code(e)
+            if code in (401, 403):
+                if attempt + 1 < _AUTH_RETRIES:
+                    time.sleep(min(30.0, 3 * 2**attempt))
+                    continue
+                raise FlatFileError(
+                    f"HTTP {code} — {_AUTH_RETRIES} denemede de indirilemedi "
+                    f"({key}). Dataset aboneliğe kapalı olabilir; listeleme "
+                    "açık olsa da indirme aboneliğe bağlı."
+                ) from e
+            raise
+        os.replace(part, target)
+        return size
+    raise AssertionError("ulaşılamaz")  # döngü ya döner ya yükseltir
+
+
+def _preflight(client, bucket: str, key: str) -> None:
+    """Tek baytlık GET: dataset aboneliğe kapalıysa 5.000 dosya sonra değil,
+    daha ilk saniyede ve açık mesajla dur."""
     try:
-        client.download_file(bucket, key, str(part))
+        client.get_object(Bucket=bucket, Key=key, Range="bytes=0-0")
     except Exception as e:  # noqa: BLE001
-        part.unlink(missing_ok=True)
-        code = (
-            getattr(e, "response", {}).get("ResponseMetadata", {}).get("HTTPStatusCode")
-        )
-        if code in (401, 403):
+        if _http_code(e) in (401, 403):
             raise FlatFileError(
-                f"HTTP {code} — bu dataset bu abonelikte indirilemiyor ({key}). "
-                "Listeleme açık olsa da indirme aboneliğe bağlı."
+                f"HTTP {_http_code(e)} — bu dataset bu abonelikte indirilemiyor "
+                f"({key}). Listeleme açık olsa da indirme aboneliğe bağlı."
             ) from e
         raise
-    os.replace(part, target)
-    return size
 
 
 def mirror(
@@ -139,6 +193,7 @@ def mirror(
     workers: int = DEFAULT_WORKERS,
 ) -> dict[str, int]:
     """Paralel ayna. {indirilen, atlanan, bayt} döner; ilerleme loglanır."""
+    _preflight(client, bucket, objects[0][0])
     total_bytes = sum(s for _, s in objects)
     done = skipped = 0
     got = 0
@@ -196,6 +251,8 @@ def main() -> None:
     ap.add_argument(
         "--years", default="", help="YYYY veya YYYY-YYYY (varsayılan: hepsi)"
     )
+    ap.add_argument("--start", default="", help="gün süzgeci başı: YYYY-MM-DD")
+    ap.add_argument("--end", default="", help="gün süzgeci sonu: YYYY-MM-DD")
     ap.add_argument("--workers", type=int, default=DEFAULT_WORKERS)
     ap.add_argument("--endpoint", default=DEFAULT_ENDPOINT)
     ap.add_argument("--bucket", default=DEFAULT_BUCKET)
@@ -207,7 +264,12 @@ def main() -> None:
     try:
         client = make_client(args.endpoint, args.workers)
         objs = list_dataset(
-            client, args.dataset, bucket=args.bucket, years=_parse_years(args.years)
+            client,
+            args.dataset,
+            bucket=args.bucket,
+            years=_parse_years(args.years),
+            start=args.start,
+            end=args.end,
         )
         if not objs:
             _log(f"HATA: {args.dataset} altında nesne yok")

@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import logging
+import multiprocessing
 import os
 import random
 import shutil
@@ -36,6 +37,96 @@ from typing import Any
 
 class TerminalLLMError(RuntimeError):
     """Non-retryable provider failure (credit/auth/permission)."""
+
+
+class LLMCallCancelled(RuntimeError):
+    """The owning AUTO run requested stop while an LLM call was in flight."""
+
+
+_LLM_CONTROL = threading.local()
+
+
+def set_thread_llm_control(cancel_check=None, observer=None, admit_check=None) -> None:
+    """Install AUTO-scoped cancellation, telemetry and budget admission hooks."""
+    _LLM_CONTROL.cancel_check = cancel_check
+    _LLM_CONTROL.observer = observer
+    _LLM_CONTROL.admit_check = admit_check
+
+
+def _check_llm_cancelled() -> None:
+    check = getattr(_LLM_CONTROL, "cancel_check", None)
+    if callable(check) and check():
+        raise LLMCallCancelled("AUTO stop requested")
+
+
+def _observe_llm(**event) -> None:
+    observer = getattr(_LLM_CONTROL, "observer", None)
+    if callable(observer):
+        try:
+            observer(event)
+        except Exception:
+            logging.exception("LLM observer failed")
+
+
+def _llm_request_token_bound(kwargs: dict) -> dict[str, int]:
+    """Conservative token upper bound used before an LLM request is admitted.
+
+    UTF-8 bytes are a safe upper bound for BPE-style input tokenization and do
+    not require a model-specific tokenizer.  The output side is already bounded
+    by ``max_tokens``.  This intentionally errs on the side of ending an AUTO
+    run early instead of letting one final request overshoot its advertised cap.
+    """
+
+    payloads: list[str] = []
+    system = kwargs.get("system")
+    if isinstance(system, str):
+        payloads.append(system)
+    for message in kwargs.get("messages") or []:
+        if not isinstance(message, dict):
+            continue
+        content = message.get("content")
+        if isinstance(content, str):
+            payloads.append(content)
+    input_bound = sum(len(text.encode("utf-8")) for text in payloads)
+    # Account for role/message framing without pretending to know the provider's
+    # exact chat template.
+    input_bound += 64 * (len(payloads) + 1)
+    output_bound = max(0, int(kwargs.get("max_tokens") or 0))
+    return {
+        "input_token_bound": input_bound,
+        "output_token_bound": output_bound,
+        "total_token_bound": input_bound + output_bound,
+    }
+
+
+def _admit_llm_request(kwargs: dict) -> None:
+    admit = getattr(_LLM_CONTROL, "admit_check", None)
+    if callable(admit):
+        admit(_llm_request_token_bound(kwargs))
+
+
+def _raise_if_llm_control_abort(exc: BaseException) -> None:
+    """Never disguise STOP/budget control flow as a successful fallback."""
+
+    if isinstance(exc, LLMCallCancelled) or bool(
+        getattr(exc, "llm_control_abort", False)
+    ):
+        raise exc
+
+
+def _interruptible_sleep(seconds: float) -> None:
+    # Non-AUTO callers have no cancellation source; preserve one sleep call
+    # (also keeps deterministic unit tests fast when _sleep is replaced).
+    if not callable(getattr(_LLM_CONTROL, "cancel_check", None)):
+        _sleep(max(0.0, float(seconds)))
+        return
+    deadline = time.monotonic() + max(0.0, float(seconds))
+    while True:
+        _check_llm_cancelled()
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return
+        _sleep(min(0.25, remaining))
 
 
 def is_terminal_llm_error(exc: BaseException) -> bool:
@@ -538,6 +629,7 @@ def _or_create_with_backoff(or_model: str, **kwargs):
     client = _get_openrouter_client()
     slept = 0.0
     for i, planned in enumerate(_OR_RETRY_WAITS):
+        _check_llm_cancelled()
         try:
             return client.messages.create(model=or_model, **kwargs)
         except Exception as e:
@@ -553,8 +645,9 @@ def _or_create_with_backoff(or_model: str, **kwargs):
                 i + 1,
                 len(_OR_RETRY_WAITS),
             )
-            _sleep(wait)
+            _interruptible_sleep(wait)
             slept += wait
+    _check_llm_cancelled()
     return client.messages.create(model=or_model, **kwargs)
 
 
@@ -622,6 +715,7 @@ def _create_message(client, _purpose: str = "", **kwargs):
     bir daha ilk çağrıyı çöpe atmaz. Ölçüm: kimi-k3'te her `idea`/`custom_block`
     çağrısı tavana dayanıyordu, yani her üretim iki çağrı ediyordu.
     """
+    _check_llm_cancelled()
     base = int(kwargs.get("max_tokens") or 0)
     key = (current_model(), _purpose or "llm")
     learned = _LEARNED_MAX_TOKENS.get(key, 0)
@@ -649,6 +743,7 @@ def _create_message(client, _purpose: str = "", **kwargs):
         bigger,
         bigger,
     )
+    _check_llm_cancelled()
     resp = _create_message_once(client, _purpose, **{**kwargs, "max_tokens": bigger})
     if _was_truncated(resp):
         # Do NOT learn a ceiling that did not work either — the next call would
@@ -673,18 +768,54 @@ def _create_message_once(client, _purpose: str = "", **kwargs):
     fine). This is the single choke point through which all app LLM calls pass.
     """
     global _active_model
+    _check_llm_cancelled()
+    kwargs = dict(kwargs)
+    kwargs.setdefault(
+        "timeout", float(os.environ.get("NAUTILUS_LLM_CALL_TIMEOUT", "120"))
+    )
     model = current_model()
+
+    def _call(called_model: str, fn):
+        # Admission happens for every real provider attempt, including a
+        # truncation retry or model fallback.  The AUTO hook can therefore
+        # reject the request before any prompt/output tokens are spent.
+        _admit_llm_request(kwargs)
+        started = time.monotonic()
+        try:
+            response = fn()
+        except Exception as exc:
+            _observe_llm(
+                model=called_model,
+                purpose=_purpose or "llm",
+                usage=None,
+                duration_s=round(time.monotonic() - started, 3),
+                max_tokens=int(kwargs.get("max_tokens") or 0),
+                status="cancelled" if isinstance(exc, LLMCallCancelled) else "error",
+                error=f"{type(exc).__name__}: {exc}"[:500],
+            )
+            raise
+        _observe_llm(
+            model=called_model,
+            purpose=_purpose or "llm",
+            usage=_usage_dict(response),
+            duration_s=round(time.monotonic() - started, 3),
+            max_tokens=int(kwargs.get("max_tokens") or 0),
+            status="truncated" if _was_truncated(response) else "ok",
+        )
+        _check_llm_cancelled()
+        return response
+
     if model.startswith("or:"):
         # Koşu-başına OpenRouter yolu (thread pin "or:<id>"): varsayılan
         # backend'e dokunmadan bu çağrı OpenRouter'a gider. Fable→Opus kredi
         # fallback'i Claude'a özgüdür — burada uygulanmaz; 429 dışındaki hata
         # çağırana düşer (çağıranların kendi graceful fallback'leri var).
         or_model = model[3:]
-        resp = _or_create_with_backoff(or_model, **kwargs)
+        resp = _call(or_model, lambda: _or_create_with_backoff(or_model, **kwargs))
         _ledger_record(resp, or_model, _purpose)
         return resp
     try:
-        resp = client.messages.create(model=model, **kwargs)
+        resp = _call(model, lambda: client.messages.create(model=model, **kwargs))
         _ledger_record(resp, model, _purpose)
         return resp
     except Exception as e:
@@ -698,7 +829,10 @@ def _create_message_once(client, _purpose: str = "", **kwargs):
             type(e).__name__,
             FALLBACK_MODEL,
         )
-        resp = client.messages.create(model=FALLBACK_MODEL, **kwargs)
+        resp = _call(
+            FALLBACK_MODEL,
+            lambda: client.messages.create(model=FALLBACK_MODEL, **kwargs),
+        )
         _ledger_record(resp, FALLBACK_MODEL, _purpose)
         return resp
 
@@ -830,6 +964,7 @@ class _ClaudeCLIMessages:
         messages: list[dict],
         system: str | None = None,
         max_tokens: int = 0,  # no equivalent in the CLI; prompts already request short answers
+        timeout: float | None = None,
         **_ignored: Any,
     ) -> _CLIResponse:
         # Single-turn calls (every existing proposer) join user content verbatim
@@ -891,20 +1026,62 @@ class _ClaudeCLIMessages:
             ):
                 env.pop(var, None)
 
-            timeout = float(os.environ.get("NAUTILUS_CLI_TIMEOUT", "300"))
-            proc = subprocess.run(
-                cmd,
-                input=prompt,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                env=env,
-                cwd=tempfile.gettempdir(),
-                timeout=timeout,
-                # Windows: don't open/close a console window on every LLM call.
-                creationflags=NO_WINDOW_FLAGS,
+            deadline_s = min(
+                float(timeout or 120),
+                float(os.environ.get("NAUTILUS_CLI_TIMEOUT", "300")),
             )
+            if not callable(getattr(_LLM_CONTROL, "cancel_check", None)):
+                proc = subprocess.run(
+                    cmd,
+                    input=prompt,
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    env=env,
+                    cwd=tempfile.gettempdir(),
+                    timeout=deadline_s,
+                    creationflags=NO_WINDOW_FLAGS,
+                )
+            else:
+                proc = subprocess.Popen(
+                    cmd,
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    env=env,
+                    cwd=tempfile.gettempdir(),
+                    creationflags=NO_WINDOW_FLAGS,
+                )
+                started = time.monotonic()
+                first = True
+                while True:
+                    try:
+                        _check_llm_cancelled()
+                    except LLMCallCancelled:
+                        proc.kill()
+                        proc.communicate()
+                        raise
+                    remaining = deadline_s - (time.monotonic() - started)
+                    if remaining <= 0:
+                        proc.kill()
+                        proc.communicate()
+                        raise TimeoutError(
+                            f"claude CLI exceeded {deadline_s:g}s LLM call timeout"
+                        )
+                    try:
+                        stdout, stderr = proc.communicate(
+                            input=prompt if first else None,
+                            timeout=min(0.25, remaining),
+                        )
+                        break
+                    except subprocess.TimeoutExpired:
+                        first = False
+                proc.stdout = stdout
+                proc.stderr = stderr
         finally:
             if sys_file:
                 try:
@@ -1000,9 +1177,15 @@ class _ORTextBlock:
 
 
 class _ORUsage:
-    def __init__(self, prompt_tokens: int = 0, completion_tokens: int = 0) -> None:
+    def __init__(
+        self,
+        prompt_tokens: int = 0,
+        completion_tokens: int = 0,
+        cost_usd: float | None = None,
+    ) -> None:
         self.input_tokens = int(prompt_tokens or 0)
         self.output_tokens = int(completion_tokens or 0)
+        self.cost_usd = float(cost_usd) if cost_usd is not None else None
         # Anthropic yüzeyiyle uyum için mevcut alanlar da sağlanır.
         self.cache_read_input_tokens = 0
         self.cache_creation_input_tokens = 0
@@ -1015,22 +1198,153 @@ class _ORResponse:
         prompt_tokens: int = 0,
         completion_tokens: int = 0,
         stop_reason: str | None = None,
+        cost_usd: float | None = None,
     ) -> None:
         self.content = [_ORTextBlock(text)]
         self.usage = _ORUsage(
-            prompt_tokens=prompt_tokens, completion_tokens=completion_tokens
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            cost_usd=cost_usd,
         )
         # Anthropic adlandırmasına çevrilir ("length" → "max_tokens"), böylece
         # _was_truncated tek bir alan okur; bkz. _create_message.
         self.stop_reason = stop_reason
 
 
+class _OpenRouterProcessError(RuntimeError):
+    """Serializable OpenRouter child-process failure."""
+
+    def __init__(self, message: str, *, status_code: int | None = None) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+
+
+def _openrouter_usage_payload(usage: Any) -> dict[str, int | float | None]:
+    raw = {}
+    if usage is not None and hasattr(usage, "model_dump"):
+        try:
+            raw = usage.model_dump() or {}
+        except Exception:
+            raw = {}
+    cost = raw.get("cost")
+    if cost is None:
+        cost = getattr(usage, "cost", None)
+    return {
+        "prompt_tokens": int(getattr(usage, "prompt_tokens", 0) or 0),
+        "completion_tokens": int(getattr(usage, "completion_tokens", 0) or 0),
+        "cost_usd": float(cost) if cost is not None else None,
+    }
+
+
+def _openrouter_process_main(conn, config: dict, request: dict) -> None:
+    """Execute one provider call in an OS process the AUTO worker can kill."""
+
+    try:
+        from openai import OpenAI
+
+        timeout = float(config.get("timeout") or 120.0)
+        client = OpenAI(
+            base_url=config["base_url"],
+            api_key=config["api_key"],
+            timeout=timeout,
+            max_retries=0,
+        )
+        req = dict(request)
+        req.pop("timeout", None)
+        resp = client.chat.completions.create(**req)
+        usage = _openrouter_usage_payload(getattr(resp, "usage", None))
+        conn.send(
+            {
+                "ok": True,
+                "text": (
+                    (resp.choices[0].message.content or "") if resp.choices else ""
+                ),
+                "finish_reason": (
+                    getattr(resp.choices[0], "finish_reason", None)
+                    if resp.choices
+                    else None
+                ),
+                **usage,
+            }
+        )
+    except BaseException as exc:
+        status = getattr(exc, "status_code", None)
+        if status is None:
+            status = getattr(getattr(exc, "response", None), "status_code", None)
+        try:
+            conn.send(
+                {
+                    "ok": False,
+                    "type": type(exc).__name__,
+                    "message": str(exc)[:2000],
+                    "status_code": status,
+                }
+            )
+        except Exception:
+            pass
+    finally:
+        conn.close()
+
+
+def _stop_provider_process(proc) -> None:
+    if proc.is_alive():
+        try:
+            proc.kill()
+        except AttributeError:
+            proc.terminate()
+    proc.join(timeout=2.0)
+
+
+def _run_openrouter_killable(request: dict, config: dict, timeout: float) -> dict:
+    """Run a synchronous SDK request behind a hard deadline and kill switch."""
+
+    _check_llm_cancelled()
+    ctx = multiprocessing.get_context("spawn")
+    parent, child = ctx.Pipe(duplex=False)
+    proc = ctx.Process(
+        target=_openrouter_process_main,
+        args=(child, {**config, "timeout": timeout}, request),
+        daemon=True,
+    )
+    proc.start()
+    child.close()
+    deadline = time.monotonic() + max(0.1, float(timeout))
+    try:
+        while True:
+            _check_llm_cancelled()
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError(
+                    f"OpenRouter call exceeded {float(timeout):g}s hard deadline"
+                )
+            if parent.poll(min(0.1, remaining)):
+                payload = parent.recv()
+                if not payload.get("ok"):
+                    raise _OpenRouterProcessError(
+                        f"{payload.get('type', 'OpenRouterError')}: "
+                        f"{payload.get('message', 'provider call failed')}",
+                        status_code=payload.get("status_code"),
+                    )
+                return payload
+            if not proc.is_alive():
+                raise _OpenRouterProcessError(
+                    f"OpenRouter worker exited without a response (exit={proc.exitcode})"
+                )
+    finally:
+        _stop_provider_process(proc)
+        parent.close()
+
+
 class _OpenRouterMessages:
     def __init__(
-        self, client: Any, extra_headers: dict[str, str] | None = None
+        self,
+        client: Any,
+        extra_headers: dict[str, str] | None = None,
+        process_config: dict[str, str] | None = None,
     ) -> None:
         self._client = client
         self._extra_headers = extra_headers or {}
+        self._process_config = process_config
 
     def create(
         self,
@@ -1039,6 +1353,7 @@ class _OpenRouterMessages:
         messages: list[dict],
         system: str | None = None,
         max_tokens: int = 0,
+        timeout: float | None = None,
         **_ignored: Any,
     ) -> _ORResponse:
         or_messages: list[dict[str, str]] = []
@@ -1059,6 +1374,8 @@ class _OpenRouterMessages:
         }
         if max_tokens and max_tokens > 0:
             req["max_tokens"] = int(max_tokens)
+        if timeout is not None:
+            req["timeout"] = float(timeout)
         # OpenRouter'ın karşılığı `reasoning.effort` ve sözlüğü daha dar
         # (low/medium/high); Claude CLI'a özgü xhigh/max en yakın üst seviyeye
         # düşer. OpenAI SDK'sı bilinmeyen üst-düzey anahtarı reddeder, bu yüzden
@@ -1071,25 +1388,45 @@ class _OpenRouterMessages:
         if self._extra_headers:
             req["extra_headers"] = self._extra_headers
 
-        resp = self._client.chat.completions.create(**req)
-        text = (resp.choices[0].message.content or "") if resp.choices else ""
-        usage = getattr(resp, "usage", None)
-        finish = (
-            getattr(resp.choices[0], "finish_reason", None) if resp.choices else None
-        )
+        if self._process_config is not None and callable(
+            getattr(_LLM_CONTROL, "cancel_check", None)
+        ):
+            payload = _run_openrouter_killable(
+                req, self._process_config, float(timeout or 120.0)
+            )
+            text = str(payload.get("text") or "")
+            usage_payload = payload
+            finish = payload.get("finish_reason")
+        else:
+            resp = self._client.chat.completions.create(**req)
+            text = (resp.choices[0].message.content or "") if resp.choices else ""
+            usage_payload = _openrouter_usage_payload(getattr(resp, "usage", None))
+            finish = (
+                getattr(resp.choices[0], "finish_reason", None)
+                if resp.choices
+                else None
+            )
         return _ORResponse(
             text=text,
-            prompt_tokens=getattr(usage, "prompt_tokens", 0),
-            completion_tokens=getattr(usage, "completion_tokens", 0),
+            prompt_tokens=usage_payload.get("prompt_tokens", 0),
+            completion_tokens=usage_payload.get("completion_tokens", 0),
             stop_reason="max_tokens" if finish == "length" else finish,
+            cost_usd=usage_payload.get("cost_usd"),
         )
 
 
 class _OpenRouterClient:
     def __init__(
-        self, client: Any, extra_headers: dict[str, str] | None = None
+        self,
+        client: Any,
+        extra_headers: dict[str, str] | None = None,
+        process_config: dict[str, str] | None = None,
     ) -> None:
-        self.messages = _OpenRouterMessages(client, extra_headers=extra_headers)
+        self.messages = _OpenRouterMessages(
+            client,
+            extra_headers=extra_headers,
+            process_config=process_config,
+        )
 
 
 def _find_claude_cli() -> str | None:
@@ -1130,10 +1467,18 @@ def _build_openrouter_client() -> _OpenRouterClient:
     if title:
         extra_headers["X-Title"] = title
 
+    timeout = float(os.environ.get("NAUTILUS_LLM_CALL_TIMEOUT", "120"))
+    max_retries = int(os.environ.get("NAUTILUS_OPENROUTER_SDK_RETRIES", "0"))
     logging.info("LLM backend: openrouter (%s)", base_url)
     return _OpenRouterClient(
-        OpenAI(base_url=base_url, api_key=api_key),
+        OpenAI(
+            base_url=base_url,
+            api_key=api_key,
+            timeout=timeout,
+            max_retries=max(0, max_retries),
+        ),
         extra_headers=extra_headers,
+        process_config={"base_url": base_url, "api_key": api_key},
     )
 
 
@@ -1795,22 +2140,14 @@ Design a new {market_target} composed strategy as specified. Return JSON only.""
             system=system,
             messages=[{"role": "user", "content": user}],
         )
-        usage = {
-            "input_tokens": getattr(resp.usage, "input_tokens", 0) or 0,
-            "output_tokens": getattr(resp.usage, "output_tokens", 0) or 0,
-            "cache_read_input_tokens": getattr(resp.usage, "cache_read_input_tokens", 0)
-            or 0,
-            "cache_creation_input_tokens": getattr(
-                resp.usage, "cache_creation_input_tokens", 0
-            )
-            or 0,
-        }
+        usage = _usage_dict(resp)
         text = "".join(
             b.text for b in resp.content if getattr(b, "type", "") == "text"
         ).strip()
         data = json.loads(_extract_json_object(text))
         return _validate_composed(data), usage
     except Exception as e:
+        _raise_if_llm_control_abort(e)
         fb = _fallback_composed()
         fb["description"] = (
             fb.get("description", "") + f" · fallback ({type(e).__name__})"
@@ -1863,6 +2200,40 @@ def _test_execute_generated(
     the loop-budgeted compilation are IDENTICAL to composer._load_module_from_path —
     a block that passes smoke finds the same environment at runtime.
     """
+    # A single smoke input cannot exercise every conditional branch.  The live
+    # AUTO review found exit blocks whose smoke returned None while a later
+    # branch returned "long"/"short".  Validate every literal return in the
+    # syntax tree before execution so dead/rare branches cannot evade the role
+    # contract.  Dynamic expressions remain covered by the runtime check below.
+    import ast
+
+    try:
+        tree = ast.parse(src, filename="<custom_block>")
+    except SyntaxError as exc:
+        raise GeneratedCodeError(f"invalid Python syntax: {exc}") from exc
+    allowed_literals = {"long", "short"} if role_hint == "entry" else {"exit"}
+    evaluate_defs = [
+        node
+        for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.name == "evaluate"
+    ]
+    for node in ast.walk(evaluate_defs[0] if evaluate_defs else tree):
+        if not isinstance(node, ast.Return) or node.value is None:
+            continue
+        if not isinstance(node.value, ast.Constant):
+            raise GeneratedCodeError(
+                f"evaluate() role return at line {getattr(node, 'lineno', '?')} "
+                "must be a literal signal or None; dynamic returns are not auditable"
+            )
+        value = node.value.value
+        if value is not None and value not in allowed_literals:
+            expected = "'long'/'short'/None" if role_hint == "entry" else "'exit'/None"
+            raise GeneratedCodeError(
+                f"evaluate() violated the {role_hint} role contract at line "
+                f"{getattr(node, 'lineno', '?')}: returned {value!r}; expected {expected}"
+            )
+
     import math as _math
     import statistics as _stats
 
@@ -2138,13 +2509,17 @@ def _extract_json_object(text: str) -> str:
 def _usage_dict(resp) -> dict:
     """resp.usage → normalize token dict (M1583: counted on every LLM call)."""
     u = getattr(resp, "usage", None)
-    return {
+    usage = {
         "input_tokens": getattr(u, "input_tokens", 0) or 0,
         "output_tokens": getattr(u, "output_tokens", 0) or 0,
         "cache_read_input_tokens": getattr(u, "cache_read_input_tokens", 0) or 0,
         "cache_creation_input_tokens": getattr(u, "cache_creation_input_tokens", 0)
         or 0,
     }
+    cost = getattr(u, "cost_usd", None)
+    if cost is not None:
+        usage["cost_usd"] = float(cost)
+    return usage
 
 
 def _call_claude_for_block(user_prompt: str) -> tuple[dict, dict]:
@@ -2465,11 +2840,19 @@ def propose_custom_block(
     friendly message on repeated validation failure.
     """
     role_line = _summarize_role_hint(role_hint)
+    role_contract = (
+        'This is an ENTRY block: every firing branch MUST return exactly "long" or "short"; '
+        'never return "exit".'
+        if role_hint == "entry"
+        else 'This is an EXIT block: every firing branch MUST return exactly "exit"; '
+        'never return "long" or "short".'
+    )
     user_prompt = f"""Design a new signal block.
 
 Label (user's short name for it): {label}
 Role hint: {role_hint}
 {role_line}
+ROLE CONTRACT (applies to EVERY conditional branch): {role_contract}
 
 Description (user's words — infer parameters, thresholds, logic):
 \"\"\"{description.strip()}\"\"\"
@@ -2484,6 +2867,7 @@ Return the JSON only."""
             for k, v in _u.items():
                 _acc_usage[k] = _acc_usage.get(k, 0) + v
         except Exception as e:
+            _raise_if_llm_control_abort(e)
             if is_terminal_llm_error(e):
                 raise TerminalLLMError(
                     f"terminal LLM provider failure: {type(e).__name__}: {e}"
@@ -2652,7 +3036,15 @@ def chat_edit_block(
         # Güvenlik + smoke: propose_custom_block:1554-1566 ile birebir defense-in-depth.
         try:
             _validate_generated_code(new_code)
-            _test_execute_generated(new_code, meta=new_meta, require_max_lookback=True)
+            edit_role = str(existing_meta.get("role") or new_meta.get("role") or "entry")
+            new_meta = dict(new_meta)
+            new_meta["role"] = edit_role
+            _test_execute_generated(
+                new_code,
+                meta=new_meta,
+                require_max_lookback=True,
+                role_hint=edit_role,
+            )
         except GeneratedCodeError as e:
             # Kod reddedildi — eski geçerli kodu KORU, hatayı kullanıcıya göster
             # (otomatik iç-tur yok; kullanıcı sohbetle düzelttirir).
@@ -3044,6 +3436,7 @@ def _propose_agent_strategy_idea(
         idea["usage"] = _usage_dict(resp)  # M1583: count idea tokens too
         return idea
     except Exception as e:
+        _raise_if_llm_control_abort(e)
         logging.warning("_propose_agent_strategy_idea failed: %s", e, exc_info=True)
         # Fallback: pick from a variety of concepts (avoid always returning Bollinger)
         _FALLBACK_IDEAS = [

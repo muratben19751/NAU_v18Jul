@@ -302,7 +302,7 @@ def download(
         note=(
             "Massive REST /v2/aggs ingest"
             + (
-                "; split/temettü ayarlı (adjusted=true)."
+                "; yalnız split ayarlı (adjusted=true; temettü ayarlanmaz)."
                 if adjusted
                 else " (UNADJUSTED)."
             )

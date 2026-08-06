@@ -1174,11 +1174,11 @@ def run_multi_symbol(
             pnl = m.get("pnl", 0.0) or 0.0
             sharpe = m.get("sharpe")
             n_trades = m.get("n_trades", 0) or 0
-            pnl_pct = pnl / STARTING_CASH * 100
+            pnl_pct = pnl / STARTING_CASH
             icon = "✓" if pnl > 0 else "✗"
             sharpe_str = f"{sharpe:.2f}" if sharpe is not None else "—"
             _p(
-                f"  [{sym}] {icon} PnL={pnl:+.2f} {cur} ({pnl_pct:+.1f}%) · "
+                f"  [{sym}] {icon} PnL={pnl:+.2f} {cur} ({100 * pnl_pct:+.1f}%) · "
                 f"Sharpe={sharpe_str} · {n_trades} trade"
             )
             results.append(
@@ -1266,12 +1266,12 @@ def run_multi_symbol(
                 pnl = m.get("pnl", 0.0) or 0.0
                 sharpe = m.get("sharpe")
                 n_trades = m.get("n_trades", 0) or 0
-                pnl_pct = pnl / STARTING_CASH * 100
+                pnl_pct = pnl / STARTING_CASH
 
                 icon = "✓" if pnl > 0 else "✗"
                 sharpe_str = f"{sharpe:.2f}" if sharpe is not None else "—"
                 _p(
-                    f"  [{sym}] {icon} PnL={pnl:+.2f} {cur} ({pnl_pct:+.1f}%) · "
+                    f"  [{sym}] {icon} PnL={pnl:+.2f} {cur} ({100 * pnl_pct:+.1f}%) · "
                     f"Sharpe={sharpe_str} · {n_trades} trade"
                 )
                 results.append(

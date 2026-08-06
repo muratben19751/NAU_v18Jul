@@ -202,6 +202,30 @@ class TestFeeConstants:
         assert m_with_fee["commission_total"] > 0, "Commission should be > 0"
         assert m_with_fee["commission_total"] == pytest.approx(50.0, abs=0.01)
 
+    def test_slippage_model_has_auditable_nonzero_estimate_when_report_is_zero(self):
+        from unittest.mock import MagicMock
+
+        from backtest import _metrics
+
+        positions = _fake_positions_df([10.0, -2.0])
+        engine = MagicMock()
+        engine.portfolio.analyzer.get_performance_stats_returns.return_value = {}
+        engine.portfolio.analyzer.get_performance_stats_general.return_value = {}
+        engine.portfolio.analyzer.currencies = []
+        engine.trader.generate_order_fills_report.return_value = pd.DataFrame(
+            {"quantity": ["100", "50"], "slippage": [0.0, 0.0]}
+        )
+        metrics = _metrics(
+            engine,
+            positions,
+            slippage_model_active=True,
+            price_increment=0.01,
+        )
+        assert metrics["slippage_reported_total"] == 0
+        assert metrics["slippage_estimated_total"] == pytest.approx(1.5)
+        assert metrics["slippage_total"] == pytest.approx(1.5)
+        assert metrics["slippage_fill_count"] == 2
+
 
 # ---------------------------------------------------------------------------
 # Test 4 — _parse_money_column: bad values warn, return 0.0

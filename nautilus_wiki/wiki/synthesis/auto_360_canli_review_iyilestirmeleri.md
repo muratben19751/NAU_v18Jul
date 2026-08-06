@@ -13,7 +13,7 @@ related:
   - wiki/synthesis/auto_arama_ekonomisi.md
   - wiki/synthesis/llm_maliyet_kaldiraclari.md
   - wiki/synthesis/nau_performans_denetimi.md
-last_updated: 2026-08-05
+last_updated: 2026-08-06
 ---
 
 # AUTO 360° canlı inceleme ve güvenilirlik iyileştirmeleri
@@ -211,6 +211,173 @@ Durum: **uygulandı, test edildi, servise yüklendi**.
   kapanmış ve bu sayfa nihai kayıt olarak sabitlenmiştir.
 - Bir sonraki kanıt noktası, adjusted veriyle çalıştırılacak yeni AUTO koşusunun
   `session_end`, robustness ve sealed-holdout çıktılarıdır.
+
+## İkinci canlı inceleme ve sertleştirme — `7a83089b`
+
+Geçici `AGENT_ALLOW_UNADJUSTED=1` araştırma override'ıyla yapılan koşu, ilk
+adayda mutlak kârın edge olmadığını açıkça gösterdi: `10c1e975eca4` için PnL
+`+1105,27`, fakat buy-and-hold `%18,6955` karşısında excess `%−18,585`, Sharpe
+`0,3615`, 636 işlem ve skor `−6,3717` idi. Komisyon `1272`, fill slippage
+telemetrisi ise sıfır görünüyordu. Koşunun gerçek sağlayıcı tüketimi 73.667 input
++ 45.261 output = 118.928 token iken aday olaylarında yalnız 46.552 token
+görünmesi, retry/custom-block çağrılarının run telemetrisine eksik yansıdığını
+kanıtladı.
+
+Veri incelemesi ayrıca QQQ 1H serisinde 2004 sonundan 2011'e kadar büyük bir
+takvim boşluğu buldu; 2005–2010 yılları yoktu. `adjusted=false` işaretiyle
+birleşince bu veri ancak araştırma amaçlı okunabilir, edge veya yayımlama kanıtı
+olamaz.
+
+### Bu turda uygulanan ek sözleşmeler
+
+- Generated custom block doğrulaması artık yalnız bir smoke girdisinin gördüğü
+  çıktıya bakmaz. AST'deki tüm literal `return` dalları taranır: entry yalnız
+  `long|short|None`, exit yalnız `exit|None`. Koşullu/ölü dalda kalan yanlış
+  `long/short` exit üretimi de fail-closed reddedilir; dinamik signal dönüşleri
+  denetlenebilir olmadığı için üretilen bloklarda kabul edilmez. Rol kuralı promptta her
+  dal için açıkça tekrar edilir; block-edit yolu mevcut metadata rolünü korur.
+- Entry/exit çifti tek registry transaction'ında yazılır. İki üretim ve spec
+  doğrulaması tamamlanmadan hiçbir blok kaydedilmez; backtest başlamadan gelen
+  stop sinyali yalnız o koşunun henüz çalışmamış bloklarını siler.
+- Dış kataloglarda 14 günü aşan aktif-gün boşluğu AUTO başlamadan reddedilir.
+  Bilinen unadjusted veri yalnız iki anahtarlı
+  `AGENT_ALLOW_UNADJUSTED=1 + AGENT_RESEARCH_MODE=1` override ile açılsa bile
+  koşu `research_only` taşır ve
+  sealed holdout geçse dahi `strategy_catalog` yayımlaması kesinlikle yasaktır.
+- Robustness öncesi ucuz alpha kapısı en az 20 işlem yanında pozitif mutlak PnL,
+  pozitif per-trade Sharpe ve pozitif benchmark excess ister. Böylece
+  `10c1e975eca4` gibi mutlak kârlı fakat benchmark altında kalan aday, WFO/MC
+  maliyeti üretmez. Kesin IS/OOS `✗` sonucu da WFO ve Monte Carlo'yu kısa devre
+  eder.
+- Her gerçek provider cevabı — kesilip tekrar denenen cevaplar dahil — model,
+  amaç, input/output/cache token, `max_tokens`, süre ve durumuyla `llm_usage`
+  olayı üretir. Run token sayacı bu tek choke point'ten beslenir; yüksek seviye
+  çağrıların ikinci kez sayılması kaldırıldı. 250k tavan provider dönüşünden
+  hemen sonra tekrar kontrol edilir.
+- LLM çağrıları varsayılan 120 saniyelik istek tavanı taşır. OpenRouter 429
+  backoff'u 250 ms aralıklarla stop kontrol eder; Claude CLI `Popen` ile izlenir
+  ve stop/timeout'ta child process öldürülür. Böylece Stop düğmesi beş dakikalık
+  senkron CLI çağrısını beklemek zorunda değildir.
+- Equity intraday annualization sabit 6,5 saat yerine gerçek katalogdaki medyan
+  bar/gün sayısını kullanır; QQQ 1H için 1638 yerine `7×252=1764`. Robustness
+  `pnl_pct` alanı ana backtest ile aynı fraction sözleşmesine geçirildi.
+- Slippage telemetrisi `reported`, `estimated`, `fill_count` ve
+  `model_active` alanlarına ayrıldı. Fill raporu sıfır/eksik dönerken model
+  açıksa quantity × price-increment üzerinden bir-tick denetim tahmini yazılır;
+  sıfır artık sessizce execution-gerçekçiliği kanıtı sayılmaz.
+- Tam robustness nesnesi JSONL satırına gömülmez. Gzip JSON artifact olarak
+  `{run_id}_artifacts/` altına yazılır; JSONL yalnız karar özeti, bağıl path,
+  byte boyutu ve SHA-256 digest taşır. Stop sonrası yanıltıcı “yeni tur
+  başlıyor” mesajı da kaldırıldı.
+
+### Doğrulama (ikinci dalga)
+
+- Ruff: değişen dosyaların tamamında temiz.
+- İzole tam paket: **769 passed, 3 skipped, 2 deselected**.
+- Gerçek kullanıcı custom-block kataloğunu gerektirdiği için izole paketten
+  ayrılan iki test ayrıca gerçek katalog üzerinde çalıştırıldı: **2 passed**.
+- Tam paket tabanı: **771 passed, 3 skipped**. Son iki güvenlik guard'ı
+  (dinamik role-return reddi ve eski tek-anahtarlı override'ın etkisizliği)
+  ayrıca hedefli paketlerde geçti: **28/28** ve **57/57**.
+
+### Mimari sınır
+
+Backtest ve robustness zaten öldürülebilir child process'lerde, LLM CLI da bu
+turda öldürülebilir child'a alındı; buna karşın AUTO orkestrasyon durumu hâlâ web
+sürecinin belleğinde tutuluyor. JSONL + artifact kayıtları restart sonrası tam
+adli iz bırakır, fakat yarım koşuyu otomatik devam ettiren harici/durable queue
+henüz yoktur. Bu, veri/edge doğruluğu düzeltmelerinden ayrı bir servisleşme
+migrasyonudur; süreç restart'ı aktif koşuyu devam ettirmez.
+
+## Adjusted veri sonrasi canli inceleme - `bbbdd6e3`
+
+Massive adjusted QQQ.NASDAQ 1-HOUR kataloguyla yapilan `bbbdd6e3` kosusu veri
+kapilarinin duzeldigini, fakat arama ekonomisinde iki yeni acik kaldigini
+gosterdi. Katalog 40.068 bar, 2003-09-10 -> 2026-07-01 araligi, `adjusted=true`,
+`research_only=false` ve aktif-gun gap'i olmadan yuklendi. Eski unadjusted/gap
+uyarilari tekrar etmedi.
+
+Kosunun kanit ozeti:
+
+- 45 dk 38 sn, 10 backtest, 35 gercek LLM denemesi.
+- LLM bekleme suresi 2.453,53 sn (toplam surenin yaklasik %89,6'si), backtest
+  suresi 280,56 sn.
+- 245.347/250.000 token (%98,1); uc yanit `max_tokens` nedeniyle kesildi.
+- En uzun provider cagrisi 707,36 sn oldu. Stop sirasindaki 94,2 sn'lik cagri
+  cevap donene kadar iptal edilemedi ve 15.921 token daha tuketti.
+- Session JSONL 209.418 byte'ta kaldi; nested curve/artifact inceltmesi calisti.
+- Winner, robustness, sealed holdout veya katalog yazimi olmadi. Bu sonuc dogru:
+  en iyi mutlak aday +1.831,96 dolar (+%18,32) uretirken ayni donemde benchmark
+  yaklasik +%1.869,55 idi; excess kesin bicimde negatiftir.
+- `pnl_pct` ve `benchmark_return_pct` icin birim uyusmazligi yoktur: ikisi de
+  fraction sozlesmesindedir. Gercek karsilastirma kusuru, LLM'in %5/%10/fixed/
+  ATR maruziyet secmesine karsilik benchmark'in %100 buy-and-hold olmasiydi.
+
+### Bu inceleme sonrasinda uygulanan ek sertlestirme
+
+- Her gercek provider denemesinden **once** prompt icin muhafazakar input token
+  ust siniri ve `max_tokens` output rezervi hesaplanir. Kalan butce bu rezervi
+  karsilamiyorsa cagri hic gonderilmez; `llm_budget_rejected` olayi yazilir.
+- OpenRouter AUTO cagrisi ayri bir OS process'inde calisir. Varsayilan 120 sn sert
+  deadline veya Stop sinyali process'i oldurur. SDK'nin gizli retry katmani AUTO
+  icin varsayilan olarak kapatildi (`max_retries=0`); kontrollu 429 backoff'u stop
+  kontrol etmeye devam eder.
+- Stop ve butce exception'lari strateji fallback'i gibi yutulamaz. Kismi tur
+  `x/y iterations completed` olarak kapanir; Stop sonrasinda ranking veya
+  robustness baslatilmaz. UI artik "tur sonunda" degil aktif adimin iptal
+  edilecegini/bitirilecegini soyler.
+- OpenRouter response usage icindeki gercek `cost` run defterine tasinir. UI ve
+  `token_snapshot`, provider cost varsa fiyat tablosu tahmini yerine onu kullanir
+  ve `cost_source=provider` kaydeder.
+- External-equity AUTO adaylarinin sinyal kalitesi ayni sinavda olculur: LLM'in
+  sectigi `fixed`, `atr_target`, `vol_target` veya dusuk yuzde yerine tum adaylar
+  varsayilan %95 `percent_equity` maruziyetine normalize edilir. Degisim
+  `exposure_normalized` olayi ile denetlenebilir; deployment risk sizing'i
+  promotion sonrasina kalir.
+- Exact aday fingerprint'i daha once kosulan spec'i yeniden calistirmaz. Sifir
+  trade ureten blok/rol ailesi parametreleri degistirilerek tekrar denenmez;
+  token harcamayan deterministik builtin fallback ile degistirilir ve
+  `candidate_deduplicated` yazilir.
+- Winnerless continuous circuit breaker varsayilani 25 turdan 3 tura indirildi.
+  Ayni edge'siz aile 4 saat/250k butcenin geri kalanini tuketmez.
+- FlatFiles one-byte abonelik preflight'i test S3 sozlesmesine eklendi; tum
+  worker'lari isitmadan 2 sn timeout testi baslatan Windows timing flake'i tum
+  pool worker'larini onceden isitacak bicimde deterministiklestirildi.
+
+### Dogrulama (ucuncu dalga)
+
+- Ruff: `agent.py`, `web/routes/agent_backtest.py` ve yeni hedefli testlerde temiz.
+- LLM admission/cancel, provider cost, killable OpenRouter yolu, exposure
+  normalization ve candidate fingerprint testleri eklendi.
+- Hedefli AUTO/form paketi: **64 passed**.
+- Tam regresyon paketi: **801 passed, 1 skipped**.
+
+### Kalan mimari sinir
+
+AUTO orkestrasyon state'i hala web process bellegindedir. Bu tur route/worker
+dogruluk kontratini sertlestirdi ve provider islemini oldurulebilir hale getirdi;
+PM2 restart sonrasinda yarim kosuyu otomatik devam ettirecek durable queue/checkpoint
+migrasyonu ayri bir servis degisikligi olarak kalir. JSONL ve gzip artifact adli
+izi korur, fakat calisan state'i yeniden kurmaz.
+
+## Canli dagitim senkronizasyonu - 2026-08-06
+
+- `nautilus` PM2 sureci PID `54468` ile **online**; son kontrollu restart'tan
+  sonra 8 saat kesintisiz calisma suresi goruldu.
+- Strategy Studio saglik kontrolu `http://127.0.0.1:8111/studio` icin HTTP
+  **200** dondu; yanit boyutu 1.765.194 byte idi.
+- Gecici arastirma kapilari canli surecte kapali: `AGENT_ALLOW_UNADJUSTED=0` ve
+  `AGENT_RESEARCH_MODE=0`. Bilinen ayarlanmamis veri normal AUTO kosusuna veya
+  katalog yayimina giremez.
+- Son dogrulama tabani **801 passed, 1 skipped**; Ruff ve `git diff --check`
+  temizdir.
+- `bbbdd6e3` icin winner/robustness/holdout/katalog yazimi olmamasi bir altyapi
+  hatasi degil, negatif benchmark excess nedeniyle beklenen fail-closed
+  sonucudur. Bir sonraki canli kosuda temel kabul kaniti; sert 120 sn provider
+  deadline, cagri-oncesi token rezervi, aday dedup ve esit maruziyet olaylarinin
+  session JSONL'de gorulmesidir.
+
+Durum: **kod, test, wiki ve canli servis senkronize**.
 
 <!-- BACKLINKS:BEGIN -->
 ## Referenced by

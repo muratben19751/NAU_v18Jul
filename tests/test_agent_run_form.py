@@ -58,7 +58,17 @@ def test_bogus_tf_codes_fall_back_to_single_interval(monkeypatch):
 
 
 def test_dotted_symbol_promotes_to_external_with_mapped_tfs(monkeypatch):
+    import data
+
     monkeypatch.setenv("AGENT_ALLOW_UNADJUSTED", "1")
+    monkeypatch.setenv("AGENT_RESEARCH_MODE", "1")
+    # This test verifies request mapping, not catalog-quality validation. The
+    # real local QQQ fixture intentionally contains the large historical gap
+    # that AUTO now rejects.
+    monkeypatch.setattr(data, "external_data_gap_report", lambda frame: None)
+    monkeypatch.setattr(data, "load_external_bars", lambda *a, **k: object())
+    monkeypatch.setattr(data, "_external_bar_dir", lambda *a, **k: (object(), object()))
+    monkeypatch.setattr(data, "_external_adjusted_flag", lambda *a, **k: False)
     client, got, done = _client_and_capture(monkeypatch)
     r = client.post(
         "/agent/run",
@@ -69,6 +79,7 @@ def test_dotted_symbol_promotes_to_external_with_mapped_tfs(monkeypatch):
     assert got["source"] == "external"
     assert got["instrument_id"] == "QQQ.NASDAQ"
     assert got["intervals"] == ["1-HOUR", "1-DAY"]  # bybit codes → granularities
+    assert got["research_only"] is True
 
 
 def test_model_pick_reaches_worker_and_thread_pin(monkeypatch):

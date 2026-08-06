@@ -24,7 +24,7 @@ import time
 from contextlib import contextmanager
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 import pandas as pd
 import requests
@@ -1957,6 +1957,33 @@ def load_external_bars(
                 df.index[susp][0].date(),
             )
     return df
+
+
+def external_data_gap_report(
+    df: pd.DataFrame, *, max_calendar_days: int = 14
+) -> dict[str, Any] | None:
+    """Return the largest suspicious calendar gap in an external series.
+
+    Weekends and ordinary exchange holidays fit comfortably under 14 days.
+    Multi-month/year holes do not, and silently annualizing/ranking across them
+    creates non-reproducible edge.  The caller may fail closed before AUTO.
+    """
+    if df is None or len(df) < 2 or not isinstance(df.index, pd.DatetimeIndex):
+        return None
+    active_days = pd.DatetimeIndex(df.index).normalize().unique().sort_values()
+    if len(active_days) < 2:
+        return None
+    deltas = active_days[1:] - active_days[:-1]
+    largest_idx = int(deltas.argmax())
+    largest_days = int(deltas[largest_idx] / pd.Timedelta(days=1))
+    if largest_days <= max_calendar_days:
+        return None
+    return {
+        "days": largest_days,
+        "from": active_days[largest_idx].date().isoformat(),
+        "to": active_days[largest_idx + 1].date().isoformat(),
+        "max_allowed_days": int(max_calendar_days),
+    }
 
 
 def coverage_range(

@@ -307,7 +307,13 @@ class TestRunUnitsTimeout:
         # with the timeout payload, and the assertion fails for a reason that has
         # nothing to do with the M300 branch under test. Paying that cost outside
         # the measured window makes the timing assumption hold on a loaded box.
-        pool.run_units([{"key": "warmup"}], timeout_s=60.0)
+        # Warm every configured worker. A single warmup future only starts one
+        # process lazily; the second process can otherwise spend most of the
+        # deliberately tiny 2s test budget importing on Windows.
+        pool.run_units(
+            [{"key": f"warmup-{i}"} for i in range(pool.max_workers)],
+            timeout_s=60.0,
+        )
 
         # Stall the PARENT side PAST the timeout budget: after the first fast
         # future is yielded, progress_cb sleeps here while the remaining fast

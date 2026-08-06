@@ -40,6 +40,12 @@ class FakeS3:
     def get_paginator(self, _name: str) -> _FakePaginator:
         return _FakePaginator(self._objects)
 
+    def get_object(self, **_kwargs):
+        """Mirror production's one-byte subscription preflight contract."""
+        if self._fail:
+            raise self._fail
+        return {"Body": b"x"}
+
     def download_file(self, bucket: str, key: str, path: str) -> None:
         self.calls.append(key)
         if self._fail:

@@ -29,6 +29,8 @@ eğrilerinin indirgenmesi; ham hâli olay başına 3,5 MB yazıyordu),
 
 from __future__ import annotations
 
+import gzip
+import hashlib
 import json
 import logging
 import math
@@ -112,8 +114,10 @@ DEFAULT_CONTINUOUS_MAX_TOKENS = int(
 )
 
 # M22 extra circuit breaker: threshold of consecutive winnerless rounds
-# (continuous mode). Counter resets when a winner appears. 0 = off; default 25.
-_WINLESS_ROUND_LIMIT = int(os.environ.get("AGENT_WINLESS_ROUND_LIMIT", "25"))
+# (continuous mode). Three complete rounds are enough to identify a stalled
+# strategy family without spending the remainder of a four-hour/token budget.
+# Counter resets when a winner appears. 0 = explicit operator opt-out.
+_WINLESS_ROUND_LIMIT = int(os.environ.get("AGENT_WINLESS_ROUND_LIMIT", "3"))
 
 # L26: lightweight best-effort SQLite index of winner + robustness moments.
 _AGENT_INDEX_DB = Path.home() / ".cache" / "nautilus_web_app" / "agent_index.db"
@@ -131,6 +135,8 @@ _SESSION_LOG_META: threading.Lock = threading.Lock()  # guards _SESSION_LOG_LOCK
 
 class AgentBudgetReached(RuntimeError):
     """Raised between LLM calls when the run's token ceiling is reached."""
+
+    llm_control_abort = True
 
 
 def _json_safe(obj):
@@ -170,6 +176,62 @@ def _session_log(run_id: str, event: str, **kwargs) -> None:
                 _f.write(line)
     except Exception:
         pass
+
+
+def _write_session_artifact(run_id: str, name: str, payload) -> dict:
+    """Write a curve-heavy audit payload outside JSONL and return its identity."""
+    safe_name = re.sub(r"[^a-zA-Z0-9_.-]+", "-", name).strip("-.") or "artifact"
+    directory = SESSION_LOG_DIR / f"{run_id}_artifacts"
+    directory.mkdir(parents=True, exist_ok=True)
+    raw = json.dumps(_json_safe(payload), default=str, separators=(",", ":")).encode(
+        "utf-8"
+    )
+    compressed = gzip.compress(raw, compresslevel=6, mtime=0)
+    path = directory / f"{safe_name}.json.gz"
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_bytes(compressed)
+    tmp.replace(path)
+    return {
+        "path": str(path.relative_to(SESSION_LOG_DIR)),
+        "sha256": hashlib.sha256(compressed).hexdigest(),
+        "bytes": len(compressed),
+        "raw_bytes": len(raw),
+        "encoding": "gzip+json",
+    }
+
+
+def _robustness_log_summary(rob: dict) -> dict:
+    """Scalar decision evidence retained inline; full payload is an artifact."""
+    split = rob.get("split") or {}
+    mc = rob.get("mc") or {}
+    ms = rob.get("multi_symbol") or {}
+    return {
+        "short_circuit": rob.get("short_circuit"),
+        "split": {
+            "overfitting_label": split.get("overfitting_label"),
+            "overfitting_score": split.get("overfitting_score"),
+            "in_sample_metrics": {
+                k: (split.get("in_sample_metrics") or {}).get(k)
+                for k in _WFO_KEEP_METRICS
+            },
+            "oos_metrics": {
+                k: (split.get("oos_metrics") or {}).get(k)
+                for k in _WFO_KEEP_METRICS
+            },
+        },
+        "wfo": {"windows": len(rob.get("wfo_windows") or [])},
+        "mc": {
+            k: v
+            for k, v in mc.items()
+            if k not in {"curves_sample", "percentile_curves", "equity_curves"}
+            and not isinstance(v, (list, dict))
+        },
+        "multi_symbol": {
+            k: v
+            for k, v in ms.items()
+            if k != "results" and not isinstance(v, (list, dict))
+        },
+    }
 
 
 def _cleanup_all_agent_blocks() -> None:
@@ -487,6 +549,11 @@ def _add_tokens(run_id: str, usage: dict | None) -> None:
             s["tokens_cache_write"] = s.get("tokens_cache_write", 0) + (
                 usage.get("cache_creation_input_tokens") or 0
             )
+            provider_cost = usage.get("cost_usd")
+            if provider_cost is not None:
+                s["provider_cost_usd"] = s.get("provider_cost_usd", 0.0) + float(
+                    provider_cost
+                )
 
 
 def _enforce_token_budget(run_id: str) -> None:
@@ -506,6 +573,39 @@ def _enforce_token_budget(run_id: str) -> None:
         )
     if cap > 0 and used >= cap:
         raise AgentBudgetReached(f"token ceiling ({cap:,}) reached at {used:,}")
+
+
+def _admit_llm_budget(run_id: str, request: dict) -> None:
+    """Reject a provider request unless its conservative bound fits the cap."""
+
+    reserve = max(0, int(request.get("total_token_bound") or 0))
+    with _AGENT_LOCK:
+        s = _AGENT_PROGRESS.get(run_id) or {}
+        cap = int(s.get("max_total_tokens") or 0)
+        used = sum(
+            int(s.get(k) or 0)
+            for k in (
+                "tokens_in",
+                "tokens_out",
+                "tokens_cache_read",
+                "tokens_cache_write",
+            )
+        )
+    if cap > 0 and used + reserve > cap:
+        remaining = max(0, cap - used)
+        _session_log(
+            run_id,
+            "llm_budget_rejected",
+            used=used,
+            remaining=remaining,
+            requested_bound=reserve,
+            input_bound=int(request.get("input_token_bound") or 0),
+            output_bound=int(request.get("output_token_bound") or 0),
+        )
+        raise AgentBudgetReached(
+            f"token ceiling ({cap:,}) cannot admit next call: "
+            f"{remaining:,} remaining, {reserve:,} reserved"
+        )
 
 
 def _set_robustness_scan(run_id: str, current: int, total: int) -> None:
@@ -708,6 +808,88 @@ def _proposal_to_spec(proposal: dict):
     )
 
 
+def _candidate_fingerprint(spec, *, family: bool = False) -> str:
+    """Stable identity for duplicate and known-dead candidate suppression.
+
+    Exact fingerprints include parameters. Family fingerprints intentionally
+    omit them so a zero-trade indicator/role topology is not retried with tiny
+    parameter variations. Generated custom blocks retain their concrete name;
+    treating every custom function as one family would suppress genuinely new
+    code merely because an earlier generated function emitted no signals.
+    """
+
+    blocks = []
+    for block in getattr(spec, "blocks", []) or []:
+        row = {
+            "type": str(getattr(block, "type", "")),
+            "role": str(getattr(block, "role", "")),
+        }
+        if not family:
+            row["params"] = getattr(block, "params", {}) or {}
+        blocks.append(row)
+    payload = {
+        "blocks": blocks,
+        "entry_logic": str(getattr(spec, "entry_logic", "OR")),
+        "exit_logic": str(getattr(spec, "exit_logic", "OR")),
+        "allow_short": bool(getattr(spec, "allow_short", False)),
+        "use_bracket": bool(getattr(spec, "use_bracket", False)),
+        "sl_type": str(getattr(spec, "sl_type", "off")),
+        "sl_value": float(getattr(spec, "sl_value", 0.0) or 0.0),
+        "tp_type": str(getattr(spec, "tp_type", "off")),
+        "tp_value": float(getattr(spec, "tp_value", 0.0) or 0.0),
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()[:20]
+
+
+def _deduplicate_candidate(
+    spec,
+    *,
+    seen: set[str],
+    zero_trade_families: set[str],
+    run_id: str,
+    round_num: int,
+    iteration: int,
+):
+    """Replace a repeated/dead candidate with a no-token builtin proposal."""
+
+    exact = _candidate_fingerprint(spec)
+    family = _candidate_fingerprint(spec, family=True)
+    reason = "exact_duplicate" if exact in seen else None
+    if reason is None and family in zero_trade_families:
+        reason = "known_zero_trade_family"
+    if reason is None:
+        return spec
+
+    _discard_unrun_custom_blocks(spec, run_id)
+    from agent import _fallback_composed
+
+    for _ in range(64):
+        replacement = _proposal_to_spec(_fallback_composed())
+        replacement_exact = _candidate_fingerprint(replacement)
+        replacement_family = _candidate_fingerprint(replacement, family=True)
+        if replacement_exact in seen or replacement_family in zero_trade_families:
+            continue
+        _session_log(
+            run_id,
+            "candidate_deduplicated",
+            round=round_num,
+            iteration=iteration,
+            reason=reason,
+            rejected_spec_id=getattr(spec, "id", ""),
+            rejected_fingerprint=exact,
+            replacement_spec_id=replacement.id,
+            replacement_fingerprint=replacement_exact,
+        )
+        _add_step(
+            run_id,
+            f"  ↻ Replaced {reason.replace('_', ' ')} candidate with "
+            f"{replacement.name}",
+        )
+        return replacement
+    raise RuntimeError("candidate fallback pool exhausted after 64 attempts")
+
+
 _STARTING_CASH: float | None = None
 _PNL_FALLBACK_WARNED = False
 
@@ -809,6 +991,21 @@ def _score(result) -> float:
     return score
 
 
+def _pre_robustness_eligible(result) -> bool:
+    """Cheap fail-closed alpha gate before the expensive robustness suite."""
+    if result is None or result.error or not result.metrics:
+        return False
+    m = result.metrics
+    if int(m.get("n_trades") or 0) < _MIN_TRADES:
+        return False
+    values = (m.get("pnl"), m.get("excess_pnl_pct"), m.get("sharpe_per_trade"))
+    try:
+        pnl, excess, sharpe = (float(v) for v in values)
+    except (TypeError, ValueError):
+        return False
+    return all(math.isfinite(v) and v > 0 for v in (pnl, excess, sharpe))
+
+
 def _stamp_buy_hold_benchmark(result, bars_df) -> None:
     """Attach deterministic buy-and-hold and excess-return metrics in-place."""
 
@@ -851,43 +1048,40 @@ EXTERNAL_PEER_BASKET = [
 # çizgisidir; %5 gibi bir değer $10k hesapta ~2 hisse eder ve sabit komisyonu
 # tekrar bağlayıcı kısıt yapardı.
 AGENT_EQUITY_PCT = float(os.environ.get("AGENT_EQUITY_PCT", "95"))
+NORMALIZE_EXTERNAL_EXPOSURE = (
+    os.environ.get("AGENT_NORMALIZE_EXTERNAL_EXPOSURE", "1").strip() != "0"
+)
 
 
 def _clamp_spec_trade_size(spec):
-    """Hisse senedi spec'ini ÖLÇEKLİ boyutlandırmaya geçirir.
+    """Normalize every external-equity AUTO candidate to equal exposure.
 
-    Sorun ikiydi, tarihsel olarak yalnız birincisi çözülmüştü:
+    Signal research must not let the LLM choose the leverage of its own exam.
+    Comparing a 5%/10%/one-share candidate with a 100%-invested buy-and-hold
+    benchmark mixes signal quality with sizing and makes the excess-return gate
+    structurally unfair. AUTO therefore scores all external candidates at the
+    same near-fully-invested exposure. Deployment can choose risk sizing after
+    promotion.
 
-    1. Ajan kripto alışkanlığıyla ``trade_size=0.01`` üretiyor; hisse senedinde
-       lot tam sayı (``size_precision=0``) olduğu için bu 0 adede yuvarlanıyor
-       ve backtest hiç işlem açmıyordu.
-    2. Bunu ``1.0``'a sabitlemek 1. sorunu çözdü ama **fiilî üretim boyutunu
-       1 hisseye kilitledi**. QQQ ortalama $220 iken IBKR sabit komisyonu
-       gidiş-dönüş $2 → işlem başına %0,91 gider. Komisyon 200 hisseye kadar
-       SABİT olduğundan 1 hisse, oran açısından mümkün olan EN KÖTÜ boyuttu:
-       ölçüldüğünde kaybeden 10 adayın 8'i yalnız pozisyon çarpanıyla kâra
-       geçiyordu.
-
-    Çare sabit bir adet DEĞİL — ``percent_equity`` modu. Sabit adet bu veri
-    setinde çalışmaz: QQQ 2003'te ~$25, bugün ~$725 (30×). İlk fiyata göre
-    seçilen adet sonda hesabı aşar, son fiyata göre seçilen adet başta
-    mikroskobik kalır. ``percent_equity`` her işlemde ``equity × yüzde / fiyat``
-    hesaplar (composer.py::_compute_qty) ve ``make_qty`` tam sayıya yuvarlar.
-
-    Yalnız "fixed" modda ve ölçek bozuksa (<1) müdahale edilir: ajan bilinçli
-    olarak ``percent_equity``/``atr_target``/``vol_target`` seçtiyse ona
-    dokunulmaz. Spec taze bir nesne olduğu için yerinde değişiklik güvenli;
-    robustness fazı da aynı nesneyi kullanır.
+    Returns a before/after audit record when a mutation was made.
     """
-    if getattr(spec, "trade_size_mode", "fixed") != "fixed":
-        return spec
-    if float(spec.trade_size) < 1:
-        spec.trade_size_mode = "percent_equity"
-        spec.trade_size_percent = AGENT_EQUITY_PCT
-        # "fixed"e geri düşülen yollar (fiyat<=0, ATR ısınmamış) için taban:
-        # 0 adet üretip sessizce işlemsiz kalmasın.
-        spec.trade_size = 1.0
-    return spec
+    if not NORMALIZE_EXTERNAL_EXPOSURE:
+        return None
+    before = {
+        "trade_size_mode": str(getattr(spec, "trade_size_mode", "fixed")),
+        "trade_size_percent": float(getattr(spec, "trade_size_percent", 0.0) or 0.0),
+        "trade_size": float(getattr(spec, "trade_size", 0.0) or 0.0),
+    }
+    spec.trade_size_mode = "percent_equity"
+    spec.trade_size_percent = AGENT_EQUITY_PCT
+    # Defensive floor for an engine path that temporarily falls back to fixed.
+    spec.trade_size = 1.0
+    after = {
+        "trade_size_mode": spec.trade_size_mode,
+        "trade_size_percent": float(spec.trade_size_percent),
+        "trade_size": float(spec.trade_size),
+    }
+    return None if before == after else {"before": before, "after": after}
 
 
 def _wfo_test(w: dict) -> dict:
@@ -1064,6 +1258,11 @@ def _multi_symbol_definitive_failure(ms: dict | None) -> bool:
     """True only for an evaluated, explicit symbol-specific rejection."""
 
     return "✗" in str((ms or {}).get("generalization_label", ""))
+
+
+def _split_definitive_failure(split: dict | None) -> bool:
+    """True when IS/OOS has already produced an explicit rejection."""
+    return "✗" in str((split or {}).get("overfitting_label", ""))
 
 
 def _holdout_promotion_passed(
@@ -1450,6 +1649,20 @@ def _run_full_robustness(
         )
         _add_step(run_id, f"  → Overfitting score: {sp.get('overfitting_label', '?')}")
 
+        # In strict AUTO, an explicit split rejection guarantees that the final
+        # gate cannot pass. WFO and Monte Carlo cannot reverse that measured
+        # failure, so avoid the remaining expensive work.
+        if _split_definitive_failure(split):
+            reason = "skipped after definitive IS/OOS rejection"
+            _add_step(run_id, f"  ⏭ {reason}: Walk-Forward and Monte Carlo")
+            return {
+                "split": split,
+                "wfo_windows": [],
+                "mc": {"error": reason},
+                "multi_symbol": ms,
+                "short_circuit": "is_oos",
+            }
+
         # 3) Walk-Forward
         _add_step(
             run_id,
@@ -1552,16 +1765,20 @@ def _agent_worker(
     range_end: str = "",
     model: str = "",
     effort: str = "",
+    research_only: bool = False,
 ) -> None:
     import pandas as pd
 
     from agent import (
+        LLMCallCancelled,
         TerminalLLMError,
         propose_composed_strategy,
         set_thread_effort,
+        set_thread_llm_control,
         set_thread_model,
         set_thread_random_seed,
     )
+
 
     # Pin THIS worker thread's LLM calls to the picked model (unknown/"" =
     # app default). Thread-local — concurrent surfaces are unaffected.
@@ -1571,6 +1788,32 @@ def _agent_worker(
     # bileşik −81%). "" = CLI/uç kendi varsayılanını uygular.
     set_thread_effort(effort or None)
     set_thread_random_seed(run_id)
+
+    def _llm_cancelled() -> bool:
+        with _AGENT_LOCK:
+            state = _AGENT_PROGRESS.get(run_id)
+            if state is None or state.get("stop_requested"):
+                return True
+            cap = int(state.get("max_total_tokens") or 0)
+            used = sum(
+                int(state.get(k) or 0)
+                for k in (
+                    "tokens_in",
+                    "tokens_out",
+                    "tokens_cache_read",
+                    "tokens_cache_write",
+                )
+            )
+        if cap > 0 and used >= cap:
+            raise AgentBudgetReached(f"token ceiling ({cap:,}) reached at {used:,}")
+        return False
+
+    def _llm_observer(event: dict) -> None:
+        usage = event.get("usage")
+        if usage:
+            _add_tokens(run_id, usage)
+        _session_log(run_id, "llm_usage", **event)
+
     from composer import load_catalog
     from data import _bybit_cache_path
     from sandbox import run_backtest_guarded, run_robustness_guarded
@@ -1642,6 +1885,7 @@ def _agent_worker(
         model=model,
         effort=effort,
         search_seed=run_id,
+        research_only=research_only,
     )
 
     run_number = 0
@@ -1660,6 +1904,8 @@ def _agent_worker(
     _winless_rounds = 0
     _degraded_spec_ids: set[str] = set()
     _holdout_consumed: set[str] = set()
+    _seen_candidate_fingerprints: set[str] = set()
+    _zero_trade_families: set[str] = set()
     _last_started_round = 0
 
     # Continuous mode with no ceiling has exactly two brakes: the winnerless-round
@@ -1787,6 +2033,11 @@ def _agent_worker(
         # rounds reported one phantom round.
         _last_started_round = run_number
 
+        set_thread_llm_control(
+            _llm_cancelled,
+            _llm_observer,
+            lambda request: _admit_llm_budget(run_id, request),
+        )
         try:
             # ── Phase 0: Data ────────────────────────────────────────────────────
             # Multi-TF: lazy-load cache per TF. Pre-load the first TF here.
@@ -2049,7 +2300,6 @@ def _agent_worker(
                 market=_market_for(_iv0),
                 timeframe=_iv0,
             )
-            _add_tokens(run_id, _usage1)
             _enforce_token_budget(run_id)
             _session_log(
                 run_id,
@@ -2077,8 +2327,25 @@ def _agent_worker(
                 status="warn" if degraded else "ok",
                 name=spec.name,
             )
+            spec = _deduplicate_candidate(
+                spec,
+                seen=_seen_candidate_fingerprints,
+                zero_trade_families=_zero_trade_families,
+                run_id=run_id,
+                round_num=run_number,
+                iteration=0,
+            )
             if is_external:
-                _clamp_spec_trade_size(spec)
+                _exposure_change = _clamp_spec_trade_size(spec)
+                if _exposure_change:
+                    _session_log(
+                        run_id,
+                        "exposure_normalized",
+                        round=run_number,
+                        iteration=0,
+                        spec_id=spec.id,
+                        **_exposure_change,
+                    )
             spec.trend_filter = trend_filter
             spec.trend_interval = trend_interval
             spec.model_slippage = True
@@ -2117,6 +2384,7 @@ def _agent_worker(
                     s = _AGENT_PROGRESS.get(run_id)
                     stop_hit = bool(s is not None and s.get("stop_requested"))
                 if stop_hit:
+                    _discard_unrun_custom_blocks(spec, run_id)
                     _add_step(run_id, "  ⏹ Stop signal received — breaking the loop")
                     break
 
@@ -2184,6 +2452,11 @@ def _agent_worker(
                 r.bars_info = dict(iter_bars_info)
                 history.append(r)
                 results.append((spec, r, iter_iv))
+                _seen_candidate_fingerprints.add(_candidate_fingerprint(spec))
+                if int((r.metrics or {}).get("n_trades") or 0) == 0:
+                    _zero_trade_families.add(
+                        _candidate_fingerprint(spec, family=True)
+                    )
                 # The returned ts is this iteration's key into the backtest log
                 # — the cockpit card links its tear sheet with it.
                 _bt_log_ts = ""
@@ -2331,7 +2604,6 @@ def _agent_worker(
                                     market=next_market,
                                     timeframe=next_iv,
                                 )
-                                _add_tokens(run_id, _u)
                                 _enforce_token_budget(run_id)
                                 spec = _proposal_to_spec(proposal)
                                 if proposal.get("degraded"):
@@ -2364,7 +2636,6 @@ def _agent_worker(
                                 market=next_market,
                                 timeframe=next_iv,
                             )
-                            _add_tokens(run_id, _u)
                             _enforce_token_budget(run_id)
                             spec = _proposal_to_spec(proposal)
                             if proposal.get("degraded"):
@@ -2387,6 +2658,14 @@ def _agent_worker(
                                 usage=_u,
                             )
                             _add_step(run_id, f"  → {spec.name}")
+                        spec = _deduplicate_candidate(
+                            spec,
+                            seen=_seen_candidate_fingerprints,
+                            zero_trade_families=_zero_trade_families,
+                            run_id=run_id,
+                            round_num=run_number,
+                            iteration=next_i,
+                        )
                         # H9: trend_filter/trend_interval was only applied to the
                         # first (phase 1) spec; EVERY spec generated in refine
                         # kept the composer default (trend_filter=False), making
@@ -2396,7 +2675,16 @@ def _agent_worker(
                         spec.trend_interval = trend_interval
                         spec.model_slippage = True
                         if is_external:
-                            _clamp_spec_trade_size(spec)
+                            _exposure_change = _clamp_spec_trade_size(spec)
+                            if _exposure_change:
+                                _session_log(
+                                    run_id,
+                                    "exposure_normalized",
+                                    round=run_number,
+                                    iteration=next_i,
+                                    spec_id=spec.id,
+                                    **_exposure_change,
+                                )
                         with _AGENT_LOCK:
                             if run_id in _AGENT_PROGRESS:
                                 _AGENT_PROGRESS[run_id]["strategy_name"] = spec.name
@@ -2406,6 +2694,8 @@ def _agent_worker(
                             status="ok",
                             name=spec.name,
                         )
+                    except (LLMCallCancelled, AgentBudgetReached):
+                        raise
                     except Exception as e:
                         _add_step(
                             run_id,
@@ -2417,9 +2707,27 @@ def _agent_worker(
                             status="warn",
                         )
 
-            _done_phase(run_id, 2, f"✓ {n_iterations} iterations completed")
+            with _AGENT_LOCK:
+                _stopped_during_iterations = bool(
+                    (_AGENT_PROGRESS.get(run_id) or {}).get("stop_requested")
+                )
+            _completed_iterations = len(results)
+            _done_phase(
+                run_id,
+                2,
+                (
+                    f"⏹ {_completed_iterations}/{n_iterations} iterations completed"
+                    if _stopped_during_iterations
+                    else f"✓ {_completed_iterations}/{n_iterations} iterations completed"
+                ),
+            )
 
             # ── Phase 3: Ranking ─────────────────────────────────────────────────
+            if _stopped_during_iterations:
+                # STOP is terminal for the search. Do not rank a partial round
+                # or enter robustness after the user has cancelled it.
+                break
+
             _set_phase(run_id, 3, "Ranking results…")
             _tl_begin(
                 run_id,
@@ -2429,11 +2737,16 @@ def _agent_worker(
                 round_num=run_number,
             )
             ranked = _rank_results(results)
-            eligible = [(s, r, iv) for s, r, iv in ranked if _score(r) > float("-inf")]
+            eligible = [
+                (s, r, iv)
+                for s, r, iv in ranked
+                if _score(r) > float("-inf") and _pre_robustness_eligible(r)
+            ]
 
             _add_step(
                 run_id,
-                f"{len(eligible)}/{len(results)} results qualify (≥{_MIN_TRADES} trades, no error)",
+                f"{len(eligible)}/{len(results)} results qualify (≥{_MIN_TRADES} trades, "
+                "positive PnL/Sharpe and positive benchmark excess)",
             )
             for rank_i, (s, r, iv) in enumerate(ranked[:5]):
                 sc = _score(r)
@@ -2573,10 +2886,17 @@ def _agent_worker(
                     "generalization_label", "—"
                 )
 
-                # Session log: robustness sonucunun TAMAMI (split + WFO + MC +
-                # multi_symbol), ama equity eğrileri indirgenmiş — ham hâli olay
-                # başına 3,5 MB yazıyordu (bkz. _thin_curves). Metriklerin
-                # kendisi (pnl, sharpe, pass sayıları) aynen korunur.
+                try:
+                    rob_artifact = _write_session_artifact(
+                        run_id,
+                        f"robustness-r{run_number}-c{rank_i + 1}",
+                        rob,
+                    )
+                except Exception as artifact_exc:
+                    rob_artifact = {"error": str(artifact_exc)[:300]}
+                # JSONL remains a compact event index. The full, curve-heavy
+                # robustness object is gzip-compressed and content-addressed by
+                # digest so replay/audit retains every value without 100KB lines.
                 _session_log(
                     run_id,
                     "robustness_result",
@@ -2589,14 +2909,8 @@ def _agent_worker(
                     overfitting_label=split_label,
                     wf_pass=wf_str,
                     ms_label=ms_label,
-                    split=_thin_curves(rob.get("split")),
-                    # WFO pencereleri 88 adet ve her biri 3 eğri taşıyor (train/
-                    # test/naive). Eğrileri seyreltmek olayı 2,39 MB'tan 303 KB'a
-                    # indirdi; kalan yük yapısal (88 × 3 × ~30 alan). Log'dan bu
-                    # alanları kimse geri okumuyor → adli çekirdek yeter.
-                    wfo_windows=_compact_wfo_windows(rob.get("wfo_windows")),
-                    mc=_thin_curves(rob.get("mc")),
-                    multi_symbol=_thin_curves(rob.get("multi_symbol")),
+                    summary=_robustness_log_summary(rob),
+                    artifact=rob_artifact,
                 )
                 # L26: lightweight SQLite index (best-effort, errors swallowed)
                 _index_insert(
@@ -2738,6 +3052,12 @@ def _agent_worker(
                 if _winless_bump():
                     _winless_stop()
                     return
+                with _AGENT_LOCK:
+                    _stop_before_next = bool(
+                        (_AGENT_PROGRESS.get(run_id) or {}).get("stop_requested")
+                    )
+                if _stop_before_next:
+                    break
                 _add_step(run_id, "Continuous mode: new round starting…")
                 continue
 
@@ -2884,6 +3204,16 @@ def _agent_worker(
                     promotion_reason = f"sealed holdout exception: {_hold_err}"
                     _add_step(run_id, f"⚠ Could not run sealed OOS: {_hold_err}")
 
+            if research_only and promotion_passed:
+                promotion_passed = False
+                promotion_reason = (
+                    "research-only run used known-unadjusted external data"
+                )
+                _add_step(
+                    run_id,
+                    "❌ Research-only/unadjusted run cannot publish to the strategy catalog",
+                )
+
             if promotion_passed:
                 # M14: locked append only after the independent promotion gate.
                 from composer import append_to_catalog
@@ -2966,10 +3296,31 @@ def _agent_worker(
             import time as _time
 
             _time.sleep(3)  # give polling a chance to render the result
+            with _AGENT_LOCK:
+                _stop_after_result = bool(
+                    (_AGENT_PROGRESS.get(run_id) or {}).get("stop_requested")
+                )
+            if _stop_after_result:
+                break
             _add_step(
                 run_id, f"Continuous mode: round {run_number} completed, continuing…"
             )
 
+        except LLMCallCancelled as e:
+            _tl_close_open(run_id, status="warn")
+            with _AGENT_LOCK:
+                if run_id in _AGENT_PROGRESS:
+                    _AGENT_PROGRESS[run_id]["done"] = True
+                    _AGENT_PROGRESS[run_id]["continuous_finished"] = True
+            _add_step(run_id, f"⏹ {e} — provider call cancelled")
+            _session_log(
+                run_id,
+                "session_end",
+                round=run_number,
+                outcome="stopped",
+                total_rounds=_last_started_round,
+            )
+            return
         except AgentBudgetReached as e:
             _tl_close_open(run_id, status="warn")
             with _AGENT_LOCK:
@@ -3047,8 +3398,14 @@ def _agent_worker(
             _to = s.get("tokens_out", 0) or 0
             _tcr = s.get("tokens_cache_read", 0) or 0
             _tcw = s.get("tokens_cache_write", 0) or 0
-            # L38: model-based rates; on subscription CLI the cost is None.
-            _model, _cost_usd = _llm_cost_usd(_ti, _to, _tcr, _tcw, model=model)
+            _provider_cost = float(s.get("provider_cost_usd") or 0.0)
+            # OpenRouter returns billed usage cost. Prefer it over a local price
+            # table; fall back to notional pricing for providers that omit cost.
+            _model, _estimated_cost = _llm_cost_usd(
+                _ti, _to, _tcr, _tcw, model=model
+            )
+            _cost_usd = _provider_cost if _provider_cost > 0 else _estimated_cost
+            _cost_source = "provider" if _provider_cost > 0 else "price_table"
             _session_log(
                 run_id,
                 "token_snapshot",
@@ -3058,9 +3415,11 @@ def _agent_worker(
                 cache_read=_tcr,
                 cache_write=_tcw,
                 pricing_model=_model,
+                cost_source=_cost_source if _cost_usd is not None else None,
                 cost_usd=round(_cost_usd, 6) if _cost_usd is not None else None,
                 cost_eur=round(_cost_usd * 0.91, 6) if _cost_usd is not None else None,
             )
+            set_thread_llm_control(None, None, None)
 
     # Continuous mode exited (stop/budget/winless/error — all breaks land here).
     _tl_close_open(run_id, status="warn")
@@ -3130,7 +3489,7 @@ def _generate_custom_spec(
         new_spec_id,
         register_custom_from_disk,
     )
-    from custom_block_store import save_custom
+    from custom_block_store import save_custom_batch
 
     try:
         idea = _propose_agent_strategy_idea(
@@ -3144,7 +3503,6 @@ def _generate_custom_spec(
         # added to the counters — previously only the builtin proposal was
         # counted; since custom generation is the most token-heavy call, the cost
         # and the max_total_tokens budget breaker were seriously undercounting.
-        _add_tokens(run_id, idea.get("usage"))
         _enforce_token_budget(run_id)
         # Fikir çağrısı düştüyse buradan çıkan blok, modelin fikri değil kaynak
         # koddaki sabit bir fikrin kodudur — sayılmazsa makul bir yedek gerçek
@@ -3176,30 +3534,8 @@ def _generate_custom_spec(
 
         _add_step(run_id, f"  ⚙ Generating custom entry block: {entry_label}…")
         entry_block = propose_custom_block(entry_label, idea["entry_desc"], "entry")
-        _add_tokens(run_id, entry_block.get("usage"))
         _enforce_token_budget(run_id)
         entry_block["name"] = entry_name
-        save_custom(entry_name, entry_block["meta"], entry_block["code"], prompt=hint)
-        register_custom_from_disk(entry_name)
-        _add_step(run_id, f"  ✓ Entry block saved: {entry_name}")
-        # Session log + copy the code under {run_id}_blocks/
-        _session_log(
-            run_id,
-            "custom_block_generated",
-            iteration=iter_idx,
-            round=round_num,
-            name=entry_name,
-            role="entry",
-            label=entry_label,
-            meta=entry_block.get("meta"),
-            code=entry_block.get("code", ""),
-        )
-        try:
-            blocks_dir = SESSION_LOG_DIR / f"{run_id}_blocks"
-            blocks_dir.mkdir(parents=True, exist_ok=True)
-            (blocks_dir / f"{entry_name}.py").write_text(entry_block.get("code", ""))
-        except Exception:
-            pass
 
         # With 50% probability use the best builtin exit from history (instead of custom)
         # This combines a proven exit mechanism with new entry ideas.
@@ -3254,31 +3590,8 @@ def _generate_custom_spec(
         else:
             _add_step(run_id, f"  ⚙ Generating custom exit block: {exit_label}…")
             exit_block = propose_custom_block(exit_label, idea["exit_desc"], "exit")
-            _add_tokens(run_id, exit_block.get("usage"))  # M1583
             _enforce_token_budget(run_id)
             exit_block["name"] = exit_name
-            save_custom(exit_name, exit_block["meta"], exit_block["code"], prompt=hint)
-            register_custom_from_disk(exit_name)
-            _add_step(run_id, f"  ✓ Exit block saved: {exit_name}")
-            # Session log + copy the code under {run_id}_blocks/
-            _session_log(
-                run_id,
-                "custom_block_generated",
-                iteration=iter_idx,
-                round=round_num,
-                name=exit_name,
-                role="exit",
-                label=exit_label,
-                meta=exit_block.get("meta"),
-                code=exit_block.get("code", ""),
-            )
-        try:
-            blocks_dir = SESSION_LOG_DIR / f"{run_id}_blocks"
-            blocks_dir.mkdir(parents=True, exist_ok=True)
-            if not use_builtin_exit:
-                (blocks_dir / f"{exit_name}.py").write_text(exit_block.get("code", ""))
-        except Exception:
-            pass
 
         if not use_builtin_exit:
             spec = ComposedStrategySpec(
@@ -3303,6 +3616,58 @@ def _generate_custom_spec(
         err = spec.validate()
         if err:
             raise RuntimeError(f"Custom spec invalid: {err}")
+
+        # Entry and exit form one candidate transaction. Persist only after
+        # both generations and composed-spec validation succeed, otherwise a
+        # stop/error during exit generation leaves an orphan entry behind.
+        generated = [
+            {
+                "name": entry_name,
+                "meta": entry_block["meta"],
+                "code": entry_block["code"],
+                "prompt": hint,
+                "role": "entry",
+                "label": entry_label,
+                "usage": entry_block.get("usage"),
+            }
+        ]
+        if not use_builtin_exit:
+            generated.append(
+                {
+                    "name": exit_name,
+                    "meta": exit_block["meta"],
+                    "code": exit_block["code"],
+                    "prompt": hint,
+                    "role": "exit",
+                    "label": exit_label,
+                    "usage": exit_block.get("usage"),
+                }
+            )
+        save_custom_batch(generated)
+        for block in generated:
+            register_custom_from_disk(block["name"])
+            _add_step(run_id, f"  ✓ {block['role'].title()} block saved: {block['name']}")
+            _session_log(
+                run_id,
+                "custom_block_generated",
+                iteration=iter_idx,
+                round=round_num,
+                name=block["name"],
+                role=block["role"],
+                label=block["label"],
+                meta=block["meta"],
+                code=block["code"],
+                usage=block["usage"],
+            )
+        try:
+            blocks_dir = SESSION_LOG_DIR / f"{run_id}_blocks"
+            blocks_dir.mkdir(parents=True, exist_ok=True)
+            for block in generated:
+                (blocks_dir / f"{block['name']}.py").write_text(
+                    block["code"], encoding="utf-8"
+                )
+        except Exception:
+            pass
         return spec
 
     except (TerminalLLMError, AgentBudgetReached):
@@ -3323,6 +3688,19 @@ def _generate_custom_spec(
 def _cleanup_agent_blocks(run_id: str) -> None:
     """Legacy hook kept for compatibility; run-specific blocks are retained."""
     return None
+
+
+def _discard_unrun_custom_blocks(spec, run_id: str) -> None:
+    """Delete only this run's generated blocks when stop precedes backtest."""
+    from custom_block_store import delete_custom
+
+    prefix_entry = f"agnt_e_{run_id}_"
+    prefix_exit = f"agnt_x_{run_id}_"
+    for block in getattr(spec, "blocks", []) or []:
+        name = str(getattr(block, "type", ""))
+        if name.startswith((prefix_entry, prefix_exit)):
+            delete_custom(name)
+            _session_log(run_id, "custom_block_discarded", name=name, reason="not run")
 
 
 @router.get("/tokens")
@@ -3476,11 +3854,14 @@ async def run(
     # Unknown codes are dropped (defense against hand-crafted posts).
     _allowed = ("1", "5", "15", "30", "60", "240", "720", "D")
     chosen = [t for t in tfs if t in _allowed]
+    research_only = False
     if is_external:
         from data import (
             EXTERNAL_GRAN_BY_BYBIT_CODE,
             _external_adjusted_flag,
             _external_bar_dir,
+            external_data_gap_report,
+            load_external_bars,
         )
 
         mapped = [
@@ -3496,20 +3877,46 @@ async def run(
         # selection: splits/dividends can be ranked as edge. Fail closed before
         # launching a worker. A deliberate research-only override is available
         # via env and remains visible in the run log through data.py warnings.
-        if os.environ.get("AGENT_ALLOW_UNADJUSTED", "").strip() != "1":
-            for _iv in intervals:
-                _located = _external_bar_dir(instrument_id, _iv)
-                if (
-                    _located is not None
-                    and _external_adjusted_flag(_located[0], instrument_id) is False
-                ):
+        # Two-key opt-in: a stale PM2 environment containing the historical
+        # one-key override must not silently reopen unadjusted AUTO after a
+        # restart. Research mode has to be asserted independently each time.
+        _allow_unadjusted = (
+            os.environ.get("AGENT_ALLOW_UNADJUSTED", "").strip() == "1"
+            and os.environ.get("AGENT_RESEARCH_MODE", "").strip() == "1"
+        )
+        for _iv in intervals:
+            _located = _external_bar_dir(instrument_id, _iv)
+            _known_unadjusted = bool(
+                _located is not None
+                and _external_adjusted_flag(_located[0], instrument_id) is False
+            )
+            if _known_unadjusted:
+                if not _allow_unadjusted:
                     return HTMLResponse(
                         "<div class='empty-state'>⚠ AUTO refused known-unadjusted "
                         f"equity data for {instrument_id} ({_iv}). Use an adjusted "
                         "catalog; split/dividend jumps can create false edge. "
-                        "Research-only override: AGENT_ALLOW_UNADJUSTED=1.</div>",
+                        "Research-only override requires AGENT_ALLOW_UNADJUSTED=1 "
+                        "and AGENT_RESEARCH_MODE=1.</div>",
                         status_code=400,
                     )
+                research_only = True
+            try:
+                _gap = external_data_gap_report(load_external_bars(instrument_id, _iv))
+            except Exception as _gap_exc:
+                return HTMLResponse(
+                    "<div class='empty-state'>⚠ AUTO could not validate external "
+                    f"data integrity for {instrument_id} ({_iv}): {_gap_exc}</div>",
+                    status_code=400,
+                )
+            if _gap:
+                return HTMLResponse(
+                    "<div class='empty-state'>⚠ AUTO refused external data with a "
+                    f"{_gap['days']}-day gap for {instrument_id} ({_iv}), "
+                    f"{_gap['from']} → {_gap['to']}. Repair/backfill the catalog "
+                    "before autonomous research.</div>",
+                    status_code=400,
+                )
     else:
         intervals = ["60", "240", "D"] if is_multi_tf else (chosen or [interval])
 
@@ -3551,6 +3958,7 @@ async def run(
             "tokens_out": 0,
             "tokens_cache_read": 0,
             "tokens_cache_write": 0,
+            "provider_cost_usd": 0.0,
             # Degradasyon sayacı: kaç üretim adımı fallback'e düştü ve neden.
             # Bir koşunun "başarılı" görünmesi fazların ✓ kapanmasına bakar; bu
             # sayaç o görüntünün karşı ağırlığı (bkz. _mark_degraded).
@@ -3588,6 +3996,7 @@ async def run(
             "started_at": datetime.now(UTC).timestamp(),
             "max_hours": max_hours,
             "max_total_tokens": max_total_tokens,
+            "research_only": research_only,
             # Timeline spans (SVG Gantt — see _tl_begin/_tl_end)
             "timeline": [],
         },
@@ -3622,6 +4031,7 @@ async def run(
             range_end=range_end,
             model=model.strip(),
             effort=effort.strip(),
+            research_only=research_only,
         ),
         daemon=True,
     ).start()
@@ -3683,7 +4093,8 @@ async def stop(request: Request, run_id: str):
         )
     return HTMLResponse(
         "<span class='badge' style='background:rgba(251,146,60,0.2);color:#fb923c;'>"
-        "⏹ Stop signal sent — it will stop after the current round finishes</span>"
+        "⏹ Stop signal sent — the active provider/backtest step is being "
+        "cancelled or will finish first</span>"
     )
 
 
@@ -3812,8 +4223,12 @@ async def progress(request: Request, run_id: str):
     _to = state.get("tokens_out", 0) or 0
     _tcr = state.get("tokens_cache_read", 0) or 0
     _tcw = state.get("tokens_cache_write", 0) or 0
+    _provider_cost = float(state.get("provider_cost_usd") or 0.0)
     _pricing_model = str((raw.get("brief") or {}).get("model") or "")
-    _model, _cost_usd = _llm_cost_usd(_ti, _to, _tcr, _tcw, model=_pricing_model)
+    _model, _estimated_cost = _llm_cost_usd(
+        _ti, _to, _tcr, _tcw, model=_pricing_model
+    )
+    _cost_usd = _provider_cost if _provider_cost > 0 else _estimated_cost
     token_info = {
         "input": _ti,
         "output": _to,
@@ -3821,6 +4236,7 @@ async def progress(request: Request, run_id: str):
         "cache_write": _tcw,
         "total": _ti + _to + _tcr + _tcw,
         "pricing_model": _model,
+        "cost_source": "provider" if _provider_cost > 0 else "price_table",
         "cost_usd": round(_cost_usd, 4) if _cost_usd is not None else None,
         "cost_eur": round(_cost_usd * _USD_EUR, 4) if _cost_usd is not None else None,
     }

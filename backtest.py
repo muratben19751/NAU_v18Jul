@@ -453,7 +453,7 @@ def _parse_money_column(series: pd.Series) -> np.ndarray:
     return result
 
 
-def _periods_per_year(bar_type=None, instrument=None) -> int:
+def _periods_per_year(bar_type=None, instrument=None, bars_df=None) -> int:
     """H5/M35/L42: derive the annualization base FROM SOURCE + BAR INTERVAL.
 
     Returns are at bar frequency; the correct factor is sqrt(bars per year).
@@ -496,7 +496,19 @@ def _periods_per_year(bar_type=None, instrument=None) -> int:
         return 52
     if bar_sec >= 86400:  # daily+
         return 252  # NAU 252 trading days
-    return max(1, int(252 * 6.5 * 3600 / bar_sec))  # intraday equity (RTH)
+    # External catalogs are the authority on their own session shape. QQQ 1H,
+    # for example, contains seven hourly bars on a normal session; the old
+    # hard-coded 6.5h estimate returned 1638 instead of the observed 1764.
+    try:
+        if bars_df is not None and len(bars_df) >= 20:
+            idx = pd.DatetimeIndex(bars_df.index)
+            per_day = pd.Series(1, index=idx.normalize()).groupby(level=0).sum()
+            observed = int(round(float(per_day.median()))) * 252
+            if observed > 0:
+                return observed
+    except (TypeError, ValueError, AttributeError):
+        pass
+    return max(1, int(252 * 6.5 * 3600 / bar_sec))  # intraday equity fallback
 
 
 def _sharpe_manual(equity_series: list[float], annualization: int = 365) -> float:
@@ -561,6 +573,8 @@ def _metrics(
     annualization: int | None = None,
     mtm_ts: list[int] | None = None,
     starting_cash: float | None = None,
+    slippage_model_active: bool = False,
+    price_increment: float | None = None,
 ) -> dict:
     """Compute backtest metrics.
 
@@ -605,6 +619,10 @@ def _metrics(
             "avg_duration_mins": float("nan"),
             "commission_total": 0.0,
             "slippage_total": 0.0,
+            "slippage_reported_total": 0.0,
+            "slippage_estimated_total": 0.0,
+            "slippage_fill_count": 0,
+            "slippage_model_active": bool(slippage_model_active),
             "runner": "BacktestEngine",
             # Phase 1 additions
             "sharpe_nautilus": float("nan"),
@@ -658,15 +676,31 @@ def _metrics(
             pass
 
     # Slippage from order fills
-    slippage_total = 0.0
+    slippage_reported_total = 0.0
+    slippage_estimated_total = 0.0
+    slippage_fill_count = 0
     try:
         fills_df = engine.trader.generate_order_fills_report()
+        slippage_fill_count = int(len(fills_df))
         if not fills_df.empty and "slippage" in fills_df.columns:
-            slippage_total = float(
+            slippage_reported_total = float(
                 pd.to_numeric(fills_df["slippage"], errors="coerce").sum()
             )
+        # Some Nautilus reports omit/zero the slippage column even though the
+        # deterministic FillModel moved market fills by one tick. Preserve the
+        # reported number separately and expose a conservative one-tick audit
+        # estimate so "model active + 636 fills + $0" is no longer invisible.
+        if slippage_model_active and slippage_reported_total == 0 and price_increment:
+            qty_col = next(
+                (c for c in ("last_qty", "quantity", "qty", "filled_qty") if c in fills_df),
+                None,
+            )
+            if qty_col:
+                quantities = np.abs(_parse_money_column(fills_df[qty_col]))
+                slippage_estimated_total = float(quantities.sum()) * float(price_increment)
     except Exception:
         pass
+    slippage_total = slippage_reported_total or slippage_estimated_total
 
     # Realized equity curve for max drawdown (backward-compat) + MTM if available
     dd_pnls = pnls
@@ -844,6 +878,10 @@ def _metrics(
         "avg_duration_mins": avg_duration_mins,
         "commission_total": commission_total,
         "slippage_total": slippage_total,
+        "slippage_reported_total": slippage_reported_total,
+        "slippage_estimated_total": slippage_estimated_total,
+        "slippage_fill_count": slippage_fill_count,
+        "slippage_model_active": bool(slippage_model_active),
         "runner": "BacktestEngine",
         # Phase 1 additions
         "sharpe_nautilus": sharpe_nautilus,  # Nautilus 252-day value kept for audit
@@ -1165,7 +1203,7 @@ def run_backtest(
             engine,
             positions_df,
             mtm_equity=mtm_equity,
-            annualization=_periods_per_year(active_bar_type, instrument),
+            annualization=_periods_per_year(active_bar_type, instrument, df),
             mtm_ts=getattr(strategy, "_mtm_ts", None),
         )
         equity, equity_dates = _equity_curve(positions_df)
@@ -1491,9 +1529,11 @@ def run_composed_backtest(
             engine,
             positions_df,
             mtm_equity=mtm_equity,
-            annualization=_periods_per_year(active_bar_type, active_instrument),
+            annualization=_periods_per_year(active_bar_type, active_instrument, df),
             mtm_ts=getattr(_composed_strategy, "_mtm_ts", None),
             starting_cash=_cap,
+            slippage_model_active=bool(getattr(spec, "model_slippage", False)),
+            price_increment=float(active_instrument.price_increment),
         )
         equity, equity_dates = _equity_curve(positions_df, starting_cash=_cap)
         # Entry/exit reasons: decision log (same lifecycle as _mtm_equity) +

@@ -209,6 +209,51 @@ def save_custom(name: str, meta: dict, code: str, prompt: str = "") -> Path:
     return path
 
 
+def save_custom_batch(blocks: list[dict[str, Any]]) -> list[Path]:
+    """Persist a related set of blocks as one registry transaction.
+
+    Files are staged first and the registry is replaced only after every write
+    succeeds.  If anything fails, newly-created files are removed and replaced
+    files are restored.  AUTO uses this for entry/exit pairs so a failed exit
+    can never leave an orphan entry registered.
+    """
+    if not blocks:
+        return []
+    names = [str(item.get("name") or "") for item in blocks]
+    if len(set(names)) != len(names) or any(not is_valid_name(name) for name in names):
+        raise ValueError("batch contains duplicate or invalid custom block names")
+    _ensure_dir()
+    with _STORE_LOCK:
+        reg = _read_registry()
+        old_files: dict[str, str | None] = {}
+        paths: list[Path] = []
+        try:
+            for item, name in zip(blocks, names):
+                path = module_path(name)
+                old_files[name] = path.read_text(encoding="utf-8") if path.exists() else None
+                path.write_text(str(item.get("code") or ""), encoding="utf-8")
+                paths.append(path)
+                reg[name] = {
+                    "meta": dict(item.get("meta") or {}),
+                    "module_file": path.name,
+                    "generated_at": datetime.now(UTC).isoformat(),
+                    "prompt": str(item.get("prompt") or ""),
+                }
+            _write_registry(reg)
+            return paths
+        except Exception:
+            for name, previous in old_files.items():
+                path = module_path(name)
+                try:
+                    if previous is None:
+                        path.unlink(missing_ok=True)
+                    else:
+                        path.write_text(previous, encoding="utf-8")
+                except OSError:
+                    log.exception("could not roll back custom block %s", name)
+            raise
+
+
 def delete_custom(name: str) -> bool:
     """Remove a custom block from disk, registry, and in-memory BLOCK_REGISTRY."""
     if not is_valid_name(name):
