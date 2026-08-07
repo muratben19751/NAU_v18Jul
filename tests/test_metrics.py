@@ -135,6 +135,18 @@ class TestManualSharpe:
 
         assert math.isnan(_sharpe_manual([10_000.0])), "Single-point series → NaN"
 
+    def test_sortino_uses_same_bar_annualization_as_sharpe(self):
+        from backtest import _sortino_manual
+
+        returns = np.array([0.01, -0.02, 0.03, -0.01, 0.005])
+        equity = 10_000 * np.cumprod(np.r_[1.0, 1.0 + returns])
+        expected = (
+            float(np.mean(returns))
+            / float(np.sqrt(np.mean(np.square(np.minimum(returns, 0.0)))))
+            * math.sqrt(1764)
+        )
+        assert _sortino_manual(list(equity), annualization=1764) == pytest.approx(expected)
+
     def test_metrics_uses_365_annualization(self):
         """metrics['annualization'] must be 365 and sharpe_nautilus is separate."""
         from unittest.mock import MagicMock
@@ -161,6 +173,28 @@ class TestManualSharpe:
         # leave sharpe_nautilus/annualization correct while silently breaking
         # the primary 'sharpe'.
         assert metrics["sharpe"] == pytest.approx(metrics["sharpe_nautilus"], abs=1e-6)
+
+    def test_metrics_mtm_uses_matching_sharpe_and_sortino_annualization(self):
+        from unittest.mock import MagicMock
+
+        from backtest import _metrics, _sharpe_manual, _sortino_manual
+
+        positions_df = _fake_positions_df([100.0, -20.0, 50.0])
+        engine = MagicMock()
+        engine.portfolio.analyzer.get_performance_stats_returns.return_value = {
+            "Sharpe Ratio (252 days)": 0.1,
+            "Sortino Ratio (252 days)": 0.2,
+        }
+        engine.portfolio.analyzer.get_performance_stats_general.return_value = {}
+        engine.portfolio.analyzer.currencies = []
+        engine.trader.generate_order_fills_report.return_value = pd.DataFrame()
+        mtm = [10_000.0, 10_100.0, 9_900.0, 10_200.0, 10_150.0, 10_300.0]
+
+        metrics = _metrics(engine, positions_df, mtm_equity=mtm, annualization=1764)
+
+        assert metrics["sharpe"] == pytest.approx(_sharpe_manual(mtm, 1764))
+        assert metrics["sortino"] == pytest.approx(_sortino_manual(mtm, 1764))
+        assert metrics["sortino_nautilus"] == pytest.approx(0.2)
 
 
 # ---------------------------------------------------------------------------

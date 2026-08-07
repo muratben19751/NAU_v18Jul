@@ -170,6 +170,22 @@ def test_custom_block_role_system_prompt_is_role_locked():
     assert "ROLE LOCK — ENTRY ONLY" in entry_prompt
 
 
+def test_cli_output_cap_telemetry_marks_advisory_overrun():
+    import agent
+
+    telemetry = agent._output_cap_telemetry(
+        agent._ClaudeCLIClient("claude"),
+        {"output_tokens": 4_369},
+        4_000,
+    )
+    assert telemetry == {
+        "output_cap_mode": "advisory_cli",
+        "output_cap_requested": 4_000,
+        "output_cap_exceeded": True,
+        "output_cap_excess_tokens": 369,
+    }
+
+
 def test_custom_block_token_limit_stops_retry(monkeypatch):
     import agent
 
@@ -184,6 +200,134 @@ def test_custom_block_token_limit_stops_retry(monkeypatch):
     with pytest.raises(agent.GeneratedCodeError, match="token limit reached"):
         agent.propose_custom_block("x", "x", "entry")
     assert len(calls) == 1
+
+
+def test_custom_block_uses_compact_provider_limits(monkeypatch):
+    import agent
+
+    captured = {}
+
+    class Usage:
+        input_tokens = 10
+        output_tokens = 10
+        cache_read_input_tokens = 0
+        cache_creation_input_tokens = 0
+
+    response = SimpleNamespace(
+        usage=Usage(),
+        stop_reason="end_turn",
+        model="fake",
+        content=[
+            SimpleNamespace(
+                type="text",
+                text='{"name":"x","meta":{"label":"x","params":{}},"code":"def max_lookback(params):\\n return 1\\ndef evaluate(state, block, closes, indicators, portfolio):\\n return None"}',
+            )
+        ],
+    )
+    monkeypatch.setattr(agent, "_get_client", lambda: SimpleNamespace())
+    monkeypatch.setattr(
+        agent,
+        "_create_message",
+        lambda client, **kwargs: (captured.update(kwargs) or response),
+    )
+    agent._call_claude_for_block("x", role_hint="entry")
+    assert captured["max_tokens"] == 1_800
+    assert captured["timeout"] == 75.0
+
+
+def test_custom_block_timeout_does_not_retry(monkeypatch):
+    import agent
+
+    calls = []
+
+    def timeout(*args, **kwargs):
+        calls.append(1)
+        raise TimeoutError("provider deadline")
+
+    monkeypatch.setattr(agent, "_call_claude_for_block", timeout)
+    with pytest.raises(agent.GeneratedCodeError, match="TimeoutError"):
+        agent.propose_custom_block("x", "x", "entry")
+    assert len(calls) == 1
+
+
+def test_openrouter_pin_reports_provider_enforced_output_cap():
+    import agent
+
+    telemetry = agent._output_cap_telemetry(
+        agent._ClaudeCLIClient("claude"),
+        {"output_tokens": 1_800},
+        1_800,
+        provider_enforced=True,
+    )
+    assert telemetry["output_cap_mode"] == "provider_enforced"
+    assert telemetry["output_cap_exceeded"] is False
+
+
+def test_custom_block_cap_rejects_truncation_retry_before_second_provider_call(
+    monkeypatch,
+):
+    """The 4k→16k retry must not slip past a block's own token ceiling."""
+    import agent
+
+    calls = []
+
+    class Usage:
+        input_tokens = 100
+        output_tokens = 4_000
+        cache_read_input_tokens = 0
+        cache_creation_input_tokens = 0
+
+    truncated = SimpleNamespace(usage=Usage(), stop_reason="max_tokens", model="fake")
+    client = SimpleNamespace(
+        messages=SimpleNamespace(
+            create=lambda **kwargs: (calls.append(kwargs) or truncated)
+        )
+    )
+    monkeypatch.setattr(agent, "_get_client", lambda: client)
+    monkeypatch.setattr(agent, "_ledger_record", lambda *args, **kwargs: None)
+    agent.set_thread_llm_control(lambda: False, None, None)
+    try:
+        with pytest.raises(agent.LLMTokenBudgetExceeded, match="cannot admit"):
+            agent._call_claude_for_block(
+                "short block description",
+                role_hint="entry",
+                token_limit=20_000,
+            )
+    finally:
+        agent.set_thread_llm_control(None, None, None)
+    assert len(calls) == 1
+
+
+def test_cli_output_reservation_uses_observed_model_purpose_high_water(monkeypatch):
+    """Claude CLI lacks max_tokens: later admissions reserve observed output."""
+    import agent
+
+    monkeypatch.setattr(agent, "_OBSERVED_OUTPUT_HIGH_WATER", {})
+    agent._observe_llm(
+        model="claude-fable-5",
+        purpose="custom_block",
+        usage={"output_tokens": 9_640},
+    )
+
+    bound = agent._llm_request_token_bound(
+        {"messages": [{"role": "user", "content": "x"}], "max_tokens": 4_000},
+        model="claude-fable-5",
+        purpose="custom_block",
+    )
+
+    assert bound["configured_output_tokens"] == 4_000
+    assert bound["observed_output_reserve"] == 9_640
+    assert bound["output_token_bound"] == 9_640
+    assert bound["output_reservation_mode"] == "observed_high_water"
+
+
+def test_phase_timeout_never_exceeds_remaining_global_deadline():
+    import web.routes.agent_backtest as ab
+
+    assert ab._remaining_phase_timeout(100.0, 1.0, 600.0, now=3_650.0) == 50.0
+    assert ab._remaining_phase_timeout(100.0, 0.0, 600.0, now=9_999.0) == 600.0
+    with pytest.raises(ab.AgentBudgetReached, match="time ceiling"):
+        ab._remaining_phase_timeout(100.0, 1.0, 600.0, now=3_700.0)
 
 
 def test_custom_batch_validator_failure_rolls_back_registry(monkeypatch, tmp_path):
@@ -258,6 +402,71 @@ def test_generate_custom_spec_registers_before_validation(monkeypatch, tmp_path)
             store.delete_custom(name)
 
 
+def test_legacy_agent_name_backfills_role_and_rejects_wrong_runtime_signal(
+    monkeypatch, tmp_path
+):
+    """A legacy agnt_x file cannot become an entry signal after restart."""
+    import composer
+    import custom_block_store as store
+
+    monkeypatch.setattr(store, "STORE_DIR", tmp_path / "store")
+    monkeypatch.setattr(store, "REGISTRY_FILE", tmp_path / "store" / "registry.json")
+    name = "agnt_x_deadbeef_1"  # legacy shape: no durable role metadata
+    store.save_custom(
+        name,
+        {"label": "legacy", "params": {}},
+        "def evaluate(state, block, closes, indicators, portfolio):\n"
+        "    return 'long'\n",
+    )
+    try:
+        composer.register_custom_from_disk(name)
+        assert store.get_custom(name)["meta"]["role"] == "exit"
+        spec = composer.ComposedStrategySpec(
+            id="legacy-role",
+            name="legacy",
+            description="",
+            blocks=[composer.SignalBlock(type=name, role="entry", params={})],
+        )
+        assert "declared for role 'exit'" in (spec.validate() or "")
+
+        strategy = SimpleNamespace(
+            _prev_state={},
+            _buf_cap=20,
+            _indicators={},
+            _volumes=[],
+            _highs=[],
+            _lows=[],
+            portfolio=SimpleNamespace(
+                is_net_long=lambda *_: False,
+                is_net_short=lambda *_: False,
+                is_flat=lambda *_: True,
+            ),
+        )
+        block = SimpleNamespace(params={}, role="exit", type=name)
+        assert composer.BLOCK_REGISTRY[name]["eval"](strategy, 0, block, [100.0]) is None
+    finally:
+        composer.unregister_custom_block(name)
+        store.delete_custom(name)
+
+
+def test_agent_run_cleanup_is_atomic_and_keeps_promoted_dependencies(monkeypatch, tmp_path):
+    import custom_block_store as store
+
+    monkeypatch.setattr(store, "STORE_DIR", tmp_path / "store")
+    monkeypatch.setattr(store, "REGISTRY_FILE", tmp_path / "store" / "registry.json")
+    keep = "agnt_e_deadbeef_r1_1"
+    drop = "agnt_x_deadbeef_r1_1"
+    other = "agnt_e_cafebabe_r1_1"
+    for name in (keep, drop, other):
+        store.save_custom(name, {"params": {}}, "def evaluate():\n    return None\n")
+
+    assert {item["name"] for item in store.list_agent_blocks("deadbeef")} == {keep, drop}
+    assert store.cleanup_agent_run("deadbeef", keep_names={keep}) == [drop]
+    assert store.get_custom(keep) is not None
+    assert store.get_custom(drop) is None
+    assert store.get_custom(other) is not None
+
+
 def test_wfo_requires_half_positive_even_with_positive_penalized_sharpe():
     import web.routes.agent_backtest as ab
 
@@ -269,6 +478,68 @@ def test_wfo_requires_half_positive_even_with_positive_penalized_sharpe():
         "split": {"overfitting_label": "✓ Robust"},
         "wfo_windows": windows,
         "oos_sharpe_penalized": 2.0,
+        "mc": {"max_dd_p50": -10.0},
+    }
+    assert ab._robustness_passed(rob, strict=True) is False
+
+
+def test_wfo_requires_positive_excess_not_just_positive_pnl():
+    import web.routes.agent_backtest as ab
+
+    windows = [
+        {
+            "test_n_trades": 5,
+            "test_metrics": {
+                "pnl": 100.0,
+                "excess_return_fraction": -0.01,
+                "sharpe": 1.0,
+            },
+        }
+        for _ in range(4)
+    ]
+    rob = {
+        "split": {"overfitting_label": "✓ Robust"},
+        "wfo_windows": windows,
+        "oos_sharpe_penalized": 1.0,
+        "mc": {"max_dd_p50": -10.0},
+    }
+    assert ab._robustness_passed(rob, strict=True) is False
+
+
+def test_strict_mc_rejects_unsafe_drawdown_tail():
+    import web.routes.agent_backtest as ab
+
+    windows = [
+        {
+            "test_n_trades": 5,
+            "test_metrics": {"excess_return_fraction": 0.01, "sharpe": 1.0},
+        }
+        for _ in range(4)
+    ]
+    rob = {
+        "split": {"overfitting_label": "✓ Robust"},
+        "wfo_windows": windows,
+        "multi_symbol": {"generalization_label": "✓ Generalizable"},
+        "mc": {"max_dd_p50": -10.0, "max_dd_p95": -40.0},
+    }
+    assert ab._robustness_passed(rob, strict=True) is False
+    assert ab._robustness_passed(rob, strict=False) is True
+
+
+def test_strict_mc_requires_tail_metric():
+    import web.routes.agent_backtest as ab
+
+    windows = [
+        {
+            "test_n_trades": 5,
+            "test_metrics": {"excess_return_fraction": 0.01, "sharpe": 1.0},
+        }
+        for _ in range(4)
+    ]
+    rob = {
+        "split": {"overfitting_label": "✓ Robust"},
+        "wfo_windows": windows,
+        "multi_symbol": {"generalization_label": "✓ Generalizable"},
         "mc": {"max_dd_p50": -10.0},
     }
     assert ab._robustness_passed(rob, strict=True) is False
@@ -339,6 +610,21 @@ def test_external_gap_report_fails_on_multiyear_hole():
     assert gap and gap["days"] > 2000
 
 
+def test_external_gap_report_fails_on_large_same_session_intraday_hole():
+    import data
+
+    idx = pd.to_datetime(["2025-01-02 14:30", "2025-01-02 15:30", "2025-01-02 20:00"], utc=True)
+    frame = pd.DataFrame({"close": [1.0, 1.1, 1.2]}, index=idx)
+    gap = data.external_data_gap_report(frame, granularity="1-HOUR")
+    assert gap == {
+        "kind": "intraday",
+        "from": "2025-01-02T15:30:00+00:00",
+        "to": "2025-01-02T20:00:00+00:00",
+        "gap_minutes": 270,
+        "max_allowed_minutes": 180,
+    }
+
+
 def test_metrics_thinning_reaches_nested_mtm_curve():
     import web.routes.agent_backtest as ab
 
@@ -349,6 +635,22 @@ def test_metrics_thinning_reaches_nested_mtm_curve():
     thin = ab._thin_curves(payload, cap=400)
     assert len(thin["equity_curve_mtm"]) == 400
     assert thin["n_trades"] == 30
+
+
+def test_session_curve_cap_bounds_top_level_and_nested_curves():
+    import web.routes.agent_backtest as ab
+
+    assert ab._SESSION_CURVE_CAP == 120
+    values = list(range(2_000))
+    dates = [str(i) for i in values]
+    curve, curve_dates = ab._thin_pair(values, dates, cap=ab._SESSION_CURVE_CAP)
+    metrics = ab._thin_curves(
+        {"equity_curve_mtm": [[str(i), float(i)] for i in values]},
+        cap=ab._SESSION_CURVE_CAP,
+    )
+    assert len(curve) == len(curve_dates) == ab._SESSION_CURVE_CAP
+    assert len(metrics["equity_curve_mtm"]) == ab._SESSION_CURVE_CAP
+    assert curve[0] == 0 and curve[-1] == 1_999
 
 
 def test_robustness_payload_is_stored_as_gzip_artifact(monkeypatch, tmp_path):
@@ -414,6 +716,7 @@ def test_llm_observer_sees_each_actual_provider_response():
     assert events[0]["usage"]["input_tokens"] == 11
     assert events[0]["purpose"] == "probe"
     assert events[0]["status"] == "ok"
+    assert events[0]["output_cap_mode"] == "provider_enforced"
 
 
 def test_llm_call_honors_cooperative_cancel_before_provider():
@@ -528,6 +831,40 @@ def test_session_summary_prefers_completed_rounds_over_token_snapshot(
     assert sessions._session_summary("counter")["total_rounds"] == 2
 
 
+def test_large_session_summary_reads_bounded_head_and_tail(monkeypatch, tmp_path):
+    import json
+
+    import web.routes.sessions as sessions
+
+    monkeypatch.setattr(sessions, "SESSION_LOG_DIR", tmp_path)
+    monkeypatch.setattr(sessions, "_SESSION_SUMMARY_FULL_SCAN_MAX_BYTES", 128)
+    sessions._SUMMARY_CACHE.clear()
+    path = tmp_path / "large001.jsonl"
+    head = json.dumps(
+        {
+            "ts": "2026-08-06T12:00:00+00:00",
+            "event": "session_start",
+            "symbol": "QQQ.NASDAQ",
+            "n_iterations": 4,
+        }
+    )
+    tail = json.dumps(
+        {
+            "ts": "2026-08-06T12:12:00+00:00",
+            "event": "session_end",
+            "outcome": "budget",
+            "completed_rounds": 2,
+        }
+    )
+    path.write_text(head + "\n" + ("x" * 512) + "\n" + tail + "\n", encoding="utf-8")
+
+    summary = sessions._session_summary("large001")
+    assert summary["symbol"] == "QQQ.NASDAQ"
+    assert summary["outcome"] == "budget"
+    assert summary["total_rounds"] == 2
+    assert summary["n_backtest"] == "?"
+
+
 def test_openrouter_auto_path_uses_killable_process(monkeypatch):
     import agent
 
@@ -631,6 +968,39 @@ def test_candidate_fingerprint_distinguishes_exact_from_family():
     ) == ab._candidate_fingerprint(second, family=True)
 
 
+def test_candidate_fingerprint_canonicalizes_commutative_block_order():
+    import web.routes.agent_backtest as ab
+
+    a = ab._proposal_to_spec(
+        {
+            "entry_logic": "AND",
+            "exit_logic": "OR",
+            "blocks": [
+                {"type": "momentum", "role": "entry", "params": {"lookback": 10}},
+                {"type": "rsi", "role": "entry", "params": {"period": 14}},
+                {"type": "atr_stop", "role": "exit", "params": {"period": 14, "mult": 3}},
+                {"type": "take_profit", "role": "exit", "params": {"percent": 5}},
+            ],
+        }
+    )
+    b = ab._proposal_to_spec(
+        {
+            "entry_logic": "AND",
+            "exit_logic": "OR",
+            "blocks": [
+                {"type": "take_profit", "role": "exit", "params": {"percent": 5}},
+                {"type": "rsi", "role": "entry", "params": {"period": 14}},
+                {"type": "atr_stop", "role": "exit", "params": {"period": 14, "mult": 3}},
+                {"type": "momentum", "role": "entry", "params": {"lookback": 10}},
+            ],
+        }
+    )
+    assert ab._candidate_fingerprint(a) == ab._candidate_fingerprint(b)
+    assert ab._candidate_fingerprint(a, family=True) == ab._candidate_fingerprint(
+        b, family=True
+    )
+
+
 def test_fallback_composition_is_reproducible_per_run_seed():
     import agent
 
@@ -718,3 +1088,27 @@ def test_stale_single_key_unadjusted_override_is_not_enough(monkeypatch):
     )
     assert response.status_code == 400
     assert "AGENT_RESEARCH_MODE=1" in response.text
+
+
+def test_session_log_failure_marks_live_audit_degraded(tmp_path, monkeypatch):
+    """An unavailable audit directory must be visible without stopping AUTO."""
+    import web.routes.agent_backtest as ab
+
+    blocked = tmp_path / "not-a-directory"
+    blocked.write_text("occupied")
+    run_id = "deadbeef"
+    monkeypatch.setattr(ab, "SESSION_LOG_DIR", blocked)
+    with ab._AGENT_LOCK:
+        ab._AGENT_PROGRESS[run_id] = {
+            "audit_degraded": False,
+            "audit_error": None,
+        }
+    try:
+        ab._session_log(run_id, "step", msg="audit probe")
+        with ab._AGENT_LOCK:
+            state = ab._AGENT_PROGRESS[run_id]
+            assert state["audit_degraded"] is True
+            assert "Session audit log unavailable" in state["audit_error"]
+    finally:
+        with ab._AGENT_LOCK:
+            ab._AGENT_PROGRESS.pop(run_id, None)

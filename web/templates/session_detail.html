@@ -18,6 +18,12 @@
         ⚠ step events trimmed (last 20k)
       </span>
       {% endif %}
+      {% if detail_truncated %}
+      <span class="badge" style="font-size:10px;color:#fb923c;border-color:rgba(251,146,60,0.35);"
+            title="This legacy log is too large for a full browser replay. The page shows bounded start/end evidence; use exported artifacts for deeper forensics.">
+        ⚠ partial large-log preview
+      </span>
+      {% endif %}
       {# L38: model-based ESTIMATED cost; None on subscription CLI runs → hidden #}
       {% if last_tok and last_tok.cost_eur is not none %}
       <span class="mono" style="font-size:12px;font-weight:600;color:var(--amber);margin-left:auto;">

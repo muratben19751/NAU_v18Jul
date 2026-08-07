@@ -42,6 +42,7 @@ import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 
+import pandas as pd
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse
 
@@ -57,6 +58,16 @@ from web.shared import log_robustness as _log_robustness  # noqa: E402
 _AGENT_STORE = ProgressStore(50)
 _AGENT_PROGRESS = _AGENT_STORE.raw()
 _AGENT_LOCK = _AGENT_STORE.lock
+
+# AUTO can fan out into LLM, backtest, and robustness workers. Keep the default
+# deliberately small so two browser clicks cannot oversubscribe the host or
+# make token/cost attribution ambiguous. Operators may raise this explicitly
+# only after sizing the worker pools for their machine.
+try:
+    _MAX_CONCURRENT_AUTO_RUNS = max(1, int(os.environ.get("AGENT_MAX_CONCURRENT_RUNS", "1")))
+except ValueError:
+    _MAX_CONCURRENT_AUTO_RUNS = 1
+_AUTO_RUN_SLOTS = threading.BoundedSemaphore(_MAX_CONCURRENT_AUTO_RUNS)
 # Minimum number of trades to be considered statistically reliable. Runs below
 # this are eliminated with -inf in _score (cannot be a winner). The value is
 # aligned with the NAU_ev backtest optimizer's JUNK_MIN_TRADES=20 threshold (see
@@ -73,10 +84,22 @@ _AGENT_LOCK = _AGENT_STORE.lock
 # kararı olduğu için varsayılan korunuyor. Denemek için: AGENT_MIN_TRADES=10.
 _MIN_TRADES = int(os.environ.get("AGENT_MIN_TRADES", "20"))
 
-# L2: Monte Carlo median drawdown limit (%). Both the _robustness_passed
-# comparison and the explanation text shown to the user derive from this SINGLE
-# constant.
+# Session JSONL is an audit index, not the full chart store.  A 120-point
+# forensic curve preserves shape/endpoints while bounding continuous AUTO disk
+# growth across the top-level and nested MTM curves in every candidate event.
+_SESSION_CURVE_CAP = 120
+
+# Exception policy for a catalog history that was independently reviewed. This
+# is deliberately a fingerprint, not a generic "ignore old gap" switch: an
+# unknown calendar or any intraday gap remains a hard refusal.
+_KNOWN_CONTINUOUS_TAIL_GAPS = {
+    ("QQQ.NASDAQ", "2004-11-30", "2011-03-23", 2304): "2011-03-23",
+}
+
+# L2: Monte Carlo drawdown limits (%).  The median describes the typical path;
+# strict publication also has to reject a materially unsafe adverse tail.
 _MC_DD_LIMIT = -25.0
+_MC_DD_TAIL_LIMIT = -35.0
 
 # L32: Sealed holdout — the last N days of data are completely withheld from the
 # iteration + robustness phases; tested exactly once only AFTER the winner is
@@ -112,6 +135,17 @@ DEFAULT_CONTINUOUS_MAX_HOURS = float(
 DEFAULT_CONTINUOUS_MAX_TOKENS = int(
     os.environ.get("AGENT_DEFAULT_CONTINUOUS_MAX_TOKENS", "250000")
 )
+# Form values may request a smaller budget, but may never create an unbounded
+# billable/process-spawning AUTO run. Operators can tighten these ceilings via
+# environment configuration; posting 0 does not disable them.
+HARD_MAX_AUTO_HOURS = max(
+    0.01,
+    float(os.environ.get("AGENT_HARD_MAX_AUTO_HOURS", str(DEFAULT_CONTINUOUS_MAX_HOURS))),
+)
+HARD_MAX_AUTO_TOKENS = max(
+    1,
+    int(os.environ.get("AGENT_HARD_MAX_AUTO_TOKENS", str(DEFAULT_CONTINUOUS_MAX_TOKENS))),
+)
 
 # M22 extra circuit breaker: threshold of consecutive winnerless rounds
 # (continuous mode). Three complete rounds are enough to identify a stalled
@@ -139,6 +173,26 @@ class AgentBudgetReached(RuntimeError):
     llm_control_abort = True
 
 
+def _remaining_phase_timeout(
+    started_at: float,
+    max_hours: float,
+    default_seconds: float,
+    *,
+    now: float | None = None,
+) -> float:
+    """Bound one isolated phase by the remaining run-wide wall-clock budget."""
+
+    if max_hours <= 0:
+        return float(default_seconds)
+    elapsed = (time.monotonic() if now is None else now) - started_at
+    remaining = max_hours * 3600 - elapsed
+    if remaining <= 0:
+        raise AgentBudgetReached(f"time ceiling ({max_hours:g} hours) reached")
+    # Keep a tiny positive value so sandbox cleanup takes its normal timeout
+    # path rather than receiving an invalid deadline.
+    return max(0.1, min(float(default_seconds), remaining))
+
+
 def _json_safe(obj):
     """Reduces NaN/Inf floats to None (recursive) — prevents json.dumps from
     producing non-standard ``NaN``/``Infinity`` literals (part of L33).
@@ -155,8 +209,8 @@ def _json_safe(obj):
 
 def _session_log(run_id: str, event: str, **kwargs) -> None:
     """Append a JSON event line to agent_sessions/{run_id}.jsonl.
-    Thread-safe per run_id. Silently ignores all errors so logging never
-    breaks the agent worker.
+    Thread-safe per run_id. Audit logging must never stop research, but a
+    write failure is surfaced in the live state instead of being invisible.
     """
     try:
         SESSION_LOG_DIR.mkdir(parents=True, exist_ok=True)
@@ -174,8 +228,23 @@ def _session_log(run_id: str, event: str, **kwargs) -> None:
         with lock:
             with (SESSION_LOG_DIR / f"{run_id}.jsonl").open("a") as _f:
                 _f.write(line)
-    except Exception:
-        pass
+                # ``session_end`` is the durable completion boundary used by
+                # the Sessions page after a PM2 restart.
+                if event == "session_end":
+                    _f.flush()
+                    os.fsync(_f.fileno())
+    except Exception as exc:
+        logging.getLogger(__name__).warning(
+            "AUTO audit log write failed for %s (%s)", run_id, event, exc_info=True
+        )
+        # Do not call _add_step here: it writes another audit event and would
+        # recurse on a full/unavailable volume.  The progress endpoint copies
+        # these scalar fields and renders a non-terminal warning instead.
+        with _AGENT_LOCK:
+            state = _AGENT_PROGRESS.get(run_id)
+            if state is not None:
+                state["audit_degraded"] = True
+                state["audit_error"] = f"Session audit log unavailable: {exc}"
 
 
 def _write_session_artifact(run_id: str, name: str, payload) -> dict:
@@ -818,7 +887,7 @@ def _candidate_fingerprint(spec, *, family: bool = False) -> str:
     code merely because an earlier generated function emitted no signals.
     """
 
-    blocks = []
+    blocks_by_role: dict[str, list[dict]] = {}
     for block in getattr(spec, "blocks", []) or []:
         row = {
             "type": str(getattr(block, "type", "")),
@@ -826,7 +895,25 @@ def _candidate_fingerprint(spec, *, family: bool = False) -> str:
         }
         if not family:
             row["params"] = getattr(block, "params", {}) or {}
-        blocks.append(row)
+        blocks_by_role.setdefault(row["role"], []).append(row)
+
+    # Signal evaluation aggregates the entry and exit partitions with all()/any()
+    # (ComposerStrategy.on_bar); AND and OR are commutative. Fingerprinting their
+    # emitted order as if it were a strategy difference lets an LLM spend a full
+    # backtest on the same topology merely because it swapped two blocks.
+    #
+    # Keep roles partitioned: entry/exit are different contracts, while sort_keys
+    # also makes nested parameter dict ordering irrelevant.
+    blocks = [
+        row
+        for role in sorted(blocks_by_role)
+        for row in sorted(
+            blocks_by_role[role],
+            key=lambda item: json.dumps(
+                item, sort_keys=True, separators=(",", ":"), default=str
+            ),
+        )
+    ]
     payload = {
         "blocks": blocks,
         "entry_logic": str(getattr(spec, "entry_logic", "OR")),
@@ -1034,6 +1121,11 @@ def _stamp_buy_hold_benchmark(result, bars_df) -> None:
         result.metrics["benchmark_return_pct"] = benchmark
         result.metrics["excess_pnl_pct"] = excess
         result.metrics["benchmark"] = "buy_and_hold"
+        # The strategy return is net of its simulated costs, while this simple
+        # close-to-close reference has no trading costs.  Keep that contract
+        # explicit so downstream ranking/reporting cannot label it net alpha.
+        result.metrics["benchmark_cost_basis"] = "gross_buy_and_hold_no_costs"
+        result.metrics["strategy_return_cost_basis"] = "net_simulated_costs"
     except (KeyError, TypeError, ValueError, IndexError):
         return
 
@@ -1169,7 +1261,7 @@ def _robustness_passed(
         if "✗" in split_label or "yetersiz" in split_label:
             failed += 1
 
-    # 2) Walk-Forward: ≥50% valid windows with positive test PnL.
+    # 2) Walk-Forward: ≥50% valid windows with positive OOS alpha.
     # Windows with <3 test trades are statistically unreliable → invalid.
     wfo = rob.get("wfo_windows") or []
     # `test_n_trades` is kept as the fallback count: a window may carry it
@@ -1220,7 +1312,22 @@ def _robustness_passed(
                 pen = None
         except (TypeError, ValueError):
             pen = None
-        positive = sum(1 for w in valid_windows if _wfo_test(w).get("pnl", 0) > 0)
+        # A positive return in a broad bull market is not a strategy edge.
+        # ``run_walk_forward`` stamps buy-and-hold excess for the exact test
+        # slice.  Missing alpha is a fail-closed robustness error: otherwise
+        # archived/slim rows could silently re-open the old nominal-PnL gate.
+        _excess = []
+        for w in valid_windows:
+            try:
+                value = float(_wfo_test(w).get("excess_return_fraction"))
+            except (TypeError, ValueError):
+                value = float("nan")
+            _excess.append(value)
+        if any(not math.isfinite(value) for value in _excess):
+            failed += 1
+            _skip("Walk-Forward alpha", "missing slice-local benchmark/excess")
+            _excess = []
+        positive = sum(1 for value in _excess if value > 0)
         positive_ratio = positive / len(valid_windows)
         # UI and gate now implement one contract: at least half of the valid
         # windows must be profitable. Penalized OOS Sharpe is an additional
@@ -1241,7 +1348,7 @@ def _robustness_passed(
         if "✗" in ms_label:  # symbol-specific strategy is not accepted
             failed += 1
 
-    # 4) Monte Carlo: median drawdown check
+    # 4) Monte Carlo: median drawdown check, plus strict adverse-tail check.
     mc = rob.get("mc") or {}
     if not mc or mc.get("error"):
         _skip("Monte Carlo", str(mc.get("error") or "no section"))
@@ -1250,6 +1357,21 @@ def _robustness_passed(
         dd_p50 = mc.get("max_dd_p50")
         if dd_p50 is not None and dd_p50 < _MC_DD_LIMIT:
             failed += 1
+        # ``max_dd_p95`` is deliberately named for the 95% confidence band but
+        # is the 5th percentile of signed (negative) max-DD values: the adverse
+        # tail.  Old/partial payloads cannot satisfy strict publication because
+        # their tail risk is unknown; relaxed research keeps median-only parity.
+        if strict:
+            dd_p95 = mc.get("max_dd_p95")
+            try:
+                dd_p95 = float(dd_p95)
+            except (TypeError, ValueError):
+                dd_p95 = None
+            if dd_p95 is None or not math.isfinite(dd_p95):
+                failed += 1
+                _skip("Monte Carlo tail risk", "missing max_dd_p95")
+            elif dd_p95 < _MC_DD_TAIL_LIMIT:
+                failed += 1
 
     if failed:
         return False
@@ -1777,6 +1899,7 @@ def _agent_worker(
     model: str = "",
     effort: str = "",
     research_only: bool = False,
+    data_truncation: dict | None = None,
 ) -> None:
     import pandas as pd
 
@@ -1817,6 +1940,12 @@ def _agent_worker(
             )
         if cap > 0 and used >= cap:
             raise AgentBudgetReached(f"token ceiling ({cap:,}) reached at {used:,}")
+        # The old wall-clock ceiling was checked only between rounds. A long
+        # provider request could therefore begin just before the deadline and
+        # continue spending well past it. The LLM wrapper polls this callback,
+        # so reject cooperatively before the next provider step/retry.
+        if max_hours > 0 and (time.monotonic() - _worker_t0) >= max_hours * 3600:
+            raise AgentBudgetReached(f"time ceiling ({max_hours:g} hours) reached")
         return False
 
     def _llm_observer(event: dict) -> None:
@@ -1827,7 +1956,11 @@ def _agent_worker(
 
     from composer import load_catalog
     from data import _bybit_cache_path
-    from sandbox import run_backtest_guarded, run_robustness_guarded
+    from sandbox import (
+        ROBUSTNESS_TIMEOUT_S,
+        run_backtest_guarded,
+        run_robustness_guarded,
+    )
 
     is_external = source == "external"
     if continuous_mode:
@@ -1897,7 +2030,15 @@ def _agent_worker(
         effort=effort,
         search_seed=run_id,
         research_only=research_only,
+        data_truncation=data_truncation,
     )
+    if data_truncation:
+        _session_log(run_id, "data_segment_truncated", **data_truncation)
+        _add_step(
+            run_id,
+            "⚠ Catalog history gap: using verified continuous tail "
+            f"from {data_truncation['effective_start']}",
+        )
 
     run_number = 0
     # Round count itself is not the budget; continuous mode is bounded by the
@@ -1919,6 +2060,24 @@ def _agent_worker(
     _zero_trade_families: set[str] = set()
     _last_started_round = 0
     _completed_rounds = 0
+    _retained_block_names: set[str] = set()
+
+    def _phase_timeout(default_seconds: float) -> float:
+        """Cap an isolated child by the remaining run-wide wall-clock budget."""
+        return _remaining_phase_timeout(_worker_t0, max_hours, default_seconds)
+
+    def _cleanup_generated(keep_spec=None) -> None:
+        """Delete this run's disposable generated blocks, retaining a promotion."""
+        try:
+            from custom_block_store import cleanup_agent_run
+
+            _retained_block_names.update(
+                str(block.type)
+                for block in (getattr(keep_spec, "blocks", None) or [])
+            )
+            cleanup_agent_run(run_id, keep_names=_retained_block_names)
+        except Exception:  # best effort; cleanup must never mask a terminal result
+            logging.exception("AUTO generated-block cleanup failed for run %s", run_id)
 
     # Continuous mode with no ceiling has exactly two brakes: the winnerless-round
     # breaker and the identical-error breaker. Neither bounds cost — every round
@@ -2054,6 +2213,7 @@ def _agent_worker(
             _llm_observer,
             lambda request: _admit_llm_budget(run_id, request),
         )
+
         try:
             # ── Phase 0: Data ────────────────────────────────────────────────────
             # Multi-TF: lazy-load cache per TF. Pre-load the first TF here.
@@ -2454,7 +2614,7 @@ def _agent_worker(
                     iteration_id=i,
                     rationale=f"agent-run · iter {i + 1}/{n_iterations} · {run_label} {iter_iv}",
                     progress_fn=lambda m, _i=i: _add_step(run_id, f"  └ {m}"),
-                    timeout_s=150.0,
+                    timeout_s=_phase_timeout(150.0),
                     force_subprocess=True,
                 )
                 _bt_elapsed = time.perf_counter() - _bt_t0
@@ -2526,7 +2686,9 @@ def _agent_worker(
                 # Session log: backtest result. The equity curve and its date
                 # axis are reduced TOGETHER (see _thin_pair) — raw, they made
                 # this the heaviest event in the log at ~301 KB apiece.
-                _eq_curve, _eq_dates = _thin_pair(r.equity_curve, r.equity_dates)
+                _eq_curve, _eq_dates = _thin_pair(
+                    r.equity_curve, r.equity_dates, cap=_SESSION_CURVE_CAP
+                )
                 _session_log(
                     run_id,
                     "backtest_result",
@@ -2543,7 +2705,7 @@ def _agent_worker(
                     # Metrics can themselves contain bar-resolution equity
                     # arrays (equity_curve_mtm/realized). Thin recursively; the
                     # previous top-level-only reduction left ~47 MB/hour growth.
-                    metrics=_thin_curves(r.metrics, cap=400),
+                    metrics=_thin_curves(r.metrics, cap=_SESSION_CURVE_CAP),
                     equity_curve=_eq_curve,
                     equity_dates=_eq_dates,
                     n_trades=len(r.trades) if r.trades else 0,
@@ -2784,6 +2946,7 @@ def _agent_worker(
                 _tl_end(run_id, f"rank-r{run_number}", status="warn")
                 _done_phase(run_id, 3, "⚠ No eligible result — all iterations failed")
                 _completed_rounds = run_number
+                _cleanup_generated()
                 if not continuous_mode:
                     with _AGENT_LOCK:
                         if run_id in _AGENT_PROGRESS:
@@ -2871,6 +3034,7 @@ def _agent_worker(
                         symbol=instrument_id if is_external else symbol,
                         interval=cand_iv,
                         progress_fn=_rob_progress,
+                        timeout_s=_phase_timeout(ROBUSTNESS_TIMEOUT_S),
                     )
                 except Exception as rob_exc:
                     _rob_progress.close_open("fail")
@@ -3065,6 +3229,7 @@ def _agent_worker(
                     run_id, 4, f"✗ None of the {len(eligible)} candidates passed"
                 )
                 _completed_rounds = run_number
+                _cleanup_generated()
                 if not continuous_mode:
                     with _AGENT_LOCK:
                         if run_id in _AGENT_PROGRESS:
@@ -3143,7 +3308,7 @@ def _agent_worker(
                         _recipe(winner_iv),
                         iteration_id=999,
                         rationale="sealed holdout (L32)",
-                        timeout_s=150.0,
+                        timeout_s=_phase_timeout(150.0),
                         force_subprocess=True,
                     )
                     _hm = _hold_res.metrics or {}
@@ -3301,14 +3466,17 @@ def _agent_worker(
                 spec_name=winner_spec.name,
                 spec_id=winner_spec.id,
                 score=round(_score(winner_result), 4),
-                metrics=_thin_curves(winner_result.metrics, cap=400),
+                metrics=_thin_curves(winner_result.metrics, cap=_SESSION_CURVE_CAP),
                 equity_curve=_thin_pair(
-                    winner_result.equity_curve, winner_result.equity_dates
+                    winner_result.equity_curve,
+                    winner_result.equity_dates,
+                    cap=_SESSION_CURVE_CAP,
                 )[0],
                 bars_info=bars_info,
                 promoted=promotion_passed,
                 promotion_reason=promotion_reason,
             )
+            _cleanup_generated(winner_spec if promotion_passed else None)
             _consec_err = 0  # round finished successfully — error streak broken
             _completed_rounds = run_number
             _last_err_str = None
@@ -3362,6 +3530,7 @@ def _agent_worker(
                 completed_rounds=_completed_rounds,
                 total_rounds=_completed_rounds,
             )
+            _cleanup_generated()
             return
         except AgentBudgetReached as e:
             _tl_close_open(run_id, status="warn")
@@ -3380,6 +3549,7 @@ def _agent_worker(
                 completed_rounds=_completed_rounds,
                 total_rounds=_completed_rounds,
             )
+            _cleanup_generated()
             return
         except TerminalLLMError as e:
             _tl_close_open(run_id, status="fail")
@@ -3403,6 +3573,7 @@ def _agent_worker(
                 completed_rounds=_completed_rounds,
                 total_rounds=_completed_rounds,
             )
+            _cleanup_generated()
             return
         except Exception as e:
             _tl_close_open(run_id, status="fail")
@@ -3422,6 +3593,7 @@ def _agent_worker(
                 completed_rounds=_completed_rounds,
                 total_rounds=_completed_rounds,
             )
+            _cleanup_generated()
             if not continuous_mode:
                 break
             # Circuit breaker: the same error _CONSEC_ERR_LIMIT consecutive rounds
@@ -3480,6 +3652,7 @@ def _agent_worker(
             # Permanent end: the progress route stops polling when it sees this
             # (a separate flag to distinguish it from the inter-round done=True window).
             _AGENT_PROGRESS[run_id]["continuous_finished"] = True
+    _cleanup_generated()
     _session_log(
         run_id,
         "session_end",
@@ -3773,6 +3946,15 @@ def _discard_unrun_custom_blocks(spec, run_id: str) -> None:
             _session_log(run_id, "custom_block_discarded", name=name, reason="not run")
 
 
+def _agent_worker_with_slot(**kwargs) -> None:
+    """Release the process-wide AUTO slot even if the worker fails unexpectedly."""
+
+    try:
+        _agent_worker(**kwargs)
+    finally:
+        _AUTO_RUN_SLOTS.release()
+
+
 @router.get("/tokens")
 async def tokens(request: Request):
     """Per-model LLM token usage from the persistent ledger (token_ledger).
@@ -3889,19 +4071,26 @@ async def run(
         )
 
     n_iterations = max(2, min(15, n_iterations))
-    # M22: optional budget ceilings (0 = unlimited — default behavior unchanged).
-    max_hours = max(0.0, max_hours)
-    max_total_tokens = max(0, max_total_tokens)
+    # A client may lower the budget but cannot disable server-side safety caps.
+    # ``0`` selects the safe maximum for both single and continuous AUTO runs.
+    max_hours = min(
+        HARD_MAX_AUTO_HOURS,
+        max_hours if max_hours > 0 else HARD_MAX_AUTO_HOURS,
+    )
+    max_total_tokens = min(
+        HARD_MAX_AUTO_TOKENS,
+        max_total_tokens if max_total_tokens > 0 else HARD_MAX_AUTO_TOKENS,
+    )
     is_strict = strict_mode != "relaxed"
     use_trend_filter = trend_filter == "1"
     is_continuous = continuous == "1"
     is_multi_tf = multi_tf == "1"
     use_web_research = web_research == "1"
     if is_continuous:
-        if max_hours <= 0:
-            max_hours = DEFAULT_CONTINUOUS_MAX_HOURS
-        if max_total_tokens <= 0:
-            max_total_tokens = DEFAULT_CONTINUOUS_MAX_TOKENS
+        # Preserve the existing continuous defaults while the hard caps above
+        # protect every run type from oversized hand-crafted form values.
+        max_hours = min(max_hours, DEFAULT_CONTINUOUS_MAX_HOURS)
+        max_total_tokens = min(max_total_tokens, DEFAULT_CONTINUOUS_MAX_TOKENS)
     # App-wide convention: a DOTTED id (QQQ.NASDAQ) is an external-catalog
     # instrument — the studio AUTO cockpit posts it through the plain symbol
     # select, so promote it here instead of requiring a separate source field.
@@ -3925,6 +4114,12 @@ async def run(
     _allowed = ("1", "5", "15", "30", "60", "240", "720", "D")
     chosen = [t for t in tfs if t in _allowed]
     research_only = False
+    # A catalog can contain an old, disconnected segment (for example a ticker
+    # rename).  Do not splice it into the current series.  When the user did
+    # not request a window, AUTO may safely use the newest continuous segment;
+    # an explicit historical request still fails closed below.
+    auto_continuous_start: str | None = None
+    data_truncation: dict | None = None
     if is_external:
         from data import (
             EXTERNAL_GRAN_BY_BYBIT_CODE,
@@ -3972,7 +4167,17 @@ async def run(
                     )
                 research_only = True
             try:
-                _gap = external_data_gap_report(load_external_bars(instrument_id, _iv))
+                _validation_df = load_external_bars(instrument_id, _iv)
+                if range_start:
+                    _validation_df = _validation_df[
+                        _validation_df.index >= pd.Timestamp(range_start, tz=_validation_df.index.tz)
+                    ]
+                if range_end:
+                    _validation_df = _validation_df[
+                        _validation_df.index
+                        < pd.Timestamp(range_end, tz=_validation_df.index.tz) + pd.Timedelta(days=1)
+                    ]
+                _gap = external_data_gap_report(_validation_df, granularity=_iv)
             except Exception as _gap_exc:
                 return HTMLResponse(
                     "<div class='empty-state'>⚠ AUTO could not validate external "
@@ -3980,15 +4185,72 @@ async def run(
                     status_code=400,
                 )
             if _gap:
+                _fingerprint = (
+                    instrument_id,
+                    _gap.get("from"),
+                    _gap.get("to"),
+                    int(_gap.get("days") or 0),
+                )
+                _tail_start = _KNOWN_CONTINUOUS_TAIL_GAPS.get(_fingerprint)
+                # A UI may submit a default end date even when the operator did
+                # not choose a historical window.  It is still safe to retain
+                # the known recent tail whenever the requested start precedes
+                # it and the requested end does not exclude it.
+                if (
+                    _tail_start
+                    and (not range_start or range_start < _tail_start)
+                    and (not range_end or range_end >= _tail_start)
+                ):
+                    _tail = _validation_df[
+                        _validation_df.index >= pd.Timestamp(_tail_start, tz=_validation_df.index.tz)
+                    ]
+                    if len(_tail) < 200 or external_data_gap_report(
+                        _tail, granularity=_iv
+                    ):
+                        return HTMLResponse(
+                            "<div class='empty-state'>⚠ AUTO could not retain a sufficiently "
+                            "long, continuous post-gap external segment.</div>",
+                            status_code=400,
+                        )
+                    if auto_continuous_start is None or _tail_start > auto_continuous_start:
+                        auto_continuous_start = _tail_start
+                    data_truncation = {
+                        "policy": "known_continuous_tail_v1",
+                        "instrument_id": instrument_id,
+                        "granularity": _iv,
+                        "gap": _gap,
+                        "effective_start": _tail_start,
+                        "discarded_bars": int(len(_validation_df) - len(_tail)),
+                    }
+                    continue
+                if _gap.get("kind") == "intraday":
+                    _gap_text = (
+                        f"a {_gap['gap_minutes']}-minute intraday gap for "
+                        f"{instrument_id} ({_iv}), {_gap['from']} → {_gap['to']}"
+                    )
+                else:
+                    _gap_text = (
+                        f"a {_gap['days']}-day gap for {instrument_id} ({_iv}), "
+                        f"{_gap['from']} → {_gap['to']}"
+                    )
                 return HTMLResponse(
-                    "<div class='empty-state'>⚠ AUTO refused external data with a "
-                    f"{_gap['days']}-day gap for {instrument_id} ({_iv}), "
-                    f"{_gap['from']} → {_gap['to']}. Repair/backfill the catalog "
+                    "<div class='empty-state'>⚠ AUTO refused external data with "
+                    f"{_gap_text}. Repair/backfill the catalog "
                     "before autonomous research.</div>",
                     status_code=400,
                 )
+        if auto_continuous_start:
+            range_start = auto_continuous_start
     else:
         intervals = ["60", "240", "D"] if is_multi_tf else (chosen or [interval])
+
+    if not _AUTO_RUN_SLOTS.acquire(blocking=False):
+        return HTMLResponse(
+            "<div class='empty-state'>⚠ AUTO capacity reached — another autonomous "
+            "research run is active. Stop it or wait for completion before starting "
+            "a new run.</div>",
+            status_code=429,
+        )
 
     run_id = uuid.uuid4().hex[:8]
 
@@ -4011,6 +4273,10 @@ async def run(
             "steps": [],
             "done": False,
             "error": None,
+            # Audit logging is best-effort for liveness, but its failure must
+            # remain visible because JSONL is the post-restart evidence trail.
+            "audit_degraded": False,
+            "audit_error": None,
             "strategy_name": "",
             "stop_requested": False,
             "continuous_mode": is_continuous,
@@ -4057,6 +4323,7 @@ async def run(
                 ),
                 "range_start": range_start,
                 "range_end": range_end,
+                "data_truncation": data_truncation,
                 "iterations": n_iterations,
                 "guidance": hint.strip(),
                 "tfs": list(chosen) or [interval],
@@ -4073,6 +4340,7 @@ async def run(
         on_evict=_release_session_lock,
     )
     if not created:
+        _AUTO_RUN_SLOTS.release()
         return HTMLResponse(
             "<div class='empty-state'>⚠ 50 active runs limit — could not start a "
             "new run. Stop one of the existing runs first.</div>",
@@ -4080,7 +4348,7 @@ async def run(
         )
 
     threading.Thread(
-        target=_agent_worker,
+        target=_agent_worker_with_slot,
         kwargs=dict(
             run_id=run_id,
             hint=hint.strip(),
@@ -4102,6 +4370,7 @@ async def run(
             model=model.strip(),
             effort=effort.strip(),
             research_only=research_only,
+            data_truncation=data_truncation,
         ),
         daemon=True,
     ).start()
@@ -4234,6 +4503,8 @@ async def progress(request: Request, run_id: str):
             "steps": list(raw["steps"]),
             "done": raw["done"],
             "error": raw["error"],
+            "audit_degraded": raw.get("audit_degraded", False),
+            "audit_error": raw.get("audit_error"),
             "strategy_name": raw["strategy_name"],
             "winner_result": raw["winner_result"],
             "winner_spec_name": raw["winner_spec_name"],

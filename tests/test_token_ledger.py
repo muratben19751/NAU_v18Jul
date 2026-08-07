@@ -189,6 +189,28 @@ def test_record_persists_ttl_split_and_summary_prices_it(tmp_path, monkeypatch):
     assert m["cost_usd"] == pytest.approx(20.0)  # 1M 1h-writes × $10 × 2
 
 
+def test_provider_reported_cost_is_durable_and_preferred_in_summary(tmp_path, monkeypatch):
+    ledger = tmp_path / "token_usage.jsonl"
+    monkeypatch.setattr(token_ledger, "LEDGER_PATH", ledger)
+    token_ledger.record(
+        "claude-fable-5",
+        {
+            "input_tokens": 100,
+            "output_tokens": 10,
+            "cost_usd": 0.123456,
+        },
+        "strategy",
+    )
+    record = json.loads(ledger.read_text(encoding="utf-8").strip())
+    assert record["provider_cost_usd"] == pytest.approx(0.123456)
+    summary = token_ledger.summary(ledger)
+    model = summary["models"]["claude-fable-5"]
+    assert model["provider_cost_usd"] == pytest.approx(0.123456)
+    assert model["cost_usd"] == pytest.approx(0.123456)
+    assert model["cost_source"] == "provider_reported"
+    assert summary["total"]["cost_source"] == "provider_reported"
+
+
 def test_summary_since_filters_and_prices(tmp_path, monkeypatch):
     ledger = tmp_path / "token_usage.jsonl"
     monkeypatch.setattr(token_ledger, "LEDGER_PATH", ledger)

@@ -437,6 +437,96 @@ Kalan mimari sinir degismedi: AUTO orkestrasyonu web process bellegindedir;
 PM2 restart yarim kosuyu otomatik surdurmez. Durable queue/checkpoint migrasyonu
 ayri bir servislesme calismasidir.
 
+## Son 360 derece AUTO sertlestirmesi - 2026-08-06
+
+`8f191a64` kosusunun kaniti, sistemin negatif alpha adaylarini robustness ve
+katalog asamalarina gecirmedigini gostermistir: 10 backtest / 27 LLM cagrisi
+sonunda winner, sealed holdout ve katalog yazimi yoktur. Ancak ayni entry/exit
+bloklarinin sirasi degistirilerek tekrar denenebilmesi, uzun legacy oturum
+corpusunun liste ekraninda disk baskisi yaratmasi ve denetim gunlugu yazma
+hatalarinin sessiz kalmasi kalan iyilestirme noktalarini ortaya cikarmistir.
+
+### Uygulananlar
+
+- Aday fingerprint'i entry ve exit bloklarini rol icinde kanonik siralar. OR/AND
+  mantiginda blok sirasi degisse bile ayni strateji bir kez calisir.
+- Multi-symbol ve WFO artik yalniz mutlak PnL'ye bakmaz: ayni OOS slice icin
+  benchmark/excess hesaplanir; pozitif alpha yoksa pahali devam asamasi reddedilir.
+- Custom block LLM cagrilari provider'a gitmeden once blok basina token rezervi
+  ile admission kontrolunden gecer; truncated ilk yanitin tokenlari da muhasebeye
+  dahildir. Provider bildirdigi USD maliyeti token defterinde kalici saklanir.
+- Legacy `agnt_e_*` / `agnt_x_*` bloklari rol metadatasi ile onarilir; prefix ile
+  metadata celisirse fail-closed olur. Ters rol runtime sinyali `None` sayilir.
+  Kosu sonunda winner bagimliliklari korunur, diger gecici custom bloklar atomik
+  olarak temizlenir.
+- Dört saatlik duvar-saati tavani LLM callback'inde de denetlenir; yeni provider
+  cagrisi veya robustness gecisi sonrasina sarkmaz.
+- Session listesi tam gecmis corpusunu sinirsiz paralel taramak yerine varsayilan
+  sekiz eszamanli ozet okumayla sinirlanir (`NAUTILUS_SESSION_SUMMARY_CONCURRENCY`).
+  Aktif JSONL'nin buyuk curve yukleri artifact'ta kalmaya devam eder.
+- JSONL yazimi artik sessizce yutulmaz. Arastirma devam eder fakat canli UI
+  `AUDIT DEGRADED` uyarisi verir; `session_end` yazisi flush+fsync ile kalici
+  tamamlama siniridir.
+
+### Dogrulama
+
+- Python derleme ve `git diff --check`: temiz.
+- AUTO/robustness/token/registry/session hedefli regresyon: **97 passed**.
+- Pytest cache dizinine ait bir Windows izin uyarisi haric test hatasi yoktur;
+  test gecici dizini proje icinde izole edilerek calistirildi.
+
+## Sonraki AUTO dongusu: modelden bagimsiz canli inceleme sozlesmesi
+
+Bu bolum her yeni run'dan once referanstir. Secilen LLM (Fable, Claude, OpenAI
+veya baska bir saglayici) kalite karsilastirmasinin girdisidir; kabul kapilarini
+ve maliyet muhasebesini degistirmez.
+
+- Run basinda istenen model, gercek cagrida kullanilan model, fallback modeli ve
+  provider maliyeti ayri ayri kaydedilir. Fallback veya model degisimi gizli
+  basari sayilmaz.
+- Her turda token/cost, LLM-backtest-robustness sureleri, PM2/worker sagligi ve
+  session JSONL/artifact boyutu toplanir. 250k token ve 4 saat sinirinda yeni
+  provider cagrisi admission ile reddedilmelidir.
+- Kod/mimari incelemesi custom block rol kontrati, staged register-cleanup,
+  audit-log sagligi, route-worker bellek durumu ve winner'in holdout sonrasinda
+  kataloglanmasini kontrol eder.
+- Quant incelemesi adjusted/gap/split, lookahead, annualization, komisyon ve
+  slippage, exposure, benchmark/excess, az islem, dedup, WFO/MC ve sealed
+  holdout kapilarini ayni kurallarla denetler.
+- Her kosu sonunda bu sayfaya `run_id`, gercek model/fallback, tur sayisi,
+  token/maliyet/sure, aday ve robustness sonucu, winner/holdout/katalog karari,
+  kritik hata ve yapilan degisiklik eklenir. Bu kayit sonraki kosunun baslangic
+  kontrol listesi olur; onceki fail-closed korumalari gevsetilmez.
+
+## Canli kosu kaydi: `c0efcbe4` - 2026-08-06
+
+- Veri yalniz `QQQ.NASDAQ` 1-HOUR'un 2011-03-23 sonrasi dogrulanmis kesintisiz
+  tail segmentinden alindi; 2004-2011 fiziksel boslugu birlestirilmedi.
+- Gercek model `moonshotai/kimi-k3` (OpenRouter) oldu; fallback kaydi yoktur.
+  Kosu 3 turun sonunda `winless_limit` ile kapandi: 12 aday, winner yok,
+  sealed holdout ve strategy catalog yazimi yoktur.
+- Adaylarin nominal PnL'leri pozitif gorunse bile hepsi buy-and-hold benchmark'a
+  gore negatif excess uretti. Son aday 1.035 islemde +%109,40 net PnL'ye karsin
+  -%1136,74 excess urettigi icin alpha kapisinda reddedildi; WFO/MC'ye
+  gecmedi.
+- Toplam provider kullanimi 121.948 input + 48.287 output token, $0,987662
+  provider maliyetidir; 250k token tavani asilmaz.
+- Iki OpenRouter custom-block cagrisi 120 sn hard timeout'a dustu. Run retry ile
+  toparlansa da bu gecikme ve belirsiz retry maliyeti sonraki kosular icin
+  iyilestirme gerektirdigini kanitladi.
+
+### Kosu sonrasi duzeltme
+
+- Custom-block cagrilari varsayilan olarak en fazla 1.800 output token ve 75 sn
+  timeout ile sinirlandi (`AGENT_CUSTOM_BLOCK_MAX_TOKENS`,
+  `AGENT_CUSTOM_BLOCK_TIMEOUT`). Hard timeout ikinci pahali denemeyi baslatmaz;
+  AUTO'nun mevcut role-safe builtin fallback yoluna doner.
+- OpenRouter'a thread pin'i varken process varsayilan istemcisi Claude CLI olsa
+  bile output-cap telemetrisi artik dogru olarak `provider_enforced` yazar;
+  `advisory_cli` yalniz gercek CLI cagrilari icindir.
+- Bu duzeltme `tests/test_auto_360_fixes.py` paketiyle 58 test ve Ruff ile
+  dogrulandi. Nautilus yeniden baslatildi; `/studio` HTTP 200.
+
 <!-- BACKLINKS:BEGIN -->
 ## Referenced by
 

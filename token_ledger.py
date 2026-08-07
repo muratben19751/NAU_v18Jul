@@ -30,6 +30,7 @@ agent session logs).
 from __future__ import annotations
 
 import json
+import math
 import threading
 from datetime import UTC, datetime
 from pathlib import Path
@@ -127,6 +128,25 @@ def _extract_usage(usage) -> dict[str, int]:
     return out
 
 
+def _extract_provider_cost(usage) -> float | None:
+    """Read an exact provider-reported USD cost when the response has one."""
+
+    if usage is None:
+        return None
+    raw = (
+        usage.get("cost_usd")
+        if isinstance(usage, dict)
+        else getattr(usage, "cost_usd", None)
+    )
+    if raw is None:
+        return None
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return None
+    return value if math.isfinite(value) and value >= 0 else None
+
+
 def record(model: str, usage, purpose: str = "") -> None:
     """Append one usage line. Best-effort — never raises into the caller.
 
@@ -146,6 +166,12 @@ def record(model: str, usage, purpose: str = "") -> None:
             # TTL-split keys only when present — legacy line shape otherwise.
             **{k: v for k, v in counts.items() if k in _FIELDS or v},
         }
+        provider_cost = _extract_provider_cost(usage)
+        if provider_cost is not None:
+            # OpenRouter and Claude CLI can return the billed request cost. It
+            # must survive a server restart; the old ledger kept only tokens and
+            # silently turned an invoice fact back into a local price estimate.
+            line["provider_cost_usd"] = provider_cost
         payload = json.dumps(line, ensure_ascii=False)
         with _LOCK:
             LEDGER_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -185,12 +211,20 @@ def summary(path: Path | None = None, *, since: str | None = None) -> dict:
     """
     p = path or LEDGER_PATH
     models: dict[str, dict] = {}
-    grand = {"calls": 0, **{f: 0 for f in _FIELDS}, "total": 0}
+    grand = {
+        "calls": 0,
+        **{f: 0 for f in _FIELDS},
+        "total": 0,
+        "provider_cost_usd": 0.0,
+        "provider_cost_calls": 0,
+        "_estimated_missing_cost_usd": 0.0,
+        "_unpriced_missing_calls": 0,
+    }
     first_ts = last_ts = None
     if not p.exists():
         return {
             "models": models,
-            "total": {**grand, "cost_usd": 0.0},
+            "total": {**grand, "cost_usd": 0.0, "cost_source": "price_table"},
             "first_ts": None,
             "last_ts": None,
         }
@@ -208,7 +242,16 @@ def summary(path: Path | None = None, *, since: str | None = None) -> dict:
                     continue
                 model = rec.get("model") or "unknown"
                 m = models.setdefault(
-                    model, {"calls": 0, **{fld: 0 for fld in _FIELDS}, "total": 0}
+                    model,
+                    {
+                        "calls": 0,
+                        **{fld: 0 for fld in _FIELDS},
+                        "total": 0,
+                        "provider_cost_usd": 0.0,
+                        "provider_cost_calls": 0,
+                        "_estimated_missing_cost_usd": 0.0,
+                        "_unpriced_missing_calls": 0,
+                    },
                 )
                 m["calls"] += 1
                 grand["calls"] += 1
@@ -224,6 +267,28 @@ def summary(path: Path | None = None, *, since: str | None = None) -> dict:
                     v = int(rec.get(fld) or 0)
                     if v:
                         m[fld] = m.get(fld, 0) + v
+                reported = rec.get("provider_cost_usd")
+                try:
+                    reported = float(reported) if reported is not None else None
+                except (TypeError, ValueError):
+                    reported = None
+                if reported is not None and math.isfinite(reported) and reported >= 0:
+                    m["provider_cost_usd"] += reported
+                    m["provider_cost_calls"] += 1
+                    grand["provider_cost_usd"] += reported
+                    grand["provider_cost_calls"] += 1
+                else:
+                    line_counts = {
+                        fld: int(rec.get(fld) or 0)
+                        for fld in (*_FIELDS, "cache_write_5m", "cache_write_1h")
+                    }
+                    estimate = cost_usd(line_counts, model)
+                    if estimate is None:
+                        m["_unpriced_missing_calls"] += 1
+                        grand["_unpriced_missing_calls"] += 1
+                    else:
+                        m["_estimated_missing_cost_usd"] += estimate
+                        grand["_estimated_missing_cost_usd"] += estimate
                 ts = rec.get("ts")
                 if ts:
                     if first_ts is None or ts < first_ts:
@@ -234,11 +299,36 @@ def summary(path: Path | None = None, *, since: str | None = None) -> dict:
         pass
     total_cost = 0.0
     for model, m in models.items():
-        c = cost_usd(m, model)
+        # Keep the all-token list-price estimate for comparison, but prefer an
+        # exact reported cost for each line that supplied one. Mixed ledgers
+        # combine exact costs with estimates only for the unreported lines.
+        m["estimated_cost_usd"] = cost_usd(m, model)
+        c = m["provider_cost_usd"] + m["_estimated_missing_cost_usd"]
+        if not c and m["_unpriced_missing_calls"] and not m["provider_cost_calls"]:
+            c = None
         m["cost_usd"] = c
+        if m["provider_cost_calls"] == m["calls"]:
+            m["cost_source"] = "provider_reported"
+        elif m["provider_cost_calls"]:
+            m["cost_source"] = "mixed"
+        else:
+            m["cost_source"] = "price_table"
+        del m["_estimated_missing_cost_usd"]
+        del m["_unpriced_missing_calls"]
         if c is not None:
             total_cost += c
+    grand["estimated_cost_usd"] = sum(
+        float(m["estimated_cost_usd"] or 0.0) for m in models.values()
+    )
     grand["cost_usd"] = round(total_cost, 4)
+    if grand["provider_cost_calls"] == grand["calls"]:
+        grand["cost_source"] = "provider_reported"
+    elif grand["provider_cost_calls"]:
+        grand["cost_source"] = "mixed"
+    else:
+        grand["cost_source"] = "price_table"
+    del grand["_estimated_missing_cost_usd"]
+    del grand["_unpriced_missing_calls"]
     return {"models": models, "total": grand, "first_ts": first_ts, "last_ts": last_ts}
 
 

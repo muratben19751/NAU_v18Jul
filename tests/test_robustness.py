@@ -2,11 +2,16 @@
 
 from types import SimpleNamespace
 
+import pandas as pd
 import pytest
 
 import wfo_optimizer as W
 from backtest import comparable_metrics
-from backtest_robustness import run_monte_carlo
+from backtest_robustness import (
+    _stable_symbol_iteration_id,
+    _stamp_window_benchmark,
+    run_monte_carlo,
+)
 from composer import ComposedStrategySpec, SignalBlock
 
 
@@ -55,6 +60,23 @@ class TestMonteCarloBootstrap:
 
     def test_empty_trades_returns_error(self):
         assert "error" in run_monte_carlo([], n_sims=10)
+
+
+def test_window_benchmark_uses_exact_oos_slice():
+    metrics = {"pnl_pct": 0.10}
+    bars = pd.DataFrame({"close": [100.0, 120.0]})
+
+    _stamp_window_benchmark(metrics, bars)
+
+    assert metrics["benchmark_return_fraction"] == pytest.approx(0.20)
+    assert metrics["excess_return_fraction"] == pytest.approx(-0.10)
+    assert metrics["benchmark_cost_basis"] == "gross_buy_and_hold_no_costs"
+    assert metrics["strategy_return_cost_basis"] == "net_simulated_costs"
+
+
+def test_symbol_iteration_id_is_stable():
+    assert _stable_symbol_iteration_id("SPY.ARCA") == _stable_symbol_iteration_id("SPY.ARCA")
+    assert _stable_symbol_iteration_id("SPY.ARCA") != _stable_symbol_iteration_id("QQQ.NASDAQ")
 
 
 # ---------------------------------------------------------------------------

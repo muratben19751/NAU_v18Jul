@@ -141,6 +141,15 @@
   </div>
   {% endif %}
 
+  {% if state.audit_degraded %}
+  <div class="panel" style="border-color:rgba(251,191,36,0.45);">
+    <div class="panel-body">
+      <span class="badge" style="background:rgba(251,191,36,0.16);color:#fbbf24;">AUDIT DEGRADED</span>
+      <span class="text-muted" style="margin-left:8px;">{{ state.audit_error or 'Session log could not be written; live results may not survive a restart.' }}</span>
+    </div>
+  </div>
+  {% endif %}
+
   {# Robustness scan summary (shown after phase 4 completes with no winner) #}
   {% if rob_scan_log %}
   <div class="panel">

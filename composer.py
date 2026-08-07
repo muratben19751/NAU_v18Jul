@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import threading
 import uuid
@@ -1146,12 +1147,26 @@ def register_custom_from_disk(name: str) -> None:
     info = cbs.get_custom(name)
     if info is None:
         raise ValueError(f"no such custom block: {name}")
+    # Current AUTO blocks persist role metadata at generation time. Earlier
+    # ``agnt_e``/``agnt_x`` artifacts did not, even though their reserved names
+    # already encode the only safe role. Backfill that durable fact before this
+    # module enters the registry; a conflicting hand-edited record is rejected
+    # rather than being allowed to masquerade as its opposite signal type.
+    inferred_role = cbs.ensure_agent_role_metadata(name)
+    if inferred_role is not None:
+        info = cbs.get_custom(name)
+        if info is None:  # defensive: a concurrent cleanup won the race
+            raise ValueError(f"custom block disappeared during role migration: {name}")
+    meta = dict(info.get("meta") or {})
+    declared_role = meta.get("role") if meta.get("role") in {"entry", "exit"} else None
     module = _load_module_from_path(name, cbs.module_path(name))
     evaluate = getattr(module, "evaluate", None)
     if not callable(evaluate):
         raise ValueError(f"{name}.py has no callable `evaluate`")
 
-    def _eval_wrapper(strategy, idx, block, closes, _fn=evaluate):
+    def _eval_wrapper(
+        strategy, idx, block, closes, _fn=evaluate, _declared_role=declared_role
+    ):
         # Give custom blocks a small mutable state dict scoped by block idx.
         key = f"custom_state_{idx}"
         state = strategy._prev_state.setdefault(key, {})
@@ -1180,7 +1195,27 @@ def register_custom_from_disk(name: str) -> None:
         block_view = SimpleNamespace(
             params=dict(block.params), role=block.role, type=block.type
         )
-        return _fn(state, block_view, closes_view, indicators, _PortfolioView(strategy))
+        signal = _fn(state, block_view, closes_view, indicators, _PortfolioView(strategy))
+        # Legacy AUTO files were only syntactically validated, so a rare branch
+        # could return the opposite vocabulary despite a normal smoke result.
+        # Never reinterpret it at runtime: fail closed to no signal. New blocks
+        # are rejected earlier by agent._test_execute_generated; this is the
+        # durable catalog/restart defense for legacy artifacts.
+        if _declared_role == "entry":
+            allowed = {None, "long", "short"}
+        elif _declared_role == "exit":
+            allowed = {None, "exit"}
+        else:
+            allowed = None
+        if allowed is not None and signal not in allowed:
+            logging.warning(
+                "custom block '%s' returned %r outside declared %s role; ignored",
+                name,
+                signal,
+                _declared_role,
+            )
+            return None
+        return signal
 
     max_lookback_fn = getattr(module, "max_lookback", None)
     validate_fn = getattr(module, "validate", None)
@@ -1217,7 +1252,7 @@ def register_custom_from_disk(name: str) -> None:
     register_custom_block(
         name,
         {
-            "meta": info["meta"],
+            "meta": meta,
             "eval": _eval_wrapper,
             "on_start": None,
             "max_lookback": _lookback_with_floor,
@@ -1393,8 +1428,17 @@ class ComposedStrategySpec:
                 return "sl_value must be > 0 when bracket is enabled."
             if self.tp_type != "off" and self.tp_value <= 0:
                 return "tp_value must be > 0 when TP is not off."
-        if self.trade_size_mode == "percent_equity" and self.trade_size_percent <= 0:
-            return "trade_size_percent must be > 0."
+        if self.trade_size_mode == "percent_equity":
+            try:
+                pct = float(self.trade_size_percent)
+            except (TypeError, ValueError):
+                return "trade_size_percent must be a finite number."
+            if not math.isfinite(pct):
+                return "trade_size_percent must be a finite number."
+            if pct <= 0:
+                return "trade_size_percent must be > 0."
+            if pct > 100:
+                return "trade_size_percent must be <= 100 for an unlevered strategy."
         if self.trade_size_mode == "atr_target" and self.trade_size_atr_risk <= 0:
             return "trade_size_atr_risk must be > 0."
         if self.trade_size_mode == "fixed_usdt" and self.trade_size_usdt <= 0:
@@ -1954,8 +1998,19 @@ class ComposedStrategy(Strategy):
             # Fixed dollar → quantity: divide the USDT amount by the price
             return max(0.0, float(self.spec.trade_size_usdt) / price)
         if mode == "percent_equity":
-            equity = self._current_equity()
-            return max(0.0, equity * (self.spec.trade_size_percent / 100.0) / price)
+            # Never submit a percent-equity order above account equity. Besides
+            # malformed/manual specs, AUTO's exposure setting is environment
+            # controlled; fail closed on non-finite account/pct values rather
+            # than turning them into an unbounded share quantity.
+            try:
+                equity = float(self._current_equity())
+                pct = float(self.spec.trade_size_percent)
+            except (TypeError, ValueError):
+                return 0.0
+            if not math.isfinite(equity) or not math.isfinite(pct):
+                return 0.0
+            notional = max(0.0, equity) * min(max(pct, 0.0), 100.0) / 100.0
+            return notional / price
         if mode == "atr_target":
             if self._atr is None or not self._atr.initialized or self._atr.value <= 0:
                 return float(self.spec.trade_size)

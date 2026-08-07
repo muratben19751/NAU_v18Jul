@@ -1901,8 +1901,6 @@ def load_external_bars(
         bars = cat.bars(bar_types=[bar_dir.name])
         if not bars:
             raise ValueError(f"no bars decoded for {bar_dir.name}")
-        # ts_event is bar CLOSE — shift back one interval to OPEN-time index.
-        # L15: a SINGLE pass over the bar list (instead of five separate list-comps).
         recs = [
             (
                 b.ts_event - interval_ns,
@@ -1914,6 +1912,8 @@ def load_external_bars(
             )
             for b in bars
         ]
+        # ts_event is bar CLOSE — shift back one interval to OPEN-time index.
+        # L15: a SINGLE pass over the bar list (instead of five separate list-comps).
         df = pd.DataFrame(
             recs, columns=["ts_ns", "open", "high", "low", "close", "volume"]
         )
@@ -1960,29 +1960,63 @@ def load_external_bars(
 
 
 def external_data_gap_report(
-    df: pd.DataFrame, *, max_calendar_days: int = 14
+    df: pd.DataFrame,
+    *,
+    max_calendar_days: int = 14,
+    granularity: str = "",
 ) -> dict[str, Any] | None:
     """Return the largest suspicious calendar gap in an external series.
 
     Weekends and ordinary exchange holidays fit comfortably under 14 days.
     Multi-month/year holes do not, and silently annualizing/ranking across them
-    creates non-reproducible edge.  The caller may fail closed before AUTO.
+    creates non-reproducible edge.  For known intraday granularities, also flag
+    a large *same-session* gap. This intentionally avoids guessing overnight or
+    holiday sessions, keeping the validation safe for equity and crypto feeds.
     """
     if df is None or len(df) < 2 or not isinstance(df.index, pd.DatetimeIndex):
         return None
-    active_days = pd.DatetimeIndex(df.index).normalize().unique().sort_values()
-    if len(active_days) < 2:
+    idx = pd.DatetimeIndex(df.index).sort_values()
+    active_days = idx.normalize().unique().sort_values()
+    if len(active_days) >= 2:
+        deltas = active_days[1:] - active_days[:-1]
+        largest_idx = int(deltas.argmax())
+        largest_days = int(deltas[largest_idx] / pd.Timedelta(days=1))
+        if largest_days > max_calendar_days:
+            return {
+                "kind": "calendar",
+                "days": largest_days,
+                "from": active_days[largest_idx].date().isoformat(),
+                "to": active_days[largest_idx + 1].date().isoformat(),
+                "max_allowed_days": int(max_calendar_days),
+            }
+
+    # Do not infer a cadence from arbitrary caller text.  A same-date gap of
+    # more than three expected bars is a conservative corruption/missing-data
+    # signal; cross-date gaps remain governed by the calendar rule above.
+    interval_minutes = {
+        "1-MINUTE": 1,
+        "5-MINUTE": 5,
+        "15-MINUTE": 15,
+        "30-MINUTE": 30,
+        "1-HOUR": 60,
+        "4-HOUR": 240,
+        "12-HOUR": 720,
+    }.get(str(granularity).upper())
+    if not interval_minutes:
         return None
-    deltas = active_days[1:] - active_days[:-1]
-    largest_idx = int(deltas.argmax())
-    largest_days = int(deltas[largest_idx] / pd.Timedelta(days=1))
-    if largest_days <= max_calendar_days:
+    deltas = idx[1:] - idx[:-1]
+    same_day = idx[1:].normalize() == idx[:-1].normalize()
+    max_gap = pd.Timedelta(minutes=interval_minutes * 3)
+    suspect = (deltas > max_gap) & same_day
+    if not suspect.any():
         return None
+    suspect_i = next(i for i, value in enumerate(suspect) if value)
     return {
-        "days": largest_days,
-        "from": active_days[largest_idx].date().isoformat(),
-        "to": active_days[largest_idx + 1].date().isoformat(),
-        "max_allowed_days": int(max_calendar_days),
+        "kind": "intraday",
+        "from": idx[suspect_i].isoformat(),
+        "to": idx[suspect_i + 1].isoformat(),
+        "gap_minutes": int(deltas[suspect_i] / pd.Timedelta(minutes=1)),
+        "max_allowed_minutes": interval_minutes * 3,
     }
 
 

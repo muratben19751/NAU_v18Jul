@@ -534,6 +534,28 @@ def _sharpe_manual(equity_series: list[float], annualization: int = 365) -> floa
     return mu / sigma * math.sqrt(annualization)
 
 
+def _sortino_manual(equity_series: list[float], annualization: int = 365) -> float:
+    """Sortino from the same bar-resolution return series as ``_sharpe_manual``.
+
+    The downside deviation uses zero as the target return and all observations
+    (non-negative returns contribute zero), which keeps its denominator on the
+    same bar-frequency basis as Sharpe.  Returning NaN for no downside risk is
+    deliberate: a finite score would fabricate a ranking signal.
+    """
+    if len(equity_series) < 2:
+        return float("nan")
+    arr = np.asarray(equity_series, dtype=float)
+    returns = np.diff(arr) / arr[:-1]
+    returns = returns[np.isfinite(returns)]
+    if len(returns) < 2:
+        return float("nan")
+    downside = np.minimum(returns, 0.0)
+    downside_dev = float(np.sqrt(np.mean(np.square(downside))))
+    if downside_dev == 0.0:
+        return float("nan")
+    return float(np.mean(returns)) / downside_dev * math.sqrt(annualization)
+
+
 def _max_dd_from_series(equity_series: list[float]) -> float:
     """Compute max drawdown from any equity series (bar or trade resolution).
 
@@ -626,6 +648,7 @@ def _metrics(
             "runner": "BacktestEngine",
             # Phase 1 additions
             "sharpe_nautilus": float("nan"),
+            "sortino_nautilus": float("nan"),
             "sharpe_per_trade": float("nan"),
             "annualization": annualization,
             "max_dd_mtm": 0.0,
@@ -745,7 +768,7 @@ def _metrics(
             return float("nan")
 
     sharpe_nautilus = _stat(ret, "Sharpe Ratio (252 days)")
-    sortino = _stat(ret, "Sortino Ratio (252 days)")
+    sortino_nautilus = _stat(ret, "Sortino Ratio (252 days)")
     volatility = _stat(ret, "Returns Volatility (252 days)")
     avg_return = _stat(ret, "Average (Return)")
     profit_factor = _stat(ret, "Profit Factor")
@@ -759,6 +782,10 @@ def _metrics(
     if _using_mtm:
         sharpe_manual = _sharpe_manual(mtm_equity, annualization=annualization)
         sharpe = sharpe_manual if not math.isnan(sharpe_manual) else sharpe_nautilus
+        sortino_manual = _sortino_manual(mtm_equity, annualization=annualization)
+        sortino = (
+            sortino_manual if not math.isnan(sortino_manual) else sortino_nautilus
+        )
     else:
         # H610: no MTM (registry strategies — MACrossover/RSIMeanReversion).
         # realized_equity_full is TRADE-resolution; applying bar-frequency
@@ -766,6 +793,7 @@ def _metrics(
         # Make the frequency-correct Nautilus 252-day value primary; if that's
         # missing too, the per-trade sqrt(n) base.
         sharpe = sharpe_nautilus
+        sortino = sortino_nautilus
 
     # M35: per-trade Sharpe for NAU comparison (NAU_ev: mean/std × sqrt(n_trades)
     # from per-TRADE returns). M620: NAU uses population std (ddof=0) and in the
@@ -885,6 +913,7 @@ def _metrics(
         "runner": "BacktestEngine",
         # Phase 1 additions
         "sharpe_nautilus": sharpe_nautilus,  # Nautilus 252-day value kept for audit
+        "sortino_nautilus": sortino_nautilus,  # same 252-day audit reference
         "sharpe_per_trade": sharpe_per_trade,  # M35: NAU per-trade base
         "annualization": annualization,  # H5: real bars/year base
         "max_dd_mtm": max_dd_mtm,  # MTM drawdown (== max_dd when MTM available)

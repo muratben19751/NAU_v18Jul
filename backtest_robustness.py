@@ -30,6 +30,11 @@ def _env_float(name: str, default: float) -> float:
 # lookback leakage from spilling into the test window. NAU pattern.
 WF_EMBARGO_DAYS = max(0.0, _env_float("NAUTILUS_WF_EMBARGO_DAYS", 2))
 
+
+def _stable_symbol_iteration_id(symbol: str) -> int:
+    """Cross-process stable backtest trace id for a symbol."""
+    return int(hashlib.sha1(symbol.encode()).hexdigest(), 16) % 10000
+
 # M268/M431: unit-timeout for the parallel batches in robustness — so a hung
 # custom-block unit does not hold the whole suite hostage to the sandbox's 900s
 # global timeout (wholesale loss of all the work). Batch budget < global timeout.
@@ -239,6 +244,8 @@ def run_walk_forward(
                 bar_type=bar_type,
                 venue=venue,
             )
+            if test_result and not test_result.error:
+                _stamp_window_benchmark(test_result.metrics, test_bars)
 
         # Naive (unchanged) spec on the SAME OOS window — honest baseline.
         naive_result = None
@@ -252,6 +259,8 @@ def run_walk_forward(
                 bar_type=bar_type,
                 venue=venue,
             )
+            if naive_result and not naive_result.error:
+                _stamp_window_benchmark(naive_result.metrics, test_bars)
 
         windows.append(
             _wfo_window_entry(
@@ -306,6 +315,33 @@ def _derive_test_objective(metrics: dict, objective: str):
     if v is None or _isnan_num(v):
         return None
     return float(v)
+
+
+def _stamp_window_benchmark(metrics: dict | None, bars: pd.DataFrame) -> None:
+    """Attach slice-local buy-and-hold/excess returns to a test result."""
+    if not metrics or bars is None or len(bars) < 2 or "close" not in bars:
+        return
+    try:
+        first = float(bars["close"].iloc[0])
+        last = float(bars["close"].iloc[-1])
+        if not np.isfinite(first) or not np.isfinite(last) or first <= 0:
+            return
+        from backtest import STARTING_CASH
+
+        pnl_pct = metrics.get("pnl_pct")
+        if pnl_pct is None:
+            pnl_pct = float(metrics.get("pnl") or 0.0) / float(STARTING_CASH)
+        benchmark = last / first - 1.0
+        excess = float(pnl_pct) - benchmark
+        metrics["benchmark_return_fraction"] = benchmark
+        metrics["excess_return_fraction"] = excess
+        # Legacy aliases keep archived viewers and old callers readable.
+        metrics["benchmark_return_pct"] = benchmark
+        metrics["excess_pnl_pct"] = excess
+        metrics["benchmark_cost_basis"] = "gross_buy_and_hold_no_costs"
+        metrics["strategy_return_cost_basis"] = "net_simulated_costs"
+    except (TypeError, ValueError, KeyError):
+        return
 
 
 def _wfo_window_entry(
@@ -585,6 +621,14 @@ def _run_walk_forward_parallel(
         m = meta[window_n]
         pt = test_payloads.get(f"w{window_n}t")
         pn = test_payloads.get(f"w{window_n}n")
+        test_bars = bars_df.loc[
+            (bars_df.index >= pd.Timestamp(test_start))
+            & (bars_df.index < pd.Timestamp(test_end))
+        ]
+        if pt and not pt.get("error"):
+            _stamp_window_benchmark(pt.get("metrics"), test_bars)
+        if pn and not pn.get("error"):
+            _stamp_window_benchmark(pn.get("metrics"), test_bars)
         windows.append(
             _wfo_window_entry(
                 window_n,
@@ -1071,7 +1115,9 @@ def run_multi_symbol(
     """Measures generalizability by testing the strategy on multiple symbols.
 
     Runs the same spec over the same time range in a backtest for each symbol.
-    Results: how many symbols had positive PnL, average Sharpe, per-symbol detail.
+    Results: how many symbols beat their own buy-and-hold baseline, average
+    Sharpe, and per-symbol detail. Absolute profit in a bull market is not
+    evidence of generalizable alpha.
 
     ``source="external"``: symbols are external-catalog instrument ids
     (e.g. "SPY.ARCA"), ``interval`` is the catalog DSL (e.g. "1-DAY"), and the
@@ -1079,8 +1125,8 @@ def run_multi_symbol(
 
     Returns: {
         symbols_tested: int,
-        symbols_positive: int,          # those with PnL > 0
-        pass_rate: float,               # positive / total
+        symbols_positive: int,          # those with excess return > 0
+        pass_rate: float,               # alpha-positive / total
         generalization_label: str,      # "✓ Generalizable" / "⚠ Limited" / "✗ Symbol specific"
         primary_symbol: str,
         results: [
@@ -1137,7 +1183,7 @@ def run_multi_symbol(
                 "source": source,
                 # Stable iteration_id: hash(sym) is per-process random with PYTHONHASHSEED
                 # (record ids change on restart). sha1 is deterministic.
-                "iteration_id": int(hashlib.sha1(sym.encode()).hexdigest(), 16) % 10000,
+                "iteration_id": _stable_symbol_iteration_id(sym),
                 "rationale": f"multi-symbol · {sym}",
             }
             for sym in symbols
@@ -1174,18 +1220,27 @@ def run_multi_symbol(
             pnl = m.get("pnl", 0.0) or 0.0
             sharpe = m.get("sharpe")
             n_trades = m.get("n_trades", 0) or 0
-            pnl_pct = pnl / STARTING_CASH
-            icon = "✓" if pnl > 0 else "✗"
+            pnl_pct = m.get("pnl_pct", pnl / STARTING_CASH)
+            benchmark = m.get("benchmark_return_fraction")
+            excess = m.get("excess_return_fraction")
+            icon = "✓" if excess is not None and excess > 0 else "✗"
             sharpe_str = f"{sharpe:.2f}" if sharpe is not None else "—"
+            excess_str = f"{100 * excess:+.1f}%" if excess is not None else "—"
             _p(
                 f"  [{sym}] {icon} PnL={pnl:+.2f} {cur} ({100 * pnl_pct:+.1f}%) · "
-                f"Sharpe={sharpe_str} · {n_trades} trade"
+                f"Excess={excess_str} · Sharpe={sharpe_str} · {n_trades} trade"
             )
             results.append(
                 {
                     "symbol": sym,
                     "pnl": round(pnl, 2),
-                    "pnl_pct": round(pnl_pct, 2),
+                    "pnl_pct": round(pnl_pct, 6),
+                    "benchmark_return_fraction": round(benchmark, 6)
+                    if benchmark is not None
+                    else None,
+                    "excess_return_fraction": round(excess, 6)
+                    if excess is not None
+                    else None,
                     "sharpe": round(sharpe, 2) if sharpe is not None else None,
                     "n_trades": n_trades,
                     "error": None,
@@ -1240,7 +1295,10 @@ def run_multi_symbol(
                 r = run_composed_backtest(
                     spec,
                     df,
-                    iteration_id=hash(sym) % 10000,
+                    # Python's hash is randomized per process.  The parallel
+                    # branch already uses SHA1, so retain identical trace ids
+                    # when the pool is disabled too.
+                    iteration_id=_stable_symbol_iteration_id(sym),
                     rationale=f"multi-symbol · {sym}",
                     instrument=instr,
                     bar_type=bt,
@@ -1266,19 +1324,29 @@ def run_multi_symbol(
                 pnl = m.get("pnl", 0.0) or 0.0
                 sharpe = m.get("sharpe")
                 n_trades = m.get("n_trades", 0) or 0
-                pnl_pct = pnl / STARTING_CASH
+                _stamp_window_benchmark(m, df)
+                pnl_pct = m.get("pnl_pct", pnl / STARTING_CASH)
+                benchmark = m.get("benchmark_return_fraction")
+                excess = m.get("excess_return_fraction")
 
-                icon = "✓" if pnl > 0 else "✗"
+                icon = "✓" if excess is not None and excess > 0 else "✗"
                 sharpe_str = f"{sharpe:.2f}" if sharpe is not None else "—"
+                excess_str = f"{100 * excess:+.1f}%" if excess is not None else "—"
                 _p(
                     f"  [{sym}] {icon} PnL={pnl:+.2f} {cur} ({100 * pnl_pct:+.1f}%) · "
-                    f"Sharpe={sharpe_str} · {n_trades} trade"
+                    f"Excess={excess_str} · Sharpe={sharpe_str} · {n_trades} trade"
                 )
                 results.append(
                     {
                         "symbol": sym,
                         "pnl": round(pnl, 2),
-                        "pnl_pct": round(pnl_pct, 2),
+                        "pnl_pct": round(pnl_pct, 6),
+                        "benchmark_return_fraction": round(benchmark, 6)
+                        if benchmark is not None
+                        else None,
+                        "excess_return_fraction": round(excess, 6)
+                        if excess is not None
+                        else None,
                         "sharpe": round(sharpe, 2) if sharpe is not None else None,
                         "n_trades": n_trades,
                         "error": r.error,
@@ -1296,11 +1364,17 @@ def run_multi_symbol(
                     }
                 )
 
-    # Results with enough trades
+    # Results with enough trades and an actually measured alpha. Missing market
+    # data must not silently become a pass merely because the strategy made
+    # nominal PnL during a broad rally.
     valid = [
-        r for r in results if not r.get("error") and (r.get("n_trades") or 0) >= 5
+        r
+        for r in results
+        if not r.get("error")
+        and (r.get("n_trades") or 0) >= 5
+        and r.get("excess_return_fraction") is not None
     ]  # 3→5
-    positive = [r for r in valid if (r.get("pnl") or 0) > 0]
+    positive = [r for r in valid if (r.get("excess_return_fraction") or 0) > 0]
     n_valid = len(valid)
     n_positive = len(positive)
     pass_rate = n_positive / n_valid if n_valid > 0 else 0.0
@@ -1318,7 +1392,7 @@ def run_multi_symbol(
     avg_sharpe = round(sum(sharpes) / len(sharpes), 2) if sharpes else None
 
     _p(
-        f"Multi-symbol completed · {n_positive}/{n_valid} symbols positive · "
+        f"Multi-symbol completed · {n_positive}/{n_valid} symbols positive alpha · "
         f"pass_rate={pass_rate:.0%} · {label}"
     )
 

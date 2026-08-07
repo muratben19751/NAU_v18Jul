@@ -43,7 +43,19 @@ class LLMCallCancelled(RuntimeError):
     """The owning AUTO run requested stop while an LLM call was in flight."""
 
 
+class LLMTokenBudgetExceeded(RuntimeError):
+    """A local caller budget rejected an LLM provider attempt before billing."""
+
+
 _LLM_CONTROL = threading.local()
+
+# The Claude CLI deliberately has no ``max_tokens`` flag.  For that backend a
+# configured output ceiling is therefore a request *hint*, not a billing cap.
+# Keep the largest observed output per (actual model, purpose) and reserve it
+# on the next attempt. This is intentionally conservative, but not advertised
+# as a hard provider-side limit.
+_OUTPUT_RESERVATION_LOCK = threading.Lock()
+_OBSERVED_OUTPUT_HIGH_WATER: dict[tuple[str, str], int] = {}
 
 
 def set_thread_llm_control(cancel_check=None, observer=None, admit_check=None) -> None:
@@ -60,6 +72,21 @@ def _check_llm_cancelled() -> None:
 
 
 def _observe_llm(**event) -> None:
+    usage = event.get("usage") or {}
+    if isinstance(usage, dict):
+        try:
+            observed_output = max(0, int(usage.get("output_tokens") or 0))
+        except (TypeError, ValueError):
+            observed_output = 0
+        if observed_output:
+            key = (
+                str(event.get("model") or current_model() or "unknown"),
+                str(event.get("purpose") or "llm"),
+            )
+            with _OUTPUT_RESERVATION_LOCK:
+                _OBSERVED_OUTPUT_HIGH_WATER[key] = max(
+                    observed_output, _OBSERVED_OUTPUT_HIGH_WATER.get(key, 0)
+                )
     observer = getattr(_LLM_CONTROL, "observer", None)
     if callable(observer):
         try:
@@ -68,13 +95,48 @@ def _observe_llm(**event) -> None:
             logging.exception("LLM observer failed")
 
 
-def _llm_request_token_bound(kwargs: dict) -> dict[str, int]:
+def _output_cap_telemetry(
+    client,
+    usage: dict,
+    max_tokens: int,
+    *,
+    provider_enforced: bool = False,
+) -> dict[str, int | str | bool]:
+    """Describe whether an output ceiling was enforced or merely requested.
+
+    Claude Code's CLI accepts no output-token switch.  Without this explicit
+    distinction the session log made a 4k request look like a 4k hard cap even
+    after the CLI returned more than 4k tokens.  Keep the proof alongside each
+    usage event so budget reviews do not have to infer it from implementation
+    details.
+    """
+
+    requested = max(0, int(max_tokens or 0))
+    output = max(0, int(usage.get("output_tokens") or 0))
+    # A thread may be pinned to OpenRouter while the process-default client is
+    # still the Claude CLI.  The transport, not that cached default client,
+    # determines whether ``max_tokens`` is a hard provider limit.
+    is_cli = isinstance(client, _ClaudeCLIClient) and not provider_enforced
+    exceeded = bool(is_cli and requested and output > requested)
+    return {
+        "output_cap_mode": "advisory_cli" if is_cli else "provider_enforced",
+        "output_cap_requested": requested,
+        "output_cap_exceeded": exceeded,
+        "output_cap_excess_tokens": max(0, output - requested) if exceeded else 0,
+    }
+
+
+def _llm_request_token_bound(
+    kwargs: dict, *, model: str = "", purpose: str = ""
+) -> dict[str, int | str]:
     """Conservative token upper bound used before an LLM request is admitted.
 
     UTF-8 bytes are a safe upper bound for BPE-style input tokenization and do
-    not require a model-specific tokenizer.  The output side is already bounded
-    by ``max_tokens``.  This intentionally errs on the side of ending an AUTO
-    run early instead of letting one final request overshoot its advertised cap.
+    not require a model-specific tokenizer. For API-backed models the output
+    side is bounded by ``max_tokens``. Claude CLI has no equivalent switch, so
+    its reservation is the configured hint raised to the observed high-water
+    mark for this model/purpose. This is a conservative admission estimate,
+    not a provider-enforced hard cap.
     """
 
     payloads: list[str] = []
@@ -91,18 +153,32 @@ def _llm_request_token_bound(kwargs: dict) -> dict[str, int]:
     # Account for role/message framing without pretending to know the provider's
     # exact chat template.
     input_bound += 64 * (len(payloads) + 1)
-    output_bound = max(0, int(kwargs.get("max_tokens") or 0))
+    configured_output = max(0, int(kwargs.get("max_tokens") or 0))
+    key = (
+        str(model or current_model() or "unknown"),
+        str(purpose or "llm"),
+    )
+    with _OUTPUT_RESERVATION_LOCK:
+        observed_output = _OBSERVED_OUTPUT_HIGH_WATER.get(key, 0)
+    output_bound = max(configured_output, observed_output)
     return {
         "input_token_bound": input_bound,
         "output_token_bound": output_bound,
         "total_token_bound": input_bound + output_bound,
+        "configured_output_tokens": configured_output,
+        "observed_output_reserve": observed_output,
+        "output_reservation_mode": (
+            "observed_high_water" if observed_output > configured_output else "configured_hint"
+        ),
     }
 
 
-def _admit_llm_request(kwargs: dict) -> None:
+def _admit_llm_request(
+    kwargs: dict, *, model: str = "", purpose: str = ""
+) -> None:
     admit = getattr(_LLM_CONTROL, "admit_check", None)
     if callable(admit):
-        admit(_llm_request_token_bound(kwargs))
+        admit(_llm_request_token_bound(kwargs, model=model, purpose=purpose))
 
 
 def _raise_if_llm_control_abort(exc: BaseException) -> None:
@@ -779,7 +855,7 @@ def _create_message_once(client, _purpose: str = "", **kwargs):
         # Admission happens for every real provider attempt, including a
         # truncation retry or model fallback.  The AUTO hook can therefore
         # reject the request before any prompt/output tokens are spent.
-        _admit_llm_request(kwargs)
+        _admit_llm_request(kwargs, model=called_model, purpose=_purpose or "llm")
         started = time.monotonic()
         try:
             response = fn()
@@ -794,13 +870,20 @@ def _create_message_once(client, _purpose: str = "", **kwargs):
                 error=f"{type(exc).__name__}: {exc}"[:500],
             )
             raise
+        usage = _usage_dict(response)
         _observe_llm(
             model=called_model,
             purpose=_purpose or "llm",
-            usage=_usage_dict(response),
+            usage=usage,
             duration_s=round(time.monotonic() - started, 3),
             max_tokens=int(kwargs.get("max_tokens") or 0),
             status="truncated" if _was_truncated(response) else "ok",
+            **_output_cap_telemetry(
+                client,
+                usage,
+                int(kwargs.get("max_tokens") or 0),
+                provider_enforced=model.startswith("or:"),
+            ),
         )
         _check_llm_cancelled()
         return response
@@ -2557,22 +2640,116 @@ def _custom_block_system_prompt(role_hint: str) -> str:
             "must return the literal \"long\" or \"short\". Non-firing branches "
             "return None. The string \"exit\" is forbidden in return statements."
         )
-    return CUSTOM_BLOCK_SYSTEM_PROMPT + lock
+    # Custom generation was the dominant AUTO token consumer in live runs:
+    # one idea plus entry/exit code could spend several 4k+ CLI responses.
+    # This is an instruction-level budget for the CLI path (which has no hard
+    # output switch) and also keeps API output concise without weakening the
+    # role/sandbox contract above.
+    compact = (
+        "\n\nCOMPACT OUTPUT BUDGET:\n"
+        "Think silently. Return only the schema JSON, with no rationale beyond "
+        "meta.help. Use at most 3 parameters and no helper unless essential; "
+        "keep code at most 60 lines and the entire response under 1,800 tokens."
+    )
+    return CUSTOM_BLOCK_SYSTEM_PROMPT + lock + compact
 
 
 def _call_claude_for_block(
-    user_prompt: str, *, role_hint: str = "entry"
+    user_prompt: str,
+    *,
+    role_hint: str = "entry",
+    token_limit: int | None = None,
+    tokens_spent: int = 0,
 ) -> tuple[dict, dict]:
     """Returns (parsed_json, usage) — M1583: count custom-block tokens too."""
     client = _get_client()
-    resp = _create_message(
-        client,
-        _purpose="custom_block",
-        max_tokens=4000,
-        system=_custom_block_system_prompt(role_hint),
-        messages=[{"role": "user", "content": user_prompt}],
-    )
-    usage = _usage_dict(resp)
+    try:
+        # Compact JSON-only custom blocks do not need the generic 4k ceiling.
+        # Keeping the limit below the prompt's 1,800-token contract reduces
+        # OpenRouter latency and prevents oversized retry spend.
+        custom_max_tokens = max(
+            512, min(1_800, int(os.environ.get("AGENT_CUSTOM_BLOCK_MAX_TOKENS", "1800")))
+        )
+    except ValueError:
+        custom_max_tokens = 1_800
+    try:
+        # A custom-block timeout should be shorter than the generic research
+        # call deadline; the composer can safely select a builtin fallback.
+        custom_timeout = max(
+            15.0, min(120.0, float(os.environ.get("AGENT_CUSTOM_BLOCK_TIMEOUT", "75")))
+        )
+    except ValueError:
+        custom_timeout = 75.0
+    request = {
+        "_purpose": "custom_block",
+        "max_tokens": custom_max_tokens,
+        "timeout": custom_timeout,
+        "system": _custom_block_system_prompt(role_hint),
+        "messages": [{"role": "user", "content": user_prompt}],
+    }
+
+    # A custom block's budget has to apply to *provider attempts*, not merely
+    # to the final response. `_create_message` may retry a truncated 4k answer
+    # at 16k, and counting only after it returned made the advertised 25k cap
+    # an overshoot detector rather than a spending guard. Temporarily compose a
+    # local admission hook with AUTO's run-wide hook; this also keeps STOP and
+    # the global 250k ceiling intact.
+    if token_limit is None:
+        resp = _create_message(client, **request)
+        usage = _usage_dict(resp)
+    else:
+        limit = max(0, int(token_limit))
+        spent_before = max(0, int(tokens_spent))
+        observed: dict[str, int] = {}
+        previous_admit = getattr(_LLM_CONTROL, "admit_check", None)
+        previous_observer = getattr(_LLM_CONTROL, "observer", None)
+
+        def _observed_total() -> int:
+            return sum(
+                int(observed.get(k) or 0)
+                for k in (
+                    "input_tokens",
+                    "output_tokens",
+                    "cache_read_input_tokens",
+                    "cache_creation_input_tokens",
+                )
+            )
+
+        def _local_admit(bound: dict) -> None:
+            reserve = max(0, int(bound.get("total_token_bound") or 0))
+            projected = spent_before + _observed_total() + reserve
+            if projected > limit:
+                raise LLMTokenBudgetExceeded(
+                    "custom_block token cap cannot admit provider attempt: "
+                    f"{spent_before + _observed_total():,}/{limit:,} spent, "
+                    f"{reserve:,} reserved"
+                )
+            if callable(previous_admit):
+                previous_admit(bound)
+
+        def _local_observer(event: dict) -> None:
+            payload = event.get("usage") or {}
+            if isinstance(payload, dict):
+                for key in (
+                    "input_tokens",
+                    "output_tokens",
+                    "cache_read_input_tokens",
+                    "cache_creation_input_tokens",
+                ):
+                    observed[key] = observed.get(key, 0) + int(payload.get(key) or 0)
+            if callable(previous_observer):
+                previous_observer(event)
+
+        _LLM_CONTROL.admit_check = _local_admit
+        _LLM_CONTROL.observer = _local_observer
+        try:
+            resp = _create_message(client, **request)
+        finally:
+            _LLM_CONTROL.admit_check = previous_admit
+            _LLM_CONTROL.observer = previous_observer
+        # Includes a discarded truncated response, if any. The caller's retry
+        # counter and telemetry now agree with actual provider attempts.
+        usage = observed or _usage_dict(resp)
     text = "".join(b.text for b in resp.content if getattr(b, "type", "") == "text")
     payload = _extract_json_object(text)
     try:
@@ -2980,9 +3157,20 @@ Return the JSON only."""
 
     for attempt in range(_attempt_limit):
         try:
-            data, _u = _call_claude_for_block(user_prompt, role_hint=role_hint)
+            data, _u = _call_claude_for_block(
+                user_prompt,
+                role_hint=role_hint,
+                token_limit=_token_limit,
+                tokens_spent=_spent_tokens(),
+            )
             for k, v in _u.items():
                 _acc_usage[k] = _acc_usage.get(k, 0) + v
+        except LLMTokenBudgetExceeded as e:
+            # Local cap refusal is intentional and cannot be healed by another
+            # paid retry. Return a normal generated-code failure to the caller,
+            # which can select the role-safe builtin candidate instead.
+            last_error = str(e)
+            break
         except Exception as e:
             _raise_if_llm_control_abort(e)
             if is_terminal_llm_error(e):
@@ -2990,6 +3178,11 @@ Return the JSON only."""
                     f"terminal LLM provider failure: {type(e).__name__}: {e}"
                 ) from e
             last_error = f"Claude request failed: {type(e).__name__}: {e}"
+            # Repeating a hard provider timeout doubles wall-clock delay while
+            # producing no usable block.  Bubble a normal generated-code
+            # failure so AUTO's existing role-safe builtin fallback is used.
+            if isinstance(e, TimeoutError):
+                break
             user_prompt = f"Previous request failed ({type(e).__name__}). {user_prompt}"
             if not _retry_allowed():
                 break

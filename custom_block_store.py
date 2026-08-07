@@ -27,12 +27,15 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import threading
 import time
 from collections.abc import Callable
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
+from tempfile import mkstemp
 from typing import Any
 
 log = logging.getLogger(__name__)
@@ -42,9 +45,11 @@ log = logging.getLogger(__name__)
 # /lab or /strategy, a read-modify-write lost-update could silently destroy a
 # block's registration (RLock: reentrant within the same thread).
 _STORE_LOCK = threading.RLock()
+_REGISTRY_GUARD_STATE = threading.local()
 
 STORE_DIR = Path.home() / ".cache" / "nautilus_web_app" / "custom_blocks"
 REGISTRY_FILE = STORE_DIR / "registry.json"
+_REGISTRY_LOCK_FILE = "registry.lock"
 
 _NAME_RE = re.compile(r"^[a-z][a-z0-9_]{1,39}$")
 
@@ -54,6 +59,14 @@ _NAME_RE = re.compile(r"^[a-z][a-z0-9_]{1,39}$")
 # to keep the UI list free of bulk ephemeral blocks (see the 06 · Custom Blocks
 # panel bloat found in the /studio QA pass).
 _EPHEMERAL_PREFIXES = ("desc_", "agnt_")
+
+# AUTO names are part of the persisted artifact contract.  Older runs used
+# ``agnt_e_<run>_<iteration>``; current runs include ``_r<round>`` so a single
+# run cannot overwrite its earlier candidate.  Keep both shapes readable: a
+# restart must be able to migrate safe legacy artifacts before it loads them.
+_AGENT_BLOCK_RE = re.compile(
+    r"^agnt_(?P<role>[ex])_(?P<run>[a-z0-9]{8})(?:_r[1-9][0-9]*)?_[0-9]+$"
+)
 
 
 def _ensure_dir() -> None:
@@ -76,16 +89,90 @@ _READ_RETRIES = 4
 _READ_RETRY_SLEEP = 0.05
 
 
+@contextmanager
+def _registry_guard():
+    """Serialize registry RMW operations across threads and processes.
+
+    The lock is separate from the JSON payload, so replacing registry.json
+    atomically never invalidates a lock held by a concurrent writer.
+    """
+    with _STORE_LOCK:
+        # ``save_custom_batch(..., validate=...)`` can register the blocks it
+        # just staged. The OS advisory lock is not re-entrant, so keep it held
+        # only once for nested work in the same thread.
+        depth = getattr(_REGISTRY_GUARD_STATE, "depth", 0)
+        if depth:
+            _REGISTRY_GUARD_STATE.depth = depth + 1
+            try:
+                yield
+            finally:
+                _REGISTRY_GUARD_STATE.depth = depth
+            return
+
+        handle = None
+        locked = False
+        try:
+            _ensure_dir()
+            lock_path = STORE_DIR / _REGISTRY_LOCK_FILE
+            lock_path.touch(exist_ok=True)
+            handle = lock_path.open("r+b")
+            if os.name == "nt":
+                import msvcrt
+
+                if lock_path.stat().st_size == 0:
+                    handle.write(b"\0")
+                    handle.flush()
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+                locked = True
+            else:  # pragma: no cover - Linux deployments
+                import fcntl
+
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+                locked = True
+        except OSError as exc:
+            if handle is not None:
+                handle.close()
+            raise RegistryUnavailable(f"cannot lock custom block registry: {exc}") from exc
+
+        try:
+            _REGISTRY_GUARD_STATE.depth = 1
+            yield
+        finally:
+            _REGISTRY_GUARD_STATE.depth = 0
+            if locked:
+                try:
+                    handle.seek(0)
+                    if os.name == "nt":
+                        import msvcrt
+
+                        msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+                    else:  # pragma: no cover - Linux deployments
+                        import fcntl
+
+                        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+                except OSError:
+                    log.exception("could not release custom block registry lock")
+            if handle is not None:
+                handle.close()
+
+
 def _read_registry() -> dict[str, dict[str, Any]]:
-    """Return the registry mapping. Raises RegistryUnavailable on read failure.
+    """Return the registry mapping or raise ``RegistryUnavailable``.
 
     Only a genuine PARSE failure (unreadable JSON / wrong shape) quarantines the
-    file to `.json.bak`. Any I/O error is transient by assumption and is retried,
+    file to `.json.bak` and then raises; it is never treated as empty. Any I/O error is transient by assumption and is retried,
     then raised — the previous behaviour quarantined on *any* exception, so a
     single Windows sharing violation during a concurrent save renamed the whole
     registry away and every custom block registration was lost.
     """
     if not REGISTRY_FILE.exists():
+        # A malformed registry is moved aside below for operator recovery. Do
+        # not let a later caller mistake that quarantined state for a newly
+        # created, empty catalog and prune every strategy that uses a custom
+        # block.
+        if REGISTRY_FILE.with_suffix(".json.bak").exists():
+            raise RegistryUnavailable("registry.json is quarantined as malformed")
         return {}
     last_err: Exception | None = None
     for attempt in range(_READ_RETRIES):
@@ -103,31 +190,111 @@ def _read_registry() -> dict[str, dict[str, Any]]:
                 raise ValueError("registry.json is not a dict")
             return data
         except (ValueError, TypeError) as e:
-            # Corrupt content: keep it as .bak so the registry can be rebuilt
-            # from the .py files, and start empty.
+            # Preserve bad content for recovery, but never start empty:
+            # composer would otherwise prune dependent catalog entries.
             corrupt = REGISTRY_FILE.with_suffix(".json.bak")
             try:
                 REGISTRY_FILE.replace(corrupt)
             except OSError:
                 pass
             log.warning("registry.json unparsable (%s) — quarantined to %s", e, corrupt)
-            return {}
+            raise RegistryUnavailable(
+                f"registry.json is malformed; refusing empty-registry fallback: {e}"
+            ) from e
     raise RegistryUnavailable(f"cannot read {REGISTRY_FILE}: {last_err}")
 
 
 def _write_registry(reg: dict[str, dict[str, Any]]) -> None:
     _ensure_dir()
-    # Atomic write: first write to a tmp file, then rename
-    tmp = REGISTRY_FILE.with_suffix(".json.tmp")
+    # Atomic write with a unique sibling temp. A fixed .json.tmp lets two
+    # processes clobber one another's staging file even if replace() is atomic.
+    fd, tmp_name = mkstemp(prefix="registry.", suffix=".tmp", dir=STORE_DIR)
+    tmp = Path(tmp_name)
     # UTF-8 pinned to match the read side: prompts/meta carry non-ASCII (Turkish
     # text, arrows) and the Windows locale codec would raise on write.
-    tmp.write_text(json.dumps(reg, indent=2, ensure_ascii=False), encoding="utf-8")
-    tmp.replace(REGISTRY_FILE)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps(reg, indent=2, ensure_ascii=False))
+            fh.flush()
+            os.fsync(fh.fileno())
+        tmp.replace(REGISTRY_FILE)
+    except Exception:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 def is_valid_name(name: str) -> bool:
     """Names must be lowercase snake_case, start with a letter, 2-40 chars."""
     return bool(name and _NAME_RE.match(name))
+
+
+def agent_block_identity(name: str) -> dict[str, str] | None:
+    """Return immutable AUTO identity encoded in a generated block name.
+
+    ``None`` means this is a user/describe block, for which no automatic
+    lifecycle or role policy is inferred.  The role is deliberately inferred
+    from the *name*, not an LLM-provided metadata field: legacy AUTO files did
+    not persist that field and must not be reusable in the opposite role.
+    """
+    match = _AGENT_BLOCK_RE.fullmatch(str(name or ""))
+    if match is None:
+        return None
+    return {
+        "role": "entry" if match.group("role") == "e" else "exit",
+        "run_id": match.group("run"),
+    }
+
+
+def ensure_agent_role_metadata(name: str) -> str | None:
+    """Backfill the role of a legacy AUTO block, or reject a forged conflict.
+
+    Returns the inferred role for AUTO names and ``None`` for every other
+    custom block.  The registry update is atomic and idempotent.  A stored role
+    that conflicts with the reserved ``agnt_e``/``agnt_x`` prefix is unsafe, so
+    callers must quarantine it rather than guessing which semantics to run.
+    """
+    identity = agent_block_identity(name)
+    if identity is None:
+        return None
+    inferred = identity["role"]
+    with _registry_guard():
+        reg = _read_registry()
+        info = reg.get(name)
+        if info is None:
+            raise ValueError(f"no such custom block: {name}")
+        meta = dict(info.get("meta") or {})
+        stored = meta.get("role")
+        if stored in {"entry", "exit"} and stored != inferred:
+            raise ValueError(
+                f"AUTO block {name!r} has conflicting role metadata "
+                f"{stored!r}; name requires {inferred!r}"
+            )
+        if stored != inferred:
+            meta["role"] = inferred
+            info = dict(info)
+            info["meta"] = meta
+            reg[name] = info
+            _write_registry(reg)
+    return inferred
+
+
+def list_agent_blocks(run_id: str | None = None) -> list[dict[str, Any]]:
+    """List AUTO artifacts with their parsed identity; this never deletes.
+
+    Deletion needs catalog-awareness, which belongs to the AUTO orchestrator.
+    Exposing a precise list lets it retain promoted dependencies while cleaning
+    failed, degraded, or abandoned candidates without a broad glob delete.
+    """
+    wanted = str(run_id or "")
+    if run_id is not None and not re.fullmatch(r"[a-z0-9]{8}", wanted):
+        raise ValueError("run_id must be the eight-character AUTO id")
+    out: list[dict[str, Any]] = []
+    for item in list_custom(include_ephemeral=True):
+        identity = agent_block_identity(item["name"])
+        if identity is None or (run_id is not None and identity["run_id"] != wanted):
+            continue
+        out.append({**item, **identity})
+    return out
 
 
 def list_custom(include_ephemeral: bool = True) -> list[dict[str, Any]]:
@@ -197,7 +364,7 @@ def save_custom(name: str, meta: dict, code: str, prompt: str = "") -> Path:
     # not specified on write, Windows uses the locale (cp1254) → LLM code
     # containing non-ASCII (→, …, typographic quotes) blows up with
     # UnicodeEncodeError or the block can never be imported. Pin UTF-8.
-    with _STORE_LOCK:
+    with _registry_guard():
         path.write_text(code, encoding="utf-8")
         reg = _read_registry()
         reg[name] = {
@@ -230,7 +397,7 @@ def save_custom_batch(
     if len(set(names)) != len(names) or any(not is_valid_name(name) for name in names):
         raise ValueError("batch contains duplicate or invalid custom block names")
     _ensure_dir()
-    with _STORE_LOCK:
+    with _registry_guard():
         reg = _read_registry()
         old_registry = dict(reg)
         old_files: dict[str, str | None] = {}
@@ -272,7 +439,7 @@ def delete_custom(name: str) -> bool:
     """Remove a custom block from disk, registry, and in-memory BLOCK_REGISTRY."""
     if not is_valid_name(name):
         return False
-    with _STORE_LOCK:  # M(store): locked RMW — lost-update prevention
+    with _registry_guard():
         reg = _read_registry()
         if name not in reg:
             return False
@@ -291,3 +458,72 @@ def delete_custom(name: str) -> bool:
     except Exception:
         pass
     return True
+
+
+def delete_custom_batch(names: list[str] | tuple[str, ...] | set[str]) -> list[str]:
+    """Atomically remove known custom blocks and unregister them after commit.
+
+    Missing names are harmless. Unlike looping over :func:`delete_custom`, this
+    either removes every selected file+registry entry or restores both. AUTO
+    uses it for a failed run's entry/exit pair so a crash cannot leave a single
+    orphan that is imported on the next server start.
+    """
+    selected = list(dict.fromkeys(str(name) for name in names))
+    if any(not is_valid_name(name) for name in selected):
+        raise ValueError("batch contains an invalid custom block name")
+    if not selected:
+        return []
+    with _registry_guard():
+        reg = _read_registry()
+        removed = [name for name in selected if name in reg]
+        if not removed:
+            return []
+        old_registry = dict(reg)
+        old_files: dict[str, str | None] = {}
+        try:
+            for name in removed:
+                path = module_path(name)
+                old_files[name] = (
+                    path.read_text(encoding="utf-8") if path.exists() else None
+                )
+                path.unlink(missing_ok=True)
+                del reg[name]
+            _write_registry(reg)
+        except Exception:
+            for name, previous in old_files.items():
+                if previous is None:
+                    continue
+                try:
+                    module_path(name).write_text(previous, encoding="utf-8")
+                except OSError:
+                    log.exception("could not roll back deleted custom block %s", name)
+            try:
+                _write_registry(old_registry)
+            except OSError:
+                log.exception("could not roll back custom block registry deletion")
+            raise
+    # Do not take composer._REGISTRY_LOCK while the store transaction is open;
+    # composer reads the store before taking that lock. Commit first, then make
+    # the process-local registry agree with disk.
+    try:
+        from composer import unregister_custom_block
+
+        for name in removed:
+            unregister_custom_block(name)
+    except Exception:
+        log.exception("could not unregister deleted custom blocks from memory")
+    return removed
+
+
+def cleanup_agent_run(run_id: str, *, keep_names: set[str] | None = None) -> list[str]:
+    """Remove non-retained AUTO artifacts for one completed/aborted run.
+
+    This is intentionally explicit rather than a background TTL delete. The
+    caller supplies catalog dependencies in ``keep_names``; therefore a winning
+    strategy is never broken merely because its source run is old.
+    """
+    keep = {str(name) for name in (keep_names or set())}
+    candidates = [
+        item["name"] for item in list_agent_blocks(run_id) if item["name"] not in keep
+    ]
+    return delete_custom_batch(candidates)

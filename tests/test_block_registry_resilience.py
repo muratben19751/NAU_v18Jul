@@ -63,8 +63,13 @@ def test_io_error_does_not_quarantine_the_registry(store):
 def test_genuinely_corrupt_json_is_still_quarantined(store):
     store.REGISTRY_FILE.write_text("{not json at all", encoding="utf-8")
 
-    assert store.list_custom() == []
+    with pytest.raises(store.RegistryUnavailable, match="refusing empty-registry"):
+        store.list_custom()
     assert store.REGISTRY_FILE.with_suffix(".json.bak").exists()
+    # The next request sees the quarantine marker too; it must not turn into a
+    # seemingly valid empty store after the first caller moved the bad file.
+    with pytest.raises(store.RegistryUnavailable, match="quarantined"):
+        store.list_custom()
 
 
 def test_unreadable_registry_leaves_the_catalog_untouched(tmp_path, monkeypatch):
@@ -97,3 +102,26 @@ def test_unreadable_registry_leaves_the_catalog_untouched(tmp_path, monkeypatch)
         "catalog.json was rewritten while the custom block registry was unreadable"
     )
     assert [s.id for s in catalog] == ["s1"], "strategy was pruned, not preserved"
+
+
+def test_corrupt_registry_leaves_the_catalog_untouched(store, tmp_path, monkeypatch):
+    """A malformed registry is unavailable, never an empty custom-name set."""
+    import composer
+
+    catalog_file = tmp_path / "catalog.json"
+    spec = {
+        "id": "s-corrupt",
+        "name": "uses a custom block",
+        "description": "",
+        "blocks": [{"type": "blk_one", "role": "entry", "params": {}}],
+        "trade_size": 0.1,
+    }
+    catalog_file.write_text(json.dumps([spec]), encoding="utf-8")
+    monkeypatch.setattr(composer, "CATALOG_FILE", catalog_file)
+    monkeypatch.setattr(composer, "_CATALOG_RAW_CACHE", None)
+    store.REGISTRY_FILE.write_text("{broken", encoding="utf-8")
+
+    catalog = composer.load_catalog()
+
+    assert json.loads(catalog_file.read_text(encoding="utf-8")) == [spec]
+    assert [s.id for s in catalog] == ["s-corrupt"]

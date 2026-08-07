@@ -224,6 +224,13 @@ class TestComputeQty:
             _qty_self("percent_equity", equity=10_000.0, pct=50.0), 50_000.0
         ) == pytest.approx(0.1)
 
+    def test_percent_equity_never_exceeds_account_notional(self):
+        """A malformed percentage cannot turn an unlevered order into leverage."""
+        # 250% input is capped to one account-equity notional: 10k / 50k = 0.2.
+        assert self._qty(
+            _qty_self("percent_equity", equity=10_000.0, pct=250.0), 50_000.0
+        ) == pytest.approx(0.2)
+
     def test_atr_target_uses_risk_over_atr(self):
         # risk_usd = 10000 * 1% = 100 ; qty = 100 / atr.value(200) = 0.5
         atr = SimpleNamespace(initialized=True, value=200.0)

@@ -20,6 +20,10 @@ def _client_and_capture(monkeypatch):
 
     got: dict = {}
     done = threading.Event()
+    # These tests exercise form-to-worker mapping, not the process-wide AUTO
+    # admission limit. Keep the asynchronous fake worker from making a rapid
+    # sequence of independent form cases race the production semaphore.
+    monkeypatch.setattr(ab, "_AUTO_RUN_SLOTS", threading.BoundedSemaphore(50))
 
     def fake_worker(**kw):
         got.update(kw)
@@ -65,7 +69,7 @@ def test_dotted_symbol_promotes_to_external_with_mapped_tfs(monkeypatch):
     # This test verifies request mapping, not catalog-quality validation. The
     # real local QQQ fixture intentionally contains the large historical gap
     # that AUTO now rejects.
-    monkeypatch.setattr(data, "external_data_gap_report", lambda frame: None)
+    monkeypatch.setattr(data, "external_data_gap_report", lambda frame, **kw: None)
     monkeypatch.setattr(data, "load_external_bars", lambda *a, **k: object())
     monkeypatch.setattr(data, "_external_bar_dir", lambda *a, **k: (object(), object()))
     monkeypatch.setattr(data, "_external_adjusted_flag", lambda *a, **k: False)
@@ -80,6 +84,37 @@ def test_dotted_symbol_promotes_to_external_with_mapped_tfs(monkeypatch):
     assert got["instrument_id"] == "QQQ.NASDAQ"
     assert got["intervals"] == ["1-HOUR", "1-DAY"]  # bybit codes → granularities
     assert got["research_only"] is True
+
+
+def test_known_qqq_gap_uses_audited_recent_continuous_tail(monkeypatch):
+    """Only the exact reviewed QQQ history gap may select the recent suffix."""
+    import pandas as pd
+
+    import data
+
+    old = pd.DatetimeIndex([pd.Timestamp("2004-11-30 13:00", tz="UTC")])
+    recent = pd.date_range("2011-03-23 13:00", periods=250, freq="B", tz="UTC")
+    frame = pd.DataFrame(
+        {"open": 1.0, "high": 1.0, "low": 1.0, "close": 1.0, "volume": 1.0},
+        index=old.append(recent),
+    )
+    monkeypatch.setattr(data, "load_external_bars", lambda *a, **k: frame)
+    monkeypatch.setattr(data, "_external_bar_dir", lambda *a: (object(), object()))
+    monkeypatch.setattr(data, "_external_adjusted_flag", lambda *a: True)
+    client, got, done = _client_and_capture(monkeypatch)
+    r = client.post(
+        "/agent/run",
+        data={
+            "symbol": "QQQ.NASDAQ",
+            "tfs": ["60"],
+            "range_end": "2026-08-05",  # UI default end date is not an opt-out.
+            "n_iterations": 2,
+        },
+    )
+    assert r.status_code == 200
+    assert done.wait(5)
+    assert got["range_start"] == "2011-03-23"
+    assert got["data_truncation"]["policy"] == "known_continuous_tail_v1"
 
 
 def test_model_pick_reaches_worker_and_thread_pin(monkeypatch):

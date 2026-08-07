@@ -265,6 +265,31 @@ def _run_unit(unit: dict) -> dict:
             if not result.error
             else 0,
         }
+        if unit.get("kind") == "symbol" and not result.error:
+            # Multi-symbol acceptance is based on alpha, so compute buy-and-hold
+            # over this worker's exact data slice (not the parent's primary bar
+            # series).  Keep the value in the metrics envelope consumed by the
+            # robustness reducer.
+            try:
+                first = float(bars["close"].iloc[0])
+                last = float(bars["close"].iloc[-1])
+                if first > 0 and len(bars) >= 2:
+                    benchmark = last / first - 1.0
+                    metrics = payload["metrics"]
+                    pnl_pct = metrics.get("pnl_pct")
+                    if pnl_pct is None:
+                        from backtest import STARTING_CASH
+
+                        pnl_pct = float(metrics.get("pnl") or 0.0) / float(STARTING_CASH)
+                    excess = float(pnl_pct) - benchmark
+                    metrics["benchmark_return_fraction"] = benchmark
+                    metrics["excess_return_fraction"] = excess
+                    metrics["benchmark_return_pct"] = benchmark
+                    metrics["excess_pnl_pct"] = excess
+                    metrics["benchmark_cost_basis"] = "gross_buy_and_hold_no_costs"
+                    metrics["strategy_return_cost_basis"] = "net_simulated_costs"
+            except (KeyError, TypeError, ValueError, IndexError):
+                pass
         if unit.get("want_equity"):
             payload["equity_curve"] = result.equity_curve or []
         if unit.get("kind") == "symbol":
