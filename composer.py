@@ -1272,14 +1272,30 @@ def _load_custom_blocks() -> None:
     """Load all custom blocks from the on-disk store into BLOCK_REGISTRY.
 
     Broken modules are skipped with a warning printed to stderr — one bad
-    block must not take down the whole catalog.
+    block must not take down the whole catalog. This runs at import time
+    (module-level call below), so the same discipline extends one level up:
+    a registry.json that is itself unreadable (RegistryUnavailable — see
+    custom_block_store's docstring on why that's raised rather than
+    flattened to "no blocks") must not fail `import composer` and take down
+    every route module that depends on it (2026-08-09 DeepR finding). The
+    degrade is a server that starts with zero custom-block evaluators
+    registered this run, not a server that cannot start at all.
     """
     try:
         import custom_block_store as cbs
     except Exception as e:  # pragma: no cover
         print(f"[composer] cannot import custom_block_store: {e}")
         return
-    for info in cbs.list_custom():
+    try:
+        custom_blocks = cbs.list_custom()
+    except Exception as e:
+        logging.getLogger(__name__).warning(
+            "custom block registry unavailable at startup — continuing with "
+            "zero custom-block evaluators registered this run: %s",
+            e,
+        )
+        return
+    for info in custom_blocks:
         name = info["name"]
         try:
             register_custom_from_disk(name)

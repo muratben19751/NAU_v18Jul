@@ -182,3 +182,69 @@ def test_registry_cache_does_not_leak_across_different_registry_files(
 
     assert names_a == ["only_in_a"]
     assert names_b == ["only_in_b"]
+
+
+# ---------------------------------------------------------------------------
+# composer._load_custom_blocks() import-time resilience (DeepR 2026-08-09 [YÜKSEK])
+# ---------------------------------------------------------------------------
+#
+# _load_custom_blocks() runs once at `import composer` (module-level call).
+# It already skipped individually-broken block modules with a warning, but
+# a registry.json that is itself unreadable (RegistryUnavailable — the two
+# test classes above pin why that must raise rather than report "empty")
+# used to propagate straight out of `_load_custom_blocks()` and fail the
+# `import composer` statement itself — taking down every route module that
+# depends on it, i.e. the whole server. These tests call the function
+# directly (composer.py is already imported once for the whole test
+# session; re-triggering module-level import side effects isn't needed —
+# the function is a normal callable) with `custom_block_store.list_custom`
+# monkeypatched to raise, and assert it degrades instead of propagating.
+
+
+def test_load_custom_blocks_survives_an_unreadable_registry(monkeypatch, caplog):
+    import composer
+    import custom_block_store as cbs
+
+    def _unavailable():
+        raise cbs.RegistryUnavailable("registry.json is quarantined as malformed")
+
+    monkeypatch.setattr(cbs, "list_custom", _unavailable)
+
+    with caplog.at_level("WARNING"):
+        composer._load_custom_blocks()  # must not raise
+
+    assert "unavailable" in caplog.text.lower()
+
+
+def test_load_custom_blocks_survives_any_list_custom_exception(monkeypatch):
+    """Not just RegistryUnavailable — any exception from list_custom() must
+    degrade gracefully, matching the existing per-block try/except below it."""
+    import composer
+    import custom_block_store as cbs
+
+    monkeypatch.setattr(
+        cbs, "list_custom", lambda: (_ for _ in ()).throw(OSError("disk error"))
+    )
+
+    composer._load_custom_blocks()  # must not raise
+
+
+def test_load_custom_blocks_still_registers_blocks_on_the_happy_path(
+    tmp_path, monkeypatch
+):
+    """Regression guard for the fix itself: the try/except must not
+    accidentally swallow the happy path too."""
+    import composer
+    import custom_block_store as cbs
+
+    monkeypatch.setattr(cbs, "STORE_DIR", tmp_path)
+    monkeypatch.setattr(cbs, "REGISTRY_FILE", tmp_path / "registry.json")
+    valid_source = (
+        "def evaluate(state, block, closes, indicators, portfolio):\n    return None\n"
+    )
+    cbs.save_custom("blk_valid", {"label": "Valid", "params": {}}, valid_source)
+    monkeypatch.setattr(composer, "BLOCK_REGISTRY", {})
+
+    composer._load_custom_blocks()
+
+    assert "blk_valid" in composer.BLOCK_REGISTRY
