@@ -1,4 +1,4 @@
-"""_agent_worker decomposition (2026-08-08 DeepR #47), steps A1-A6:
+"""_agent_worker decomposition (2026-08-08 DeepR #47), steps A1-A7:
 - A1: the three pure closures `_market_for`/`_iv_for`/`_recipe` were promoted
   to module-level functions in web/routes/agent_backtest.py so they can be
   unit-tested in isolation, instead of only indirectly through a full worker
@@ -16,6 +16,12 @@
 - A6: `_propose_initial_strategy` (Phase 1) promoted to a module function,
   doing its own local imports (mirrors `_generate_custom_spec`'s established
   pattern in this file).
+- A7: `_scan_one_candidate` (Phase 4's per-candidate robustness check)
+  promoted to a module function. Caught two real extraction bugs before
+  testing: the "effective score" log message referenced the caller's
+  `len(passers)` (fixed via an explicit `n_passers_so_far` parameter), and
+  `_MAX_PASSERS` was a local of `_agent_worker` unreachable from the new
+  module function (promoted to a module constant).
 """
 
 from __future__ import annotations
@@ -406,3 +412,135 @@ class TestProposeInitialStrategy:
         assert spec.trend_filter is True
         assert spec.trend_interval == "60"
         assert spec.model_slippage is True
+
+
+class TestScanOneCandidate:
+    def _spec(self, name="cand", id_="id-1"):
+        return SimpleNamespace(name=name, id=id_)
+
+    def _result(self, pnl=100.0, sharpe=1.0):
+        return SimpleNamespace(
+            error=None,
+            metrics={
+                "n_trades": 30,
+                "pnl": pnl,
+                "pnl_pct": pnl / 10_000.0,
+                "sharpe_per_trade": sharpe,
+                "max_dd": -0.1,
+            },
+            trades=[],
+        )
+
+    def _quiet(self, monkeypatch):
+        for name in (
+            "_set_robustness_scan",
+            "_add_step",
+            "_set_phase",
+            "_tl_begin",
+            "_tl_end",
+            "_session_log",
+        ):
+            monkeypatch.setattr(ab, name, lambda *a, **k: None)
+        monkeypatch.setattr(
+            ab, "_make_rob_progress", lambda *a, **k: _FakeRobProgress()
+        )
+        monkeypatch.setattr(
+            ab, "_write_session_artifact", lambda *a, **k: {"digest": "x"}
+        )
+        monkeypatch.setattr(ab, "_index_insert", lambda *a, **k: None)
+        monkeypatch.setattr(ab, "_robustness_log_summary", lambda rob: {})
+
+    def _args(self, wstate, *, n_passers_so_far=0):
+        return dict(
+            run_id="run-1",
+            run_number=1,
+            rank_i=0,
+            n_eligible=1,
+            cand_spec=self._spec(),
+            cand_result=self._result(),
+            cand_iv="60",
+            cand_df=None,
+            strict_mode=False,
+            wstate=wstate,
+            is_external=False,
+            instrument_id="",
+            symbol="BTCUSDT",
+            category="linear",
+            max_hours=0.0,
+            n_passers_so_far=n_passers_so_far,
+        )
+
+    def test_exception_is_caught_and_returns_failed_non_raising_outcome(
+        self, monkeypatch
+    ):
+        self._quiet(monkeypatch)
+        monkeypatch.setattr(
+            "sandbox.run_robustness_guarded",
+            lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")),
+        )
+        outcome = ab._scan_one_candidate(**self._args(ab._WorkerState()))
+
+        assert outcome.passed is False
+        assert outcome.passer_entry is None
+        assert outcome.log_entry["overfitting_label"] == "error: RuntimeError"
+
+    def test_passing_candidate_positive_score_sign_safety(self, monkeypatch):
+        self._quiet(monkeypatch)
+        monkeypatch.setattr("sandbox.run_robustness_guarded", lambda *a, **k: {})
+        monkeypatch.setattr(ab, "_robustness_passed", lambda *a, **k: True)
+        monkeypatch.setattr(ab, "_ms_score_factor", lambda rob: 0.5)
+
+        outcome = ab._scan_one_candidate(
+            **self._args(ab._WorkerState(), n_passers_so_far=1)
+        )
+
+        assert outcome.passed is True
+        raw = ab._score(self._result())
+        expected = raw - (1.0 - 0.5) * abs(raw)
+        assert outcome.passer_entry["effective"] == pytest.approx(expected)
+        assert outcome.passer_entry["effective"] == pytest.approx(raw * 0.5)
+
+    def test_passing_candidate_negative_score_penalty_pulls_down_not_up(
+        self, monkeypatch
+    ):
+        """Sign-safety: for a NEGATIVE raw score, the MS-factor penalty must
+        make the effective score MORE negative (worse), never less negative
+        — a naive raw*factor would invert this for factor<1."""
+        self._quiet(monkeypatch)
+        monkeypatch.setattr("sandbox.run_robustness_guarded", lambda *a, **k: {})
+        monkeypatch.setattr(ab, "_robustness_passed", lambda *a, **k: True)
+        monkeypatch.setattr(ab, "_ms_score_factor", lambda rob: 0.5)
+
+        args = self._args(ab._WorkerState())
+        args["cand_result"] = self._result(pnl=-100.0, sharpe=-1.0)
+        outcome = ab._scan_one_candidate(**args)
+
+        raw = ab._score(self._result(pnl=-100.0, sharpe=-1.0))
+        assert raw < 0
+        assert outcome.passer_entry["effective"] < raw  # worse, not better
+
+    def test_degraded_spec_forced_to_fail_regardless_of_robustness_verdict(
+        self, monkeypatch
+    ):
+        self._quiet(monkeypatch)
+        monkeypatch.setattr("sandbox.run_robustness_guarded", lambda *a, **k: {})
+        monkeypatch.setattr(ab, "_robustness_passed", lambda *a, **k: True)
+        monkeypatch.setattr(ab, "_ms_score_factor", lambda rob: 1.0)
+
+        wstate = ab._WorkerState()
+        args = self._args(wstate)
+        args["cand_spec"] = self._spec(id_="degraded-1")
+        wstate.degraded_spec_ids.add("degraded-1")
+
+        outcome = ab._scan_one_candidate(**args)
+
+        assert outcome.passed is False
+        assert outcome.passer_entry is None
+
+
+class _FakeRobProgress:
+    def __call__(self, *a, **k):
+        pass
+
+    def close_open(self, status):
+        pass

@@ -95,6 +95,12 @@ _AUTO_RUN_SLOTS = threading.BoundedSemaphore(_MAX_CONCURRENT_AUTO_RUNS)
 # kararı olduğu için varsayılan korunuyor. Denemek için: AGENT_MIN_TRADES=10.
 _MIN_TRADES = int(os.environ.get("AGENT_MIN_TRADES", "20"))
 
+# M26+M31: instead of "first passer wins", collect at most the first 3
+# candidates that pass Phase 4 robustness; the winner is chosen by the
+# effective score weighted by the multi-symbol pass_rate factor. If the
+# scan ends before 3 passers are found, decide with what's on hand.
+_MAX_PASSERS = 3
+
 # Session JSONL is an audit index, not the full chart store.  A 120-point
 # forensic curve preserves shape/endpoints while bounding continuous AUTO disk
 # growth across the top-level and nested MTM curves in every candidate event.
@@ -1420,6 +1426,203 @@ def _propose_initial_strategy(
     return spec
 
 
+class _ScanOutcome(NamedTuple):
+    passed: bool
+    log_entry: dict
+    passer_entry: dict | None
+
+
+def _scan_one_candidate(
+    run_id: str,
+    run_number: int,
+    rank_i: int,
+    n_eligible: int,
+    cand_spec,
+    cand_result,
+    cand_iv: str,
+    cand_df,
+    strict_mode: bool,
+    wstate: _WorkerState,
+    is_external: bool,
+    instrument_id: str,
+    symbol: str,
+    category: str,
+    max_hours: float,
+    n_passers_so_far: int,
+) -> _ScanOutcome:
+    """Phase 4's per-candidate robustness check (loop control, stop-check,
+    and cache loading stay in the caller). A `run_robustness_guarded`
+    exception is caught and reported as a failed, non-raising outcome —
+    never propagates out of this function."""
+    from sandbox import ROBUSTNESS_TIMEOUT_S, run_robustness_guarded
+
+    _set_robustness_scan(run_id, rank_i + 1, n_eligible)
+    _add_step(
+        run_id,
+        f"[{rank_i + 1}/{n_eligible}] Robustness: {cand_spec.name} [{cand_iv}]",
+    )
+    _set_phase(run_id, 4, f"{rank_i + 1}/{n_eligible} trying: {cand_spec.name}")
+
+    _rob_key = f"rob-r{run_number}-c{rank_i + 1}"
+    _tl_begin(
+        run_id,
+        "robustness",
+        _rob_key,
+        f"Robustness {rank_i + 1}/{n_eligible} · {cand_spec.name}",
+        round_num=run_number,
+        name=cand_spec.name,
+    )
+    _rob_progress = _make_rob_progress(run_id, rank_i + 1, run_number)
+    try:
+        # Isolated in a killable child so the suite's many backtests
+        # can't freeze the web server's event loop.
+        rob = run_robustness_guarded(
+            cand_spec,
+            cand_df,
+            _recipe(is_external, instrument_id, symbol, category, cand_iv),
+            cand_result.trades,
+            symbol=instrument_id if is_external else symbol,
+            interval=cand_iv,
+            progress_fn=_rob_progress,
+            timeout_s=_remaining_phase_timeout(
+                wstate.worker_t0, max_hours, ROBUSTNESS_TIMEOUT_S
+            ),
+        )
+    except Exception as rob_exc:
+        _rob_progress.close_open("fail")
+        _tl_end(run_id, _rob_key, status="fail")
+        _add_step(run_id, f"  ⚠ Robustness error: {rob_exc} — skipping")
+        return _ScanOutcome(
+            passed=False,
+            log_entry={
+                "rank": rank_i + 1,
+                "name": cand_spec.name,
+                "score": round(_score(cand_result), 3),
+                "passed": False,
+                "overfitting_label": f"error: {type(rob_exc).__name__}",
+                "mc_dd_p50": None,
+                "wf_pass": "—",
+                "ms_label": "—",
+            },
+            passer_entry=None,
+        )
+
+    passed = _robustness_passed(rob, strict=strict_mode, run_id=run_id)
+    if cand_spec.id in wstate.degraded_spec_ids:
+        passed = False
+        _add_step(
+            run_id,
+            "  ❌ Degraded/fallback candidate is research-only and "
+            "cannot enter the winner pool",
+        )
+
+    split_label = (rob.get("split") or {}).get("overfitting_label", "?")
+    mc_dd = (rob.get("mc") or {}).get("max_dd_p50", None)
+    wfo = rob.get("wfo_windows") or []
+    # Naive series — the one _robustness_passed decided on.
+    valid_wfo = _valid_wfo_windows(wfo)
+    wf_pos = sum(1 for w in valid_wfo if _wfo_test(w).get("pnl", 0) > 0)
+    wf_str = f"{wf_pos}/{len(valid_wfo)}" if valid_wfo else "—"
+    ms_label = (rob.get("multi_symbol") or {}).get("generalization_label", "—")
+
+    try:
+        rob_artifact = _write_session_artifact(
+            run_id,
+            f"robustness-r{run_number}-c{rank_i + 1}",
+            rob,
+        )
+    except Exception as artifact_exc:
+        rob_artifact = {"error": str(artifact_exc)[:300]}
+    # JSONL remains a compact event index. The full, curve-heavy
+    # robustness object is gzip-compressed and content-addressed by
+    # digest so replay/audit retains every value without 100KB lines.
+    _session_log(
+        run_id,
+        "robustness_result",
+        round=run_number,
+        rank=rank_i + 1,
+        spec_name=cand_spec.name,
+        spec_id=cand_spec.id,
+        score=round(_score(cand_result), 4),
+        passed=passed,
+        overfitting_label=split_label,
+        wf_pass=wf_str,
+        ms_label=ms_label,
+        summary=_robustness_log_summary(rob),
+        artifact=rob_artifact,
+    )
+    # L26: lightweight SQLite index (best-effort, errors swallowed)
+    _index_insert(
+        run_id,
+        run_number,
+        cand_spec.name,
+        cand_spec.id,
+        _score(cand_result),
+        passed,
+        instrument_id if is_external else symbol,
+        cand_iv,
+    )
+
+    log_entry = {
+        "rank": rank_i + 1,
+        "name": cand_spec.name,
+        "score": round(_score(cand_result), 3),
+        "passed": passed,
+        "overfitting_label": split_label,
+        "mc_dd_p50": round(mc_dd, 1) if mc_dd is not None else None,
+        "wf_pass": wf_str,
+        "ms_label": ms_label,
+    }
+
+    _rob_progress.close_open("ok")
+    if passed:
+        _tl_end(run_id, _rob_key, status="ok", name=cand_spec.name)
+        # M26+M31: a passing candidate enters the pool; effective
+        # score = _score × multi-symbol pass_rate factor (0.15…1.0).
+        raw_score = _score(cand_result)
+        factor = _ms_score_factor(rob)
+        # Sign-safe MS penalty: for a positive score, exactly equals
+        # raw*factor (raw - (1-factor)*raw); for a negative score, it
+        # prevents a small factor from making the score LESS negative
+        # and inverting the ranking (the penalty always pulls the
+        # score DOWN).
+        effective = raw_score - (1.0 - factor) * abs(raw_score)
+        passer_entry = {
+            "spec": cand_spec,
+            "result": cand_result,
+            "rob": rob,
+            "iv": cand_iv,
+            "score": raw_score,
+            "factor": factor,
+            "effective": effective,
+        }
+        _add_step(
+            run_id,
+            f"  ✅ ALL TESTS PASSED! "
+            f"IS/OOS: {split_label} · WFO: {wf_str} · Multi-symbol: {ms_label}",
+        )
+        _add_step(
+            run_id,
+            f"  ⚖ Effective score: {raw_score:.3f} × MS-factor "
+            f"{factor:.3f} = {effective:.3f} "
+            f"({n_passers_so_far + 1}/{_MAX_PASSERS} passing candidates)",
+        )
+        return _ScanOutcome(passed=True, log_entry=log_entry, passer_entry=passer_entry)
+
+    _tl_end(run_id, _rob_key, status="warn", name=cand_spec.name)
+    _add_step(
+        run_id,
+        (
+            f"  ❌ Failed — IS/OOS: {split_label} · "
+            f"WFO: {wf_str} · MC median DD: {mc_dd:.1f}% · Multi-symbol: {ms_label}"
+            if mc_dd is not None
+            else f"  ❌ Failed — IS/OOS: {split_label} · "
+            f"WFO: {wf_str} · Multi-symbol: {ms_label}"
+        ),
+    )
+    return _ScanOutcome(passed=False, log_entry=log_entry, passer_entry=None)
+
+
 # Liquid peer basket for multi-symbol robustness on external (US equity) runs.
 # Real instrument ids from the catalog — SPY/IWM are on the ARCA venue, not NASDAQ.
 EXTERNAL_PEER_BASKET = [
@@ -2222,9 +2425,7 @@ def _agent_worker(
     from composer import load_catalog
     from data import _bybit_cache_path
     from sandbox import (
-        ROBUSTNESS_TIMEOUT_S,
         run_backtest_guarded,
-        run_robustness_guarded,
     )
 
     is_external = source == "external"
@@ -3065,11 +3266,6 @@ def _agent_worker(
             winner_rob = None
             winner_iv = None
             rob_scan_log: list[dict] = []
-            # M26+M31: instead of "first passer wins", collect at most the first 3
-            # candidates that pass; the winner is chosen by the effective score
-            # weighted by the multi-symbol pass_rate factor. If the list ends
-            # before 3 passers are found, decide with what's on hand.
-            _MAX_PASSERS = 3
             passers: list[dict] = []
 
             for rank_i, (cand_spec, cand_result, cand_iv) in enumerate(eligible):
@@ -3086,194 +3282,40 @@ def _agent_worker(
                         "  ⏹ Stop signal — breaking the robustness scan",
                     )
                     break
-                _set_robustness_scan(run_id, rank_i + 1, len(eligible))
-                _add_step(
-                    run_id,
-                    f"[{rank_i + 1}/{len(eligible)}] Robustness: {cand_spec.name} [{cand_iv}]",
-                )
-                _set_phase(
-                    run_id,
-                    4,
-                    f"{rank_i + 1}/{len(eligible)} trying: {cand_spec.name}",
-                )
-
                 cand_df = _load_tf(cand_iv)
-
-                _rob_key = f"rob-r{run_number}-c{rank_i + 1}"
-                _tl_begin(
-                    run_id,
-                    "robustness",
-                    _rob_key,
-                    f"Robustness {rank_i + 1}/{len(eligible)} · {cand_spec.name}",
-                    round_num=run_number,
-                    name=cand_spec.name,
-                )
-                _rob_progress = _make_rob_progress(run_id, rank_i + 1, run_number)
-                try:
-                    # Isolated in a killable child so the suite's many backtests
-                    # can't freeze the web server's event loop.
-                    rob = run_robustness_guarded(
-                        cand_spec,
-                        cand_df,
-                        _recipe(is_external, instrument_id, symbol, category, cand_iv),
-                        cand_result.trades,
-                        symbol=instrument_id if is_external else symbol,
-                        interval=cand_iv,
-                        progress_fn=_rob_progress,
-                        timeout_s=_remaining_phase_timeout(
-                            wstate.worker_t0, max_hours, ROBUSTNESS_TIMEOUT_S
-                        ),
-                    )
-                except Exception as rob_exc:
-                    _rob_progress.close_open("fail")
-                    _tl_end(run_id, _rob_key, status="fail")
-                    _add_step(run_id, f"  ⚠ Robustness error: {rob_exc} — skipping")
-                    rob_scan_log.append(
-                        {
-                            "rank": rank_i + 1,
-                            "name": cand_spec.name,
-                            "score": round(_score(cand_result), 3),
-                            "passed": False,
-                            "overfitting_label": f"error: {type(rob_exc).__name__}",
-                            "mc_dd_p50": None,
-                            "wf_pass": "—",
-                            "ms_label": "—",
-                        }
-                    )
-                    with _AGENT_LOCK:
-                        if run_id in _AGENT_PROGRESS:
-                            _AGENT_PROGRESS[run_id]["rob_scan_log"] = list(rob_scan_log)
-                    continue
-
-                passed = _robustness_passed(rob, strict=strict_mode, run_id=run_id)
-                if cand_spec.id in wstate.degraded_spec_ids:
-                    passed = False
-                    _add_step(
-                        run_id,
-                        "  ❌ Degraded/fallback candidate is research-only and "
-                        "cannot enter the winner pool",
-                    )
-
-                split_label = (rob.get("split") or {}).get("overfitting_label", "?")
-                mc_dd = (rob.get("mc") or {}).get("max_dd_p50", None)
-                wfo = rob.get("wfo_windows") or []
-                # Naive series — the one _robustness_passed decided on.
-                valid_wfo = _valid_wfo_windows(wfo)
-                wf_pos = sum(1 for w in valid_wfo if _wfo_test(w).get("pnl", 0) > 0)
-                wf_str = f"{wf_pos}/{len(valid_wfo)}" if valid_wfo else "—"
-                ms_label = (rob.get("multi_symbol") or {}).get(
-                    "generalization_label", "—"
-                )
-
-                try:
-                    rob_artifact = _write_session_artifact(
-                        run_id,
-                        f"robustness-r{run_number}-c{rank_i + 1}",
-                        rob,
-                    )
-                except Exception as artifact_exc:
-                    rob_artifact = {"error": str(artifact_exc)[:300]}
-                # JSONL remains a compact event index. The full, curve-heavy
-                # robustness object is gzip-compressed and content-addressed by
-                # digest so replay/audit retains every value without 100KB lines.
-                _session_log(
-                    run_id,
-                    "robustness_result",
-                    round=run_number,
-                    rank=rank_i + 1,
-                    spec_name=cand_spec.name,
-                    spec_id=cand_spec.id,
-                    score=round(_score(cand_result), 4),
-                    passed=passed,
-                    overfitting_label=split_label,
-                    wf_pass=wf_str,
-                    ms_label=ms_label,
-                    summary=_robustness_log_summary(rob),
-                    artifact=rob_artifact,
-                )
-                # L26: lightweight SQLite index (best-effort, errors swallowed)
-                _index_insert(
+                outcome = _scan_one_candidate(
                     run_id,
                     run_number,
-                    cand_spec.name,
-                    cand_spec.id,
-                    _score(cand_result),
-                    passed,
-                    instrument_id if is_external else symbol,
+                    rank_i,
+                    len(eligible),
+                    cand_spec,
+                    cand_result,
                     cand_iv,
+                    cand_df,
+                    strict_mode,
+                    wstate,
+                    is_external,
+                    instrument_id,
+                    symbol,
+                    category,
+                    max_hours,
+                    len(passers),
                 )
-
-                rob_scan_log.append(
-                    {
-                        "rank": rank_i + 1,
-                        "name": cand_spec.name,
-                        "score": round(_score(cand_result), 3),
-                        "passed": passed,
-                        "overfitting_label": split_label,
-                        "mc_dd_p50": round(mc_dd, 1) if mc_dd is not None else None,
-                        "wf_pass": wf_str,
-                        "ms_label": ms_label,
-                    }
-                )
+                rob_scan_log.append(outcome.log_entry)
                 # Flush partial results after each candidate so data is preserved
                 # even if an exception aborts the loop later.
                 with _AGENT_LOCK:
                     if run_id in _AGENT_PROGRESS:
                         _AGENT_PROGRESS[run_id]["rob_scan_log"] = list(rob_scan_log)
 
-                _rob_progress.close_open("ok")
-                if passed:
-                    _tl_end(run_id, _rob_key, status="ok", name=cand_spec.name)
-                    # M26+M31: a passing candidate enters the pool; effective
-                    # score = _score × multi-symbol pass_rate factor (0.15…1.0).
-                    raw_score = _score(cand_result)
-                    factor = _ms_score_factor(rob)
-                    # Sign-safe MS penalty: for a positive score, exactly equals
-                    # raw*factor (raw - (1-factor)*raw); for a negative score, it
-                    # prevents a small factor from making the score LESS negative
-                    # and inverting the ranking (the penalty always pulls the
-                    # score DOWN).
-                    effective = raw_score - (1.0 - factor) * abs(raw_score)
-                    passers.append(
-                        {
-                            "spec": cand_spec,
-                            "result": cand_result,
-                            "rob": rob,
-                            "iv": cand_iv,
-                            "score": raw_score,
-                            "factor": factor,
-                            "effective": effective,
-                        }
-                    )
-                    _add_step(
-                        run_id,
-                        f"  ✅ ALL TESTS PASSED! "
-                        f"IS/OOS: {split_label} · WFO: {wf_str} · Multi-symbol: {ms_label}",
-                    )
-                    _add_step(
-                        run_id,
-                        f"  ⚖ Effective score: {raw_score:.3f} × MS-factor "
-                        f"{factor:.3f} = {effective:.3f} "
-                        f"({len(passers)}/{_MAX_PASSERS} passing candidates)",
-                    )
+                if outcome.passed:
+                    passers.append(outcome.passer_entry)
                     if len(passers) >= _MAX_PASSERS:
                         _add_step(
                             run_id,
                             f"  {_MAX_PASSERS} passing candidates collected — scan ending",
                         )
                         break
-                else:
-                    _tl_end(run_id, _rob_key, status="warn", name=cand_spec.name)
-                    _add_step(
-                        run_id,
-                        (
-                            f"  ❌ Failed — IS/OOS: {split_label} · "
-                            f"WFO: {wf_str} · MC median DD: {mc_dd:.1f}% · Multi-symbol: {ms_label}"
-                            if mc_dd is not None
-                            else f"  ❌ Failed — IS/OOS: {split_label} · "
-                            f"WFO: {wf_str} · Multi-symbol: {ms_label}"
-                        ),
-                    )
 
             if passers:
                 # The passing candidate with the highest effective score wins.
