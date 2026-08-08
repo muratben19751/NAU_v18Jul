@@ -1284,6 +1284,37 @@ def _rank_results(results: list[tuple]) -> list[tuple]:
     return sorted(results, key=lambda x: _score(x[1]), reverse=True)
 
 
+def _rank_and_filter(
+    run_id: str, results: list[tuple]
+) -> tuple[list[tuple], list[tuple]]:
+    """Rank one round's iteration results and filter to the robustness-eligible
+    subset, logging the qualify-count and top-5 summary. Winnerless
+    return/continue control flow stays in the caller — this is the pure
+    ranking/filtering/logging half of Phase 3."""
+    ranked = _rank_results(results)
+    eligible = [
+        (s, r, iv)
+        for s, r, iv in ranked
+        if _score(r) > float("-inf") and _pre_robustness_eligible(r)
+    ]
+
+    _add_step(
+        run_id,
+        f"{len(eligible)}/{len(results)} results qualify (≥{_MIN_TRADES} trades, "
+        "positive PnL/Sharpe and positive benchmark excess)",
+    )
+    for rank_i, (s, r, iv) in enumerate(ranked[:5]):
+        sc = _score(r)
+        m = r.metrics or {}
+        _add_step(
+            run_id,
+            f"  #{rank_i + 1} {s.name} [{iv}] · score={sc:.3f} · "
+            f"PnL={m.get('pnl', 0):+.2f} · "
+            f"Sharpe={m.get('sharpe', float('nan')):.2f}",
+        )
+    return ranked, eligible
+
+
 # Liquid peer basket for multi-symbol robustness on external (US equity) runs.
 # Real instrument ids from the catalog — SPY/IWM are on the ARCA venue, not NASDAQ.
 EXTERNAL_PEER_BASKET = [
@@ -2961,27 +2992,7 @@ def _agent_worker(
                 "Ranking",
                 round_num=run_number,
             )
-            ranked = _rank_results(results)
-            eligible = [
-                (s, r, iv)
-                for s, r, iv in ranked
-                if _score(r) > float("-inf") and _pre_robustness_eligible(r)
-            ]
-
-            _add_step(
-                run_id,
-                f"{len(eligible)}/{len(results)} results qualify (≥{_MIN_TRADES} trades, "
-                "positive PnL/Sharpe and positive benchmark excess)",
-            )
-            for rank_i, (s, r, iv) in enumerate(ranked[:5]):
-                sc = _score(r)
-                m = r.metrics or {}
-                _add_step(
-                    run_id,
-                    f"  #{rank_i + 1} {s.name} [{iv}] · score={sc:.3f} · "
-                    f"PnL={m.get('pnl', 0):+.2f} · "
-                    f"Sharpe={m.get('sharpe', float('nan')):.2f}",
-                )
+            ranked, eligible = _rank_and_filter(run_id, results)
 
             if not eligible:
                 _tl_end(run_id, f"rank-r{run_number}", status="warn")

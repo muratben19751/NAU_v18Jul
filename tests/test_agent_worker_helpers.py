@@ -10,6 +10,9 @@
   functions taking `wstate` explicitly instead of closing over it.
 - A4: `_make_llm_control` factory promoted to a module function — this is the
   cost/time budget enforcement gate, previously zero-coverage.
+- A5: `_rank_and_filter` (Phase 3's pure ranking/filtering/logging) promoted
+  to a module function; the winnerless return/continue control flow stays
+  in `_agent_worker`.
 """
 
 from __future__ import annotations
@@ -274,3 +277,47 @@ class TestMakeLlmControl:
         lines = (tmp_path / f"{run_id}.jsonl").read_text().strip().splitlines()
         events = [json.loads(ln) for ln in lines]
         assert any(e["event"] == "llm_usage" and e["model"] == "x" for e in events)
+
+
+class TestRankAndFilter:
+    @staticmethod
+    def _result(n_trades, *, pnl=100.0, sharpe=1.0, excess=0.05, error=None):
+        return SimpleNamespace(
+            error=error,
+            metrics={
+                "n_trades": n_trades,
+                "pnl": pnl,
+                "sharpe_per_trade": sharpe,
+                "excess_return_fraction": excess,
+                "sharpe": sharpe,
+                "pnl_pct": 0.1,
+                "win_rate": 0.5,
+                "max_dd": -0.1,
+            },
+        )
+
+    def _spec(self, name):
+        return SimpleNamespace(name=name)
+
+    def test_qualifying_and_non_qualifying_membership(self, monkeypatch):
+        monkeypatch.setattr(ab, "_add_step", lambda *a, **k: None)
+        good = (self._spec("good"), self._result(30), "60")
+        junk_few_trades = (self._spec("junk1"), self._result(5), "60")
+        junk_negative_pnl = (self._spec("junk2"), self._result(30, pnl=-10.0), "60")
+        errored = (self._spec("junk3"), self._result(30, error="boom"), "60")
+        results = [good, junk_few_trades, junk_negative_pnl, errored]
+
+        ranked, eligible = ab._rank_and_filter("run-1", results)
+
+        assert len(ranked) == 4  # ranking includes everything
+        assert [s.name for s, _r, _iv in eligible] == ["good"]
+
+    def test_logs_qualify_count_and_top5(self, monkeypatch):
+        logged = []
+        monkeypatch.setattr(ab, "_add_step", lambda run_id, msg: logged.append(msg))
+        results = [(self._spec("a"), self._result(30), "60")]
+
+        ab._rank_and_filter("run-1", results)
+
+        assert any("1/1 results qualify" in m for m in logged)
+        assert any("#1 a" in m for m in logged)
