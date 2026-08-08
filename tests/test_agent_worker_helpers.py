@@ -1,4 +1,4 @@
-"""_agent_worker decomposition (2026-08-08 DeepR #47), steps A1-A3:
+"""_agent_worker decomposition (2026-08-08 DeepR #47), steps A1-A4:
 - A1: the three pure closures `_market_for`/`_iv_for`/`_recipe` were promoted
   to module-level functions in web/routes/agent_backtest.py so they can be
   unit-tested in isolation, instead of only indirectly through a full worker
@@ -8,11 +8,15 @@
   existing suite passing unchanged).
 - A3: `_cleanup_generated`/`_winless_bump`/`_winless_stop` promoted to module
   functions taking `wstate` explicitly instead of closing over it.
+- A4: `_make_llm_control` factory promoted to a module function — this is the
+  cost/time budget enforcement gate, previously zero-coverage.
 """
 
 from __future__ import annotations
 
 from types import SimpleNamespace
+
+import pytest
 
 import web.routes.agent_backtest as ab
 
@@ -187,3 +191,86 @@ class TestWinlessStop:
         finally:
             with ab._AGENT_LOCK:
                 ab._AGENT_PROGRESS.pop(run_id, None)
+
+
+class TestMakeLlmControl:
+    """Currently zero-coverage safety-critical budget/cancel logic (2026-08-08
+    DeepR #47-A4) — previously only reachable through a full worker run."""
+
+    def _progress(self, **overrides):
+        base = {"stop_requested": False, "max_total_tokens": 0}
+        base.update(overrides)
+        return base
+
+    def test_stop_requested_cancels(self, monkeypatch):
+        run_id = "run-stop"
+        with ab._AGENT_LOCK:
+            ab._AGENT_PROGRESS[run_id] = self._progress(stop_requested=True)
+        try:
+            cancelled, _ = ab._make_llm_control(run_id, 0.0, ab._WorkerState())
+            assert cancelled() is True
+        finally:
+            with ab._AGENT_LOCK:
+                ab._AGENT_PROGRESS.pop(run_id, None)
+
+    def test_run_missing_from_progress_cancels(self):
+        cancelled, _ = ab._make_llm_control("no-such-run", 0.0, ab._WorkerState())
+        assert cancelled() is True
+
+    def test_token_cap_raises_budget_reached(self, monkeypatch):
+        run_id = "run-tokens"
+        with ab._AGENT_LOCK:
+            ab._AGENT_PROGRESS[run_id] = self._progress(max_total_tokens=100)
+        monkeypatch.setattr(ab, "_token_usage", lambda state: 150)
+        try:
+            cancelled, _ = ab._make_llm_control(run_id, 0.0, ab._WorkerState())
+            with pytest.raises(ab.AgentBudgetReached, match="token ceiling"):
+                cancelled()
+        finally:
+            with ab._AGENT_LOCK:
+                ab._AGENT_PROGRESS.pop(run_id, None)
+
+    def test_wall_clock_cap_raises_budget_reached_after_token_check_passes(
+        self, monkeypatch
+    ):
+        run_id = "run-clock"
+        with ab._AGENT_LOCK:
+            ab._AGENT_PROGRESS[run_id] = self._progress()  # no token cap
+        wstate = ab._WorkerState()
+        wstate.worker_t0 = 0.0
+        monkeypatch.setattr(ab.time, "monotonic", lambda: 999999.0)
+        try:
+            cancelled, _ = ab._make_llm_control(run_id, max_hours=0.001, wstate=wstate)
+            with pytest.raises(ab.AgentBudgetReached, match="time ceiling"):
+                cancelled()
+        finally:
+            with ab._AGENT_LOCK:
+                ab._AGENT_PROGRESS.pop(run_id, None)
+
+    def test_no_condition_returns_false(self):
+        run_id = "run-fine"
+        with ab._AGENT_LOCK:
+            ab._AGENT_PROGRESS[run_id] = self._progress()
+        try:
+            cancelled, _ = ab._make_llm_control(run_id, 0.0, ab._WorkerState())
+            assert cancelled() is False
+        finally:
+            with ab._AGENT_LOCK:
+                ab._AGENT_PROGRESS.pop(run_id, None)
+
+    def test_observer_records_usage_and_logs(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(ab, "SESSION_LOG_DIR", tmp_path)
+        run_id = "run-observe"
+        recorded = {}
+        monkeypatch.setattr(
+            ab, "_add_tokens", lambda rid, usage: recorded.setdefault("usage", usage)
+        )
+        _, observer = ab._make_llm_control(run_id, 0.0, ab._WorkerState())
+        observer({"usage": {"input_tokens": 10}, "model": "x"})
+
+        assert recorded["usage"] == {"input_tokens": 10}
+        import json
+
+        lines = (tmp_path / f"{run_id}.jsonl").read_text().strip().splitlines()
+        events = [json.loads(ln) for ln in lines]
+        assert any(e["event"] == "llm_usage" and e["model"] == "x" for e in events)

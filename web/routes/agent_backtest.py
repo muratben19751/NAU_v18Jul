@@ -45,6 +45,7 @@ import re
 import threading
 import time
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -315,6 +316,42 @@ def _winless_stop(run_id: str, run_number: int, wstate: _WorkerState) -> None:
         completed_rounds=wstate.completed_rounds,
         total_rounds=wstate.completed_rounds,
     )
+
+
+def _make_llm_control(
+    run_id: str, max_hours: float, wstate: _WorkerState
+) -> tuple[Callable[[], bool], Callable[[dict], None]]:
+    """Build the (cancelled_fn, observer_fn) pair `set_thread_llm_control` needs.
+
+    Token-cap check runs BEFORE the wall-clock check — order matters for the
+    exact AgentBudgetReached message a caller sees when both ceilings are hit
+    at once.
+    """
+
+    def _llm_cancelled() -> bool:
+        with _AGENT_LOCK:
+            state = _AGENT_PROGRESS.get(run_id)
+            if state is None or state.get("stop_requested"):
+                return True
+            cap = int(state.get("max_total_tokens") or 0)
+            used = _token_usage(state)
+        if cap > 0 and used >= cap:
+            raise AgentBudgetReached(f"token ceiling ({cap:,}) reached at {used:,}")
+        # The old wall-clock ceiling was checked only between rounds. A long
+        # provider request could therefore begin just before the deadline and
+        # continue spending well past it. The LLM wrapper polls this callback,
+        # so reject cooperatively before the next provider step/retry.
+        if max_hours > 0 and (time.monotonic() - wstate.worker_t0) >= max_hours * 3600:
+            raise AgentBudgetReached(f"time ceiling ({max_hours:g} hours) reached")
+        return False
+
+    def _llm_observer(event: dict) -> None:
+        usage = event.get("usage")
+        if usage:
+            _add_tokens(run_id, usage)
+        _session_log(run_id, "llm_usage", **event)
+
+    return _llm_cancelled, _llm_observer
 
 
 def _json_safe(obj):
@@ -2046,29 +2083,6 @@ def _agent_worker(
     set_thread_effort(effort or None)
     set_thread_random_seed(run_id)
 
-    def _llm_cancelled() -> bool:
-        with _AGENT_LOCK:
-            state = _AGENT_PROGRESS.get(run_id)
-            if state is None or state.get("stop_requested"):
-                return True
-            cap = int(state.get("max_total_tokens") or 0)
-            used = _token_usage(state)
-        if cap > 0 and used >= cap:
-            raise AgentBudgetReached(f"token ceiling ({cap:,}) reached at {used:,}")
-        # The old wall-clock ceiling was checked only between rounds. A long
-        # provider request could therefore begin just before the deadline and
-        # continue spending well past it. The LLM wrapper polls this callback,
-        # so reject cooperatively before the next provider step/retry.
-        if max_hours > 0 and (time.monotonic() - wstate.worker_t0) >= max_hours * 3600:
-            raise AgentBudgetReached(f"time ceiling ({max_hours:g} hours) reached")
-        return False
-
-    def _llm_observer(event: dict) -> None:
-        usage = event.get("usage")
-        if usage:
-            _add_tokens(run_id, usage)
-        _session_log(run_id, "llm_usage", **event)
-
     from composer import load_catalog
     from data import _bybit_cache_path
     from sandbox import (
@@ -2083,6 +2097,13 @@ def _agent_worker(
         max_total_tokens = (
             max_total_tokens if max_total_tokens > 0 else DEFAULT_CONTINUOUS_MAX_TOKENS
         )
+
+    # M22: optional budget ceilings (0 = unlimited) + winnerless-round breaker.
+    # Built AFTER the continuous_mode default-adjustment above — _make_llm_control
+    # captures max_hours BY VALUE (unlike the closures it replaced, which read the
+    # enclosing scope live), so it must see the already-defaulted value.
+    wstate = _WorkerState()
+    _llm_cancelled, _llm_observer = _make_llm_control(run_id, max_hours, wstate)
 
     # Log the session start
     _session_log(
@@ -2129,8 +2150,6 @@ def _agent_worker(
     # kept retrying a persistent "Cache too little data" error in a useless loop
     # — this cuts that off).
     _CONSEC_ERR_LIMIT = 3
-    # M22: optional budget ceilings (0 = unlimited) + winnerless-round breaker.
-    wstate = _WorkerState()
 
     # Continuous mode with no ceiling has exactly two brakes: the winnerless-round
     # breaker and the identical-error breaker. Neither bounds cost — every round
@@ -3491,7 +3510,9 @@ def _agent_worker(
                 promoted=promotion_passed,
                 promotion_reason=promotion_reason,
             )
-            _cleanup_generated(run_id, wstate, winner_spec if promotion_passed else None)
+            _cleanup_generated(
+                run_id, wstate, winner_spec if promotion_passed else None
+            )
             wstate.consec_err = 0  # round finished successfully — error streak broken
             wstate.completed_rounds = run_number
             wstate.last_err_str = None
