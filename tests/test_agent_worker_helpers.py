@@ -34,6 +34,9 @@
   dict mutation inside it, the caller owns tf_cache. Highest-residual-risk
   step in the decomposition plan; regression-gated on the UNMODIFIED
   test_agent_fixes.py::TestContinuousCircuitBreaker passing before and after.
+- A11b: `_TfLoader` class (the `_load_tf` extraction) — tf_cache/
+  holdout_cache as instance attributes instead of closure-captured locals;
+  one fresh instance per round. Same regression gate as A11a.
 """
 
 from __future__ import annotations
@@ -951,6 +954,86 @@ class TestLoadTimeframeBars:
         # explicit range honored as-is, not cropped to 730d despite >1M bars
         span_days = (df.index[-1] - df.index[0]).days
         assert span_days > 731
+
+
+class TestTfLoader:
+    def _quiet(self, monkeypatch):
+        for name in ("_add_step", "_tl_begin", "_tl_end"):
+            monkeypatch.setattr(ab, name, lambda *a, **k: None)
+
+    def _loader(self):
+        return ab._TfLoader("run-1", 1, False, "", "BTCUSDT", "linear", "", "")
+
+    def test_cache_hit_does_not_reinvoke_the_loader(self, monkeypatch):
+        self._quiet(monkeypatch)
+        calls = {"n": 0}
+
+        def fake_load(*a, **k):
+            calls["n"] += 1
+            return _daily_bars(400)
+
+        monkeypatch.setattr(ab, "_load_timeframe_bars", fake_load)
+        monkeypatch.setattr(ab, "_split_holdout", lambda df: (df, None))
+
+        loader = self._loader()
+        loader.get("60")
+        loader.get("60")
+
+        assert calls["n"] == 1
+
+    def test_holdout_split_populated_with_correct_lead_in(self, monkeypatch):
+        self._quiet(monkeypatch)
+        full_df = _daily_bars(400)
+        hold_df = full_df.iloc[-50:]
+        trimmed_df = full_df.iloc[:300]  # arbitrary distinct object
+
+        monkeypatch.setattr(ab, "_load_timeframe_bars", lambda *a, **k: full_df)
+        monkeypatch.setattr(ab, "_split_holdout", lambda df: (trimmed_df, hold_df))
+
+        loader = self._loader()
+        result = loader.get("60")
+
+        assert result is trimmed_df
+        assert loader.tf_cache["60"] is trimmed_df
+        sealed_start = loader.holdout_cache["60"][1]
+        assert sealed_start == hold_df.index[0]
+        run_frame = loader.holdout_cache["60"][0]
+        # lead-in is exactly HOLDOUT_WARMUP_BARS rows ending right before
+        # the sealed boundary, plus the sealed slice itself
+        assert len(run_frame) == ab.HOLDOUT_WARMUP_BARS + len(hold_df)
+        assert run_frame.index[ab.HOLDOUT_WARMUP_BARS] == hold_df.index[0]
+
+    def test_holdout_split_none_when_insufficient_data(self, monkeypatch):
+        self._quiet(monkeypatch)
+        full_df = _daily_bars(400)
+        monkeypatch.setattr(ab, "_load_timeframe_bars", lambda *a, **k: full_df)
+        monkeypatch.setattr(ab, "_split_holdout", lambda df: (df, None))
+
+        loader = self._loader()
+        result = loader.get("60")
+
+        assert result is full_df
+        assert loader.tf_cache["60"] is full_df
+        assert loader.holdout_cache["60"] is None
+
+    def test_exception_ends_the_timeline_span_and_propagates(self, monkeypatch):
+        monkeypatch.setattr(ab, "_add_step", lambda *a, **k: None)
+        monkeypatch.setattr(ab, "_tl_begin", lambda *a, **k: None)
+        ended = {}
+        monkeypatch.setattr(
+            ab, "_tl_end", lambda run_id, key, **k: ended.update(status=k.get("status"))
+        )
+        monkeypatch.setattr(
+            ab,
+            "_load_timeframe_bars",
+            lambda *a, **k: (_ for _ in ()).throw(RuntimeError("no data")),
+        )
+
+        loader = self._loader()
+        with pytest.raises(RuntimeError, match="no data"):
+            loader.get("60")
+
+        assert ended["status"] == "fail"
 
 
 class _FakeRobProgress:

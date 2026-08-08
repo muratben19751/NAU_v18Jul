@@ -2086,6 +2086,95 @@ def _load_timeframe_bars(
     return df
 
 
+class _TfLoader:
+    """Phase 0's cache/holdout-split wrapper around `_load_timeframe_bars`
+    (the #47-A11b extraction of `_load_tf`). Owns tf_cache/holdout_cache as
+    instance attributes instead of closure-captured locals — one fresh
+    instance is constructed per round (the caches must NOT survive into the
+    next round, matching the original per-round local dicts)."""
+
+    def __init__(
+        self,
+        run_id: str,
+        run_number: int,
+        is_external: bool,
+        instrument_id: str,
+        symbol: str,
+        category: str,
+        range_start: str,
+        range_end: str,
+    ) -> None:
+        self.run_id = run_id
+        self.run_number = run_number
+        self.is_external = is_external
+        self.instrument_id = instrument_id
+        self.symbol = symbol
+        self.category = category
+        self.range_start = range_start
+        self.range_end = range_end
+        # L32: tf_cache holds the TRIMMED data (excluding the sealed holdout);
+        # the holdout slice is stored in holdout_cache and used ONLY in a
+        # single validation run after the winner is declared.
+        self.tf_cache: dict[str, pd.DataFrame] = {}  # interval → trimmed_df
+        # interval → (warmup lead-in + sealed df, sealed start ts) | None
+        self.holdout_cache: dict[str, tuple[pd.DataFrame, pd.Timestamp] | None] = {}
+
+    def get(self, iv: str) -> pd.DataFrame:
+        if iv in self.tf_cache:
+            return self.tf_cache[iv]
+        # Timeline: cache-miss load is tracked as a "data" span.
+        _tl_key = f"data-{iv}-r{self.run_number}"
+        _tl_begin(
+            self.run_id,
+            "data",
+            _tl_key,
+            f"Data: {self.instrument_id if self.is_external else self.symbol} {iv}",
+            round_num=self.run_number,
+        )
+        try:
+            df = _load_timeframe_bars(
+                self.run_id,
+                self.is_external,
+                self.instrument_id,
+                self.symbol,
+                self.category,
+                iv,
+                self.range_start,
+                self.range_end,
+            )
+        except Exception:
+            _tl_end(self.run_id, _tl_key, status="fail")
+            raise
+        # L32: sealed holdout — the last OOS_HOLDOUT_DAYS days are withheld
+        # from the iteration + robustness phases. Skip if remaining data < 200 bars.
+        trimmed, hold_df = _split_holdout(df)
+        if hold_df is not None:
+            # Holdout RUN frame = warmup lead-in + sealed slice; the
+            # sealed boundary rides along so scoring counts only
+            # in-window entries (indicators need ~NAU_WINDOW bars
+            # before the first signal — the bare slice produced
+            # 0-trade holdouts on 4h/1d, validating nothing).
+            _lead = df[df.index < hold_df.index[0]].tail(HOLDOUT_WARMUP_BARS)
+            self.holdout_cache[iv] = (pd.concat([_lead, hold_df]), hold_df.index[0])
+            df = trimmed
+            self.tf_cache[iv] = df
+            _add_step(
+                self.run_id,
+                f"🔒 Sealed holdout separated ({iv}): the last "
+                f"{OOS_HOLDOUT_DAYS} days ({len(hold_df):,} bars) will be "
+                f"withheld until a winner is declared — {len(df):,} bars remaining",
+            )
+        else:
+            self.holdout_cache[iv] = None
+            self.tf_cache[iv] = df
+            _add_step(
+                self.run_id,
+                f"⚠ insufficient data for holdout ({iv}) — sealed OOS skipped",
+            )
+        _tl_end(self.run_id, _tl_key, status="ok", n_bars=len(df))
+        return df
+
+
 # Liquid peer basket for multi-symbol robustness on external (US equity) runs.
 # Real instrument ids from the catalog — SPY/IWM are on the ARCA venue, not NASDAQ.
 EXTERNAL_PEER_BASKET = [
@@ -2864,7 +2953,6 @@ def _agent_worker(
     research_only: bool = False,
     data_truncation: dict | None = None,
 ) -> None:
-    import pandas as pd
 
     from agent import (
         LLMCallCancelled,
@@ -3052,73 +3140,19 @@ def _agent_worker(
         try:
             # ── Phase 0: Data ────────────────────────────────────────────────────
             # Multi-TF: lazy-load cache per TF. Pre-load the first TF here.
-            # L32: tf_cache holds the TRIMMED data (excluding the sealed holdout);
-            # the holdout slice is stored in holdout_cache and used ONLY in a
-            # single validation run after the winner is declared.
-            tf_cache: dict[str, pd.DataFrame] = {}  # interval → trimmed_df
-            # interval → (warmup lead-in + sealed df, sealed start ts) | None
-            holdout_cache: dict[str, tuple[pd.DataFrame, pd.Timestamp] | None] = {}
-
-            def _load_tf(iv: str) -> pd.DataFrame:
-                if iv in tf_cache:
-                    return tf_cache[iv]
-                # Timeline: cache-miss load is tracked as a "data" span.
-                _tl_key = f"data-{iv}-r{run_number}"
-                _tl_begin(
-                    run_id,
-                    "data",
-                    _tl_key,
-                    f"Data: {instrument_id if is_external else symbol} {iv}",
-                    round_num=run_number,
-                )
-                try:
-                    df = _load_tf_uncached(iv)
-                except Exception:
-                    _tl_end(run_id, _tl_key, status="fail")
-                    raise
-                # L32: sealed holdout — the last OOS_HOLDOUT_DAYS days are withheld
-                # from the iteration + robustness phases. Skip if remaining data < 200 bars.
-                trimmed, hold_df = _split_holdout(df)
-                if hold_df is not None:
-                    # Holdout RUN frame = warmup lead-in + sealed slice; the
-                    # sealed boundary rides along so scoring counts only
-                    # in-window entries (indicators need ~NAU_WINDOW bars
-                    # before the first signal — the bare slice produced
-                    # 0-trade holdouts on 4h/1d, validating nothing).
-                    _lead = df[df.index < hold_df.index[0]].tail(HOLDOUT_WARMUP_BARS)
-                    holdout_cache[iv] = (
-                        pd.concat([_lead, hold_df]),
-                        hold_df.index[0],
-                    )
-                    df = trimmed
-                    tf_cache[iv] = df
-                    _add_step(
-                        run_id,
-                        f"🔒 Sealed holdout separated ({iv}): the last "
-                        f"{OOS_HOLDOUT_DAYS} days ({len(hold_df):,} bars) will be "
-                        f"withheld until a winner is declared — {len(df):,} bars remaining",
-                    )
-                else:
-                    holdout_cache[iv] = None
-                    tf_cache[iv] = df
-                    _add_step(
-                        run_id,
-                        f"⚠ insufficient data for holdout ({iv}) — sealed OOS skipped",
-                    )
-                _tl_end(run_id, _tl_key, status="ok", n_bars=len(df))
-                return df
-
-            def _load_tf_uncached(iv: str) -> pd.DataFrame:
-                return _load_timeframe_bars(
-                    run_id,
-                    is_external,
-                    instrument_id,
-                    symbol,
-                    category,
-                    iv,
-                    range_start,
-                    range_end,
-                )
+            # Fresh loader every round — its tf_cache/holdout_cache must NOT
+            # survive into the next round (matches the original per-round
+            # local dicts this replaced).
+            tf_loader = _TfLoader(
+                run_id,
+                run_number,
+                is_external,
+                instrument_id,
+                symbol,
+                category,
+                range_start,
+                range_end,
+            )
 
             if is_external:
                 # Narrow down to the timeframes the instrument actually has.
@@ -3153,7 +3187,7 @@ def _agent_worker(
                 )
                 + (f" + {len(intervals) - 1} more TF" if len(intervals) > 1 else ""),
             )
-            first_df = _load_tf(first_iv)
+            first_df = tf_loader.get(first_iv)
             date_start = first_df.index[0].date()
             date_end = first_df.index[-1].date()
             _done_phase(
@@ -3231,7 +3265,7 @@ def _agent_worker(
                 # generation side (_iv_for), which the loop must agree with:
                 # the spec was written for THIS bar.
                 iter_iv = _iv_for(i, run_number, intervals)
-                iter_df = _load_tf(iter_iv)
+                iter_df = tf_loader.get(iter_iv)
                 r = _run_backtest_iteration(
                     run_id,
                     run_number,
@@ -3494,7 +3528,7 @@ def _agent_worker(
                         "  ⏹ Stop signal — breaking the robustness scan",
                     )
                     break
-                cand_df = _load_tf(cand_iv)
+                cand_df = tf_loader.get(cand_iv)
                 outcome = _scan_one_candidate(
                     run_id,
                     run_number,
@@ -3556,7 +3590,7 @@ def _agent_worker(
                 # (in multi-TF the first TF's range was shifting the chart URL
                 # window and the winner session-log to the wrong range).
                 bars_info["granularity" if is_external else "interval"] = winner_iv
-                _win_df = _load_tf(winner_iv)
+                _win_df = tf_loader.get(winner_iv)
                 bars_info["n_bars"] = len(_win_df)
                 bars_info["start"] = str(_win_df.index[0].date())
                 bars_info["end"] = str(_win_df.index[-1].date())
@@ -3618,7 +3652,7 @@ def _agent_worker(
                 winner_spec,
                 winner_iv,
                 winner_rob,
-                holdout_cache,
+                tf_loader.holdout_cache,
                 wstate,
                 is_external,
                 instrument_id,
