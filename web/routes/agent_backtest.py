@@ -270,6 +270,53 @@ class _WorkerState:
     retained_block_names: set[str] = field(default_factory=set)
 
 
+def _cleanup_generated(run_id: str, wstate: _WorkerState, keep_spec=None) -> None:
+    """Delete this run's disposable generated blocks, retaining a promotion."""
+    try:
+        from custom_block_store import cleanup_agent_run
+
+        wstate.retained_block_names.update(
+            str(block.type) for block in (getattr(keep_spec, "blocks", None) or [])
+        )
+        cleanup_agent_run(run_id, keep_names=wstate.retained_block_names)
+    except Exception:  # best effort; cleanup must never mask a terminal result
+        logging.exception("AUTO generated-block cleanup failed for run %s", run_id)
+
+
+def _winless_bump(wstate: _WorkerState) -> bool:
+    """Increment the winnerless-round counter; returns True if the limit is exceeded.
+
+    M22: previously it only incremented in the 'no eligible candidate' branch;
+    the 'candidates exist but none passed robustness' branch skipped the
+    counter, leaving an infinite-loop risk. Now both winnerless branches call
+    this.
+    """
+    wstate.winless_rounds += 1
+    return bool(_WINLESS_ROUND_LIMIT and wstate.winless_rounds >= _WINLESS_ROUND_LIMIT)
+
+
+def _winless_stop(run_id: str, run_number: int, wstate: _WorkerState) -> None:
+    _add_step(
+        run_id,
+        f"⏹ {_WINLESS_ROUND_LIMIT} consecutive winnerless rounds — "
+        "circuit breaker stopping continuous mode.",
+    )
+    _tl_close_open(run_id, status="warn")
+    with _AGENT_LOCK:
+        if run_id in _AGENT_PROGRESS:
+            _AGENT_PROGRESS[run_id]["done"] = True
+            _AGENT_PROGRESS[run_id]["continuous_finished"] = True
+    _session_log(
+        run_id,
+        "session_end",
+        round=run_number,
+        outcome="winless_limit",
+        started_round=wstate.last_started_round,
+        completed_rounds=wstate.completed_rounds,
+        total_rounds=wstate.completed_rounds,
+    )
+
+
 def _json_safe(obj):
     """Reduces NaN/Inf floats to None (recursive) — prevents json.dumps from
     producing non-standard ``NaN``/``Infinity`` literals (part of L33).
@@ -2085,18 +2132,6 @@ def _agent_worker(
     # M22: optional budget ceilings (0 = unlimited) + winnerless-round breaker.
     wstate = _WorkerState()
 
-    def _cleanup_generated(keep_spec=None) -> None:
-        """Delete this run's disposable generated blocks, retaining a promotion."""
-        try:
-            from custom_block_store import cleanup_agent_run
-
-            wstate.retained_block_names.update(
-                str(block.type) for block in (getattr(keep_spec, "blocks", None) or [])
-            )
-            cleanup_agent_run(run_id, keep_names=wstate.retained_block_names)
-        except Exception:  # best effort; cleanup must never mask a terminal result
-            logging.exception("AUTO generated-block cleanup failed for run %s", run_id)
-
     # Continuous mode with no ceiling has exactly two brakes: the winnerless-round
     # breaker and the identical-error breaker. Neither bounds cost — every round
     # spends LLM calls whether or not it produces a candidate. Say so once, in the
@@ -2108,40 +2143,6 @@ def _agent_worker(
             f"only on the stop button, {_WINLESS_ROUND_LIMIT} winnerless rounds, "
             f"or {_CONSEC_ERR_LIMIT} identical consecutive errors. Set a limit in "
             "the brief to bound the cost.",
-        )
-
-    def _winless_bump() -> bool:
-        """Increment the winnerless-round counter; returns True if the limit is exceeded.
-
-        M22: previously it only incremented in the 'no eligible candidate' branch;
-        the 'candidates exist but none passed robustness' branch skipped the
-        counter, leaving an infinite-loop risk. Now both winnerless branches call
-        this.
-        """
-        wstate.winless_rounds += 1
-        return bool(
-            _WINLESS_ROUND_LIMIT and wstate.winless_rounds >= _WINLESS_ROUND_LIMIT
-        )
-
-    def _winless_stop() -> None:
-        _add_step(
-            run_id,
-            f"⏹ {_WINLESS_ROUND_LIMIT} consecutive winnerless rounds — "
-            "circuit breaker stopping continuous mode.",
-        )
-        _tl_close_open(run_id, status="warn")
-        with _AGENT_LOCK:
-            if run_id in _AGENT_PROGRESS:
-                _AGENT_PROGRESS[run_id]["done"] = True
-                _AGENT_PROGRESS[run_id]["continuous_finished"] = True
-        _session_log(
-            run_id,
-            "session_end",
-            round=run_number,
-            outcome="winless_limit",
-            started_round=wstate.last_started_round,
-            completed_rounds=wstate.completed_rounds,
-            total_rounds=wstate.completed_rounds,
         )
 
     while True:
@@ -2967,7 +2968,7 @@ def _agent_worker(
                 _tl_end(run_id, f"rank-r{run_number}", status="warn")
                 _done_phase(run_id, 3, "⚠ No eligible result — all iterations failed")
                 wstate.completed_rounds = run_number
-                _cleanup_generated()
+                _cleanup_generated(run_id, wstate)
                 if not continuous_mode:
                     with _AGENT_LOCK:
                         if run_id in _AGENT_PROGRESS:
@@ -2986,8 +2987,8 @@ def _agent_worker(
                     0  # round ended without exception — error streak broken
                 )
                 wstate.last_err_str = None
-                if _winless_bump():
-                    _winless_stop()
+                if _winless_bump(wstate):
+                    _winless_stop(run_id, run_number, wstate)
                     return
                 continue
             _tl_end(run_id, f"rank-r{run_number}", status="ok")
@@ -3249,7 +3250,7 @@ def _agent_worker(
                     run_id, 4, f"✗ None of the {len(eligible)} candidates passed"
                 )
                 wstate.completed_rounds = run_number
-                _cleanup_generated()
+                _cleanup_generated(run_id, wstate)
                 if not continuous_mode:
                     with _AGENT_LOCK:
                         if run_id in _AGENT_PROGRESS:
@@ -3271,8 +3272,8 @@ def _agent_worker(
                 # M22: 'candidates exist but none passed robustness' is also a
                 # winnerless round — the counter must increment here too (the most
                 # common infinite-loop scenario).
-                if _winless_bump():
-                    _winless_stop()
+                if _winless_bump(wstate):
+                    _winless_stop(run_id, run_number, wstate)
                     return
                 with _AGENT_LOCK:
                     _stop_before_next = bool(
@@ -3455,7 +3456,7 @@ def _agent_worker(
                 _done_phase(
                     run_id, 5, f"❌ Not published: {promotion_reason}", degraded=True
                 )
-                promotion_limit_hit = _winless_bump()
+                promotion_limit_hit = _winless_bump(wstate)
 
             with _AGENT_LOCK:
                 if run_id in _AGENT_PROGRESS:
@@ -3490,7 +3491,7 @@ def _agent_worker(
                 promoted=promotion_passed,
                 promotion_reason=promotion_reason,
             )
-            _cleanup_generated(winner_spec if promotion_passed else None)
+            _cleanup_generated(run_id, wstate, winner_spec if promotion_passed else None)
             wstate.consec_err = 0  # round finished successfully — error streak broken
             wstate.completed_rounds = run_number
             wstate.last_err_str = None
@@ -3511,7 +3512,7 @@ def _agent_worker(
                 return
 
             if promotion_limit_hit:
-                _winless_stop()
+                _winless_stop(run_id, run_number, wstate)
                 return
 
             # In continuous mode: briefly expose the result then continue
@@ -3544,7 +3545,7 @@ def _agent_worker(
                 completed_rounds=wstate.completed_rounds,
                 total_rounds=wstate.completed_rounds,
             )
-            _cleanup_generated()
+            _cleanup_generated(run_id, wstate)
             return
         except AgentBudgetReached as e:
             _tl_close_open(run_id, status="warn")
@@ -3563,7 +3564,7 @@ def _agent_worker(
                 completed_rounds=wstate.completed_rounds,
                 total_rounds=wstate.completed_rounds,
             )
-            _cleanup_generated()
+            _cleanup_generated(run_id, wstate)
             return
         except TerminalLLMError as e:
             _tl_close_open(run_id, status="fail")
@@ -3587,7 +3588,7 @@ def _agent_worker(
                 completed_rounds=wstate.completed_rounds,
                 total_rounds=wstate.completed_rounds,
             )
-            _cleanup_generated()
+            _cleanup_generated(run_id, wstate)
             return
         except Exception as e:
             _tl_close_open(run_id, status="fail")
@@ -3607,7 +3608,7 @@ def _agent_worker(
                 completed_rounds=wstate.completed_rounds,
                 total_rounds=wstate.completed_rounds,
             )
-            _cleanup_generated()
+            _cleanup_generated(run_id, wstate)
             if not continuous_mode:
                 break
             # Circuit breaker: the same error _CONSEC_ERR_LIMIT consecutive rounds
@@ -3664,7 +3665,7 @@ def _agent_worker(
             # Permanent end: the progress route stops polling when it sees this
             # (a separate flag to distinguish it from the inter-round done=True window).
             _AGENT_PROGRESS[run_id]["continuous_finished"] = True
-    _cleanup_generated()
+    _cleanup_generated(run_id, wstate)
     _session_log(
         run_id,
         "session_end",

@@ -1,4 +1,4 @@
-"""_agent_worker decomposition (2026-08-08 DeepR #47), steps A1-A2:
+"""_agent_worker decomposition (2026-08-08 DeepR #47), steps A1-A3:
 - A1: the three pure closures `_market_for`/`_iv_for`/`_recipe` were promoted
   to module-level functions in web/routes/agent_backtest.py so they can be
   unit-tested in isolation, instead of only indirectly through a full worker
@@ -6,9 +6,13 @@
 - A2: the ~10 round-persistent locals were collected into a `_WorkerState`
   dataclass (mechanical rename only, no logic change — verified by the full
   existing suite passing unchanged).
+- A3: `_cleanup_generated`/`_winless_bump`/`_winless_stop` promoted to module
+  functions taking `wstate` explicitly instead of closing over it.
 """
 
 from __future__ import annotations
+
+from types import SimpleNamespace
 
 import web.routes.agent_backtest as ab
 
@@ -92,3 +96,94 @@ class TestWorkerStateDefaults:
             "retained_block_names",
         ):
             assert getattr(ab._WorkerState(), field_name) == set()
+
+
+class _FakeSpec:
+    def __init__(self, block_types):
+        self.blocks = [SimpleNamespace(type=t) for t in block_types]
+
+
+class TestCleanupGenerated:
+    def test_keep_spec_types_land_in_retained_block_names_and_are_passed_through(
+        self, monkeypatch
+    ):
+        calls = {}
+
+        def fake_cleanup_agent_run(run_id, keep_names):
+            calls["run_id"] = run_id
+            calls["keep_names"] = set(keep_names)
+
+        monkeypatch.setattr(
+            "custom_block_store.cleanup_agent_run", fake_cleanup_agent_run
+        )
+        wstate = ab._WorkerState()
+        ab._cleanup_generated("run-1", wstate, _FakeSpec(["momentum", "rsi"]))
+
+        assert wstate.retained_block_names == {"momentum", "rsi"}
+        assert calls == {"run_id": "run-1", "keep_names": {"momentum", "rsi"}}
+
+    def test_exception_is_swallowed_not_propagated(self, monkeypatch, caplog):
+        def boom(*a, **k):
+            raise RuntimeError("disk full")
+
+        monkeypatch.setattr("custom_block_store.cleanup_agent_run", boom)
+        wstate = ab._WorkerState()
+
+        with caplog.at_level("ERROR"):
+            ab._cleanup_generated("run-1", wstate)  # must not raise
+
+        assert "cleanup failed" in caplog.text
+
+
+class TestWinlessBump:
+    def test_returns_false_until_limit_then_true(self, monkeypatch):
+        monkeypatch.setattr(ab, "_WINLESS_ROUND_LIMIT", 3)
+        wstate = ab._WorkerState()
+        assert ab._winless_bump(wstate) is False  # 1
+        assert ab._winless_bump(wstate) is False  # 2
+        assert ab._winless_bump(wstate) is True  # 3 == limit
+
+    def test_same_counter_regardless_of_which_winnerless_branch_calls_it(
+        self, monkeypatch
+    ):
+        """M22 regression: both winnerless branches (no-eligible, no-winner)
+        must increment the SAME counter — verified here by calling it from
+        two 'different' call sites and confirming the count is shared."""
+        monkeypatch.setattr(ab, "_WINLESS_ROUND_LIMIT", 2)
+        wstate = ab._WorkerState()
+        ab._winless_bump(wstate)  # simulates "no eligible candidate" branch
+        assert ab._winless_bump(wstate) is True  # simulates "no winner" branch
+
+
+class TestWinlessStop:
+    def test_marks_done_and_logs_session_end_with_round_counters(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr(ab, "SESSION_LOG_DIR", tmp_path)
+        run_id = "run-winless"
+        with ab._AGENT_LOCK:
+            ab._AGENT_PROGRESS[run_id] = {
+                "done": False,
+                "continuous_finished": False,
+                "steps": [],
+            }
+        try:
+            wstate = ab._WorkerState()
+            wstate.last_started_round = 5
+            wstate.completed_rounds = 4
+            ab._winless_stop(run_id, 6, wstate)
+
+            assert ab._AGENT_PROGRESS[run_id]["done"] is True
+            assert ab._AGENT_PROGRESS[run_id]["continuous_finished"] is True
+
+            import json
+
+            lines = (tmp_path / f"{run_id}.jsonl").read_text().strip().splitlines()
+            events = [json.loads(ln) for ln in lines]
+            end = [e for e in events if e["event"] == "session_end"]
+            assert end and end[0]["outcome"] == "winless_limit"
+            assert end[0]["started_round"] == 5
+            assert end[0]["completed_rounds"] == 4
+        finally:
+            with ab._AGENT_LOCK:
+                ab._AGENT_PROGRESS.pop(run_id, None)
