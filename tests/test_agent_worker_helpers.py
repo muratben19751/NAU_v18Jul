@@ -29,10 +29,16 @@
 - A9: `_run_backtest_iteration` (Phase 2's run-backtest-and-log-result half)
   promoted to a module function; the 'propose next spec' lookahead-generation
   block (deferred #47-A10 in the plan) stays in `_agent_worker`.
+- A11a: `_load_timeframe_bars` (Phase 0's source-agnostic bar loader, the
+  `_load_tf_uncached` extraction) promoted to a module function — no cache
+  dict mutation inside it, the caller owns tf_cache. Highest-residual-risk
+  step in the decomposition plan; regression-gated on the UNMODIFIED
+  test_agent_fixes.py::TestContinuousCircuitBreaker passing before and after.
 """
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import pandas as pd
@@ -780,6 +786,171 @@ class TestRunBacktestIteration:
         r = ab._run_backtest_iteration(**args)  # must not raise
 
         assert r is run_result
+
+
+def _daily_bars(n=800, start="2024-01-01"):
+    idx = pd.date_range(start, periods=n, freq="1D", tz="UTC")
+    return pd.DataFrame(
+        {
+            "open": [100.0] * n,
+            "high": [101.0] * n,
+            "low": [99.0] * n,
+            "close": [100.5] * n,
+            "volume": [10.0] * n,
+        },
+        index=idx,
+    )
+
+
+class TestLoadTimeframeBars:
+    def _args(self, **overrides):
+        base = dict(
+            run_id="run-1",
+            is_external=False,
+            instrument_id="",
+            symbol="BTCUSDT",
+            category="linear",
+            iv="60",
+            range_start="",
+            range_end="",
+        )
+        base.update(overrides)
+        return base
+
+    def _quiet(self, monkeypatch):
+        monkeypatch.setattr(ab, "_add_step", lambda *a, **k: None)
+
+    def test_bybit_lookback_table_sizes_the_default_window(self, monkeypatch):
+        self._quiet(monkeypatch)
+        captured = {}
+
+        def fake_load(**kw):
+            captured.update(kw)
+            return _daily_bars(200)
+
+        monkeypatch.setattr("data.load_bybit_bars", fake_load)
+        ab._load_timeframe_bars(**self._args(iv="5"))
+
+        expected_days = 1460  # lookback table: "5" -> 1460
+        delta = captured["end"] - captured["start"]
+        assert abs(delta.days - expected_days) <= 1
+
+    def test_bybit_explicit_range_overrides_lookback(self, monkeypatch):
+        self._quiet(monkeypatch)
+        captured = {}
+
+        def fake_load(**kw):
+            captured.update(kw)
+            return _daily_bars(200)
+
+        monkeypatch.setattr("data.load_bybit_bars", fake_load)
+        ab._load_timeframe_bars(
+            **self._args(range_start="2024-01-01", range_end="2024-01-10")
+        )
+
+        assert captured["start"] == datetime(2024, 1, 1, tzinfo=UTC)
+        assert captured["end"] == datetime(2024, 1, 11, tzinfo=UTC)  # +1 day, inclusive
+
+    def test_bybit_fetch_error_falls_back_to_cache_when_it_exists(self, monkeypatch):
+        self._quiet(monkeypatch)
+
+        def boom(**kw):
+            raise RuntimeError("network down")
+
+        monkeypatch.setattr("data.load_bybit_bars", boom)
+        fake_path = SimpleNamespace(exists=lambda: True)
+        monkeypatch.setattr("data._bybit_cache_path", lambda *a, **k: fake_path)
+        monkeypatch.setattr(pd, "read_parquet", lambda p: _daily_bars(200))
+
+        df = ab._load_timeframe_bars(**self._args())
+        assert len(df) == 200
+
+    def test_bybit_fetch_error_no_cache_raises(self, monkeypatch):
+        self._quiet(monkeypatch)
+
+        def boom(**kw):
+            raise RuntimeError("network down")
+
+        monkeypatch.setattr("data.load_bybit_bars", boom)
+        fake_path = SimpleNamespace(exists=lambda: False)
+        monkeypatch.setattr("data._bybit_cache_path", lambda *a, **k: fake_path)
+
+        with pytest.raises(RuntimeError, match="Could not load"):
+            ab._load_timeframe_bars(**self._args())
+
+    def test_bybit_too_few_bars_raises(self, monkeypatch):
+        self._quiet(monkeypatch)
+        monkeypatch.setattr("data.load_bybit_bars", lambda **kw: _daily_bars(50))
+
+        with pytest.raises(RuntimeError, match="Insufficient data"):
+            ab._load_timeframe_bars(**self._args())
+
+    def test_bybit_1m_guard_crops_to_last_730_days(self, monkeypatch):
+        self._quiet(monkeypatch)
+        big = _daily_bars(1_000_001, start="2000-01-01")
+        monkeypatch.setattr("data.load_bybit_bars", lambda **kw: big)
+
+        df = ab._load_timeframe_bars(**self._args(iv="1"))
+
+        span_days = (df.index[-1] - df.index[0]).days
+        assert span_days <= 731
+
+    def test_external_date_window_slices_inclusive(self, monkeypatch):
+        self._quiet(monkeypatch)
+        monkeypatch.setattr("data.load_external_bars", lambda *a, **k: _daily_bars(800))
+
+        df = ab._load_timeframe_bars(
+            **self._args(
+                is_external=True,
+                instrument_id="AAPL.NASDAQ",
+                range_start="2024-01-01",
+                range_end="2024-06-01",  # 153 days, inclusive — clears the <100 guard
+            )
+        )
+
+        assert len(df) == 153
+        assert df.index[0] == pd.Timestamp("2024-01-01", tz="UTC")
+        assert df.index[-1] == pd.Timestamp("2024-06-01", tz="UTC")
+
+    def test_external_too_few_bars_raises(self, monkeypatch):
+        self._quiet(monkeypatch)
+        monkeypatch.setattr("data.load_external_bars", lambda *a, **k: _daily_bars(50))
+
+        with pytest.raises(RuntimeError, match="Insufficient data"):
+            ab._load_timeframe_bars(
+                **self._args(is_external=True, instrument_id="AAPL.NASDAQ")
+            )
+
+    def test_external_1_minute_guard_crops_without_explicit_range(self, monkeypatch):
+        self._quiet(monkeypatch)
+        big = _daily_bars(1_000_001, start="2000-01-01")
+        monkeypatch.setattr("data.load_external_bars", lambda *a, **k: big)
+
+        df = ab._load_timeframe_bars(
+            **self._args(is_external=True, instrument_id="AAPL.NASDAQ", iv="1-MINUTE")
+        )
+
+        span_days = (df.index[-1] - df.index[0]).days
+        assert span_days <= 731
+
+    def test_external_1_minute_guard_skipped_with_explicit_range(self, monkeypatch):
+        self._quiet(monkeypatch)
+        big = _daily_bars(1_000_001, start="2000-01-01")
+        monkeypatch.setattr("data.load_external_bars", lambda *a, **k: big)
+
+        df = ab._load_timeframe_bars(
+            **self._args(
+                is_external=True,
+                instrument_id="AAPL.NASDAQ",
+                iv="1-MINUTE",
+                range_start="2000-01-01",
+                range_end="2002-12-31",
+            )
+        )
+
+        # explicit range honored as-is, not cropped to 730d despite >1M bars
+        span_days = (df.index[-1] - df.index[0]).days
+        assert span_days > 731
 
 
 class _FakeRobProgress:

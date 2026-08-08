@@ -1979,6 +1979,113 @@ def _run_backtest_iteration(
     return r
 
 
+def _load_timeframe_bars(
+    run_id: str,
+    is_external: bool,
+    instrument_id: str,
+    symbol: str,
+    category: str,
+    iv: str,
+    range_start: str,
+    range_end: str,
+) -> pd.DataFrame:
+    """Phase 0's source-agnostic bar loader (the #47-A11a extraction of
+    `_load_tf_uncached`). No cache dict mutation here — the caller
+    (`_TfLoader`) owns tf_cache/holdout_cache."""
+    from datetime import timedelta
+
+    from data import load_bybit_bars
+
+    if is_external:
+        from data import load_external_bars
+
+        _add_step(run_id, f"Loading catalog data ({instrument_id}, {iv})…")
+        df = load_external_bars(instrument_id, iv)  # full catalog range
+        if range_start or range_end:
+            # Explicit user window (MAX butonu / elle tarih):
+            # inclusive [start, end] day slice, tz of the frame.
+            _tz = df.index.tz
+            if range_start:
+                df = df[df.index >= pd.Timestamp(range_start, tz=_tz)]
+            if range_end:
+                df = df[
+                    df.index < pd.Timestamp(range_end, tz=_tz) + pd.Timedelta(days=1)
+                ]
+            _add_step(
+                run_id,
+                f"Date window {range_start or '…'} → {range_end or '…'}"
+                f" ({len(df):,} bars)",
+            )
+        if len(df) < 100:
+            raise RuntimeError(
+                f"Insufficient data ({len(df)} bars, {instrument_id} {iv})."
+            )
+        # 1-MINUTE guard: ~23 years >2M bars — crop to the last 2 years
+        # to keep the engine responsive (mirror of the Bybit 1m guard).
+        # An EXPLICIT user window is honored as-is — the user chose it.
+        if iv == "1-MINUTE" and len(df) > 1_000_000 and not (range_start or range_end):
+            cutoff = df.index[-1] - pd.Timedelta(days=730)
+            df = df[df.index >= cutoff]
+            _add_step(
+                run_id, f"1-MINUTE cropped to the last 2 years ({len(df):,} bars)"
+            )
+        return df
+
+    from data import _bybit_cache_path
+
+    cache_path = _bybit_cache_path(category, symbol, iv)
+    # Widest available range per TF. 1m is bounded to ~2y (and cropped
+    # below) so the engine stays responsive; coarser TFs pull Bybit's
+    # full history (bar counts are small). load_bybit_bars now backfills
+    # older history when `start` predates the cache, so a narrow cache
+    # (e.g. the 7-day startup fetch) is widened here on first run and
+    # served from cache afterwards.
+    lookback_days = {"1": 730, "5": 1460, "15": 2200}.get(iv, 2200)
+    end_dt = datetime.now(UTC)
+    start_dt = end_dt - timedelta(days=lookback_days)
+    # Explicit user window overrides the default lookback; an
+    # earlier start triggers load_bybit_bars' cache backfill.
+    if range_start:
+        start_dt = datetime.strptime(range_start, "%Y-%m-%d").replace(tzinfo=UTC)
+    if range_end:
+        end_dt = datetime.strptime(range_end, "%Y-%m-%d").replace(
+            tzinfo=UTC
+        ) + timedelta(days=1)
+    _add_step(
+        run_id,
+        f"Date window {range_start} → {range_end} requested…"
+        if (range_start or range_end)
+        else f"Loading widest range ({iv}, ~{lookback_days}d)…",
+    )
+    try:
+        df = load_bybit_bars(
+            symbol=symbol,
+            interval=iv,
+            category=category,
+            start=start_dt,
+            end=end_dt,
+        )
+    except Exception as fetch_exc:
+        # Network hiccup — fall back to whatever is already cached.
+        if not cache_path.exists():
+            raise RuntimeError(
+                f"Could not load {symbol}/{category}/{iv} data: {fetch_exc}"
+            ) from fetch_exc
+        _add_step(run_id, f"Fetch error ({iv}), falling back to cache: {fetch_exc}")
+        df = pd.read_parquet(cache_path)
+
+    if len(df) < 100:
+        raise RuntimeError(
+            f"Insufficient data ({len(df)} bars, {iv}). Fetch it from the Data page."
+        )
+    # 1m guard: cap at last 2 years so backtests stay responsive.
+    if iv == "1" and len(df) > 1_000_000:
+        cutoff = df.index[-1] - pd.Timedelta(days=730)
+        df = df[df.index >= cutoff]
+        _add_step(run_id, f"1m cropped to the last 2 years ({len(df):,} bars)")
+    return df
+
+
 # Liquid peer basket for multi-symbol robustness on external (US equity) runs.
 # Real instrument ids from the catalog — SPY/IWM are on the ARCA venue, not NASDAQ.
 EXTERNAL_PEER_BASKET = [
@@ -2779,7 +2886,6 @@ def _agent_worker(
     set_thread_random_seed(run_id)
 
     from composer import load_catalog
-    from data import _bybit_cache_path
 
     is_external = source == "external"
     if continuous_mode:
@@ -3003,115 +3109,16 @@ def _agent_worker(
                 return df
 
             def _load_tf_uncached(iv: str) -> pd.DataFrame:
-                from datetime import timedelta
-
-                from data import load_bybit_bars
-
-                if is_external:
-                    from data import load_external_bars
-
-                    _add_step(
-                        run_id,
-                        f"Loading catalog data ({instrument_id}, {iv})…",
-                    )
-                    df = load_external_bars(instrument_id, iv)  # full catalog range
-                    if range_start or range_end:
-                        # Explicit user window (MAX butonu / elle tarih):
-                        # inclusive [start, end] day slice, tz of the frame.
-                        _tz = df.index.tz
-                        if range_start:
-                            df = df[df.index >= pd.Timestamp(range_start, tz=_tz)]
-                        if range_end:
-                            df = df[
-                                df.index
-                                < pd.Timestamp(range_end, tz=_tz) + pd.Timedelta(days=1)
-                            ]
-                        _add_step(
-                            run_id,
-                            f"Date window {range_start or '…'} → {range_end or '…'}"
-                            f" ({len(df):,} bars)",
-                        )
-                    if len(df) < 100:
-                        raise RuntimeError(
-                            f"Insufficient data ({len(df)} bars, {instrument_id} {iv})."
-                        )
-                    # 1-MINUTE guard: ~23 years >2M bars — crop to the last 2 years
-                    # to keep the engine responsive (mirror of the Bybit 1m guard).
-                    # An EXPLICIT user window is honored as-is — the user chose it.
-                    if (
-                        iv == "1-MINUTE"
-                        and len(df) > 1_000_000
-                        and not (range_start or range_end)
-                    ):
-                        cutoff = df.index[-1] - pd.Timedelta(days=730)
-                        df = df[df.index >= cutoff]
-                        _add_step(
-                            run_id,
-                            f"1-MINUTE cropped to the last 2 years ({len(df):,} bars)",
-                        )
-                    tf_cache[iv] = df
-                    return df
-
-                cache_path = _bybit_cache_path(category, symbol, iv)
-                # Widest available range per TF. 1m is bounded to ~2y (and cropped
-                # below) so the engine stays responsive; coarser TFs pull Bybit's
-                # full history (bar counts are small). load_bybit_bars now backfills
-                # older history when `start` predates the cache, so a narrow cache
-                # (e.g. the 7-day startup fetch) is widened here on first run and
-                # served from cache afterwards.
-                lookback_days = {"1": 730, "5": 1460, "15": 2200}.get(iv, 2200)
-                end_dt = datetime.now(UTC)
-                start_dt = end_dt - timedelta(days=lookback_days)
-                # Explicit user window overrides the default lookback; an
-                # earlier start triggers load_bybit_bars' cache backfill.
-                if range_start:
-                    start_dt = datetime.strptime(range_start, "%Y-%m-%d").replace(
-                        tzinfo=UTC
-                    )
-                if range_end:
-                    end_dt = datetime.strptime(range_end, "%Y-%m-%d").replace(
-                        tzinfo=UTC
-                    ) + timedelta(days=1)
-                _add_step(
+                return _load_timeframe_bars(
                     run_id,
-                    f"Date window {range_start} → {range_end} requested…"
-                    if (range_start or range_end)
-                    else f"Loading widest range ({iv}, ~{lookback_days}d)…",
+                    is_external,
+                    instrument_id,
+                    symbol,
+                    category,
+                    iv,
+                    range_start,
+                    range_end,
                 )
-                try:
-                    df = load_bybit_bars(
-                        symbol=symbol,
-                        interval=iv,
-                        category=category,
-                        start=start_dt,
-                        end=end_dt,
-                    )
-                except Exception as fetch_exc:
-                    # Network hiccup — fall back to whatever is already cached.
-                    if not cache_path.exists():
-                        raise RuntimeError(
-                            f"Could not load {symbol}/{category}/{iv} data: {fetch_exc}"
-                        ) from fetch_exc
-                    _add_step(
-                        run_id,
-                        f"Fetch error ({iv}), falling back to cache: {fetch_exc}",
-                    )
-                    df = pd.read_parquet(cache_path)
-
-                if len(df) < 100:
-                    raise RuntimeError(
-                        f"Insufficient data ({len(df)} bars, {iv}). "
-                        "Fetch it from the Data page."
-                    )
-                # 1m guard: cap at last 2 years so backtests stay responsive.
-                if iv == "1" and len(df) > 1_000_000:
-                    cutoff = df.index[-1] - pd.Timedelta(days=730)
-                    df = df[df.index >= cutoff]
-                    _add_step(
-                        run_id, f"1m cropped to the last 2 years ({len(df):,} bars)"
-                    )
-                tf_cache[iv] = df
-                return df
 
             if is_external:
                 # Narrow down to the timeframes the instrument actually has.
