@@ -2,6 +2,39 @@
 
 Append-only. Her ingest, query veya lint operasyonu bir satır bırakır.
 
+## 2026-08-09 — DeepR üçüncü tur: kritik 3 kapandı (kod → wiki)
+
+- **rapor** — Kullanıcı `/mDeep`'i argümansız tekrar tetikledi; ilk koşum (203
+  ajan) `nautilus_wiki/`'ye kapsam-sızdı (yeni Workflow sızıntı varyantı —
+  envanterde dışlama amacıyla anılan bir alt-dizin paradoksal biçimde dikkat
+  çekti), "NAU app'e odaklayarak tekrar tetikle" ile düzeltilip 164 ajanla
+  yeniden koşuldu → 37 bulgu, 0 sızıntı. Kullanıcı: "kritik 3 maddeyi
+  düzeltmeye başla".
+- **fix 1** — `composer._load_custom_blocks()`: `custom_block_store.list_custom()`
+  import-zamanı `RegistryUnavailable`/herhangi bir istisna fırlatırsa artık
+  `import composer`'ı düşürmüyor, uyarı loglayıp devam ediyor. 3 yeni test,
+  mutasyon testiyle doğrulandı.
+- **fix 2** — `tests/test_agent_worker_e2e.py` (yeni dosya): `_agent_worker`'ı
+  yalnız 4 dış sınırı (`load_bybit_bars`/`propose_composed_strategy`/
+  `run_backtest_guarded`/`run_robustness_guarded`) mock'layıp gerçek Faz
+  0→1→2→3→4→5 boyunca bir winner/promotion'a ve ayrı bir promotion-red'ine
+  kadar sürüyor — sealed-holdout kapısının ilk uçtan-uca kapsamı. Red testi
+  `_holdout_promotion_verdict`'i geçici olarak her zaman `True` dönecek
+  şekilde bozup mutasyon testiyle doğrulandı.
+- **fix 3 (untracked, commit dışı)** — `repair_massive_intraday.py`: 1-MINUTE
+  kaynağı da düzeltiyor artık (önceden yalnız türetilmiş TF'yi düzeltiyordu,
+  `ingest_equities.build_tf_bars()`'ın bir sonraki rutin koşusu sessizce geri
+  alıyordu); ayrıca gerçek bir pyarrow `ChunkedArray | ChunkedArray` ve bir
+  pandas 3.0.3 ns-çözünürlük bug'ı bulundu/düzeltildi. Kullanıcının kendi
+  script'i — diskte düzeltildi, testi eklendi, git'e hiç girmedi.
+- **doğrulama** — Tam suite: 1160 geçti / 1 atlandı / 1 deselected, 1 flake
+  (`test_promote_draft_atomicity` — 2026-07-27'de de aynı testte aynı flake
+  loglanmıştı, ilgisiz değişiklikle; izole 3/3 geçti). Ruff temiz.
+- **wiki** — Yeni sayfa `synthesis/nau_deepr_ucuncu_tur_2026_08_09.md`;
+  `nau_deepr_ikinci_tur_2026_08_08.md`'ye ileri-referans; `webapp_module_map.md`
+  `agent_backtest.py` satırına bölüm eklendi; test dosyasına Wiki References.
+  Backlinks + index + lint yenilendi (0 broken_links/orphans/stale/stubs).
+
 ## 2026-07-27 (2) — Strategy Builder ana kabuğun içine alındı (kod → wiki)
 
 - **rapor** — Kullanıcı: "strategy builder diğer sayfalar gibi solda link ve frame ile açılsın". Sayfa kendi başına duran bir HTML belgesiydi; nav linki vardı ama tıklayınca kabuk (sidebar + topbar) kayboluyordu.

@@ -118,6 +118,10 @@ yükseltildi).
   — kullanıcının bu projeyle ilgisiz kendi ayrı script'leri, önceki 35-görevlik
   turda da aynı gerekçeyle commit dışı bırakılmıştı.
 
+Ertesi gün kullanıcı `/mDeep`'i tekrar tetikledi — üçüncü bir tur, ilk deneme
+kapsam dışına kaydı (yeni bir Workflow sızıntı varyantı), düzeltilip yeniden
+koşuldu: devamı [[nau_deepr_ucuncu_tur_2026_08_09]].
+
 ## Test tabanı büyümesi
 
 931 (35-görevlik ilk turun sonu) → ~1090 (33 bulgu düzeltmesi) →
@@ -156,5 +160,6 @@ düzeltildi — tam tersi değil.
 ## Referenced by
 
 - [[nau_deepr_toplu_sertlestirme_2026_08]]
+- [[nau_deepr_ucuncu_tur_2026_08_09]]
 - [[webapp_module_map]]
 <!-- BACKLINKS:END -->
