@@ -206,6 +206,47 @@ def _remaining_phase_timeout(
     return max(0.1, min(float(default_seconds), remaining))
 
 
+def _market_for(is_external: bool, instrument_id: str, iv: str) -> str | None:
+    """Market context passed to the LLM — None on Bybit (existing prompt
+    preserved byte-for-byte).
+
+    Names the ONE bar the next spec will be scored on, not the whole
+    multi-TF list: the loop assigns timeframes round-robin and the caller
+    always knows which one comes next, so there is no reason to make the
+    model guess among four.
+    """
+    if not is_external:
+        return None
+    return f"US equity {instrument_id} ({iv} bars, USD cash account)"
+
+
+def _iv_for(i: int, run_number: int, intervals: list[str]) -> str:
+    """Timeframe of iteration i under the round-robin in the worker loop.
+
+    The round offsets the start. Without it the index is `i % len(intervals)`
+    with `i` restarting at 0 every round, so any timeframe at position >=
+    n_iterations is NEVER selected — not "tested less often", never at all.
+    Measured on run 3467219a: 5 timeframes, n_iterations=4, and 1-DAY could
+    not have been reached by any round of an unbounded continuous loop.
+    Shifting by the round covers the whole selection over successive rounds
+    while keeping one timeframe per iteration.
+    """
+    return intervals[(i + run_number - 1) % len(intervals)]
+
+
+def _recipe(
+    is_external: bool, instrument_id: str, symbol: str, category: str, iv: str
+) -> dict:
+    """String recipe from which the sandbox/robustness child rebuilds the instrument."""
+    if is_external:
+        return {
+            "source": "external",
+            "instrument_id": instrument_id,
+            "granularity": iv,
+        }
+    return {"symbol": symbol, "interval": iv, "category": category}
+
+
 def _json_safe(obj):
     """Reduces NaN/Inf floats to None (recursive) — prevents json.dumps from
     producing non-standard ``NaN``/``Infinity`` literals (part of L33).
@@ -1973,41 +2014,6 @@ def _agent_worker(
             max_total_tokens if max_total_tokens > 0 else DEFAULT_CONTINUOUS_MAX_TOKENS
         )
 
-    def _market_for(iv: str) -> str | None:
-        """Market context passed to the LLM — None on Bybit (existing prompt
-        preserved byte-for-byte).
-
-        Names the ONE bar the next spec will be scored on, not the whole
-        multi-TF list: the loop assigns timeframes round-robin and the caller
-        always knows which one comes next, so there is no reason to make the
-        model guess among four.
-        """
-        if not is_external:
-            return None
-        return f"US equity {instrument_id} ({iv} bars, USD cash account)"
-
-    # Timeframe of iteration i under the round-robin in the loop below.
-    #
-    # The round offsets the start. Without it the index is `i % len(intervals)`
-    # with `i` restarting at 0 every round, so any timeframe at position >=
-    # n_iterations is NEVER selected — not "tested less often", never at all.
-    # Measured on run 3467219a: 5 timeframes, n_iterations=4, and 1-DAY could
-    # not have been reached by any round of an unbounded continuous loop.
-    # Shifting by the round covers the whole selection over successive rounds
-    # while keeping one timeframe per iteration.
-    def _iv_for(i: int) -> str:
-        return intervals[(i + run_number - 1) % len(intervals)]
-
-    def _recipe(iv: str) -> dict:
-        """String recipe from which the sandbox/robustness child rebuilds the instrument."""
-        if is_external:
-            return {
-                "source": "external",
-                "instrument_id": instrument_id,
-                "granularity": iv,
-            }
-        return {"symbol": symbol, "interval": iv, "category": category}
-
     # Log the session start
     _session_log(
         run_id,
@@ -2065,10 +2071,6 @@ def _agent_worker(
     _last_started_round = 0
     _completed_rounds = 0
     _retained_block_names: set[str] = set()
-
-    def _phase_timeout(default_seconds: float) -> float:
-        """Cap an isolated child by the remaining run-wide wall-clock budget."""
-        return _remaining_phase_timeout(_worker_t0, max_hours, default_seconds)
 
     def _cleanup_generated(keep_spec=None) -> None:
         """Delete this run's disposable generated blocks, retaining a promotion."""
@@ -2470,13 +2472,13 @@ def _agent_worker(
             )
             # Iteration 0 runs on the first TF of the round-robin — tell the model
             # which bar it is designing for instead of letting it guess.
-            _iv0 = _iv_for(0)
+            _iv0 = _iv_for(0, run_number, intervals)
             proposal, _usage1 = propose_composed_strategy(
                 dummy_history,
                 catalog,
                 hint=hint,
                 web_research=web_research,
-                market=_market_for(_iv0),
+                market=_market_for(is_external, instrument_id, _iv0),
                 timeframe=_iv0,
             )
             _enforce_token_budget(run_id)
@@ -2570,7 +2572,7 @@ def _agent_worker(
                 # Round-robin TF selection — one source of truth with the
                 # generation side (_iv_for), which the loop must agree with:
                 # the spec was written for THIS bar.
-                iter_iv = _iv_for(i)
+                iter_iv = _iv_for(i, run_number, intervals)
                 iter_df = _load_tf(iter_iv)
                 if is_external:
                     iter_bars_info = {
@@ -2613,11 +2615,11 @@ def _agent_worker(
                 r = run_backtest_guarded(
                     spec,
                     iter_df,
-                    _recipe(iter_iv),
+                    _recipe(is_external, instrument_id, symbol, category, iter_iv),
                     iteration_id=i,
                     rationale=f"agent-run · iter {i + 1}/{n_iterations} · {run_label} {iter_iv}",
                     progress_fn=lambda m, _i=i: _add_step(run_id, f"  └ {m}"),
-                    timeout_s=_phase_timeout(150.0),
+                    timeout_s=_remaining_phase_timeout(_worker_t0, max_hours, 150.0),
                     force_subprocess=True,
                 )
                 _bt_elapsed = time.perf_counter() - _bt_t0
@@ -2761,8 +2763,8 @@ def _agent_worker(
                     # The TF the NEXT iteration will use is already decided by the
                     # round-robin — pass it down so periods/thresholds are sized
                     # for that bar rather than for an unknown one.
-                    next_iv = _iv_for(next_i)
-                    next_market = _market_for(next_iv)
+                    next_iv = _iv_for(next_i, run_number, intervals)
+                    next_market = _market_for(is_external, instrument_id, next_iv)
                     try:
                         if use_custom:
                             custom_spec = _generate_custom_spec(
@@ -3030,12 +3032,14 @@ def _agent_worker(
                     rob = run_robustness_guarded(
                         cand_spec,
                         cand_df,
-                        _recipe(cand_iv),
+                        _recipe(is_external, instrument_id, symbol, category, cand_iv),
                         cand_result.trades,
                         symbol=instrument_id if is_external else symbol,
                         interval=cand_iv,
                         progress_fn=_rob_progress,
-                        timeout_s=_phase_timeout(ROBUSTNESS_TIMEOUT_S),
+                        timeout_s=_remaining_phase_timeout(
+                            _worker_t0, max_hours, ROBUSTNESS_TIMEOUT_S
+                        ),
                     )
                 except Exception as rob_exc:
                     _rob_progress.close_open("fail")
@@ -3301,10 +3305,14 @@ def _agent_worker(
                     _hold_res = run_backtest_guarded(
                         winner_spec,
                         _hold_run_df,
-                        _recipe(winner_iv),
+                        _recipe(
+                            is_external, instrument_id, symbol, category, winner_iv
+                        ),
                         iteration_id=999,
                         rationale="sealed holdout (L32)",
-                        timeout_s=_phase_timeout(150.0),
+                        timeout_s=_remaining_phase_timeout(
+                            _worker_t0, max_hours, 150.0
+                        ),
                         force_subprocess=True,
                     )
                     _hm = _hold_res.metrics or {}
