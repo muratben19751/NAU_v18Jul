@@ -22,12 +22,17 @@
   `len(passers)` (fixed via an explicit `n_passers_so_far` parameter), and
   `_MAX_PASSERS` was a local of `_agent_worker` unreachable from the new
   module function (promoted to a module constant).
+- A8: `_run_promotion_gate` (Phase 5's sealed-holdout financial-integrity
+  gate) promoted to a module function. Catalog append, the _AGENT_PROGRESS
+  winner-fields write, and the final winner/session_end logging stay in
+  `_agent_worker`.
 """
 
 from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pandas as pd
 import pytest
 
 import web.routes.agent_backtest as ab
@@ -536,6 +541,121 @@ class TestScanOneCandidate:
 
         assert outcome.passed is False
         assert outcome.passer_entry is None
+
+
+def _hold_frame():
+    idx = pd.date_range("2026-01-01", periods=5, freq="1D", tz="UTC")
+    return pd.DataFrame({"close": [100.0, 101.0, 102.0, 103.0, 104.0]}, index=idx)
+
+
+class TestRunPromotionGate:
+    def _spec(self):
+        return SimpleNamespace(id="spec-1", name="Winner")
+
+    def _quiet(self, monkeypatch):
+        for name in ("_add_step", "_session_log", "_log_robustness"):
+            monkeypatch.setattr(ab, name, lambda *a, **k: None)
+
+    def _args(self, wstate, holdout_cache, *, research_only=False):
+        return dict(
+            run_id="run-1",
+            run_number=1,
+            winner_spec=self._spec(),
+            winner_iv="60",
+            winner_rob={},
+            holdout_cache=holdout_cache,
+            wstate=wstate,
+            is_external=False,
+            instrument_id="",
+            symbol="BTCUSDT",
+            category="linear",
+            max_hours=0.0,
+            research_only=research_only,
+        )
+
+    def test_already_consumed_timeframe_skips_holdout_run_entirely(self, monkeypatch):
+        self._quiet(monkeypatch)
+        calls = {"n": 0}
+        monkeypatch.setattr(
+            "sandbox.run_backtest_guarded",
+            lambda *a, **k: calls.__setitem__("n", calls["n"] + 1),
+        )
+        wstate = ab._WorkerState()
+        wstate.holdout_consumed.add("60")
+        hold_start = pd.Timestamp("2026-01-01", tz="UTC")
+        holdout_cache = {"60": (_hold_frame(), hold_start)}
+
+        gate = ab._run_promotion_gate(**self._args(wstate, holdout_cache))
+
+        assert gate.promotion_passed is False
+        assert gate.promotion_reason == (
+            "sealed holdout already consumed for this timeframe"
+        )
+        assert calls["n"] == 0
+
+    def test_passing_holdout_promotes(self, monkeypatch):
+        self._quiet(monkeypatch)
+        hold_start = pd.Timestamp("2026-01-01", tz="UTC")
+        holdout_cache = {"60": (_hold_frame(), hold_start)}
+        hold_res = SimpleNamespace(
+            error=None, metrics={"pnl": 500.0}, trades=[{"pnl": 500.0}]
+        )
+        monkeypatch.setattr("sandbox.run_backtest_guarded", lambda *a, **k: hold_res)
+        monkeypatch.setattr(
+            ab, "_sealed_holdout_stats", lambda trades, start: (25, 0.05, 1.2)
+        )
+        monkeypatch.setattr(
+            ab, "_holdout_promotion_verdict", lambda *a, **k: (True, "passed")
+        )
+
+        wstate = ab._WorkerState()
+        gate = ab._run_promotion_gate(**self._args(wstate, holdout_cache))
+
+        assert gate.promotion_passed is True
+        assert gate.winner_holdout["n_trades"] == 25
+        assert gate.winner_holdout["pnl_pct"] == 0.05
+        assert gate.winner_holdout["measured"] is True
+        assert "60" in wstate.holdout_consumed
+
+    def test_research_only_forces_rejection_even_when_holdout_passes(self, monkeypatch):
+        self._quiet(monkeypatch)
+        hold_start = pd.Timestamp("2026-01-01", tz="UTC")
+        holdout_cache = {"60": (_hold_frame(), hold_start)}
+        hold_res = SimpleNamespace(
+            error=None, metrics={"pnl": 500.0}, trades=[{"pnl": 500.0}]
+        )
+        monkeypatch.setattr("sandbox.run_backtest_guarded", lambda *a, **k: hold_res)
+        monkeypatch.setattr(
+            ab, "_sealed_holdout_stats", lambda trades, start: (25, 0.05, 1.2)
+        )
+        monkeypatch.setattr(
+            ab, "_holdout_promotion_verdict", lambda *a, **k: (True, "passed")
+        )
+
+        wstate = ab._WorkerState()
+        gate = ab._run_promotion_gate(
+            **self._args(wstate, holdout_cache, research_only=True)
+        )
+
+        assert gate.promotion_passed is False
+        assert gate.promotion_reason == (
+            "research-only run used known-unadjusted external data"
+        )
+
+    def test_holdout_run_exception_is_caught_not_raised(self, monkeypatch):
+        self._quiet(monkeypatch)
+        hold_start = pd.Timestamp("2026-01-01", tz="UTC")
+        holdout_cache = {"60": (_hold_frame(), hold_start)}
+        monkeypatch.setattr(
+            "sandbox.run_backtest_guarded",
+            lambda *a, **k: (_ for _ in ()).throw(RuntimeError("sandbox died")),
+        )
+
+        wstate = ab._WorkerState()
+        gate = ab._run_promotion_gate(**self._args(wstate, holdout_cache))
+
+        assert gate.promotion_passed is False
+        assert "sealed holdout exception:" in gate.promotion_reason
 
 
 class _FakeRobProgress:

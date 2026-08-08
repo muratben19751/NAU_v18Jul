@@ -1623,6 +1623,172 @@ def _scan_one_candidate(
     return _ScanOutcome(passed=False, log_entry=log_entry, passer_entry=None)
 
 
+class _PromotionGateResult(NamedTuple):
+    winner_holdout: dict | None
+    promotion_passed: bool
+    promotion_reason: str
+
+
+def _run_promotion_gate(
+    run_id: str,
+    run_number: int,
+    winner_spec,
+    winner_iv: str,
+    winner_rob: dict,
+    holdout_cache: dict,
+    wstate: _WorkerState,
+    is_external: bool,
+    instrument_id: str,
+    symbol: str,
+    category: str,
+    max_hours: float,
+    research_only: bool,
+) -> _PromotionGateResult:
+    """Phase 5's sealed-holdout promotion gate — the financial-integrity
+    checkpoint that decides whether the round's winner may be published to
+    the catalog. A sealed holdout window is consumed AT MOST ONCE per
+    timeframe per session (wstate.holdout_consumed); a research-only run can
+    never pass regardless of the holdout result (known-unadjusted data).
+
+    Catalog append, the _AGENT_PROGRESS winner-fields write, and the final
+    winner/finalist_rejected + session_end logging stay in the caller —
+    those are terminal round bookkeeping, not part of the gate decision.
+    """
+    from sandbox import run_backtest_guarded
+
+    # H4/H8: the winner may be on a different TF (winner_iv); cand_iv is
+    # the TF of the LAST scanned candidate left over from the loop. The
+    # robustness log and the sealed holdout must use the winner's OWN TF —
+    # otherwise the log identity is overwritten and the holdout runs with
+    # the wrong slice/recipe.
+    _log_robustness(
+        winner_spec.id,
+        winner_spec.name,
+        winner_rob,
+        symbol=instrument_id if is_external else symbol,
+        category=category,
+        interval=winner_iv,
+    )
+    _add_step(run_id, "✓ Robustness result → robustness_log.jsonl")
+    # Sealed holdout is a publication gate and each timeframe's slice is
+    # consumed at most once per AUTO session. Reusing the same 60 days
+    # for many finalists turns a holdout into another selection set.
+    winner_holdout = None
+    promotion_passed = False
+    promotion_reason = "sealed holdout unavailable"
+    _hold = holdout_cache.get(winner_iv)  # H4: the winner's TF
+    if winner_iv in wstate.holdout_consumed:
+        promotion_reason = "sealed holdout already consumed for this timeframe"
+        _add_step(run_id, f"⚠ {promotion_reason} — catalog promotion refused")
+    elif _hold is not None:
+        wstate.holdout_consumed.add(winner_iv)
+        _hold_run_df, _hold_start = _hold
+        try:
+            _hold_res = run_backtest_guarded(
+                winner_spec,
+                _hold_run_df,
+                _recipe(is_external, instrument_id, symbol, category, winner_iv),
+                iteration_id=999,
+                rationale="sealed holdout (L32)",
+                timeout_s=_remaining_phase_timeout(wstate.worker_t0, max_hours, 150.0),
+                force_subprocess=True,
+            )
+            _hm = _hold_res.metrics or {}
+            if _hold_res.error is None and _hm:
+                # Score only entries INSIDE the sealed window — the
+                # lead-in bars exist purely for indicator warmup.
+                _n, _pnl_fr, _sharpe = _sealed_holdout_stats(
+                    _hold_res.trades, int(_hold_start.timestamp())
+                )
+                _sealed_prices = _hold_run_df[_hold_run_df.index >= _hold_start][
+                    "close"
+                ]
+                from app_constants import benchmark_and_excess
+
+                _bench_excess = (
+                    benchmark_and_excess(
+                        float(_sealed_prices.iloc[0]),
+                        float(_sealed_prices.iloc[-1]),
+                        _pnl_fr,
+                    )
+                    if len(_sealed_prices) >= 2
+                    else None
+                )
+                _benchmark_fr, _excess_fr = _bench_excess or (0.0, _pnl_fr)
+                winner_holdout = {
+                    "sharpe": round(_sharpe, 4) if _sharpe is not None else None,
+                    "pnl_pct": round(_pnl_fr, 6),
+                    "benchmark_return_fraction": round(_benchmark_fr, 6),
+                    "excess_return_fraction": round(_excess_fr, 6),
+                    "benchmark_return_pct": round(_benchmark_fr, 6),
+                    "excess_pnl_pct": round(_excess_fr, 6),
+                    "n_trades": _n,
+                    "days": OOS_HOLDOUT_DAYS,
+                    "warmup_bars": HOLDOUT_WARMUP_BARS,
+                    # A count, not a boolean question. 0 entries means
+                    # the layer measured nothing; but so, in practice,
+                    # does 1 (run 3cad3325's round-2 winner reported
+                    # measured=True on a SINGLE trade, with sharpe=None
+                    # because a standard deviation needs two). The
+                    # sealed holdout is the run's one unbiased forward
+                    # estimate — claiming it exists on one trade
+                    # overstates it. Below HOLDOUT_MIN_TRADES the flag
+                    # stays False and the count is reported as-is.
+                    "measured": _n >= HOLDOUT_MIN_TRADES,
+                }
+                promotion_passed, promotion_reason = _holdout_promotion_verdict(
+                    _n, _pnl_fr, _sharpe, _excess_fr
+                )
+                if _n < HOLDOUT_MIN_TRADES:
+                    _add_step(
+                        run_id,
+                        f"⚠ Sealed OOS ({OOS_HOLDOUT_DAYS}d): {_n} trade "
+                        f"— ÖLÇÜLEMEDİ (en az {HOLDOUT_MIN_TRADES} giriş "
+                        "gerekiyor; warmup lead-in dahil)",
+                    )
+                else:
+                    _sh_txt = f"{_sharpe:.2f}" if _sharpe is not None else "—"
+                    _add_step(
+                        run_id,
+                        f"🔒 Sealed OOS ({OOS_HOLDOUT_DAYS}d): "
+                        f"Sharpe {_sh_txt} · "
+                        f"PnL {100 * _pnl_fr:.1f}% · "
+                        f"Excess {100 * _excess_fr:+.1f}% · "
+                        f"{_n} trades · promotion "
+                        f"{'PASSED' if promotion_passed else 'FAILED'}",
+                    )
+                _session_log(
+                    run_id,
+                    "holdout_result",
+                    round=run_number,
+                    spec_id=winner_spec.id,
+                    **winner_holdout,
+                )
+            else:
+                promotion_reason = f"sealed holdout error: {_hold_res.error}"
+                _add_step(
+                    run_id,
+                    f"⚠ Sealed OOS run returned an error: {_hold_res.error}",
+                )
+        except Exception as _hold_err:
+            promotion_reason = f"sealed holdout exception: {_hold_err}"
+            _add_step(run_id, f"⚠ Could not run sealed OOS: {_hold_err}")
+
+    if research_only and promotion_passed:
+        promotion_passed = False
+        promotion_reason = "research-only run used known-unadjusted external data"
+        _add_step(
+            run_id,
+            "❌ Research-only/unadjusted run cannot publish to the strategy catalog",
+        )
+
+    return _PromotionGateResult(
+        winner_holdout=winner_holdout,
+        promotion_passed=promotion_passed,
+        promotion_reason=promotion_reason,
+    )
+
+
 # Liquid peer basket for multi-symbol robustness on external (US equity) runs.
 # Real instrument ids from the catalog — SPY/IWM are on the ARCA venue, not NASDAQ.
 EXTERNAL_PEER_BASKET = [
@@ -3400,140 +3566,25 @@ def _agent_worker(
                 round_num=run_number,
                 name=winner_spec.name,
             )
-            # H4/H8: the winner may be on a different TF (winner_iv); cand_iv is
-            # the TF of the LAST scanned candidate left over from the loop. The
-            # robustness log and the sealed holdout must use the winner's OWN TF —
-            # otherwise the log identity is overwritten and the holdout runs with
-            # the wrong slice/recipe.
-            _log_robustness(
-                winner_spec.id,
-                winner_spec.name,
+            gate = _run_promotion_gate(
+                run_id,
+                run_number,
+                winner_spec,
+                winner_iv,
                 winner_rob,
-                symbol=instrument_id if is_external else symbol,
-                category=category,
-                interval=winner_iv,
+                holdout_cache,
+                wstate,
+                is_external,
+                instrument_id,
+                symbol,
+                category,
+                max_hours,
+                research_only,
             )
-            _add_step(run_id, "✓ Robustness result → robustness_log.jsonl")
-            # Sealed holdout is a publication gate and each timeframe's slice is
-            # consumed at most once per AUTO session. Reusing the same 60 days
-            # for many finalists turns a holdout into another selection set.
-            winner_holdout = None
-            promotion_passed = False
-            promotion_reason = "sealed holdout unavailable"
+            winner_holdout = gate.winner_holdout
+            promotion_passed = gate.promotion_passed
+            promotion_reason = gate.promotion_reason
             promotion_limit_hit = False
-            _hold = holdout_cache.get(winner_iv)  # H4: the winner's TF
-            if winner_iv in wstate.holdout_consumed:
-                promotion_reason = "sealed holdout already consumed for this timeframe"
-                _add_step(run_id, f"⚠ {promotion_reason} — catalog promotion refused")
-            elif _hold is not None:
-                wstate.holdout_consumed.add(winner_iv)
-                _hold_run_df, _hold_start = _hold
-                try:
-                    _hold_res = run_backtest_guarded(
-                        winner_spec,
-                        _hold_run_df,
-                        _recipe(
-                            is_external, instrument_id, symbol, category, winner_iv
-                        ),
-                        iteration_id=999,
-                        rationale="sealed holdout (L32)",
-                        timeout_s=_remaining_phase_timeout(
-                            wstate.worker_t0, max_hours, 150.0
-                        ),
-                        force_subprocess=True,
-                    )
-                    _hm = _hold_res.metrics or {}
-                    if _hold_res.error is None and _hm:
-                        # Score only entries INSIDE the sealed window — the
-                        # lead-in bars exist purely for indicator warmup.
-                        _n, _pnl_fr, _sharpe = _sealed_holdout_stats(
-                            _hold_res.trades, int(_hold_start.timestamp())
-                        )
-                        _sealed_prices = _hold_run_df[
-                            _hold_run_df.index >= _hold_start
-                        ]["close"]
-                        from app_constants import benchmark_and_excess
-
-                        _bench_excess = (
-                            benchmark_and_excess(
-                                float(_sealed_prices.iloc[0]),
-                                float(_sealed_prices.iloc[-1]),
-                                _pnl_fr,
-                            )
-                            if len(_sealed_prices) >= 2
-                            else None
-                        )
-                        _benchmark_fr, _excess_fr = _bench_excess or (0.0, _pnl_fr)
-                        winner_holdout = {
-                            "sharpe": round(_sharpe, 4)
-                            if _sharpe is not None
-                            else None,
-                            "pnl_pct": round(_pnl_fr, 6),
-                            "benchmark_return_fraction": round(_benchmark_fr, 6),
-                            "excess_return_fraction": round(_excess_fr, 6),
-                            "benchmark_return_pct": round(_benchmark_fr, 6),
-                            "excess_pnl_pct": round(_excess_fr, 6),
-                            "n_trades": _n,
-                            "days": OOS_HOLDOUT_DAYS,
-                            "warmup_bars": HOLDOUT_WARMUP_BARS,
-                            # A count, not a boolean question. 0 entries means
-                            # the layer measured nothing; but so, in practice,
-                            # does 1 (run 3cad3325's round-2 winner reported
-                            # measured=True on a SINGLE trade, with sharpe=None
-                            # because a standard deviation needs two). The
-                            # sealed holdout is the run's one unbiased forward
-                            # estimate — claiming it exists on one trade
-                            # overstates it. Below HOLDOUT_MIN_TRADES the flag
-                            # stays False and the count is reported as-is.
-                            "measured": _n >= HOLDOUT_MIN_TRADES,
-                        }
-                        promotion_passed, promotion_reason = _holdout_promotion_verdict(
-                            _n, _pnl_fr, _sharpe, _excess_fr
-                        )
-                        if _n < HOLDOUT_MIN_TRADES:
-                            _add_step(
-                                run_id,
-                                f"⚠ Sealed OOS ({OOS_HOLDOUT_DAYS}d): {_n} trade "
-                                f"— ÖLÇÜLEMEDİ (en az {HOLDOUT_MIN_TRADES} giriş "
-                                "gerekiyor; warmup lead-in dahil)",
-                            )
-                        else:
-                            _sh_txt = f"{_sharpe:.2f}" if _sharpe is not None else "—"
-                            _add_step(
-                                run_id,
-                                f"🔒 Sealed OOS ({OOS_HOLDOUT_DAYS}d): "
-                                f"Sharpe {_sh_txt} · "
-                                f"PnL {100 * _pnl_fr:.1f}% · "
-                                f"Excess {100 * _excess_fr:+.1f}% · "
-                                f"{_n} trades · promotion "
-                                f"{'PASSED' if promotion_passed else 'FAILED'}",
-                            )
-                        _session_log(
-                            run_id,
-                            "holdout_result",
-                            round=run_number,
-                            spec_id=winner_spec.id,
-                            **winner_holdout,
-                        )
-                    else:
-                        promotion_reason = f"sealed holdout error: {_hold_res.error}"
-                        _add_step(
-                            run_id,
-                            f"⚠ Sealed OOS run returned an error: {_hold_res.error}",
-                        )
-                except Exception as _hold_err:
-                    promotion_reason = f"sealed holdout exception: {_hold_err}"
-                    _add_step(run_id, f"⚠ Could not run sealed OOS: {_hold_err}")
-
-            if research_only and promotion_passed:
-                promotion_passed = False
-                promotion_reason = (
-                    "research-only run used known-unadjusted external data"
-                )
-                _add_step(
-                    run_id,
-                    "❌ Research-only/unadjusted run cannot publish to the strategy catalog",
-                )
 
             if promotion_passed:
                 # M14: locked append only after the independent promotion gate.
