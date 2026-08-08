@@ -1,4 +1,4 @@
-"""_agent_worker decomposition (2026-08-08 DeepR #47), steps A1-A4:
+"""_agent_worker decomposition (2026-08-08 DeepR #47), steps A1-A6:
 - A1: the three pure closures `_market_for`/`_iv_for`/`_recipe` were promoted
   to module-level functions in web/routes/agent_backtest.py so they can be
   unit-tested in isolation, instead of only indirectly through a full worker
@@ -13,6 +13,9 @@
 - A5: `_rank_and_filter` (Phase 3's pure ranking/filtering/logging) promoted
   to a module function; the winnerless return/continue control flow stays
   in `_agent_worker`.
+- A6: `_propose_initial_strategy` (Phase 1) promoted to a module function,
+  doing its own local imports (mirrors `_generate_custom_spec`'s established
+  pattern in this file).
 """
 
 from __future__ import annotations
@@ -321,3 +324,85 @@ class TestRankAndFilter:
 
         assert any("1/1 results qualify" in m for m in logged)
         assert any("#1 a" in m for m in logged)
+
+
+def _proposal(*, degraded="", degraded_terminal=False, blocks=None):
+    return {
+        "name": "Test Strategy",
+        "blocks": blocks or [{"type": "momentum", "role": "entry", "params": {}}],
+        "degraded": degraded,
+        "degraded_terminal": degraded_terminal,
+        "degraded_detail": "provider down" if degraded_terminal else "",
+    }
+
+
+class TestProposeInitialStrategy:
+    def _call(self, monkeypatch, wstate, *, proposal=None):
+        monkeypatch.setattr(ab, "_set_phase", lambda *a, **k: None)
+        monkeypatch.setattr(ab, "_tl_begin", lambda *a, **k: None)
+        monkeypatch.setattr(ab, "_tl_end", lambda *a, **k: None)
+        monkeypatch.setattr(ab, "_done_phase", lambda *a, **k: None)
+        monkeypatch.setattr(ab, "_add_step", lambda *a, **k: None)
+        monkeypatch.setattr(ab, "_session_log", lambda *a, **k: None)
+        monkeypatch.setattr(ab, "_enforce_token_budget", lambda run_id: None)
+        monkeypatch.setattr(
+            ab, "_mark_degraded", lambda run_id, reason, what: f"degraded:{reason}"
+        )
+        monkeypatch.setattr("composer.load_catalog", lambda: [])
+        monkeypatch.setattr(
+            "agent.propose_composed_strategy",
+            lambda *a, **k: (proposal or _proposal(), {"input_tokens": 1}),
+        )
+        return ab._propose_initial_strategy(
+            "run-1",
+            1,
+            "hint",
+            False,
+            False,
+            "",
+            ["60"],
+            True,
+            "60",
+            wstate,
+        )
+
+    def test_degraded_non_terminal_returns_spec_and_records_id(self, monkeypatch):
+        wstate = ab._WorkerState()
+        spec = self._call(
+            monkeypatch, wstate, proposal=_proposal(degraded="rate_limited")
+        )
+        assert spec is not None
+        assert spec.id in wstate.degraded_spec_ids
+
+    def test_degraded_terminal_raises_and_propagates(self, monkeypatch):
+        from agent import TerminalLLMError
+
+        wstate = ab._WorkerState()
+        with pytest.raises(TerminalLLMError, match="provider down"):
+            self._call(
+                monkeypatch,
+                wstate,
+                proposal=_proposal(degraded="down", degraded_terminal=True),
+            )
+
+    def test_dedup_receives_wstate_sets_by_reference_not_copy(self, monkeypatch):
+        wstate = ab._WorkerState()
+        seen_arg = {}
+
+        def fake_dedup(spec, *, seen, zero_trade_families, **kw):
+            seen_arg["seen"] = seen
+            seen_arg["zero_trade_families"] = zero_trade_families
+            return spec
+
+        monkeypatch.setattr(ab, "_deduplicate_candidate", fake_dedup)
+        self._call(monkeypatch, wstate)
+
+        assert seen_arg["seen"] is wstate.seen_candidate_fingerprints
+        assert seen_arg["zero_trade_families"] is wstate.zero_trade_families
+
+    def test_returned_spec_is_always_stamped(self, monkeypatch):
+        wstate = ab._WorkerState()
+        spec = self._call(monkeypatch, wstate)
+        assert spec.trend_filter is True
+        assert spec.trend_interval == "60"
+        assert spec.model_slippage is True

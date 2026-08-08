@@ -1315,6 +1315,111 @@ def _rank_and_filter(
     return ranked, eligible
 
 
+def _propose_initial_strategy(
+    run_id: str,
+    run_number: int,
+    hint: str,
+    web_research: bool,
+    is_external: bool,
+    instrument_id: str,
+    intervals: list[str],
+    trend_filter: bool,
+    trend_interval: str,
+    wstate: _WorkerState,
+):
+    """Phase 1: the round's first LLM proposal, deduped and stamped.
+
+    Raises TerminalLLMError uncaught on a terminal provider failure — the
+    caller must not swallow it. Mirrors _generate_custom_spec's established
+    pattern of a standalone module function doing its own local imports.
+    """
+    from agent import TerminalLLMError, propose_composed_strategy
+    from composer import load_catalog
+
+    _set_phase(run_id, 1, "Claude is generating a strategy…")
+
+    catalog = load_catalog()
+    dummy_history: list = []
+
+    if web_research:
+        _add_step(run_id, "🌐 Running web research…")
+    _tl_begin(
+        run_id,
+        "llm",
+        f"llm-propose-r{run_number}",
+        "Initial strategy (Claude)",
+        round_num=run_number,
+    )
+    # Iteration 0 runs on the first TF of the round-robin — tell the model
+    # which bar it is designing for instead of letting it guess.
+    _iv0 = _iv_for(0, run_number, intervals)
+    proposal, _usage1 = propose_composed_strategy(
+        dummy_history,
+        catalog,
+        hint=hint,
+        web_research=web_research,
+        market=_market_for(is_external, instrument_id, _iv0),
+        timeframe=_iv0,
+    )
+    _enforce_token_budget(run_id)
+    _session_log(
+        run_id,
+        "strategy_proposed",
+        iteration=0,
+        round=run_number,
+        spec=proposal,
+        source="builtin",
+        usage=_usage1,
+    )
+
+    spec = _proposal_to_spec(proposal)
+    degraded = proposal.get("degraded") or ""
+    if degraded:
+        _mark_degraded(run_id, degraded, "initial strategy")
+        wstate.degraded_spec_ids.add(spec.id)
+        if proposal.get("degraded_terminal"):
+            raise TerminalLLMError(
+                proposal.get("degraded_detail")
+                or f"terminal provider failure: {degraded}"
+            )
+    _tl_end(
+        run_id,
+        f"llm-propose-r{run_number}",
+        status="warn" if degraded else "ok",
+        name=spec.name,
+    )
+    spec = _deduplicate_candidate(
+        spec,
+        seen=wstate.seen_candidate_fingerprints,
+        zero_trade_families=wstate.zero_trade_families,
+        run_id=run_id,
+        round_num=run_number,
+        iteration=0,
+    )
+    if is_external:
+        _exposure_change = _clamp_spec_trade_size(spec)
+        if _exposure_change:
+            _session_log(
+                run_id,
+                "exposure_normalized",
+                round=run_number,
+                iteration=0,
+                spec_id=spec.id,
+                **_exposure_change,
+            )
+    spec.trend_filter = trend_filter
+    spec.trend_interval = trend_interval
+    spec.model_slippage = True
+    _done_phase(
+        run_id,
+        1,
+        (f"⚠ degraded ({degraded}) · {spec.name}" if degraded else f"✓ {spec.name}")
+        + (" · trend filter ON" if trend_filter else ""),
+        degraded=bool(degraded),
+    )
+    return spec
+
+
 # Liquid peer basket for multi-symbol robustness on external (US equity) runs.
 # Real instrument ids from the catalog — SPY/IWM are on the ARCA venue, not NASDAQ.
 EXTERNAL_PEER_BASKET = [
@@ -2521,90 +2626,17 @@ def _agent_worker(
                 }
 
             # ── Phase 1: Initial strategy ────────────────────────────────────────
-            _set_phase(run_id, 1, "Claude is generating a strategy…")
-
-            catalog = load_catalog()
-            dummy_history: list = []
-
-            if web_research:
-                _add_step(run_id, "🌐 Running web research…")
-            _tl_begin(
+            spec = _propose_initial_strategy(
                 run_id,
-                "llm",
-                f"llm-propose-r{run_number}",
-                "Initial strategy (Claude)",
-                round_num=run_number,
-            )
-            # Iteration 0 runs on the first TF of the round-robin — tell the model
-            # which bar it is designing for instead of letting it guess.
-            _iv0 = _iv_for(0, run_number, intervals)
-            proposal, _usage1 = propose_composed_strategy(
-                dummy_history,
-                catalog,
-                hint=hint,
-                web_research=web_research,
-                market=_market_for(is_external, instrument_id, _iv0),
-                timeframe=_iv0,
-            )
-            _enforce_token_budget(run_id)
-            _session_log(
-                run_id,
-                "strategy_proposed",
-                iteration=0,
-                round=run_number,
-                spec=proposal,
-                source="builtin",
-                usage=_usage1,
-            )
-
-            spec = _proposal_to_spec(proposal)
-            degraded = proposal.get("degraded") or ""
-            if degraded:
-                _mark_degraded(run_id, degraded, "initial strategy")
-                wstate.degraded_spec_ids.add(spec.id)
-                if proposal.get("degraded_terminal"):
-                    raise TerminalLLMError(
-                        proposal.get("degraded_detail")
-                        or f"terminal provider failure: {degraded}"
-                    )
-            _tl_end(
-                run_id,
-                f"llm-propose-r{run_number}",
-                status="warn" if degraded else "ok",
-                name=spec.name,
-            )
-            spec = _deduplicate_candidate(
-                spec,
-                seen=wstate.seen_candidate_fingerprints,
-                zero_trade_families=wstate.zero_trade_families,
-                run_id=run_id,
-                round_num=run_number,
-                iteration=0,
-            )
-            if is_external:
-                _exposure_change = _clamp_spec_trade_size(spec)
-                if _exposure_change:
-                    _session_log(
-                        run_id,
-                        "exposure_normalized",
-                        round=run_number,
-                        iteration=0,
-                        spec_id=spec.id,
-                        **_exposure_change,
-                    )
-            spec.trend_filter = trend_filter
-            spec.trend_interval = trend_interval
-            spec.model_slippage = True
-            _done_phase(
-                run_id,
-                1,
-                (
-                    f"⚠ degraded ({degraded}) · {spec.name}"
-                    if degraded
-                    else f"✓ {spec.name}"
-                )
-                + (" · trend filter ON" if trend_filter else ""),
-                degraded=bool(degraded),
+                run_number,
+                hint,
+                web_research,
+                is_external,
+                instrument_id,
+                intervals,
+                trend_filter,
+                trend_interval,
+                wstate,
             )
 
             with _AGENT_LOCK:
