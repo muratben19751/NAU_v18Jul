@@ -1,7 +1,11 @@
-"""_agent_worker decomposition, step #47-A1 (2026-08-08): the three pure
-closures `_market_for`/`_iv_for`/`_recipe` were promoted to module-level
-functions in web/routes/agent_backtest.py so they can be unit-tested in
-isolation, instead of only indirectly through a full worker run.
+"""_agent_worker decomposition (2026-08-08 DeepR #47), steps A1-A2:
+- A1: the three pure closures `_market_for`/`_iv_for`/`_recipe` were promoted
+  to module-level functions in web/routes/agent_backtest.py so they can be
+  unit-tested in isolation, instead of only indirectly through a full worker
+  run.
+- A2: the ~10 round-persistent locals were collected into a `_WorkerState`
+  dataclass (mechanical rename only, no logic change — verified by the full
+  existing suite passing unchanged).
 """
 
 from __future__ import annotations
@@ -63,3 +67,28 @@ class TestRecipe:
             "instrument_id": "AAPL",
             "granularity": "D",
         }
+
+
+class TestWorkerStateDefaults:
+    def test_scalar_defaults(self):
+        w = ab._WorkerState()
+        assert w.last_err_str is None
+        assert w.consec_err == 0
+        assert w.winless_rounds == 0
+        assert w.last_started_round == 0
+        assert w.completed_rounds == 0
+        assert w.worker_t0 > 0  # time.monotonic() at construction
+
+    def test_set_defaults_are_empty_and_independent_per_instance(self):
+        """Mutable-default footgun check: two instances must not share a set."""
+        a, b = ab._WorkerState(), ab._WorkerState()
+        a.degraded_spec_ids.add("x")
+        assert b.degraded_spec_ids == set()
+        for field_name in (
+            "degraded_spec_ids",
+            "holdout_consumed",
+            "seen_candidate_fingerprints",
+            "zero_trade_families",
+            "retained_block_names",
+        ):
+            assert getattr(ab._WorkerState(), field_name) == set()

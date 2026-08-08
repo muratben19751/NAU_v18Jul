@@ -45,6 +45,7 @@ import re
 import threading
 import time
 import uuid
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import NamedTuple
@@ -245,6 +246,28 @@ def _recipe(
             "granularity": iv,
         }
     return {"symbol": symbol, "interval": iv, "category": category}
+
+
+@dataclass
+class _WorkerState:
+    """Round-persistent state for one `_agent_worker` invocation.
+
+    Survives across `while True` rounds (continuous mode); round-LOCAL
+    variables (tf_cache, spec, history, results, ranked/eligible, winner_*)
+    are NOT here — they reset every round already and don't need a container.
+    """
+
+    last_err_str: str | None = None
+    consec_err: int = 0
+    worker_t0: float = field(default_factory=time.monotonic)
+    winless_rounds: int = 0
+    degraded_spec_ids: set[str] = field(default_factory=set)
+    holdout_consumed: set[str] = field(default_factory=set)
+    seen_candidate_fingerprints: set[str] = field(default_factory=set)
+    zero_trade_families: set[str] = field(default_factory=set)
+    last_started_round: int = 0
+    completed_rounds: int = 0
+    retained_block_names: set[str] = field(default_factory=set)
 
 
 def _json_safe(obj):
@@ -1989,7 +2012,7 @@ def _agent_worker(
         # provider request could therefore begin just before the deadline and
         # continue spending well past it. The LLM wrapper polls this callback,
         # so reject cooperatively before the next provider step/retry.
-        if max_hours > 0 and (time.monotonic() - _worker_t0) >= max_hours * 3600:
+        if max_hours > 0 and (time.monotonic() - wstate.worker_t0) >= max_hours * 3600:
             raise AgentBudgetReached(f"time ceiling ({max_hours:g} hours) reached")
         return False
 
@@ -2059,28 +2082,18 @@ def _agent_worker(
     # kept retrying a persistent "Cache too little data" error in a useless loop
     # — this cuts that off).
     _CONSEC_ERR_LIMIT = 3
-    _last_err_str: str | None = None
-    _consec_err = 0
     # M22: optional budget ceilings (0 = unlimited) + winnerless-round breaker.
-    _worker_t0 = time.monotonic()
-    _winless_rounds = 0
-    _degraded_spec_ids: set[str] = set()
-    _holdout_consumed: set[str] = set()
-    _seen_candidate_fingerprints: set[str] = set()
-    _zero_trade_families: set[str] = set()
-    _last_started_round = 0
-    _completed_rounds = 0
-    _retained_block_names: set[str] = set()
+    wstate = _WorkerState()
 
     def _cleanup_generated(keep_spec=None) -> None:
         """Delete this run's disposable generated blocks, retaining a promotion."""
         try:
             from custom_block_store import cleanup_agent_run
 
-            _retained_block_names.update(
+            wstate.retained_block_names.update(
                 str(block.type) for block in (getattr(keep_spec, "blocks", None) or [])
             )
-            cleanup_agent_run(run_id, keep_names=_retained_block_names)
+            cleanup_agent_run(run_id, keep_names=wstate.retained_block_names)
         except Exception:  # best effort; cleanup must never mask a terminal result
             logging.exception("AUTO generated-block cleanup failed for run %s", run_id)
 
@@ -2105,9 +2118,10 @@ def _agent_worker(
         counter, leaving an infinite-loop risk. Now both winnerless branches call
         this.
         """
-        nonlocal _winless_rounds
-        _winless_rounds += 1
-        return bool(_WINLESS_ROUND_LIMIT and _winless_rounds >= _WINLESS_ROUND_LIMIT)
+        wstate.winless_rounds += 1
+        return bool(
+            _WINLESS_ROUND_LIMIT and wstate.winless_rounds >= _WINLESS_ROUND_LIMIT
+        )
 
     def _winless_stop() -> None:
         _add_step(
@@ -2125,9 +2139,9 @@ def _agent_worker(
             "session_end",
             round=run_number,
             outcome="winless_limit",
-            started_round=_last_started_round,
-            completed_rounds=_completed_rounds,
-            total_rounds=_completed_rounds,
+            started_round=wstate.last_started_round,
+            completed_rounds=wstate.completed_rounds,
+            total_rounds=wstate.completed_rounds,
         )
 
     while True:
@@ -2144,7 +2158,7 @@ def _agent_worker(
             break
 
         # M22: budget check at round start — if the time/token ceiling is exceeded, finish gracefully.
-        _elapsed_h = (time.monotonic() - _worker_t0) / 3600.0
+        _elapsed_h = (time.monotonic() - wstate.worker_t0) / 3600.0
         with _AGENT_LOCK:
             _bs = _AGENT_PROGRESS.get(run_id) or {}
             _tok_total = sum(
@@ -2178,9 +2192,9 @@ def _agent_worker(
                 round=run_number,
                 outcome="budget",
                 reason=_budget_reason,
-                started_round=_last_started_round,
-                completed_rounds=_completed_rounds,
-                total_rounds=_completed_rounds,
+                started_round=wstate.last_started_round,
+                completed_rounds=wstate.completed_rounds,
+                total_rounds=wstate.completed_rounds,
             )
             return
         if continuous_mode and run_number > 1:
@@ -2211,7 +2225,7 @@ def _agent_worker(
         # Count only rounds that actually enter the work section. The old final
         # session_end used the pre-incremented run_number, so a stop between
         # rounds reported one phantom round.
-        _last_started_round = run_number
+        wstate.last_started_round = run_number
 
         set_thread_llm_control(
             _llm_cancelled,
@@ -2496,7 +2510,7 @@ def _agent_worker(
             degraded = proposal.get("degraded") or ""
             if degraded:
                 _mark_degraded(run_id, degraded, "initial strategy")
-                _degraded_spec_ids.add(spec.id)
+                wstate.degraded_spec_ids.add(spec.id)
                 if proposal.get("degraded_terminal"):
                     raise TerminalLLMError(
                         proposal.get("degraded_detail")
@@ -2510,8 +2524,8 @@ def _agent_worker(
             )
             spec = _deduplicate_candidate(
                 spec,
-                seen=_seen_candidate_fingerprints,
-                zero_trade_families=_zero_trade_families,
+                seen=wstate.seen_candidate_fingerprints,
+                zero_trade_families=wstate.zero_trade_families,
                 run_id=run_id,
                 round_num=run_number,
                 iteration=0,
@@ -2619,7 +2633,9 @@ def _agent_worker(
                     iteration_id=i,
                     rationale=f"agent-run · iter {i + 1}/{n_iterations} · {run_label} {iter_iv}",
                     progress_fn=lambda m, _i=i: _add_step(run_id, f"  └ {m}"),
-                    timeout_s=_remaining_phase_timeout(_worker_t0, max_hours, 150.0),
+                    timeout_s=_remaining_phase_timeout(
+                        wstate.worker_t0, max_hours, 150.0
+                    ),
                     force_subprocess=True,
                 )
                 _bt_elapsed = time.perf_counter() - _bt_t0
@@ -2633,9 +2649,11 @@ def _agent_worker(
                 r.bars_info = dict(iter_bars_info)
                 history.append(r)
                 results.append((spec, r, iter_iv))
-                _seen_candidate_fingerprints.add(_candidate_fingerprint(spec))
+                wstate.seen_candidate_fingerprints.add(_candidate_fingerprint(spec))
                 if int((r.metrics or {}).get("n_trades") or 0) == 0:
-                    _zero_trade_families.add(_candidate_fingerprint(spec, family=True))
+                    wstate.zero_trade_families.add(
+                        _candidate_fingerprint(spec, family=True)
+                    )
                 # The returned ts is this iteration's key into the backtest log
                 # — the cockpit card links its tear sheet with it.
                 _bt_log_ts = ""
@@ -2799,7 +2817,7 @@ def _agent_worker(
                                         proposal["degraded"],
                                         "strategy proposal",
                                     )
-                                    _degraded_spec_ids.add(spec.id)
+                                    wstate.degraded_spec_ids.add(spec.id)
                                     if proposal.get("degraded_terminal"):
                                         raise TerminalLLMError(
                                             proposal.get("degraded_detail")
@@ -2829,7 +2847,7 @@ def _agent_worker(
                                 _mark_degraded(
                                     run_id, proposal["degraded"], "strategy proposal"
                                 )
-                                _degraded_spec_ids.add(spec.id)
+                                wstate.degraded_spec_ids.add(spec.id)
                                 if proposal.get("degraded_terminal"):
                                     raise TerminalLLMError(
                                         proposal.get("degraded_detail")
@@ -2847,8 +2865,8 @@ def _agent_worker(
                             _add_step(run_id, f"  → {spec.name}")
                         spec = _deduplicate_candidate(
                             spec,
-                            seen=_seen_candidate_fingerprints,
-                            zero_trade_families=_zero_trade_families,
+                            seen=wstate.seen_candidate_fingerprints,
+                            zero_trade_families=wstate.zero_trade_families,
                             run_id=run_id,
                             round_num=run_number,
                             iteration=next_i,
@@ -2948,7 +2966,7 @@ def _agent_worker(
             if not eligible:
                 _tl_end(run_id, f"rank-r{run_number}", status="warn")
                 _done_phase(run_id, 3, "⚠ No eligible result — all iterations failed")
-                _completed_rounds = run_number
+                wstate.completed_rounds = run_number
                 _cleanup_generated()
                 if not continuous_mode:
                     with _AGENT_LOCK:
@@ -2959,13 +2977,15 @@ def _agent_worker(
                         "session_end",
                         round=run_number,
                         outcome="no_eligible_candidate",
-                        started_round=_last_started_round,
-                        completed_rounds=_completed_rounds,
-                        total_rounds=_completed_rounds,
+                        started_round=wstate.last_started_round,
+                        completed_rounds=wstate.completed_rounds,
+                        total_rounds=wstate.completed_rounds,
                     )
                     return
-                _consec_err = 0  # round ended without exception — error streak broken
-                _last_err_str = None
+                wstate.consec_err = (
+                    0  # round ended without exception — error streak broken
+                )
+                wstate.last_err_str = None
                 if _winless_bump():
                     _winless_stop()
                     return
@@ -3038,7 +3058,7 @@ def _agent_worker(
                         interval=cand_iv,
                         progress_fn=_rob_progress,
                         timeout_s=_remaining_phase_timeout(
-                            _worker_t0, max_hours, ROBUSTNESS_TIMEOUT_S
+                            wstate.worker_t0, max_hours, ROBUSTNESS_TIMEOUT_S
                         ),
                     )
                 except Exception as rob_exc:
@@ -3063,7 +3083,7 @@ def _agent_worker(
                     continue
 
                 passed = _robustness_passed(rob, strict=strict_mode, run_id=run_id)
-                if cand_spec.id in _degraded_spec_ids:
+                if cand_spec.id in wstate.degraded_spec_ids:
                     passed = False
                     _add_step(
                         run_id,
@@ -3228,7 +3248,7 @@ def _agent_worker(
                 _done_phase(
                     run_id, 4, f"✗ None of the {len(eligible)} candidates passed"
                 )
-                _completed_rounds = run_number
+                wstate.completed_rounds = run_number
                 _cleanup_generated()
                 if not continuous_mode:
                     with _AGENT_LOCK:
@@ -3239,13 +3259,15 @@ def _agent_worker(
                         "session_end",
                         round=run_number,
                         outcome="no_winner",
-                        started_round=_last_started_round,
-                        completed_rounds=_completed_rounds,
-                        total_rounds=_completed_rounds,
+                        started_round=wstate.last_started_round,
+                        completed_rounds=wstate.completed_rounds,
+                        total_rounds=wstate.completed_rounds,
                     )
                     return
-                _consec_err = 0  # round ended without exception — error streak broken
-                _last_err_str = None
+                wstate.consec_err = (
+                    0  # round ended without exception — error streak broken
+                )
+                wstate.last_err_str = None
                 # M22: 'candidates exist but none passed robustness' is also a
                 # winnerless round — the counter must increment here too (the most
                 # common infinite-loop scenario).
@@ -3295,11 +3317,11 @@ def _agent_worker(
             promotion_reason = "sealed holdout unavailable"
             promotion_limit_hit = False
             _hold = holdout_cache.get(winner_iv)  # H4: the winner's TF
-            if winner_iv in _holdout_consumed:
+            if winner_iv in wstate.holdout_consumed:
                 promotion_reason = "sealed holdout already consumed for this timeframe"
                 _add_step(run_id, f"⚠ {promotion_reason} — catalog promotion refused")
             elif _hold is not None:
-                _holdout_consumed.add(winner_iv)
+                wstate.holdout_consumed.add(winner_iv)
                 _hold_run_df, _hold_start = _hold
                 try:
                     _hold_res = run_backtest_guarded(
@@ -3311,7 +3333,7 @@ def _agent_worker(
                         iteration_id=999,
                         rationale="sealed holdout (L32)",
                         timeout_s=_remaining_phase_timeout(
-                            _worker_t0, max_hours, 150.0
+                            wstate.worker_t0, max_hours, 150.0
                         ),
                         force_subprocess=True,
                     )
@@ -3416,7 +3438,7 @@ def _agent_worker(
                 _add_step(run_id, f"✓ {winner_spec.name} → strategy_catalog.json")
                 _tl_end(run_id, f"save-r{run_number}", status="ok")
                 _done_phase(run_id, 5, f"✓ {winner_spec.name} promoted and saved")
-                _winless_rounds = 0
+                wstate.winless_rounds = 0
             else:
                 _add_step(
                     run_id,
@@ -3469,9 +3491,9 @@ def _agent_worker(
                 promotion_reason=promotion_reason,
             )
             _cleanup_generated(winner_spec if promotion_passed else None)
-            _consec_err = 0  # round finished successfully — error streak broken
-            _completed_rounds = run_number
-            _last_err_str = None
+            wstate.consec_err = 0  # round finished successfully — error streak broken
+            wstate.completed_rounds = run_number
+            wstate.last_err_str = None
 
             if not continuous_mode:
                 # Terminal event: all other exit paths (no_winner/error/stopped)
@@ -3482,9 +3504,9 @@ def _agent_worker(
                     "session_end",
                     round=run_number,
                     outcome="winner" if promotion_passed else "promotion_rejected",
-                    started_round=_last_started_round,
-                    completed_rounds=_completed_rounds,
-                    total_rounds=_completed_rounds,
+                    started_round=wstate.last_started_round,
+                    completed_rounds=wstate.completed_rounds,
+                    total_rounds=wstate.completed_rounds,
                 )
                 return
 
@@ -3518,9 +3540,9 @@ def _agent_worker(
                 "session_end",
                 round=run_number,
                 outcome="stopped",
-                started_round=_last_started_round,
-                completed_rounds=_completed_rounds,
-                total_rounds=_completed_rounds,
+                started_round=wstate.last_started_round,
+                completed_rounds=wstate.completed_rounds,
+                total_rounds=wstate.completed_rounds,
             )
             _cleanup_generated()
             return
@@ -3537,9 +3559,9 @@ def _agent_worker(
                 round=run_number,
                 outcome="budget",
                 reason=str(e),
-                started_round=_last_started_round,
-                completed_rounds=_completed_rounds,
-                total_rounds=_completed_rounds,
+                started_round=wstate.last_started_round,
+                completed_rounds=wstate.completed_rounds,
+                total_rounds=wstate.completed_rounds,
             )
             _cleanup_generated()
             return
@@ -3561,9 +3583,9 @@ def _agent_worker(
                 round=run_number,
                 outcome="terminal_llm_error",
                 error=err_str,
-                started_round=_last_started_round,
-                completed_rounds=_completed_rounds,
-                total_rounds=_completed_rounds,
+                started_round=wstate.last_started_round,
+                completed_rounds=wstate.completed_rounds,
+                total_rounds=wstate.completed_rounds,
             )
             _cleanup_generated()
             return
@@ -3581,18 +3603,20 @@ def _agent_worker(
                 round=run_number,
                 outcome="error",
                 error=err_str,
-                started_round=_last_started_round,
-                completed_rounds=_completed_rounds,
-                total_rounds=_completed_rounds,
+                started_round=wstate.last_started_round,
+                completed_rounds=wstate.completed_rounds,
+                total_rounds=wstate.completed_rounds,
             )
             _cleanup_generated()
             if not continuous_mode:
                 break
             # Circuit breaker: the same error _CONSEC_ERR_LIMIT consecutive rounds
             # → persistent problem (missing data, config) — retrying is pointless, stop.
-            _consec_err = _consec_err + 1 if err_str == _last_err_str else 1
-            _last_err_str = err_str
-            if _consec_err >= _CONSEC_ERR_LIMIT:
+            wstate.consec_err = (
+                wstate.consec_err + 1 if err_str == wstate.last_err_str else 1
+            )
+            wstate.last_err_str = err_str
+            if wstate.consec_err >= _CONSEC_ERR_LIMIT:
                 _add_step(
                     run_id,
                     f"⏹ {_CONSEC_ERR_LIMIT} consecutive identical errors — stopping "
@@ -3645,9 +3669,9 @@ def _agent_worker(
         run_id,
         "session_end",
         outcome="stopped",
-        started_round=_last_started_round,
-        completed_rounds=_completed_rounds,
-        total_rounds=_completed_rounds,
+        started_round=wstate.last_started_round,
+        completed_rounds=wstate.completed_rounds,
+        total_rounds=wstate.completed_rounds,
     )
 
 
