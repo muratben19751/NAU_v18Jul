@@ -59,11 +59,11 @@
     {% if not last.error and last.n_trades and last.n_trades > 0 %}
     {%- set _shp = last.sharpe if last.sharpe is not none else 0 -%}
     {%- set _up = (last.pnl_dir == 'up') -%}
-    {%- if _up and _shp >= 1.0 %}{% set _verdict = 'Güçlü' %}{% set _vcls = 'up' %}
-    {%- elif _up and _shp >= 0 %}{% set _verdict = 'Umut verici' %}{% set _vcls = 'up' %}
-    {%- elif _up %}{% set _verdict = 'Kârlı ama oynak' %}{% set _vcls = 'up' %}
-    {%- elif _shp > -0.5 %}{% set _verdict = 'Zayıf' %}{% set _vcls = 'down' %}
-    {%- else %}{% set _verdict = 'Elenmeli' %}{% set _vcls = 'down' %}{% endif -%}
+    {%- if _up and _shp >= 1.0 %}{% set _verdict = 'Strong' %}{% set _vcls = 'up' %}
+    {%- elif _up and _shp >= 0 %}{% set _verdict = 'Promising' %}{% set _vcls = 'up' %}
+    {%- elif _up %}{% set _verdict = 'Profitable but volatile' %}{% set _vcls = 'up' %}
+    {%- elif _shp > -0.5 %}{% set _verdict = 'Weak' %}{% set _vcls = 'down' %}
+    {%- else %}{% set _verdict = 'Should be discarded' %}{% set _vcls = 'down' %}{% endif -%}
     <div class="verdict-card {{ _vcls }}">
       <span class="verdict-badge">{{ _verdict }}</span>
       <div class="verdict-metrics">

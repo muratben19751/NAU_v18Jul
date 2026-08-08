@@ -27,6 +27,8 @@ import math
 
 
 def calc_rsi(closes: list[float], period: int = 14) -> float:
+    if period <= 0:
+        raise ValueError("period must be positive")
     if len(closes) < period + 1:
         return 50.0
     avg_gain = 0.0
@@ -52,6 +54,8 @@ def calc_rsi(closes: list[float], period: int = 14) -> float:
 
 
 def calc_rsi_series(closes: list[float], period: int = 14) -> list[float]:
+    if period <= 0:
+        raise ValueError("period must be positive")
     if len(closes) < period + 1:
         return []
     result: list[float] = []
@@ -141,6 +145,8 @@ def _tail3(
 def calc_atr(
     highs: list[float], lows: list[float], closes: list[float], period: int = 14
 ) -> float | None:
+    if period <= 0:
+        raise ValueError("period must be positive")
     h, l, c, n = _tail3(highs, lows, closes)  # noqa: E741
     if n < period + 1:
         return None
@@ -157,6 +163,8 @@ def calc_atr(
 def calc_adx(
     highs: list[float], lows: list[float], closes: list[float], period: int = 14
 ) -> dict | None:
+    if period <= 0:
+        raise ValueError("period must be positive")
     h, l, c, n = _tail3(highs, lows, closes)  # noqa: E741
     if n < period * 2 + 1:
         return None
@@ -204,6 +212,8 @@ def calc_adx(
 
 
 def calc_volume_change(volumes: list[float], lookback: int = 20) -> float:
+    if lookback <= 0:
+        raise ValueError("lookback must be positive")
     if len(volumes) < lookback + 1:
         return 0.0
     recent = volumes[-1]
@@ -213,30 +223,24 @@ def calc_volume_change(volumes: list[float], lookback: int = 20) -> float:
     return ((recent - avg_volume) / avg_volume) * 100.0
 
 
-def _find_swing_highs(prices, rsi_series, lookback, offset):
+def _find_swing_points(prices, rsi_series, lookback, offset, *, is_high):
     points = []
     for i in range(lookback, len(prices) - lookback):
-        is_high = True
+        is_swing = True
         for j in range(1, lookback + 1):
-            if prices[i] < prices[i - j] or prices[i] < prices[i + j]:
-                is_high = False
+            if is_high:
+                beats_neighbors = (
+                    prices[i] >= prices[i - j] and prices[i] >= prices[i + j]
+                )
+            else:
+                beats_neighbors = (
+                    prices[i] <= prices[i - j] and prices[i] <= prices[i + j]
+                )
+            if not beats_neighbors:
+                is_swing = False
                 break
-        if is_high:
+        if is_swing:
             # i - offset < 0: undefined in TS (ineffective point) — don't wrap around to the end in Python
-            rsi = rsi_series[i - offset] if i - offset >= 0 else None
-            points.append({"index": i, "price": prices[i], "rsi": rsi})
-    return points
-
-
-def _find_swing_lows(prices, rsi_series, lookback, offset):
-    points = []
-    for i in range(lookback, len(prices) - lookback):
-        is_low = True
-        for j in range(1, lookback + 1):
-            if prices[i] > prices[i - j] or prices[i] > prices[i + j]:
-                is_low = False
-                break
-        if is_low:
             rsi = rsi_series[i - offset] if i - offset >= 0 else None
             points.append({"index": i, "price": prices[i], "rsi": rsi})
     return points
@@ -254,8 +258,12 @@ def detect_rsi_divergence(
         return {"type": "none", "strength": 0.0}
     rsi_series = calc_rsi_series(c, rsi_period)
     rsi_offset = n - len(rsi_series)
-    swing_highs = _find_swing_highs(h, rsi_series, swing_lookback, rsi_offset)
-    swing_lows = _find_swing_lows(l, rsi_series, swing_lookback, rsi_offset)
+    swing_highs = _find_swing_points(
+        h, rsi_series, swing_lookback, rsi_offset, is_high=True
+    )
+    swing_lows = _find_swing_points(
+        l, rsi_series, swing_lookback, rsi_offset, is_high=False
+    )
 
     if len(swing_highs) >= 2:
         prev = swing_highs[-2]
@@ -328,6 +336,8 @@ def detect_rsi_divergence(
 def calc_nadaraya_watson(
     closes: list[float], bandwidth: float = 6, multiplier: float = 3.0
 ) -> dict | None:
+    if bandwidth <= 0:
+        raise ValueError("bandwidth must be positive")
     if len(closes) < 30:
         return None
     n = len(closes)

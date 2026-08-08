@@ -189,7 +189,9 @@ def test_record_persists_ttl_split_and_summary_prices_it(tmp_path, monkeypatch):
     assert m["cost_usd"] == pytest.approx(20.0)  # 1M 1h-writes × $10 × 2
 
 
-def test_provider_reported_cost_is_durable_and_preferred_in_summary(tmp_path, monkeypatch):
+def test_provider_reported_cost_is_durable_and_preferred_in_summary(
+    tmp_path, monkeypatch
+):
     ledger = tmp_path / "token_usage.jsonl"
     monkeypatch.setattr(token_ledger, "LEDGER_PATH", ledger)
     token_ledger.record(
@@ -209,6 +211,25 @@ def test_provider_reported_cost_is_durable_and_preferred_in_summary(tmp_path, mo
     assert model["cost_usd"] == pytest.approx(0.123456)
     assert model["cost_source"] == "provider_reported"
     assert summary["total"]["cost_source"] == "provider_reported"
+
+
+def test_mixed_provider_and_unpriced_calls_yields_unknown_cost(tmp_path, monkeypatch):
+    # One provider-reported call plus one call under an unpriced model name —
+    # the total must read as unknown (None), not silently just the $0.05 we
+    # do know about (regression: used to short-circuit to a false total the
+    # moment ANY call had a provider cost).
+    ledger = tmp_path / "token_usage.jsonl"
+    monkeypatch.setattr(token_ledger, "LEDGER_PATH", ledger)
+    token_ledger.record(
+        "mystery-llm", {"input_tokens": 100, "output_tokens": 10, "cost_usd": 0.05}, "a"
+    )
+    token_ledger.record("mystery-llm", _usage_obj(1000, 1000, 0, 0), "b")
+    s = token_ledger.summary(ledger)
+    m = s["models"]["mystery-llm"]
+    assert m["calls"] == 2
+    assert m["cost_usd"] is None
+    assert m["cost_source"] == "mixed"
+    assert s["total"]["cost_usd"] == 0.0  # excluded from the priced total
 
 
 def test_summary_since_filters_and_prices(tmp_path, monkeypatch):

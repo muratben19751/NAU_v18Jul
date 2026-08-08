@@ -120,16 +120,17 @@ def _worker_init(snapshot_path: str, recipe: dict) -> None:
     """Per-worker one-time setup: UTF-8 stdout, parent watchdog, data load,
     instrument/bar_type rebuild, composer import (registers custom blocks)."""
     import multiprocessing as mp
-    import sys
     import threading
 
+    from sandbox import _child_stdio_guard
+
     # Progress/log strings contain Turkish/glyph chars; fresh Windows children
-    # need UTF-8 stdout or print() crashes on cp125x (same as sandbox.py).
-    for stream in (sys.stdout, sys.stderr):
-        try:
-            stream.reconfigure(encoding="utf-8")  # type: ignore[union-attr]
-        except (AttributeError, ValueError):
-            pass
+    # need UTF-8 stdout or print() crashes on cp125x. pythonw children (PM2)
+    # additionally boot with stdout/stderr = None — reuse sandbox.py's guard
+    # instead of only reconfigure(), which raises AttributeError on None and
+    # left the worker's first print() to crash silently under the bare except
+    # this used to have.
+    _child_stdio_guard()
 
     # Parent-liveness watchdog: the pool owner is the robustness sandbox child;
     # when the server hard-kills it (timeout), TerminateProcess gives workers no
@@ -270,26 +271,9 @@ def _run_unit(unit: dict) -> dict:
             # over this worker's exact data slice (not the parent's primary bar
             # series).  Keep the value in the metrics envelope consumed by the
             # robustness reducer.
-            try:
-                first = float(bars["close"].iloc[0])
-                last = float(bars["close"].iloc[-1])
-                if first > 0 and len(bars) >= 2:
-                    benchmark = last / first - 1.0
-                    metrics = payload["metrics"]
-                    pnl_pct = metrics.get("pnl_pct")
-                    if pnl_pct is None:
-                        from backtest import STARTING_CASH
+            from app_constants import stamp_buy_hold_benchmark
 
-                        pnl_pct = float(metrics.get("pnl") or 0.0) / float(STARTING_CASH)
-                    excess = float(pnl_pct) - benchmark
-                    metrics["benchmark_return_fraction"] = benchmark
-                    metrics["excess_return_fraction"] = excess
-                    metrics["benchmark_return_pct"] = benchmark
-                    metrics["excess_pnl_pct"] = excess
-                    metrics["benchmark_cost_basis"] = "gross_buy_and_hold_no_costs"
-                    metrics["strategy_return_cost_basis"] = "net_simulated_costs"
-            except (KeyError, TypeError, ValueError, IndexError):
-                pass
+            stamp_buy_hold_benchmark(payload["metrics"], bars)
         if unit.get("want_equity"):
             payload["equity_curve"] = result.equity_curve or []
         if unit.get("kind") == "symbol":

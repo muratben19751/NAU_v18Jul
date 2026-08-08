@@ -96,7 +96,6 @@
         <div class="mc-f">
           <label for="mc-hint">GUIDANCE</label>
           <input type="text" id="mc-hint" name="hint"
-                 value="adx ve atr ile maksimum kar ve minimum dd"
                  placeholder="e.g. momentum + RSI, EMA cross…">
         </div>
 
@@ -104,11 +103,11 @@
           <div class="mc-f">
             <label for="mc-symbol">SYMBOL</label>
             <select id="mc-symbol" name="symbol">
-              <option value="BTCUSDT">BTCUSDT</option>
+              <option value="BTCUSDT" selected>BTCUSDT</option>
               <option value="ETHUSDT">ETHUSDT</option>
               <option value="SOLUSDT">SOLUSDT</option>
               {# Dotted id = external catalog (the route promotes it). #}
-              <option value="QQQ.NASDAQ" selected>QQQ.NASDAQ</option>
+              <option value="QQQ.NASDAQ">QQQ.NASDAQ</option>
             </select>
           </div>
           <div class="mc-f">

@@ -228,7 +228,7 @@ def test_custom_block_uses_compact_provider_limits(monkeypatch):
     monkeypatch.setattr(
         agent,
         "_create_message",
-        lambda client, **kwargs: (captured.update(kwargs) or response),
+        lambda client, **kwargs: captured.update(kwargs) or response,
     )
     agent._call_claude_for_block("x", role_hint="entry")
     assert captured["max_tokens"] == 1_800
@@ -280,7 +280,7 @@ def test_custom_block_cap_rejects_truncation_retry_before_second_provider_call(
     truncated = SimpleNamespace(usage=Usage(), stop_reason="max_tokens", model="fake")
     client = SimpleNamespace(
         messages=SimpleNamespace(
-            create=lambda **kwargs: (calls.append(kwargs) or truncated)
+            create=lambda **kwargs: calls.append(kwargs) or truncated
         )
     )
     monkeypatch.setattr(agent, "_get_client", lambda: client)
@@ -443,13 +443,17 @@ def test_legacy_agent_name_backfills_role_and_rejects_wrong_runtime_signal(
             ),
         )
         block = SimpleNamespace(params={}, role="exit", type=name)
-        assert composer.BLOCK_REGISTRY[name]["eval"](strategy, 0, block, [100.0]) is None
+        assert (
+            composer.BLOCK_REGISTRY[name]["eval"](strategy, 0, block, [100.0]) is None
+        )
     finally:
         composer.unregister_custom_block(name)
         store.delete_custom(name)
 
 
-def test_agent_run_cleanup_is_atomic_and_keeps_promoted_dependencies(monkeypatch, tmp_path):
+def test_agent_run_cleanup_is_atomic_and_keeps_promoted_dependencies(
+    monkeypatch, tmp_path
+):
     import custom_block_store as store
 
     monkeypatch.setattr(store, "STORE_DIR", tmp_path / "store")
@@ -460,7 +464,10 @@ def test_agent_run_cleanup_is_atomic_and_keeps_promoted_dependencies(monkeypatch
     for name in (keep, drop, other):
         store.save_custom(name, {"params": {}}, "def evaluate():\n    return None\n")
 
-    assert {item["name"] for item in store.list_agent_blocks("deadbeef")} == {keep, drop}
+    assert {item["name"] for item in store.list_agent_blocks("deadbeef")} == {
+        keep,
+        drop,
+    }
     assert store.cleanup_agent_run("deadbeef", keep_names={keep}) == [drop]
     assert store.get_custom(keep) is not None
     assert store.get_custom(drop) is None
@@ -562,20 +569,34 @@ def test_is_oos_definitive_failure_classifier():
     assert ab._split_definitive_failure(
         {"overfitting_label": "✗ Overfitting suspected"}
     )
-    assert not ab._split_definitive_failure(
-        {"overfitting_label": "⚠ Caution"}
-    )
+    assert not ab._split_definitive_failure({"overfitting_label": "⚠ Caution"})
 
 
 def test_holdout_promotion_requires_evidence_profit_sharpe_and_excess(monkeypatch):
     import web.routes.agent_backtest as ab
 
     monkeypatch.setattr(ab, "HOLDOUT_MIN_TRADES", 20)
-    assert ab._holdout_promotion_passed(20, 0.1, 0.5, 0.01)
-    assert not ab._holdout_promotion_passed(19, 0.1, 0.5, 0.01)
-    assert not ab._holdout_promotion_passed(20, -0.1, 0.5, 0.01)
-    assert not ab._holdout_promotion_passed(20, 0.1, None, 0.01)
-    assert not ab._holdout_promotion_passed(20, 0.1, 0.5, 0.0)
+    assert ab._holdout_promotion_verdict(20, 0.1, 0.5, 0.01) == (True, "passed")
+    passed, reason = ab._holdout_promotion_verdict(19, 0.1, 0.5, 0.01)
+    assert not passed and "19" in reason and "20" in reason
+    passed, reason = ab._holdout_promotion_verdict(20, -0.1, 0.5, 0.01)
+    assert not passed and "PnL" in reason
+    passed, reason = ab._holdout_promotion_verdict(20, 0.1, None, 0.01)
+    assert not passed and "Sharpe" in reason
+    passed, reason = ab._holdout_promotion_verdict(20, 0.1, 0.5, 0.0)
+    assert not passed and "buy-and-hold" in reason
+
+
+def test_holdout_promotion_reason_respects_require_flags(monkeypatch):
+    # Regression: the displayed reason must agree with the same flags that
+    # gate the pass/fail boolean — previously the reason text hardcoded all
+    # three checks as required regardless of the HOLDOUT_REQUIRE_* config.
+    import web.routes.agent_backtest as ab
+
+    monkeypatch.setattr(ab, "HOLDOUT_MIN_TRADES", 20)
+    monkeypatch.setattr(ab, "HOLDOUT_REQUIRE_POSITIVE_SHARPE", False)
+    passed, reason = ab._holdout_promotion_verdict(20, 0.1, None, 0.01)
+    assert passed and reason == "passed"
 
 
 def test_benchmark_is_stamped_and_score_uses_excess_return():
@@ -613,7 +634,9 @@ def test_external_gap_report_fails_on_multiyear_hole():
 def test_external_gap_report_fails_on_large_same_session_intraday_hole():
     import data
 
-    idx = pd.to_datetime(["2025-01-02 14:30", "2025-01-02 15:30", "2025-01-02 20:00"], utc=True)
+    idx = pd.to_datetime(
+        ["2025-01-02 14:30", "2025-01-02 15:30", "2025-01-02 20:00"], utc=True
+    )
     frame = pd.DataFrame({"close": [1.0, 1.1, 1.2]}, index=idx)
     gap = data.external_data_gap_report(frame, granularity="1-HOUR")
     assert gap == {
@@ -705,9 +728,7 @@ def test_llm_observer_sees_each_actual_provider_response():
         cache_creation_input_tokens = 0
 
     response = SimpleNamespace(usage=Usage(), model="fake", stop_reason=None)
-    client = SimpleNamespace(
-        messages=SimpleNamespace(create=lambda **kwargs: response)
-    )
+    client = SimpleNamespace(messages=SimpleNamespace(create=lambda **kwargs: response))
     agent.set_thread_llm_control(lambda: False, events.append)
     try:
         assert agent._create_message_once(client, "probe", max_tokens=50) is response
@@ -763,6 +784,85 @@ def test_llm_budget_admission_runs_before_provider():
     finally:
         agent.set_thread_llm_control(None, None, None)
     assert calls == []
+
+
+def test_create_message_once_applies_generic_timeout_for_non_cli_client():
+    # The cross-backend safety-net default (NAUTILUS_LLM_CALL_TIMEOUT) must
+    # still apply to a direct SDK/OpenRouter client — that path previously had
+    # no timeout at all.
+    import agent
+
+    calls = []
+    client = SimpleNamespace(
+        messages=SimpleNamespace(
+            create=lambda **kwargs: (
+                calls.append(kwargs),
+                SimpleNamespace(usage=None, stop_reason=None, model="fake"),
+            )[1]
+        )
+    )
+    agent._create_message_once(client, "probe", max_tokens=50)
+    assert calls[0]["timeout"] == pytest.approx(120.0)
+
+
+def test_create_message_once_skips_generic_timeout_for_cli_client():
+    # Regression: injecting the generic 120s default into the CLI client's
+    # kwargs used to silently cap its own 300s ceiling (NAUTILUS_CLI_TIMEOUT)
+    # via a min() in _ClaudeCLIMessages.create — a slow high-effort CLI call
+    # that used to fit under 300s would now hit a spurious 120s timeout.
+    import agent
+
+    calls = []
+    client = agent._ClaudeCLIClient("fake-claude-cli")
+    client.messages.create = lambda **kwargs: (
+        calls.append(kwargs),
+        SimpleNamespace(usage=None, stop_reason=None, model="fake"),
+    )[1]
+    agent._create_message_once(client, "probe", max_tokens=50)
+    assert "timeout" not in calls[0]
+
+
+def test_cli_deadline_defaults_to_own_ceiling_not_generic_default(monkeypatch):
+    import subprocess
+
+    import agent
+
+    seen = {}
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda cmd, **kw: (
+            seen.update(kw),
+            SimpleNamespace(returncode=1, stdout="", stderr=""),
+        )[1],
+    )
+    monkeypatch.delenv("NAUTILUS_CLI_TIMEOUT", raising=False)
+    with pytest.raises(Exception):
+        agent._ClaudeCLIMessages("claude").create(
+            model="claude-sonnet-5", messages=[{"role": "user", "content": "x"}]
+        )
+    assert seen["timeout"] == pytest.approx(300.0)
+
+
+def test_openrouter_client_default_retries_matches_sdk_default(monkeypatch):
+    # Regression: this default used to be silently 0 (no retry), turning a
+    # transient connection blip or 502/503 into a user-visible failure on the
+    # synchronous (non-AUTO) call path, which has no other retry/backoff.
+    import openai
+
+    import agent
+
+    captured = {}
+
+    class _FakeOpenAI:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setattr(openai, "OpenAI", _FakeOpenAI)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    monkeypatch.delenv("NAUTILUS_OPENROUTER_SDK_RETRIES", raising=False)
+    agent._build_openrouter_client()
+    assert captured["max_retries"] == 2
 
 
 def test_openrouter_usage_includes_provider_cost():
@@ -949,23 +1049,15 @@ def test_candidate_fingerprint_distinguishes_exact_from_family():
     import web.routes.agent_backtest as ab
 
     first = ab._proposal_to_spec(
-        {
-            "blocks": [
-                {"type": "momentum", "role": "entry", "params": {"lookback": 5}}
-            ]
-        }
+        {"blocks": [{"type": "momentum", "role": "entry", "params": {"lookback": 5}}]}
     )
     second = ab._proposal_to_spec(
-        {
-            "blocks": [
-                {"type": "momentum", "role": "entry", "params": {"lookback": 20}}
-            ]
-        }
+        {"blocks": [{"type": "momentum", "role": "entry", "params": {"lookback": 20}}]}
     )
     assert ab._candidate_fingerprint(first) != ab._candidate_fingerprint(second)
-    assert ab._candidate_fingerprint(
-        first, family=True
-    ) == ab._candidate_fingerprint(second, family=True)
+    assert ab._candidate_fingerprint(first, family=True) == ab._candidate_fingerprint(
+        second, family=True
+    )
 
 
 def test_candidate_fingerprint_canonicalizes_commutative_block_order():
@@ -978,7 +1070,11 @@ def test_candidate_fingerprint_canonicalizes_commutative_block_order():
             "blocks": [
                 {"type": "momentum", "role": "entry", "params": {"lookback": 10}},
                 {"type": "rsi", "role": "entry", "params": {"period": 14}},
-                {"type": "atr_stop", "role": "exit", "params": {"period": 14, "mult": 3}},
+                {
+                    "type": "atr_stop",
+                    "role": "exit",
+                    "params": {"period": 14, "mult": 3},
+                },
                 {"type": "take_profit", "role": "exit", "params": {"percent": 5}},
             ],
         }
@@ -990,7 +1086,11 @@ def test_candidate_fingerprint_canonicalizes_commutative_block_order():
             "blocks": [
                 {"type": "take_profit", "role": "exit", "params": {"percent": 5}},
                 {"type": "rsi", "role": "entry", "params": {"period": 14}},
-                {"type": "atr_stop", "role": "exit", "params": {"period": 14, "mult": 3}},
+                {
+                    "type": "atr_stop",
+                    "role": "exit",
+                    "params": {"period": 14, "mult": 3},
+                },
                 {"type": "momentum", "role": "entry", "params": {"lookback": 10}},
             ],
         }

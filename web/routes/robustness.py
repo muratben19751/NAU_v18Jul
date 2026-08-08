@@ -15,7 +15,10 @@ from fastapi.responses import HTMLResponse
 
 router = APIRouter(prefix="/robustness")
 
-from web.shared import ProgressStore  # noqa: E402
+from web.shared import (
+    ProgressStore,  # noqa: E402
+    session_id,  # noqa: E402
+)
 from web.shared import log_robustness as _log_robustness  # noqa: E402
 
 # ProgressStore holds dict + lock + capped eviction; aliases keep existing
@@ -23,6 +26,34 @@ from web.shared import log_robustness as _log_robustness  # noqa: E402
 _STORE = ProgressStore(20)  # limit abandoned runs (#21)
 _PROGRESS = _STORE.raw()
 _LOCK = _STORE.lock
+
+# Per-session single-active-run guard — only client-side protection existed
+# before (backtest_scripts.html's querySelector check), so a direct POST
+# (curl/automation/two tabs) could start multiple concurrent sandbox
+# WFO/Monte Carlo child processes for the same session. Same shape as
+# lab.py's local guard (see its comment for why this isn't shared with
+# backtest.py's cross-store dispatcher instead).
+_ACTIVE_ROBUSTNESS_RUNS: dict[str, str] = {}  # sid → run_id
+_ACTIVE_ROBUSTNESS_RUNS_LOCK = threading.Lock()
+
+
+def _session_robustness_busy(sid: str) -> bool:
+    with _ACTIVE_ROBUSTNESS_RUNS_LOCK:
+        rid = _ACTIVE_ROBUSTNESS_RUNS.get(sid)
+    if rid is None:
+        return False
+    raw = _PROGRESS.get(rid)
+    if raw is None or raw.get("done"):
+        with _ACTIVE_ROBUSTNESS_RUNS_LOCK:
+            if _ACTIVE_ROBUSTNESS_RUNS.get(sid) == rid:
+                _ACTIVE_ROBUSTNESS_RUNS.pop(sid, None)
+        return False
+    return True
+
+
+def _session_robustness_set_active(sid: str, rid: str) -> None:
+    with _ACTIVE_ROBUSTNESS_RUNS_LOCK:
+        _ACTIVE_ROBUSTNESS_RUNS[sid] = rid
 
 
 def _add_step(run_id: str, msg: str) -> None:
@@ -73,6 +104,18 @@ async def run(
     from composer import load_catalog
     from server import templates
 
+    sid = session_id(request)
+    if _session_robustness_busy(sid):
+        resp = HTMLResponse(
+            "<div class='empty-state'>A robustness run is already in progress "
+            "for this session — wait for it to finish.</div>",
+            status_code=409,
+        )
+        resp.headers["HX-Toast"] = (
+            "err|A robustness run is already running - wait for it to finish."
+        )
+        return resp
+
     # L6: the HTML input's min/max is only browser-side — a direct POST
     # (curl/automation) could pass out-of-range values; clamp to [0.5, 0.9].
     split_pct = max(0.5, min(0.9, split_pct))
@@ -104,6 +147,7 @@ async def run(
             "spec_name": spec.name,
         },
     )
+    _session_robustness_set_active(sid, run_id)
 
     def _worker():
         from datetime import timedelta

@@ -133,9 +133,9 @@ async def refresh_bybit(
         )
     except ValueError as e:
         # e.g. interval not in _BYBIT_MS
-        raise HTTPException(400, str(e))
+        raise HTTPException(400, str(e)) from e
     except Exception as e:
-        raise HTTPException(500, str(e))
+        raise HTTPException(500, str(e)) from e
     return templates.TemplateResponse(
         request,
         "fragments/data/instrument_row.html",
@@ -170,9 +170,9 @@ async def refresh_index(
             end=end or None,
         )
     except FileNotFoundError as e:
-        raise HTTPException(404, str(e))
+        raise HTTPException(404, str(e)) from e
     except Exception as e:
-        raise HTTPException(500, str(e))
+        raise HTTPException(500, str(e)) from e
     return templates.TemplateResponse(
         request,
         "fragments/data/instrument_row.html",
@@ -190,9 +190,9 @@ async def index_discover(request: Request, force: bool = Form(default=False)):
     try:
         tickers = await asyncio.to_thread(discover_index_tickers, force=force)
     except FileNotFoundError as e:
-        raise HTTPException(404, f"INDEX_ROOT not found: {e}")
+        raise HTTPException(404, f"INDEX_ROOT not found: {e}") from e
     except Exception as e:
-        raise HTTPException(500, str(e))
+        raise HTTPException(500, str(e)) from e
     return templates.TemplateResponse(
         request,
         "fragments/data/discover_result.html",
@@ -235,16 +235,16 @@ async def catalog_write(
     try:
         await asyncio.to_thread(write_to_nautilus_catalog, source, **kw)
     except RuntimeError as e:
-        raise HTTPException(400, str(e))
+        raise HTTPException(400, str(e)) from e
     except Exception as e:
-        raise HTTPException(500, str(e))
+        raise HTTPException(500, str(e)) from e
 
     # Re-render the updated row via refresh_row (builds only the target row,
     # avoids a full catalog scan).
     try:
         row = await asyncio.to_thread(refresh_row, source, **kw)
     except Exception as e:
-        raise HTTPException(500, str(e))
+        raise HTTPException(500, str(e)) from e
     return templates.TemplateResponse(
         request,
         "fragments/data/instrument_row.html",

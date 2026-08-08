@@ -57,7 +57,7 @@ def _ema(closes: list[float], period: int) -> list[float | None]:
 
 def _rsi(closes: list[float], period: int) -> list[float | None]:
     out: list[float | None] = [None] * len(closes)
-    if len(closes) < period + 1:
+    if period <= 0 or len(closes) < period + 1:
         return out
     gains = 0.0
     losses = 0.0
@@ -219,7 +219,7 @@ def indicators_for_spec(spec, times: list[int], closes: list[float]) -> dict[str
         elif btype == "price_breakout":
             n = int(p.get("lookback", 20))
             fp = f"BRK{n}"
-            if fp not in seen:
+            if fp not in seen and n > 0:
                 seen.add(fp)
                 # Rolling high/low channel
                 hi: list[float | None] = [None] * len(closes)

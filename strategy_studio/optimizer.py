@@ -294,7 +294,7 @@ class WalkForwardOptimizer:
         if len(combos) > self.max_evals:  # even sampling, keeps the corners
             step = len(combos) / self.max_evals
             combos = [combos[int(i * step)] for i in range(self.max_evals)]
-        return [dict(zip(keys, c)) for c in combos]
+        return [dict(zip(keys, c, strict=True)) for c in combos]
 
     # ── stages ──────────────────────────────────────────────────────────
     def _compile(self, defn: StrategyDefinition, params: dict[str, float]):

@@ -66,12 +66,19 @@ def check_gate(
             "deployment gate: no completed walk-forward run to evaluate"
         )
     objective = defn.walkforward.objective
-    value = {"sharpe": latest_metrics.sharpe, "max_dd": latest_metrics.max_dd_pct}.get(
-        objective, latest_metrics.dsr
+    metrics_by_objective = {
+        "sharpe": ("sharpe", latest_metrics.sharpe),
+        "max_dd": ("max_dd", latest_metrics.max_dd_pct),
+    }
+    # Unknown/unset objectives fall back to DSR — the message must say DSR,
+    # not the requested objective's name, or the operator sees a metric label
+    # that doesn't match the number next to it.
+    metric_label, value = metrics_by_objective.get(
+        objective, ("dsr", latest_metrics.dsr)
     )
     if value < cfg.gate_min_objective:
         raise DeployBlocked(
-            f"deployment gate: OOS {objective.upper()} {value:.2f} "
+            f"deployment gate: OOS {metric_label.upper()} {value:.2f} "
             f"below required {cfg.gate_min_objective:.2f}"
         )
 

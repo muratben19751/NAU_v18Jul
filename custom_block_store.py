@@ -133,7 +133,9 @@ def _registry_guard():
         except OSError as exc:
             if handle is not None:
                 handle.close()
-            raise RegistryUnavailable(f"cannot lock custom block registry: {exc}") from exc
+            raise RegistryUnavailable(
+                f"cannot lock custom block registry: {exc}"
+            ) from exc
 
         try:
             _REGISTRY_GUARD_STATE.depth = 1
@@ -377,6 +379,45 @@ def save_custom(name: str, meta: dict, code: str, prompt: str = "") -> Path:
     return path
 
 
+@contextmanager
+def _registry_transaction():
+    """Snapshot the registry + every touched file; roll both back on failure.
+
+    ``save_custom_batch`` and ``delete_custom_batch`` each mutate a set of
+    files and the shared registry as one atomic unit — both used to hand-roll
+    the same "snapshot old registry + old file contents, write, and on
+    failure restore every file and the registry" sequence independently.
+
+    Yields ``(reg, old_files)``: ``reg`` is the live registry dict to mutate
+    in place; ``old_files`` is a ``name -> previous content | None`` map the
+    caller must populate (``None`` meaning the file didn't exist yet) *before*
+    writing/deleting each file, so a rollback knows whether to restore it or
+    remove it. Call ``_write_registry(reg)`` yourself once all files are
+    written — the transaction only *restores* on an exception, it doesn't
+    commit for you.
+    """
+    reg = _read_registry()
+    old_registry = dict(reg)
+    old_files: dict[str, str | None] = {}
+    try:
+        yield reg, old_files
+    except Exception:
+        for name, previous in old_files.items():
+            path = module_path(name)
+            try:
+                if previous is None:
+                    path.unlink(missing_ok=True)
+                else:
+                    path.write_text(previous, encoding="utf-8")
+            except OSError:
+                log.exception("could not roll back custom block %s", name)
+        try:
+            _write_registry(old_registry)
+        except OSError:
+            log.exception("could not roll back custom block registry")
+        raise
+
+
 def save_custom_batch(
     blocks: list[dict[str, Any]],
     *,
@@ -397,42 +438,25 @@ def save_custom_batch(
     if len(set(names)) != len(names) or any(not is_valid_name(name) for name in names):
         raise ValueError("batch contains duplicate or invalid custom block names")
     _ensure_dir()
-    with _registry_guard():
-        reg = _read_registry()
-        old_registry = dict(reg)
-        old_files: dict[str, str | None] = {}
+    with _registry_guard(), _registry_transaction() as (reg, old_files):
         paths: list[Path] = []
-        try:
-            for item, name in zip(blocks, names):
-                path = module_path(name)
-                old_files[name] = path.read_text(encoding="utf-8") if path.exists() else None
-                path.write_text(str(item.get("code") or ""), encoding="utf-8")
-                paths.append(path)
-                reg[name] = {
-                    "meta": dict(item.get("meta") or {}),
-                    "module_file": path.name,
-                    "generated_at": datetime.now(UTC).isoformat(),
-                    "prompt": str(item.get("prompt") or ""),
-                }
-            _write_registry(reg)
-            if validate is not None:
-                validate()
-            return paths
-        except Exception:
-            for name, previous in old_files.items():
-                path = module_path(name)
-                try:
-                    if previous is None:
-                        path.unlink(missing_ok=True)
-                    else:
-                        path.write_text(previous, encoding="utf-8")
-                except OSError:
-                    log.exception("could not roll back custom block %s", name)
-            try:
-                _write_registry(old_registry)
-            except OSError:
-                log.exception("could not roll back custom block registry")
-            raise
+        for item, name in zip(blocks, names, strict=True):
+            path = module_path(name)
+            old_files[name] = (
+                path.read_text(encoding="utf-8") if path.exists() else None
+            )
+            path.write_text(str(item.get("code") or ""), encoding="utf-8")
+            paths.append(path)
+            reg[name] = {
+                "meta": dict(item.get("meta") or {}),
+                "module_file": path.name,
+                "generated_at": datetime.now(UTC).isoformat(),
+                "prompt": str(item.get("prompt") or ""),
+            }
+        _write_registry(reg)
+        if validate is not None:
+            validate()
+        return paths
 
 
 def delete_custom(name: str) -> bool:
@@ -473,35 +497,18 @@ def delete_custom_batch(names: list[str] | tuple[str, ...] | set[str]) -> list[s
         raise ValueError("batch contains an invalid custom block name")
     if not selected:
         return []
-    with _registry_guard():
-        reg = _read_registry()
+    with _registry_guard(), _registry_transaction() as (reg, old_files):
         removed = [name for name in selected if name in reg]
         if not removed:
             return []
-        old_registry = dict(reg)
-        old_files: dict[str, str | None] = {}
-        try:
-            for name in removed:
-                path = module_path(name)
-                old_files[name] = (
-                    path.read_text(encoding="utf-8") if path.exists() else None
-                )
-                path.unlink(missing_ok=True)
-                del reg[name]
-            _write_registry(reg)
-        except Exception:
-            for name, previous in old_files.items():
-                if previous is None:
-                    continue
-                try:
-                    module_path(name).write_text(previous, encoding="utf-8")
-                except OSError:
-                    log.exception("could not roll back deleted custom block %s", name)
-            try:
-                _write_registry(old_registry)
-            except OSError:
-                log.exception("could not roll back custom block registry deletion")
-            raise
+        for name in removed:
+            path = module_path(name)
+            old_files[name] = (
+                path.read_text(encoding="utf-8") if path.exists() else None
+            )
+            path.unlink(missing_ok=True)
+            del reg[name]
+        _write_registry(reg)
     # Do not take composer._REGISTRY_LOCK while the store transaction is open;
     # composer reads the store before taking that lock. Commit first, then make
     # the process-local registry agree with disk.

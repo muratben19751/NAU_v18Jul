@@ -96,6 +96,45 @@ class TestWorkerConfig:
         monkeypatch.delenv("NAUTILUS_PARALLEL_WORKERS")
         assert PE.get_worker_count() >= 1
 
+    def test_worker_count_cpu_based_no_ram_signal(self, monkeypatch):
+        # No env override, psutil raises, sysconf absent -> pure cpu-2, clamped.
+        monkeypatch.delenv("NAUTILUS_PARALLEL_WORKERS", raising=False)
+        monkeypatch.setattr(PE.os, "cpu_count", lambda: 8)
+        monkeypatch.delattr(PE.os, "sysconf", raising=False)
+        monkeypatch.setitem(
+            __import__("sys").modules,
+            "psutil",
+            None,  # `import psutil` raises ImportError -> falls through to sysconf-less branch
+        )
+        assert PE.get_worker_count() == 6  # 8 - 2, within DEFAULT_WORKER_CLAMP
+
+    def test_worker_count_clamped_to_lo_on_low_cpu(self, monkeypatch):
+        monkeypatch.delenv("NAUTILUS_PARALLEL_WORKERS", raising=False)
+        monkeypatch.setattr(PE.os, "cpu_count", lambda: 2)  # 2 - 2 = 0, below lo=1
+        assert PE.get_worker_count() == PE.DEFAULT_WORKER_CLAMP[0]
+
+    def test_worker_count_ram_capped_below_cpu_count(self, monkeypatch):
+        monkeypatch.delenv("NAUTILUS_PARALLEL_WORKERS", raising=False)
+        monkeypatch.setenv("NAUTILUS_WORKER_MEM_GB", "1.5")
+        monkeypatch.setattr(PE.os, "cpu_count", lambda: 16)  # cpu-2 = 14
+
+        class _FakeVM:
+            available = 3 * (1024**3)  # 3 GB available -> ram_cap = 2 workers
+
+        class _FakePsutil:
+            @staticmethod
+            def virtual_memory():
+                return _FakeVM()
+
+        monkeypatch.setitem(__import__("sys").modules, "psutil", _FakePsutil())
+        assert PE.get_worker_count() == 2  # RAM cap wins over the cpu-based count
+
+    def test_worker_count_cpu_count_none_falls_back_to_4(self, monkeypatch):
+        monkeypatch.delenv("NAUTILUS_PARALLEL_WORKERS", raising=False)
+        monkeypatch.setattr(PE.os, "cpu_count", lambda: None)
+        monkeypatch.setitem(__import__("sys").modules, "psutil", None)
+        assert PE.get_worker_count() == 2  # (4 or fallback) - 2
+
 
 class TestParity:
     """Sequential vs parallel must be EXACTLY equal (same seeds, same engine)."""

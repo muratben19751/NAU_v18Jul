@@ -30,6 +30,7 @@ agent session logs).
 from __future__ import annotations
 
 import json
+import logging
 import math
 import threading
 from datetime import UTC, datetime
@@ -178,8 +179,9 @@ def record(model: str, usage, purpose: str = "") -> None:
             with open(LEDGER_PATH, "a", encoding="utf-8") as f:
                 f.write(payload + "\n")
     except Exception:
-        # A ledger write must never break an LLM call.
-        pass
+        # A ledger write must never break an LLM call — but it must not vanish
+        # without a trace either.
+        logging.getLogger(__name__).warning("token_ledger.record failed", exc_info=True)
 
 
 def summary(path: Path | None = None, *, since: str | None = None) -> dict:
@@ -296,23 +298,25 @@ def summary(path: Path | None = None, *, since: str | None = None) -> dict:
                     if last_ts is None or ts > last_ts:
                         last_ts = ts
     except Exception:
-        pass
+        logging.getLogger(__name__).warning(
+            "token_ledger.summary read failed", exc_info=True
+        )
     total_cost = 0.0
     for model, m in models.items():
         # Keep the all-token list-price estimate for comparison, but prefer an
         # exact reported cost for each line that supplied one. Mixed ledgers
-        # combine exact costs with estimates only for the unreported lines.
+        # combine exact costs with estimates only for the unreported lines —
+        # but if ANY call couldn't be priced (no provider cost, no price-table
+        # entry), the total is incomplete and must read as unknown (None)
+        # rather than silently understating it as the sum of what we do know.
         m["estimated_cost_usd"] = cost_usd(m, model)
-        c = m["provider_cost_usd"] + m["_estimated_missing_cost_usd"]
-        if not c and m["_unpriced_missing_calls"] and not m["provider_cost_calls"]:
-            c = None
+        c = (
+            None
+            if m["_unpriced_missing_calls"]
+            else m["provider_cost_usd"] + m["_estimated_missing_cost_usd"]
+        )
         m["cost_usd"] = c
-        if m["provider_cost_calls"] == m["calls"]:
-            m["cost_source"] = "provider_reported"
-        elif m["provider_cost_calls"]:
-            m["cost_source"] = "mixed"
-        else:
-            m["cost_source"] = "price_table"
+        m["cost_source"] = _cost_source(m["provider_cost_calls"], m["calls"])
         del m["_estimated_missing_cost_usd"]
         del m["_unpriced_missing_calls"]
         if c is not None:
@@ -321,15 +325,18 @@ def summary(path: Path | None = None, *, since: str | None = None) -> dict:
         float(m["estimated_cost_usd"] or 0.0) for m in models.values()
     )
     grand["cost_usd"] = round(total_cost, 4)
-    if grand["provider_cost_calls"] == grand["calls"]:
-        grand["cost_source"] = "provider_reported"
-    elif grand["provider_cost_calls"]:
-        grand["cost_source"] = "mixed"
-    else:
-        grand["cost_source"] = "price_table"
+    grand["cost_source"] = _cost_source(grand["provider_cost_calls"], grand["calls"])
     del grand["_estimated_missing_cost_usd"]
     del grand["_unpriced_missing_calls"]
     return {"models": models, "total": grand, "first_ts": first_ts, "last_ts": last_ts}
+
+
+def _cost_source(provider_cost_calls: int, calls: int) -> str:
+    if provider_cost_calls == calls:
+        return "provider_reported"
+    if provider_cost_calls:
+        return "mixed"
+    return "price_table"
 
 
 def format_table(path: Path | None = None) -> str:

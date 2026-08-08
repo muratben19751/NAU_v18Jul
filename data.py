@@ -811,8 +811,12 @@ def load_bybit_bars(
             _auto_write_bybit_catalog(symbol, interval, combined, category)
         except Exception as e:
             # Non-fatal: catalog write failure doesn't break the bar return.
-            print(
-                f"[catalog] auto-write failed for {symbol}/{interval}: {e}", flush=True
+            log.warning(
+                "[catalog] auto-write failed for %s/%s: %s",
+                symbol,
+                interval,
+                e,
+                exc_info=True,
             )
 
     return result
@@ -1334,10 +1338,11 @@ def _auto_write_bybit_catalog(
                 # new files create overlapping (non-disjoint) ranges and the
                 # next read blows up. Cancel the write — the next fetch from
                 # cache repairs it.
-                print(
-                    f"[catalog] delete_data_range ERROR, skipping write → "
-                    f"{bar_type}: {_del_err}",
-                    flush=True,
+                log.warning(
+                    "[catalog] delete_data_range ERROR, skipping write → %s: %s",
+                    bar_type,
+                    _del_err,
+                    exc_info=True,
                 )
                 return
         catalog.write_data(bars)

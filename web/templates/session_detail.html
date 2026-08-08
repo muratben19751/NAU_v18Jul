@@ -20,8 +20,8 @@
       {% endif %}
       {% if detail_truncated %}
       <span class="badge" style="font-size:10px;color:#fb923c;border-color:rgba(251,146,60,0.35);"
-            title="This legacy log is too large for a full browser replay. The page shows bounded start/end evidence; use exported artifacts for deeper forensics.">
-        ⚠ partial large-log preview
+            title="This legacy log is too large for a full browser replay. Winner/session_end/token/round events are still complete; {{ n_heavy_skipped }} backtest/robustness result bod{{ 'y' if n_heavy_skipped == 1 else 'ies' }} outside the start/end window were skipped — use exported artifacts for deeper forensics.">
+        ⚠ partial large-log preview{% if n_heavy_skipped %} ({{ n_heavy_skipped }} results skipped){% endif %}
       </span>
       {% endif %}
       {# L38: model-based ESTIMATED cost; None on subscription CLI runs → hidden #}

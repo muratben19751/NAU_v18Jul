@@ -1195,7 +1195,9 @@ def register_custom_from_disk(name: str) -> None:
         block_view = SimpleNamespace(
             params=dict(block.params), role=block.role, type=block.type
         )
-        signal = _fn(state, block_view, closes_view, indicators, _PortfolioView(strategy))
+        signal = _fn(
+            state, block_view, closes_view, indicators, _PortfolioView(strategy)
+        )
         # Legacy AUTO files were only syntactically validated, so a rare branch
         # could return the opposite vocabulary despite a normal smoke result.
         # Never reinterpret it at runtime: fail closed to no signal. New blocks
@@ -1389,6 +1391,8 @@ class ComposedStrategySpec:
         )
 
     def validate(self) -> str | None:
+        if not self.name or not self.name.strip():
+            return "Strategy name is required."
         if not self.blocks:
             return "At least one signal block is required."
         if not any(b.role == "entry" for b in self.blocks):
@@ -1512,7 +1516,13 @@ def build_spec(
     """
     return ComposedStrategySpec(
         id=new_spec_id(),
-        name=(name or "unnamed").strip(),
+        # No silent "unnamed" fallback: an empty/falsy name and a
+        # whitespace-only one used to be handled inconsistently (only the
+        # latter survived stripping as ""), and either way a blank name
+        # silently saved created indistinguishable catalog/CSV rows.
+        # validate() now rejects both the same way — the caller re-prompts
+        # instead of a strategy quietly landing in the catalog unnamed.
+        name=(name or "").strip(),
         description=(description or "").strip(),
         blocks=list(blocks),
         trade_size=float(trade_size),
@@ -1777,6 +1787,7 @@ class ComposedStrategy(Strategy):
         # L19: bar timestamps (ns) of the MTM snapshots — backtest.py builds a
         # bar-resolution equity_curve_mtm as (ts, eq) pairs.
         self._mtm_ts: list[int] = []
+        self._mtm_snapshot_error_logged = False
         # delay_fill buffer: pending entry order side when delay_fill=True
         self._pending_entry: str | None = None  # "BUY" | "SELL" | None
         # Decision log: on each entry/exit signal, the firing blocks +
@@ -2081,7 +2092,7 @@ class ComposedStrategy(Strategy):
     def _build_reason(self, kind, side, fires_per, blocks_list, bar, closes) -> dict:
         """label+params+indicator-value snapshot of the firing blocks."""
         fired = []
-        for (i, b), f in zip(blocks_list, fires_per):
+        for (i, b), f in zip(blocks_list, fires_per, strict=True):
             if not f:
                 continue
             entry = BLOCK_REGISTRY.get(b.type) or {}
@@ -2305,14 +2316,23 @@ class ComposedStrategy(Strategy):
                 self._trend_bias = "bullish" if float(bar.close) > ema else "bearish"
             return
 
-        # Snapshot MTM equity every bar for real drawdown calculation
+        # Snapshot MTM equity every bar for real drawdown calculation. Log once
+        # per run (not per bar — this runs on every bar and a failing snapshot
+        # would otherwise spam the log for the rest of the backtest) so a
+        # systemic equity() problem doesn't just quietly thin the curve.
         try:
             eq = self._current_equity()
             if eq > 0:
                 self._mtm_equity.append(eq)
                 self._mtm_ts.append(int(bar.ts_event))  # L19: aligned time
         except Exception:
-            pass
+            if not self._mtm_snapshot_error_logged:
+                self._mtm_snapshot_error_logged = True
+                logging.getLogger(__name__).warning(
+                    "on_bar: MTM equity snapshot failed (further occurrences this "
+                    "run are suppressed)",
+                    exc_info=True,
+                )
 
         # L13: delay_fill — the deferred EXIT is processed BEFORE the deferred entry
         # (if both an exit and an entry are queued on the same candle, order: exit → entry;

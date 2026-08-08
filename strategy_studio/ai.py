@@ -14,7 +14,9 @@ Bkz: [[strategy_studio]]
 from __future__ import annotations
 
 import json
+import logging
 import os
+import time
 from typing import Literal, Protocol
 
 from pydantic import BaseModel, Field, ValidationError
@@ -60,31 +62,116 @@ class HttpAnthropicClient:
     """Minimal Anthropic Messages API client (INTEGRATION POINT — swap for
     the client your existing LLM loop already uses)."""
 
-    def __init__(self, model: str = "claude-sonnet-4-6", api_key: str | None = None):
-        self.model = model
+    # Not wired to agent.py's cross-run _LEARNED_MAX_TOKENS: that mechanism is
+    # keyed to the AUTO loop's rapid repeated calls to the SAME (model, purpose)
+    # and reaches into agent.py's private module state — this client is an
+    # explicit "INTEGRATION POINT" meant to stay decoupled from agent.py's
+    # internals (see class docstring), and Studio suggestion calls are
+    # occasional/interactive rather than bursty, so per-call detection is
+    # enough: no cross-call memory needed.
+    _DEFAULT_MODEL = "claude-sonnet-4-6"
+    _DEFAULT_MAX_TOKENS = 4096
+
+    def __init__(
+        self,
+        model: str | None = None,
+        api_key: str | None = None,
+        max_tokens: int | None = None,
+    ):
+        self.model = model or os.environ.get(
+            "NAUTILUS_STUDIO_LLM_MODEL", self._DEFAULT_MODEL
+        )
         self.api_key = api_key or os.environ.get("ANTHROPIC_API_KEY", "")
+        self.max_tokens = max_tokens or int(
+            os.environ.get("NAUTILUS_STUDIO_LLM_MAX_TOKENS", self._DEFAULT_MAX_TOKENS)
+        )
+
+    # Retry only transient failures (429 / 5xx / timeout / connection) — a
+    # single one of these used to kill the whole AUTO loop for this client
+    # (agent.py's own LLM path already retries the same failure classes;
+    # this one didn't, so a rate-limit blip failed the run for no reason
+    # related to the actual suggestion).
+    _RETRY_WAITS = (1.0, 2.0, 4.0)
+    _TRUNCATION_RETRY_SCALE = 2
+    _TRUNCATION_RETRY_CAP = 16000
 
     def complete(self, prompt: str) -> str:
+        text, stop_reason = self._complete_at(prompt, self.max_tokens)
+        if stop_reason != "max_tokens":
+            return text
+        bigger = min(
+            self.max_tokens * self._TRUNCATION_RETRY_SCALE, self._TRUNCATION_RETRY_CAP
+        )
+        if bigger <= self.max_tokens:
+            return text  # already at the cap — nothing more to try
+        logging.warning(
+            "HttpAnthropicClient.complete: response truncated at max_tokens=%d — "
+            "retrying once with %d",
+            self.max_tokens,
+            bigger,
+        )
+        text, _ = self._complete_at(prompt, bigger)
+        return text
+
+    def _complete_at(self, prompt: str, max_tokens: int) -> tuple[str, str | None]:
+        """One logical call (with transient-failure retry) → (text, stop_reason)."""
         import httpx  # local import: optional dependency at runtime
 
         if not self.api_key:
             raise SuggestionFailure("ANTHROPIC_API_KEY is not set")
-        r = httpx.post(
-            "https://api.anthropic.com/v1/messages",
-            headers={"x-api-key": self.api_key, "anthropic-version": "2023-06-01"},
-            json={
-                "model": self.model,
-                "max_tokens": 1024,
-                "messages": [{"role": "user", "content": prompt}],
-            },
-            timeout=60,
-        )
-        r.raise_for_status()
-        return "".join(
-            b.get("text", "")
-            for b in r.json().get("content", [])
-            if b.get("type") == "text"
-        )
+        last_exc: Exception | None = None
+        for attempt, planned_wait in enumerate((*self._RETRY_WAITS, None)):
+            try:
+                r = httpx.post(
+                    "https://api.anthropic.com/v1/messages",
+                    headers={
+                        "x-api-key": self.api_key,
+                        "anthropic-version": "2023-06-01",
+                    },
+                    json={
+                        "model": self.model,
+                        "max_tokens": max_tokens,
+                        "messages": [{"role": "user", "content": prompt}],
+                    },
+                    timeout=60,
+                )
+                r.raise_for_status()
+                body = r.json()
+                text = "".join(
+                    b.get("text", "")
+                    for b in body.get("content", [])
+                    if b.get("type") == "text"
+                )
+                return text, body.get("stop_reason")
+            except (httpx.TimeoutException, httpx.ConnectError) as e:
+                last_exc = e
+                transient = True
+            except httpx.HTTPStatusError as e:
+                last_exc = e
+                transient = (
+                    e.response.status_code == 429 or e.response.status_code >= 500
+                )
+
+            if not transient or planned_wait is None:
+                raise last_exc
+            wait = planned_wait
+            if isinstance(last_exc, httpx.HTTPStatusError):
+                retry_after = last_exc.response.headers.get("retry-after")
+                try:
+                    if retry_after:
+                        wait = float(retry_after)
+                except (TypeError, ValueError):
+                    pass
+            logging.warning(
+                "HttpAnthropicClient.complete transient error (%s) — retrying in "
+                "%.0fs (%d/%d)",
+                type(last_exc).__name__,
+                wait,
+                attempt + 1,
+                len(self._RETRY_WAITS),
+            )
+            time.sleep(wait)
+        raise last_exc  # pragma: no cover - loop always returns or raises above
 
 
 class MockLLMClient:

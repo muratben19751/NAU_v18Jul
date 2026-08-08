@@ -41,6 +41,7 @@ import time
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import NamedTuple
 
 import pandas as pd
 from fastapi import APIRouter, Form, Request
@@ -64,7 +65,9 @@ _AGENT_LOCK = _AGENT_STORE.lock
 # make token/cost attribution ambiguous. Operators may raise this explicitly
 # only after sizing the worker pools for their machine.
 try:
-    _MAX_CONCURRENT_AUTO_RUNS = max(1, int(os.environ.get("AGENT_MAX_CONCURRENT_RUNS", "1")))
+    _MAX_CONCURRENT_AUTO_RUNS = max(
+        1, int(os.environ.get("AGENT_MAX_CONCURRENT_RUNS", "1"))
+    )
 except ValueError:
     _MAX_CONCURRENT_AUTO_RUNS = 1
 _AUTO_RUN_SLOTS = threading.BoundedSemaphore(_MAX_CONCURRENT_AUTO_RUNS)
@@ -140,11 +143,15 @@ DEFAULT_CONTINUOUS_MAX_TOKENS = int(
 # environment configuration; posting 0 does not disable them.
 HARD_MAX_AUTO_HOURS = max(
     0.01,
-    float(os.environ.get("AGENT_HARD_MAX_AUTO_HOURS", str(DEFAULT_CONTINUOUS_MAX_HOURS))),
+    float(
+        os.environ.get("AGENT_HARD_MAX_AUTO_HOURS", str(DEFAULT_CONTINUOUS_MAX_HOURS))
+    ),
 )
 HARD_MAX_AUTO_TOKENS = max(
     1,
-    int(os.environ.get("AGENT_HARD_MAX_AUTO_TOKENS", str(DEFAULT_CONTINUOUS_MAX_TOKENS))),
+    int(
+        os.environ.get("AGENT_HARD_MAX_AUTO_TOKENS", str(DEFAULT_CONTINUOUS_MAX_TOKENS))
+    ),
 )
 
 # M22 extra circuit breaker: threshold of consecutive winnerless rounds
@@ -284,8 +291,7 @@ def _robustness_log_summary(rob: dict) -> dict:
                 for k in _WFO_KEEP_METRICS
             },
             "oos_metrics": {
-                k: (split.get("oos_metrics") or {}).get(k)
-                for k in _WFO_KEEP_METRICS
+                k: (split.get("oos_metrics") or {}).get(k) for k in _WFO_KEEP_METRICS
             },
         },
         "wfo": {"windows": len(rob.get("wfo_windows") or [])},
@@ -625,21 +631,26 @@ def _add_tokens(run_id: str, usage: dict | None) -> None:
                 )
 
 
+_TOKEN_USAGE_FIELDS = (
+    "tokens_in",
+    "tokens_out",
+    "tokens_cache_read",
+    "tokens_cache_write",
+)
+
+
+def _token_usage(state: dict) -> int:
+    """Sum the token-usage fields tracked in a run's progress state."""
+    return sum(int(state.get(k) or 0) for k in _TOKEN_USAGE_FIELDS)
+
+
 def _enforce_token_budget(run_id: str) -> None:
     """Stop before another LLM call once the persisted per-run ceiling is hit."""
 
     with _AGENT_LOCK:
         s = _AGENT_PROGRESS.get(run_id) or {}
         cap = int(s.get("max_total_tokens") or 0)
-        used = sum(
-            int(s.get(k) or 0)
-            for k in (
-                "tokens_in",
-                "tokens_out",
-                "tokens_cache_read",
-                "tokens_cache_write",
-            )
-        )
+        used = _token_usage(s)
     if cap > 0 and used >= cap:
         raise AgentBudgetReached(f"token ceiling ({cap:,}) reached at {used:,}")
 
@@ -651,15 +662,7 @@ def _admit_llm_budget(run_id: str, request: dict) -> None:
     with _AGENT_LOCK:
         s = _AGENT_PROGRESS.get(run_id) or {}
         cap = int(s.get("max_total_tokens") or 0)
-        used = sum(
-            int(s.get(k) or 0)
-            for k in (
-                "tokens_in",
-                "tokens_out",
-                "tokens_cache_read",
-                "tokens_cache_write",
-            )
-        )
+        used = _token_usage(s)
     if cap > 0 and used + reserve > cap:
         remaining = max(0, cap - used)
         _session_log(
@@ -688,6 +691,14 @@ def _set_robustness_scan(run_id: str, current: int, total: int) -> None:
 # ── Core helpers ──────────────────────────────────────────────────────────────
 
 
+def _downsample_indices(count: int, cap: int) -> list[int]:
+    """Evenly-spaced indices (keeps first/last) shrinking a length-``count``
+    sequence to ``cap`` points — shared by every curve-thinning path below so
+    the rounding formula lives in exactly one place."""
+    step = (count - 1) / (cap - 1)
+    return [int(round(i * step)) for i in range(cap)]
+
+
 def _spark_points(curve, n: int = 40) -> list[float]:
     """Downsample an equity curve to at most ``n`` points for the cockpit
     sparkline. Keeps first/last so the visual slope stays honest."""
@@ -696,8 +707,7 @@ def _spark_points(curve, n: int = 40) -> list[float]:
     pts = [float(v) for v in curve if v is not None]
     if len(pts) <= n:
         return [round(v, 4) for v in pts]
-    step = (len(pts) - 1) / (n - 1)
-    return [round(pts[int(round(i * step))], 4) for i in range(n)]
+    return [round(pts[i], 4) for i in _downsample_indices(len(pts), n)]
 
 
 def _thin_pair(values, dates, cap: int = 400) -> tuple[list, list]:
@@ -718,8 +728,7 @@ def _thin_pair(values, dates, cap: int = 400) -> tuple[list, list]:
     dts = list(dates or [])
     if len(vals) <= cap:
         return vals, dts
-    step = (len(vals) - 1) / (cap - 1)
-    idx = [int(round(i * step)) for i in range(cap)]
+    idx = _downsample_indices(len(vals), cap)
     out_v = [vals[i] for i in idx]
     # Dates may be absent or shorter (older records) — only index what exists.
     out_d = [dts[i] for i in idx if i < len(dts)] if dts else []
@@ -997,6 +1006,21 @@ def _starting_cash() -> float:
     return _STARTING_CASH
 
 
+def _excess_return(m: dict, *, fallback_to_pnl_pct: bool = False) -> float | None:
+    """Preferred excess-return field, with legacy-key fallback.
+
+    Both scoring gates below need "how much did this beat buy-and-hold" and
+    used to each hand-roll the same is-None fallback chain — a metrics-producer
+    change adding a new preferred key had to be edited in both to stay in sync.
+    """
+    v = m.get("excess_return_fraction")
+    if v is None:
+        v = m.get("excess_pnl_pct")
+    if v is None and fallback_to_pnl_pct:
+        v = m.get("pnl_pct")
+    return v
+
+
 def _score(result) -> float:
     """NAU composite ranking score (H9/M30/M32):
 
@@ -1046,11 +1070,7 @@ def _score(result) -> float:
     # Use explicit None check to avoid treating pnl_pct=0.0 (break-even) as missing
     # Rank edge over the investable buy-and-hold baseline when the run stamped
     # one. Absolute long-market profit is not evidence of strategy alpha.
-    _pnl_pct = m.get("excess_return_fraction")
-    if _pnl_pct is None:
-        _pnl_pct = m.get("excess_pnl_pct")
-    if _pnl_pct is None:
-        _pnl_pct = m.get("pnl_pct")
+    _pnl_pct = _excess_return(m, fallback_to_pnl_pct=True)
     if _pnl_pct is not None:
         pnl_pct = _pnl_pct
     else:
@@ -1087,9 +1107,7 @@ def _pre_robustness_eligible(result) -> bool:
     m = result.metrics
     if int(m.get("n_trades") or 0) < _MIN_TRADES:
         return False
-    excess = m.get("excess_return_fraction")
-    if excess is None:
-        excess = m.get("excess_pnl_pct")
+    excess = _excess_return(m)
     values = (m.get("pnl"), excess, m.get("sharpe_per_trade"))
     try:
         pnl, excess, sharpe = (float(v) for v in values)
@@ -1100,34 +1118,11 @@ def _pre_robustness_eligible(result) -> bool:
 
 def _stamp_buy_hold_benchmark(result, bars_df) -> None:
     """Attach deterministic buy-and-hold and excess-return metrics in-place."""
+    if result.error or not result.metrics:
+        return
+    from app_constants import stamp_buy_hold_benchmark
 
-    if result.error or not result.metrics or bars_df is None or len(bars_df) < 2:
-        return
-    try:
-        first = float(bars_df["close"].iloc[0])
-        last = float(bars_df["close"].iloc[-1])
-        if first <= 0 or not math.isfinite(first) or not math.isfinite(last):
-            return
-        benchmark = last / first - 1.0
-        pnl_pct = result.metrics.get("pnl_pct")
-        if pnl_pct is None:
-            pnl_pct = (result.metrics.get("pnl") or 0.0) / _starting_cash()
-        excess = float(pnl_pct) - benchmark
-        # Canonical names state the stored unit explicitly: these values are
-        # fractions (0.20 == 20%). Keep the legacy *_pct aliases for session and
-        # API compatibility while UI/rendering migrates to the unambiguous keys.
-        result.metrics["benchmark_return_fraction"] = benchmark
-        result.metrics["excess_return_fraction"] = excess
-        result.metrics["benchmark_return_pct"] = benchmark
-        result.metrics["excess_pnl_pct"] = excess
-        result.metrics["benchmark"] = "buy_and_hold"
-        # The strategy return is net of its simulated costs, while this simple
-        # close-to-close reference has no trading costs.  Keep that contract
-        # explicit so downstream ranking/reporting cannot label it net alpha.
-        result.metrics["benchmark_cost_basis"] = "gross_buy_and_hold_no_costs"
-        result.metrics["strategy_return_cost_basis"] = "net_simulated_costs"
-    except (KeyError, TypeError, ValueError, IndexError):
-        return
+    stamp_buy_hold_benchmark(result.metrics, bars_df, label="buy_and_hold")
 
 
 def _rank_results(results: list[tuple]) -> list[tuple]:
@@ -1211,6 +1206,19 @@ def _wfo_test(w: dict) -> dict:
     return (w.get("test_metrics_naive") or {}) or (w.get("test_metrics") or {})
 
 
+_WFO_MIN_TRADES = 3
+
+
+def _valid_wfo_windows(wfo: list[dict]) -> list[dict]:
+    """WFO windows with enough trades in their decision metric to count."""
+    return [
+        w
+        for w in wfo
+        if (_wfo_test(w).get("n_trades") or w.get("test_n_trades") or 0)
+        >= _WFO_MIN_TRADES
+    ]
+
+
 def _robustness_passed(
     rob: dict, strict: bool = True, run_id: str | None = None
 ) -> bool:
@@ -1266,11 +1274,7 @@ def _robustness_passed(
     wfo = rob.get("wfo_windows") or []
     # `test_n_trades` is kept as the fallback count: a window may carry it
     # without a metrics dict (older payloads, and the parallel path's slim rows).
-    valid_windows = [
-        w
-        for w in wfo
-        if (_wfo_test(w).get("n_trades") or w.get("test_n_trades") or 0) >= 3
-    ]
+    valid_windows = _valid_wfo_windows(wfo)
     # Does this payload actually HAVE the naive series? If it does, the optimized
     # aggregate must never be used (that is the bug being fixed). If it doesn't —
     # a run from before the naive series existed, or a spec with no optimizable
@@ -1398,20 +1402,27 @@ def _split_definitive_failure(split: dict | None) -> bool:
     return "✗" in str((split or {}).get("overfitting_label", ""))
 
 
-def _holdout_promotion_passed(
+def _holdout_promotion_verdict(
     n_trades: int,
     pnl_pct: float,
     sharpe: float | None,
     excess_pnl_pct: float,
-) -> bool:
-    """Single publication policy for sealed holdout results."""
+) -> tuple[bool, str]:
+    """Single publication policy for sealed holdout results — pass/fail AND why.
 
-    return bool(
-        n_trades >= HOLDOUT_MIN_TRADES
-        and (not HOLDOUT_REQUIRE_POSITIVE_PNL or pnl_pct > 0)
-        and (not HOLDOUT_REQUIRE_POSITIVE_SHARPE or (sharpe is not None and sharpe > 0))
-        and (not HOLDOUT_REQUIRE_POSITIVE_EXCESS or excess_pnl_pct > 0)
-    )
+    The reason string must be derived from the exact same HOLDOUT_REQUIRE_*
+    flags as the boolean, or the two can disagree: a flag flip changes what
+    passes but not the sentence a human reads about why it did or didn't.
+    """
+    if n_trades < HOLDOUT_MIN_TRADES:
+        return False, f"only {n_trades} holdout trades; need {HOLDOUT_MIN_TRADES}"
+    if HOLDOUT_REQUIRE_POSITIVE_PNL and pnl_pct <= 0:
+        return False, "sealed holdout PnL is not positive"
+    if HOLDOUT_REQUIRE_POSITIVE_SHARPE and (sharpe is None or sharpe <= 0):
+        return False, "sealed holdout Sharpe is not positive"
+    if HOLDOUT_REQUIRE_POSITIVE_EXCESS and excess_pnl_pct <= 0:
+        return False, "sealed holdout did not beat buy-and-hold"
+    return True, "passed"
 
 
 def _ms_score_factor(rob: dict | None) -> float:
@@ -1819,11 +1830,7 @@ def _run_full_robustness(
             # Reported on the SAME series the gate decides on (_wfo_test): the
             # unchanged spec's OOS windows. Showing the re-optimized count next
             # to a naive verdict made the two disagree on screen.
-            valid_wfo = [
-                w
-                for w in wfo
-                if (_wfo_test(w).get("n_trades") or w.get("test_n_trades") or 0) >= 3
-            ]
+            valid_wfo = _valid_wfo_windows(wfo)
             pos = sum(1 for w in valid_wfo if _wfo_test(w).get("pnl", 0) > 0)
             avg_pnl = (
                 sum(_wfo_test(w).get("pnl", 0) for w in valid_wfo) / len(valid_wfo)
@@ -1913,7 +1920,6 @@ def _agent_worker(
         set_thread_random_seed,
     )
 
-
     # Pin THIS worker thread's LLM calls to the picked model (unknown/"" =
     # app default). Thread-local — concurrent surfaces are unaffected.
     set_thread_model(model or None)
@@ -1929,15 +1935,7 @@ def _agent_worker(
             if state is None or state.get("stop_requested"):
                 return True
             cap = int(state.get("max_total_tokens") or 0)
-            used = sum(
-                int(state.get(k) or 0)
-                for k in (
-                    "tokens_in",
-                    "tokens_out",
-                    "tokens_cache_read",
-                    "tokens_cache_write",
-                )
-            )
+            used = _token_usage(state)
         if cap > 0 and used >= cap:
             raise AgentBudgetReached(f"token ceiling ({cap:,}) reached at {used:,}")
         # The old wall-clock ceiling was checked only between rounds. A long
@@ -2072,8 +2070,7 @@ def _agent_worker(
             from custom_block_store import cleanup_agent_run
 
             _retained_block_names.update(
-                str(block.type)
-                for block in (getattr(keep_spec, "blocks", None) or [])
+                str(block.type) for block in (getattr(keep_spec, "blocks", None) or [])
             )
             cleanup_agent_run(run_id, keep_names=_retained_block_names)
         except Exception:  # best effort; cleanup must never mask a terminal result
@@ -2630,9 +2627,7 @@ def _agent_worker(
                 results.append((spec, r, iter_iv))
                 _seen_candidate_fingerprints.add(_candidate_fingerprint(spec))
                 if int((r.metrics or {}).get("n_trades") or 0) == 0:
-                    _zero_trade_families.add(
-                        _candidate_fingerprint(spec, family=True)
-                    )
+                    _zero_trade_families.add(_candidate_fingerprint(spec, family=True))
                 # The returned ts is this iteration's key into the backtest log
                 # — the cockpit card links its tear sheet with it.
                 _bt_log_ts = ""
@@ -3070,12 +3065,7 @@ def _agent_worker(
                 mc_dd = (rob.get("mc") or {}).get("max_dd_p50", None)
                 wfo = rob.get("wfo_windows") or []
                 # Naive series — the one _robustness_passed decided on.
-                valid_wfo = [
-                    w
-                    for w in wfo
-                    if (_wfo_test(w).get("n_trades") or w.get("test_n_trades") or 0)
-                    >= 3
-                ]
+                valid_wfo = _valid_wfo_windows(wfo)
                 wf_pos = sum(1 for w in valid_wfo if _wfo_test(w).get("pnl", 0) > 0)
                 wf_str = f"{wf_pos}/{len(valid_wfo)}" if valid_wfo else "—"
                 ms_label = (rob.get("multi_symbol") or {}).get(
@@ -3321,15 +3311,18 @@ def _agent_worker(
                         _sealed_prices = _hold_run_df[
                             _hold_run_df.index >= _hold_start
                         ]["close"]
-                        _benchmark_fr = (
-                            float(_sealed_prices.iloc[-1])
-                            / float(_sealed_prices.iloc[0])
-                            - 1.0
+                        from app_constants import benchmark_and_excess
+
+                        _bench_excess = (
+                            benchmark_and_excess(
+                                float(_sealed_prices.iloc[0]),
+                                float(_sealed_prices.iloc[-1]),
+                                _pnl_fr,
+                            )
                             if len(_sealed_prices) >= 2
-                            and float(_sealed_prices.iloc[0]) > 0
-                            else 0.0
+                            else None
                         )
-                        _excess_fr = _pnl_fr - _benchmark_fr
+                        _benchmark_fr, _excess_fr = _bench_excess or (0.0, _pnl_fr)
                         winner_holdout = {
                             "sharpe": round(_sharpe, 4)
                             if _sharpe is not None
@@ -3353,13 +3346,10 @@ def _agent_worker(
                             # stays False and the count is reported as-is.
                             "measured": _n >= HOLDOUT_MIN_TRADES,
                         }
-                        promotion_passed = _holdout_promotion_passed(
+                        promotion_passed, promotion_reason = _holdout_promotion_verdict(
                             _n, _pnl_fr, _sharpe, _excess_fr
                         )
                         if _n < HOLDOUT_MIN_TRADES:
-                            promotion_reason = (
-                                f"only {_n} holdout trades; need {HOLDOUT_MIN_TRADES}"
-                            )
                             _add_step(
                                 run_id,
                                 f"⚠ Sealed OOS ({OOS_HOLDOUT_DAYS}d): {_n} trade "
@@ -3367,18 +3357,6 @@ def _agent_worker(
                                 "gerekiyor; warmup lead-in dahil)",
                             )
                         else:
-                            if _pnl_fr <= 0:
-                                promotion_reason = "sealed holdout PnL is not positive"
-                            elif _sharpe is None or _sharpe <= 0:
-                                promotion_reason = (
-                                    "sealed holdout Sharpe is not positive"
-                                )
-                            elif _excess_fr <= 0:
-                                promotion_reason = (
-                                    "sealed holdout did not beat buy-and-hold"
-                                )
-                            else:
-                                promotion_reason = "passed"
                             _sh_txt = f"{_sharpe:.2f}" if _sharpe is not None else "—"
                             _add_step(
                                 run_id,
@@ -3622,13 +3600,9 @@ def _agent_worker(
             _provider_cost = float(s.get("provider_cost_usd") or 0.0)
             # OpenRouter returns billed usage cost. Prefer it over a local price
             # table; fall back to notional pricing for providers that omit cost.
-            _model, _estimated_cost = _llm_cost_usd(
-                _ti, _to, _tcr, _tcw, model=model
-            )
+            _model, _estimated_cost = _llm_cost_usd(_ti, _to, _tcr, _tcw, model=model)
             _cost_usd = _provider_cost if _provider_cost > 0 else _estimated_cost
-            _cost_source = (
-                "provider_reported" if _provider_cost > 0 else "price_table"
-            )
+            _cost_source = "provider_reported" if _provider_cost > 0 else "price_table"
             _session_log(
                 run_id,
                 "token_snapshot",
@@ -3888,7 +3862,9 @@ def _generate_custom_spec(
 
         save_custom_batch(generated, validate=_register_and_validate)
         for block in generated:
-            _add_step(run_id, f"  ✓ {block['role'].title()} block saved: {block['name']}")
+            _add_step(
+                run_id, f"  ✓ {block['role'].title()} block saved: {block['name']}"
+            )
             _session_log(
                 run_id,
                 "custom_block_generated",
@@ -3909,8 +3885,15 @@ def _generate_custom_spec(
                 (blocks_dir / f"{block['name']}.py").write_text(
                     block["code"], encoding="utf-8"
                 )
-        except Exception:
-            pass
+        except Exception as exc:
+            logging.getLogger(__name__).warning(
+                "AUTO forensic .py copy write failed for %s", run_id, exc_info=True
+            )
+            with _AGENT_LOCK:
+                state = _AGENT_PROGRESS.get(run_id)
+                if state is not None:
+                    state["audit_degraded"] = True
+                    state["audit_error"] = f"Forensic block copy unavailable: {exc}"
         return spec
 
     except (TerminalLLMError, AgentBudgetReached):
@@ -4000,6 +3983,160 @@ async def page(request: Request):
             "active_run_id": active_run_id,
             "llm_models": selectable_models(),
         },
+    )
+
+
+class _ExternalDataDecision(NamedTuple):
+    intervals: list[str]
+    trend_interval: str
+    research_only: bool
+    auto_continuous_start: str | None
+    data_truncation: dict | None
+
+
+def _validate_external_data(
+    instrument_id: str,
+    chosen: list[str],
+    is_multi_tf: bool,
+    ext_interval: str,
+    ext_trend_interval: str,
+    range_start: str,
+    range_end: str,
+) -> _ExternalDataDecision | HTMLResponse:
+    """Fail-closed integrity gate for external (non-Bybit) instrument data.
+
+    Known-unadjusted equity series, intraday/day gaps, and stale catalog
+    segments must all block autonomous strategy selection before a worker is
+    even launched — split/dividend jumps or a spliced-in disconnected segment
+    can be ranked as false edge. Returns an HTMLResponse directly on any
+    refusal so the route can just `return` it, or the decision run() needs to
+    proceed.
+    """
+    from data import (
+        EXTERNAL_GRAN_BY_BYBIT_CODE,
+        _external_adjusted_flag,
+        _external_bar_dir,
+        external_data_gap_report,
+        load_external_bars,
+    )
+
+    mapped = [
+        EXTERNAL_GRAN_BY_BYBIT_CODE[t]
+        for t in chosen
+        if t in EXTERNAL_GRAN_BY_BYBIT_CODE
+    ]
+    intervals: list[str] = (
+        ["1-HOUR", "4-HOUR", "1-DAY"] if is_multi_tf else (mapped or [ext_interval])
+    )
+    trend_interval = ext_trend_interval
+    research_only = False
+    auto_continuous_start: str | None = None
+    data_truncation: dict | None = None
+
+    # Known-unadjusted equity series are unsuitable for autonomous strategy
+    # selection: splits/dividends can be ranked as edge. Fail closed before
+    # launching a worker. A deliberate research-only override is available
+    # via env and remains visible in the run log through data.py warnings.
+    # Two-key opt-in: a stale PM2 environment containing the historical
+    # one-key override must not silently reopen unadjusted AUTO after a
+    # restart. Research mode has to be asserted independently each time.
+    _allow_unadjusted = (
+        os.environ.get("AGENT_ALLOW_UNADJUSTED", "").strip() == "1"
+        and os.environ.get("AGENT_RESEARCH_MODE", "").strip() == "1"
+    )
+    for _iv in intervals:
+        _located = _external_bar_dir(instrument_id, _iv)
+        _known_unadjusted = bool(
+            _located is not None
+            and _external_adjusted_flag(_located[0], instrument_id) is False
+        )
+        if _known_unadjusted:
+            if not _allow_unadjusted:
+                return HTMLResponse(
+                    "<div class='empty-state'>⚠ AUTO refused known-unadjusted "
+                    f"equity data for {instrument_id} ({_iv}). Use an adjusted "
+                    "catalog; split/dividend jumps can create false edge. "
+                    "Research-only override requires AGENT_ALLOW_UNADJUSTED=1 "
+                    "and AGENT_RESEARCH_MODE=1.</div>",
+                    status_code=400,
+                )
+            research_only = True
+        try:
+            _validation_df = load_external_bars(instrument_id, _iv)
+            if range_start:
+                _validation_df = _validation_df[
+                    _validation_df.index
+                    >= pd.Timestamp(range_start, tz=_validation_df.index.tz)
+                ]
+            if range_end:
+                _validation_df = _validation_df[
+                    _validation_df.index
+                    < pd.Timestamp(range_end, tz=_validation_df.index.tz)
+                    + pd.Timedelta(days=1)
+                ]
+            _gap = external_data_gap_report(_validation_df, granularity=_iv)
+        except Exception as _gap_exc:
+            return HTMLResponse(
+                "<div class='empty-state'>⚠ AUTO could not validate external "
+                f"data integrity for {instrument_id} ({_iv}): {_gap_exc}</div>",
+                status_code=400,
+            )
+        if _gap:
+            _fingerprint = (
+                instrument_id,
+                _gap.get("from"),
+                _gap.get("to"),
+                int(_gap.get("days") or 0),
+            )
+            _tail_start = _KNOWN_CONTINUOUS_TAIL_GAPS.get(_fingerprint)
+            # A UI may submit a default end date even when the operator did
+            # not choose a historical window.  It is still safe to retain
+            # the known recent tail whenever the requested start precedes
+            # it and the requested end does not exclude it.
+            if (
+                _tail_start
+                and (not range_start or range_start < _tail_start)
+                and (not range_end or range_end >= _tail_start)
+            ):
+                _tail = _validation_df[
+                    _validation_df.index
+                    >= pd.Timestamp(_tail_start, tz=_validation_df.index.tz)
+                ]
+                if len(_tail) < 200 or external_data_gap_report(_tail, granularity=_iv):
+                    return HTMLResponse(
+                        "<div class='empty-state'>⚠ AUTO could not retain a sufficiently "
+                        "long, continuous post-gap external segment.</div>",
+                        status_code=400,
+                    )
+                if auto_continuous_start is None or _tail_start > auto_continuous_start:
+                    auto_continuous_start = _tail_start
+                data_truncation = {
+                    "policy": "known_continuous_tail_v1",
+                    "instrument_id": instrument_id,
+                    "granularity": _iv,
+                    "gap": _gap,
+                    "effective_start": _tail_start,
+                    "discarded_bars": int(len(_validation_df) - len(_tail)),
+                }
+                continue
+            if _gap.get("kind") == "intraday":
+                _gap_text = (
+                    f"a {_gap['gap_minutes']}-minute intraday gap for "
+                    f"{instrument_id} ({_iv}), {_gap['from']} → {_gap['to']}"
+                )
+            else:
+                _gap_text = (
+                    f"a {_gap['days']}-day gap for {instrument_id} ({_iv}), "
+                    f"{_gap['from']} → {_gap['to']}"
+                )
+            return HTMLResponse(
+                "<div class='empty-state'>⚠ AUTO refused external data with "
+                f"{_gap_text}. Repair/backfill the catalog "
+                "before autonomous research.</div>",
+                status_code=400,
+            )
+    return _ExternalDataDecision(
+        intervals, trend_interval, research_only, auto_continuous_start, data_truncation
     )
 
 
@@ -4121,124 +4258,22 @@ async def run(
     auto_continuous_start: str | None = None
     data_truncation: dict | None = None
     if is_external:
-        from data import (
-            EXTERNAL_GRAN_BY_BYBIT_CODE,
-            _external_adjusted_flag,
-            _external_bar_dir,
-            external_data_gap_report,
-            load_external_bars,
+        decision = _validate_external_data(
+            instrument_id,
+            chosen,
+            is_multi_tf,
+            ext_interval,
+            ext_trend_interval,
+            range_start,
+            range_end,
         )
-
-        mapped = [
-            EXTERNAL_GRAN_BY_BYBIT_CODE[t]
-            for t in chosen
-            if t in EXTERNAL_GRAN_BY_BYBIT_CODE
-        ]
-        intervals: list[str] = (
-            ["1-HOUR", "4-HOUR", "1-DAY"] if is_multi_tf else (mapped or [ext_interval])
-        )
-        trend_interval = ext_trend_interval
-        # Known-unadjusted equity series are unsuitable for autonomous strategy
-        # selection: splits/dividends can be ranked as edge. Fail closed before
-        # launching a worker. A deliberate research-only override is available
-        # via env and remains visible in the run log through data.py warnings.
-        # Two-key opt-in: a stale PM2 environment containing the historical
-        # one-key override must not silently reopen unadjusted AUTO after a
-        # restart. Research mode has to be asserted independently each time.
-        _allow_unadjusted = (
-            os.environ.get("AGENT_ALLOW_UNADJUSTED", "").strip() == "1"
-            and os.environ.get("AGENT_RESEARCH_MODE", "").strip() == "1"
-        )
-        for _iv in intervals:
-            _located = _external_bar_dir(instrument_id, _iv)
-            _known_unadjusted = bool(
-                _located is not None
-                and _external_adjusted_flag(_located[0], instrument_id) is False
-            )
-            if _known_unadjusted:
-                if not _allow_unadjusted:
-                    return HTMLResponse(
-                        "<div class='empty-state'>⚠ AUTO refused known-unadjusted "
-                        f"equity data for {instrument_id} ({_iv}). Use an adjusted "
-                        "catalog; split/dividend jumps can create false edge. "
-                        "Research-only override requires AGENT_ALLOW_UNADJUSTED=1 "
-                        "and AGENT_RESEARCH_MODE=1.</div>",
-                        status_code=400,
-                    )
-                research_only = True
-            try:
-                _validation_df = load_external_bars(instrument_id, _iv)
-                if range_start:
-                    _validation_df = _validation_df[
-                        _validation_df.index >= pd.Timestamp(range_start, tz=_validation_df.index.tz)
-                    ]
-                if range_end:
-                    _validation_df = _validation_df[
-                        _validation_df.index
-                        < pd.Timestamp(range_end, tz=_validation_df.index.tz) + pd.Timedelta(days=1)
-                    ]
-                _gap = external_data_gap_report(_validation_df, granularity=_iv)
-            except Exception as _gap_exc:
-                return HTMLResponse(
-                    "<div class='empty-state'>⚠ AUTO could not validate external "
-                    f"data integrity for {instrument_id} ({_iv}): {_gap_exc}</div>",
-                    status_code=400,
-                )
-            if _gap:
-                _fingerprint = (
-                    instrument_id,
-                    _gap.get("from"),
-                    _gap.get("to"),
-                    int(_gap.get("days") or 0),
-                )
-                _tail_start = _KNOWN_CONTINUOUS_TAIL_GAPS.get(_fingerprint)
-                # A UI may submit a default end date even when the operator did
-                # not choose a historical window.  It is still safe to retain
-                # the known recent tail whenever the requested start precedes
-                # it and the requested end does not exclude it.
-                if (
-                    _tail_start
-                    and (not range_start or range_start < _tail_start)
-                    and (not range_end or range_end >= _tail_start)
-                ):
-                    _tail = _validation_df[
-                        _validation_df.index >= pd.Timestamp(_tail_start, tz=_validation_df.index.tz)
-                    ]
-                    if len(_tail) < 200 or external_data_gap_report(
-                        _tail, granularity=_iv
-                    ):
-                        return HTMLResponse(
-                            "<div class='empty-state'>⚠ AUTO could not retain a sufficiently "
-                            "long, continuous post-gap external segment.</div>",
-                            status_code=400,
-                        )
-                    if auto_continuous_start is None or _tail_start > auto_continuous_start:
-                        auto_continuous_start = _tail_start
-                    data_truncation = {
-                        "policy": "known_continuous_tail_v1",
-                        "instrument_id": instrument_id,
-                        "granularity": _iv,
-                        "gap": _gap,
-                        "effective_start": _tail_start,
-                        "discarded_bars": int(len(_validation_df) - len(_tail)),
-                    }
-                    continue
-                if _gap.get("kind") == "intraday":
-                    _gap_text = (
-                        f"a {_gap['gap_minutes']}-minute intraday gap for "
-                        f"{instrument_id} ({_iv}), {_gap['from']} → {_gap['to']}"
-                    )
-                else:
-                    _gap_text = (
-                        f"a {_gap['days']}-day gap for {instrument_id} ({_iv}), "
-                        f"{_gap['from']} → {_gap['to']}"
-                    )
-                return HTMLResponse(
-                    "<div class='empty-state'>⚠ AUTO refused external data with "
-                    f"{_gap_text}. Repair/backfill the catalog "
-                    "before autonomous research.</div>",
-                    status_code=400,
-                )
+        if isinstance(decision, HTMLResponse):
+            return decision
+        intervals = decision.intervals
+        trend_interval = decision.trend_interval
+        research_only = decision.research_only
+        auto_continuous_start = decision.auto_continuous_start
+        data_truncation = decision.data_truncation
         if auto_continuous_start:
             range_start = auto_continuous_start
     else:
@@ -4566,9 +4601,7 @@ async def progress(request: Request, run_id: str):
     _tcw = state.get("tokens_cache_write", 0) or 0
     _provider_cost = float(state.get("provider_cost_usd") or 0.0)
     _pricing_model = str((raw.get("brief") or {}).get("model") or "")
-    _model, _estimated_cost = _llm_cost_usd(
-        _ti, _to, _tcr, _tcw, model=_pricing_model
-    )
+    _model, _estimated_cost = _llm_cost_usd(_ti, _to, _tcr, _tcw, model=_pricing_model)
     _cost_usd = _provider_cost if _provider_cost > 0 else _estimated_cost
     token_info = {
         "input": _ti,
@@ -4577,9 +4610,7 @@ async def progress(request: Request, run_id: str):
         "cache_write": _tcw,
         "total": _ti + _to + _tcr + _tcw,
         "pricing_model": _model,
-        "cost_source": (
-            "provider_reported" if _provider_cost > 0 else "price_table"
-        ),
+        "cost_source": ("provider_reported" if _provider_cost > 0 else "price_table"),
         "cost_usd": round(_cost_usd, 4) if _cost_usd is not None else None,
         "cost_eur": round(_cost_usd * _USD_EUR, 4) if _cost_usd is not None else None,
     }

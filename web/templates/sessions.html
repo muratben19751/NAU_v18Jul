@@ -4,7 +4,9 @@
 <div class="panel" style="margin-bottom:14px;">
   <div class="panel-header">
     <div class="panel-title">Agent Session Logs</div>
-    <div class="panel-meta small">{{ sessions|length }} session · all autonomous runs</div>
+    <div class="panel-meta small">
+      {% if sessions %}{{ offset + 1 }}–{{ offset + sessions|length }} of {% endif %}{{ total_sessions }} session{{ '' if total_sessions == 1 else 's' }} · all autonomous runs
+    </div>
   </div>
 </div>
 
@@ -92,6 +94,17 @@
 </a>
 {% endfor %}
 </div>
+
+{% if has_prev or has_next %}
+<div style="display:flex;justify-content:center;gap:10px;margin-top:14px;">
+  {% if has_prev %}
+  <a class="btn btn-sm" href="/sessions?limit={{ limit }}&offset={{ [offset - limit, 0]|max }}">← Newer</a>
+  {% endif %}
+  {% if has_next %}
+  <a class="btn btn-sm" href="/sessions?limit={{ limit }}&offset={{ offset + limit }}">Older →</a>
+  {% endif %}
+</div>
+{% endif %}
 
 {% endif %}
 {% endblock %}

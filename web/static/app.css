@@ -121,6 +121,7 @@ html, body {
   transition: background 0.15s, color 0.15s;
 }
 .nav a:hover { background: #14161a; color: var(--text-primary); }
+.nav a.nav-disabled { opacity: 0.45; cursor: default; pointer-events: none; }
 .nav a.active {
   background: linear-gradient(90deg, var(--accent-soft), transparent 70%);
   color: #ffffff;

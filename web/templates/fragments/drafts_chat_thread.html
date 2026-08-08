@@ -23,7 +23,7 @@
       <div class="chat-thread-list" id="drafts-chat-bubbles">
         {% for m in messages %}
           <div class="chat-bubble {{ 'chat-user' if m.role == 'user' else 'chat-assistant' }}">
-            {{ (m.display if m.display is defined and m.display else m.content) | replace('\n', '<br>') | safe }}
+            {{ (m.display if m.display is defined and m.display else m.content) | nl2br }}
           </div>
         {% endfor %}
       </div>

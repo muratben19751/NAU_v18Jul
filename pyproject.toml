@@ -45,6 +45,13 @@ extend-exclude = [
     # own style and are overwritten when a skill updates, so linting them only
     # ever breaks `ruff check .` (the command CI runs) for changes nobody made.
     ".claude",
+    # Not product code (LLM fine-tuning trainer cache, unrelated to this app) —
+    # 2502 of 2529 `ruff check .` errors on this repo came from here, drowning
+    # any real signal from the other ~137 tracked .py files.
+    "unsloth_compiled_cache",
+    # Scratch/debug scripts (manual browser-driven E2E probes, one-off fix
+    # scripts) — not linted, not part of the app.
+    "debug",
 ]
 
 [tool.ruff.lint]
@@ -58,6 +65,10 @@ ignore = ["E501", "E402"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# e2e: canlı ağ çağrısı yapan (örn. Bybit'ten gerçek bar indiren), dakikalar
+# sürebilen testler — varsayılan koşumdan hariç, açıkça `-m e2e` ile çalıştırılır.
+markers = ["e2e: hits a live external API and can take minutes; run explicitly with -m e2e"]
+addopts = "-m \"not e2e\""
 # Üçüncü-parti deprecation gürültüsünü sustur (ikisi de bizim kodumuzda değil,
 # `grep utcnow` → 0; yükseltme dışında düzeltilemez) — gerçek sinyal görünür kalsın.
 #   - Timestamp.utcnow: nautilus_trader 1.230 engine.run() içinden

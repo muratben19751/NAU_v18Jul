@@ -24,7 +24,10 @@ from fastapi.responses import HTMLResponse
 
 router = APIRouter(prefix="/lab")
 
-from web.shared import ProgressStore  # noqa: E402
+from web.shared import (
+    ProgressStore,  # noqa: E402
+    session_id,  # noqa: E402
+)
 from web.shared import chart_url as _chart_url  # noqa: E402
 from web.shared import log_backtest as _log_backtest  # noqa: E402
 
@@ -34,6 +37,36 @@ from web.shared import log_backtest as _log_backtest  # noqa: E402
 _LAB_STORE = ProgressStore(50)
 _LAB_PROGRESS = _LAB_STORE.raw()
 _LAB_LOCK = _LAB_STORE.lock
+
+# Per-session single-active-run guard — same shape as backtest.py's
+# _session_active_kind/_session_set_active (kept local rather than imported:
+# backtest.py's version dispatches across ITS OWN three stores via a
+# module-private dict, and reaching into that from here would either force a
+# backtest.py→lab.py import back-reference or a shared registry neither file
+# currently has; a second small guard scoped to this one store is simpler and
+# has no cross-module coupling).
+_ACTIVE_LAB_RUNS: dict[str, str] = {}  # sid → run_id
+_ACTIVE_LAB_RUNS_LOCK = threading.Lock()
+
+
+def _session_lab_busy(sid: str) -> bool:
+    with _ACTIVE_LAB_RUNS_LOCK:
+        rid = _ACTIVE_LAB_RUNS.get(sid)
+    if rid is None:
+        return False
+    raw = _LAB_PROGRESS.get(rid)
+    if raw is None or raw.get("done"):
+        with _ACTIVE_LAB_RUNS_LOCK:
+            if _ACTIVE_LAB_RUNS.get(sid) == rid:
+                _ACTIVE_LAB_RUNS.pop(sid, None)
+        return False
+    return True
+
+
+def _session_lab_set_active(sid: str, rid: str) -> None:
+    with _ACTIVE_LAB_RUNS_LOCK:
+        _ACTIVE_LAB_RUNS[sid] = rid
+
 
 _PHASES = [
     "Generating strategy idea",
@@ -451,7 +484,13 @@ async def page(request: Request):
     except Exception:
         external_symbols = []
 
-    return templates.TemplateResponse(
+    # Establish the session cookie on first visit — without it, a user who
+    # opens /lab directly (never having visited /studio, which sets it) POSTs
+    # to /run with no cookie; session_id() then mints a fresh sid PER REQUEST
+    # and the single-active-run guard below can never actually recognize a
+    # repeat submission from the same browser.
+    sid = session_id(request)
+    resp = templates.TemplateResponse(
         request,
         "lab.html",
         {
@@ -461,6 +500,9 @@ async def page(request: Request):
             "external_symbols": external_symbols,
         },
     )
+    if not request.cookies.get("nautlab_sid"):
+        resp.set_cookie("nautlab_sid", sid, httponly=True, samesite="lax", max_age=3600)
+    return resp
 
 
 @router.post("/run", response_class=HTMLResponse)
@@ -474,6 +516,18 @@ async def run(
     end_date: str = Form(default=""),
 ):
     from server import get_market_info, templates
+
+    sid = session_id(request)
+    if _session_lab_busy(sid):
+        resp = HTMLResponse(
+            "<div class='empty-state'>A Strategy Lab run is already in progress "
+            "for this session — wait for it to finish.</div>",
+            status_code=409,
+        )
+        resp.headers["HX-Toast"] = (
+            "err|A Strategy Lab run is already running - wait for it to finish."
+        )
+        return resp
 
     def _parse_date(s: str) -> datetime | None:
         try:
@@ -503,6 +557,7 @@ async def run(
             "hint": hint.strip(),
         },
     )
+    _session_lab_set_active(sid, run_id)
 
     threading.Thread(
         target=_lab_worker,

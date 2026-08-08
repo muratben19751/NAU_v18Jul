@@ -17,6 +17,7 @@ Geri kalanı app-spesifik; Nautilus kavramı değil.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 from collections import deque
@@ -86,6 +87,7 @@ def _read_events(run_id: str, max_lines: int | None = None) -> tuple[list[dict],
     structural: list[tuple[int, dict]] = []
     steps: deque[tuple[int, dict]] = deque(maxlen=max_lines or None)
     n_steps_seen = 0
+    read_failed = False
     try:
         with path.open() as f:
             for i, line in enumerate(f):
@@ -103,9 +105,14 @@ def _read_events(run_id: str, max_lines: int | None = None) -> tuple[list[dict],
                 else:
                     steps.append((i, obj))
                     n_steps_seen += 1
-    except Exception:
-        pass
-    truncated = bool(max_lines) and n_steps_seen > len(steps)
+    except OSError as e:
+        # Mid-read I/O failure (permission, disk, concurrent truncate): what we
+        # collected so far is a genuine partial read, not "few events happened".
+        # Fold into `truncated` so the template's existing warning fires instead
+        # of presenting an incomplete list as a clean/complete one.
+        logging.warning("_read_events(%s): read failed: %s", run_id, e, exc_info=True)
+        read_failed = True
+    truncated = read_failed or (bool(max_lines) and n_steps_seen > len(steps))
     merged = sorted([*structural, *steps], key=lambda t: t[0])
     return [e for _, e in merged], truncated
 
@@ -217,50 +224,109 @@ def _build_timeline_spans(events: list[dict]) -> list[dict]:
 # active (growing) file is re-read. Invalidation is in the key itself.
 _SUMMARY_CACHE: dict[str, tuple[tuple, dict]] = {}
 
+
+def _env_int(
+    name: str, default: int, *, lo: int | None = None, hi: int | None = None
+) -> int:
+    """Parse an int env var with clamping and a safe fallback on a bad value."""
+    try:
+        v = int(os.environ.get(name, str(default)))
+    except ValueError:
+        v = default
+    if lo is not None:
+        v = max(lo, v)
+    if hi is not None:
+        v = min(hi, v)
+    return v
+
+
+def _query_int(
+    request: Request,
+    name: str,
+    default: int,
+    *,
+    lo: int | None = None,
+    hi: int | None = None,
+) -> int:
+    """Parse an int query param with clamping and a safe fallback on a bad value."""
+    try:
+        v = int(request.query_params.get(name, str(default)))
+    except ValueError:
+        v = default
+    if lo is not None:
+        v = max(lo, v)
+    if hi is not None:
+        v = min(hi, v)
+    return v
+
+
 # The session corpus is historical evidence, not a reason to fan out hundreds
 # of simultaneous disk reads on a page render.  Cache hits are cheap; cold
 # summaries of very large legacy JSONLs remain I/O-bound, so keep the read
 # pressure bounded while preserving every visible session.
-try:
-    _SESSION_SUMMARY_CONCURRENCY = max(
-        1, min(32, int(os.environ.get("NAUTILUS_SESSION_SUMMARY_CONCURRENCY", "8")))
-    )
-except ValueError:
-    _SESSION_SUMMARY_CONCURRENCY = 8
+_SESSION_SUMMARY_CONCURRENCY = _env_int(
+    "NAUTILUS_SESSION_SUMMARY_CONCURRENCY", 8, lo=1, hi=32
+)
 
 # A historical session may contain hundreds of MB of old, curve-heavy JSONL.
 # The list page is navigation, not forensic replay: it must stay responsive
 # without asking the disk to parse the whole corpus.  The detail route remains
 # the explicit full-history view.
-try:
-    _SESSION_SUMMARY_FULL_SCAN_MAX_BYTES = max(
-        0,
-        int(os.environ.get("NAUTILUS_SESSION_SUMMARY_FULL_SCAN_MAX_BYTES", str(8 * 1024 * 1024))),
-    )
-except ValueError:
-    _SESSION_SUMMARY_FULL_SCAN_MAX_BYTES = 8 * 1024 * 1024
+_SESSION_SUMMARY_FULL_SCAN_MAX_BYTES = _env_int(
+    "NAUTILUS_SESSION_SUMMARY_FULL_SCAN_MAX_BYTES", 8 * 1024 * 1024, lo=0
+)
 _SUMMARY_EDGE_BYTES = 128 * 1024
-try:
-    _SESSION_DETAIL_FULL_SCAN_MAX_BYTES = max(
-        0,
-        int(
-            os.environ.get(
-                "NAUTILUS_SESSION_DETAIL_FULL_SCAN_MAX_BYTES", str(64 * 1024 * 1024)
-            )
-        ),
-    )
-except ValueError:
-    _SESSION_DETAIL_FULL_SCAN_MAX_BYTES = 64 * 1024 * 1024
+_SESSION_DETAIL_FULL_SCAN_MAX_BYTES = _env_int(
+    "NAUTILUS_SESSION_DETAIL_FULL_SCAN_MAX_BYTES", 64 * 1024 * 1024, lo=0
+)
 _DETAIL_EDGE_BYTES = 2 * 1024 * 1024
 
+# backtest_result/robustness_result bodies can carry an MB-scale embedded
+# equity curve; every other structural event is a few hundred bytes. Only the
+# heavy ones need to stay bounded to the head/tail windows below.
+_HEAVY_BODY_EVENTS = frozenset({"backtest_result", "robustness_result"})
 
-def _read_events_head_tail(run_id: str, edge_bytes: int = _DETAIL_EDGE_BYTES) -> list[dict]:
+
+def _parse_jsonl_blob(blob: bytes, *, require_event_key: bool = True) -> list[dict]:
+    """Decode a raw JSONL byte slice into dicts, skipping torn/invalid lines.
+
+    Shared by the head/tail forensic reader and the large-session summary —
+    both need "best-effort parse of a byte window that may start or end
+    mid-line" and previously reimplemented this loop separately.
+    """
+    parsed: list[dict] = []
+    for line in blob.decode("utf-8", errors="replace").splitlines():
+        try:
+            event = json.loads(line)
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(event, dict):
+            continue
+        if require_event_key and "event" not in event:
+            continue
+        parsed.append(event)
+    return parsed
+
+
+def _read_events_head_tail(
+    run_id: str, edge_bytes: int = _DETAIL_EDGE_BYTES
+) -> tuple[list[dict], int]:
     """Bounded forensic preview for a huge session detail request.
 
-    The normal detail replay intentionally reads all events.  For multi-GB
-    legacy JSONLs, that turns one browser request into an I/O/RAM denial of
-    service.  Keep the start metadata plus the terminal evidence, and label it
-    explicitly as partial instead of pretending the omitted middle is empty.
+    The normal detail replay intentionally reads all events. For multi-GB
+    legacy JSONLs, fully materializing every heavy-bodied event (backtest/
+    robustness results, which can each carry an MB-scale equity curve) would
+    turn one browser request into an I/O/RAM denial of service, so those stay
+    bounded to the head/tail windows. Every OTHER structural event (winner,
+    session_end, token_snapshot, phase_change, …) is lightweight, so a single
+    cheap streaming middle-pass (event name read from the line head only, the
+    same technique _session_summary uses) captures it wherever it falls
+    instead of silently dropping it when it lands outside the two windows —
+    a mid-file 'winner' from an earlier round in a long continuous session
+    must not vanish from the replay just because the log grew past 64MB.
+
+    Returns (events, n_heavy_skipped) — the count of heavy-bodied structural
+    events outside the head/tail windows, so callers can show an honest notice.
     """
     path = SESSION_LOG_DIR / f"{run_id}.jsonl"
     try:
@@ -268,74 +334,141 @@ def _read_events_head_tail(run_id: str, edge_bytes: int = _DETAIL_EDGE_BYTES) ->
         with path.open("rb") as fh:
             head = fh.read(edge_bytes)
             if size <= edge_bytes:
-                tail = b""
-            else:
-                fh.seek(max(0, size - edge_bytes))
-                tail = fh.read(edge_bytes)
+                return _parse_jsonl_blob(head), 0
+            tail_start = max(0, size - edge_bytes)
+            fh.seek(tail_start)
+            tail = fh.read(edge_bytes)
     except OSError:
-        return []
+        return [], 0
 
-    def _parse(blob: bytes) -> list[dict]:
-        parsed: list[dict] = []
+    # Head ends and tail begins may contain one cut JSON line; the parser rejects it.
+    events = [*_parse_jsonl_blob(head), *_parse_jsonl_blob(tail)]
+
+    light_events = _STRUCTURAL_EVENTS - _HEAVY_BODY_EVENTS
+    n_heavy_skipped = 0
+    try:
+        with path.open("rb") as fh:
+            fh.seek(len(head))
+            for raw_line in fh:
+                if fh.tell() >= tail_start:
+                    break
+                line = raw_line.decode("utf-8", errors="replace")
+                m_ev = _EVENT_RE.search(line[:_HEAD_SCAN])
+                if m_ev is None:
+                    continue
+                ev = m_ev.group(1)
+                if ev in _HEAVY_BODY_EVENTS:
+                    n_heavy_skipped += 1
+                elif ev in light_events:
+                    try:
+                        obj = json.loads(line)
+                    except Exception:
+                        continue
+                    if isinstance(obj, dict) and "event" in obj:
+                        events.append(obj)
+    except OSError:
+        pass
+    return events, n_heavy_skipped
+
+
+def _tail_scan_for_events(
+    path: Path, size: int, wanted: frozenset[str], max_bytes: int
+) -> dict[str, dict]:
+    """Find the last occurrence of each wanted event type near EOF.
+
+    A fixed-size tail slice can miss a terminal event (session_end, winner,
+    token_snapshot) when it's preceded by an oversized line — e.g. a
+    backtest_result carrying an embedded equity curve — pushing the actual
+    event past the window and making a completed session misreport as
+    'running'. This grows the read window (bounded doubling, capped at
+    max_bytes) until every wanted event is found or the cap is hit, using the
+    same cheap event-name regex _session_summary relies on so a big scan
+    doesn't mean a big parse.
+    """
+    found: dict[str, dict] = {}
+    window = _SUMMARY_EDGE_BYTES
+    while True:
+        window = min(window, max_bytes, size)
+        try:
+            with path.open("rb") as fh:
+                fh.seek(max(0, size - window))
+                blob = fh.read(window)
+        except OSError:
+            return found
         for line in blob.decode("utf-8", errors="replace").splitlines():
+            m = _EVENT_RE.search(line[:_HEAD_SCAN])
+            if not m or m.group(1) not in wanted:
+                continue
             try:
-                event = json.loads(line)
+                obj = json.loads(line)
             except (TypeError, ValueError):
                 continue
-            if isinstance(event, dict) and "event" in event:
-                parsed.append(event)
-        return parsed
+            if isinstance(obj, dict) and "event" in obj:
+                found[obj["event"]] = obj  # scanned oldest→newest: last one wins
+        if len(found) >= len(wanted) or window >= max_bytes or window >= size:
+            return found
+        window *= 4
 
-    # Head ends and tail begins may contain one cut JSON line; _parse rejects it.
-    return [*_parse(head), *_parse(tail)]
+
+_SUMMARY_TAIL_TERMINAL_EVENTS = frozenset({"session_end", "token_snapshot", "winner"})
 
 
 def _large_session_summary(run_id: str, path: Path, size_mb: float) -> dict:
-    """Build a bounded summary from the JSONL head and tail.
+    """Build a bounded summary from the JSONL head and a grown-as-needed tail.
 
     Counts are intentionally unknown rather than guessed.  Completion, winner
     and latest token data are terminal events and normally live at the tail;
     start metadata is at the head.
     """
     try:
+        size = path.stat().st_size
         with path.open("rb") as fh:
             head = fh.read(_SUMMARY_EDGE_BYTES)
-            fh.seek(max(0, path.stat().st_size - _SUMMARY_EDGE_BYTES))
-            tail = fh.read(_SUMMARY_EDGE_BYTES)
     except OSError:
         return {
-            "run_id": run_id, "ts_start": "—", "ts_end": "—", "elapsed": "",
-            "size_mb": size_mb, "symbol": "—", "intervals": [],
-            "n_iterations": "—", "continuous": False, "hint": "",
-            "outcome": "unreadable", "total_rounds": "?", "n_backtest": "?",
-            "n_rob": "?", "n_custom": "?", "n_step": "?", "winner_spec": "",
-            "winner_score": None, "cost_eur": None, "cost_usd": None,
-            "cost_source": None, "has_blocks": False,
+            "run_id": run_id,
+            "ts_start": "—",
+            "ts_end": "—",
+            "elapsed": "",
+            "size_mb": size_mb,
+            "symbol": "—",
+            "intervals": [],
+            "n_iterations": "—",
+            "continuous": False,
+            "hint": "",
+            "outcome": "unreadable",
+            "total_rounds": "?",
+            "n_backtest": "?",
+            "n_rob": "?",
+            "n_custom": "?",
+            "n_step": "?",
+            "winner_spec": "",
+            "winner_score": None,
+            "cost_eur": None,
+            "cost_usd": None,
+            "cost_source": None,
+            "has_blocks": False,
         }
 
-    def _objects(blob: bytes) -> list[dict]:
-        answer: list[dict] = []
-        for line in blob.decode("utf-8", errors="replace").splitlines():
-            try:
-                event = json.loads(line)
-            except (TypeError, ValueError):
-                continue
-            if isinstance(event, dict):
-                answer.append(event)
-        return answer
-
-    head_events = _objects(head)
-    tail_events = _objects(tail)
+    head_events = _parse_jsonl_blob(head, require_event_key=False)
+    terminal = _tail_scan_for_events(
+        path,
+        size,
+        _SUMMARY_TAIL_TERMINAL_EVENTS,
+        max(_SESSION_SUMMARY_FULL_SCAN_MAX_BYTES, _SUMMARY_EDGE_BYTES),
+    )
     start_ev = next((e for e in head_events if e.get("event") == "session_start"), {})
-    end_ev = next((e for e in reversed(tail_events) if e.get("event") == "session_end"), {})
-    tok_ev = next((e for e in reversed(tail_events) if e.get("event") == "token_snapshot"), {})
-    winner_ev = next((e for e in reversed(tail_events) if e.get("event") == "winner"), {})
+    end_ev = terminal.get("session_end", {})
+    tok_ev = terminal.get("token_snapshot", {})
+    winner_ev = terminal.get("winner", {})
     ts_start = start_ev.get("ts", "")
     ts_end = (end_ev or tok_ev or {}).get("ts", "")
     elapsed = ""
     try:
         elapsed_seconds = int(
-            (datetime.fromisoformat(ts_end) - datetime.fromisoformat(ts_start)).total_seconds()
+            (
+                datetime.fromisoformat(ts_end) - datetime.fromisoformat(ts_start)
+            ).total_seconds()
         )
         elapsed = f"{elapsed_seconds // 3600:02d}:{(elapsed_seconds % 3600) // 60:02d}:{elapsed_seconds % 60:02d}"
     except (TypeError, ValueError):
@@ -353,10 +486,14 @@ def _large_session_summary(run_id: str, path: Path, size_mb: float) -> dict:
         "hint": start_ev.get("hint", ""),
         "outcome": end_ev.get("outcome", "running"),
         "total_rounds": end_ev.get("completed_rounds", end_ev.get("total_rounds", "?")),
-        "n_backtest": "?", "n_rob": "?", "n_custom": "?", "n_step": "?",
+        "n_backtest": "?",
+        "n_rob": "?",
+        "n_custom": "?",
+        "n_step": "?",
         "winner_spec": winner_ev.get("spec_name", ""),
         "winner_score": winner_ev.get("score"),
-        "cost_eur": tok_ev.get("cost_eur"), "cost_usd": tok_ev.get("cost_usd"),
+        "cost_eur": tok_ev.get("cost_eur"),
+        "cost_usd": tok_ev.get("cost_usd"),
         "cost_source": tok_ev.get("cost_source"),
         "has_blocks": (SESSION_LOG_DIR / f"{run_id}_blocks").exists(),
     }
@@ -540,22 +677,23 @@ async def sessions_list(request: Request):
 
     from server import get_market_info, templates
 
+    limit = _query_int(request, "limit", 25, lo=1, hi=100)
+    offset = _query_int(request, "offset", 0, lo=0)
+
     if not SESSION_LOG_DIR.exists():
         sessions = []
+        total_files = 0
     else:
         jsonl_files = sorted(
             SESSION_LOG_DIR.glob("*.jsonl"),
             key=lambda p: p.stat().st_mtime,
             reverse=True,
         )
-        # The recent sessions are the useful operational view.  Full history
-        # remains addressable directly by run id; do not make one page render
-        # fan out over every archive ever created.
-        try:
-            limit = min(100, max(1, int(request.query_params.get("limit", "25"))))
-        except ValueError:
-            limit = 25
-        jsonl_files = jsonl_files[:limit]
+        total_files = len(jsonl_files)
+        # The recent sessions are the useful operational view, one page at a
+        # time — offset paging keeps older archives reachable instead of
+        # falling off the list entirely once the corpus outgrows one page.
+        page_files = jsonl_files[offset : offset + limit]
         # Run blocking file I/O in a bounded thread pool.  The old all-at-once
         # gather could start one full scan per historical session (93 files / a
         # multi-GB corpus in the live review), causing disk thrash and a slow
@@ -566,7 +704,7 @@ async def sessions_list(request: Request):
             async with semaphore:
                 return await asyncio.to_thread(_session_summary, path.stem)
 
-        sessions = await asyncio.gather(*[_one_summary(p) for p in jsonl_files])
+        sessions = await asyncio.gather(*[_one_summary(p) for p in page_files])
 
     return templates.TemplateResponse(
         request,
@@ -576,6 +714,11 @@ async def sessions_list(request: Request):
             "page_title": "Session Logs",
             "market": get_market_info(),
             "sessions": sessions,
+            "limit": limit,
+            "offset": offset,
+            "total_sessions": total_files,
+            "has_prev": offset > 0,
+            "has_next": offset + limit < total_files,
         },
     )
 
@@ -594,16 +737,21 @@ async def session_detail(request: Request, run_id: str):
     if not path.exists():
         return HTMLResponse("Session not found", status_code=404)
 
-    # H7: RAM protection applies to steps (newest 20k steps, deque);
-    # structural events (backtest_result/winner/token_snapshot…) are ALWAYS
-    # read to end of file — later rounds of continuous sessions
-    # are no longer lost. The truncated flag prints a warning in the template.
+    # H7: RAM protection applies to steps (newest 20k steps, deque); structural
+    # events are ALWAYS read to end of file — later rounds of continuous
+    # sessions are no longer lost — but only on the branch below the size cap.
+    # Past the cap, _read_events_head_tail still catches every lightweight
+    # structural event via a full middle-pass; only backtest/robustness_result
+    # bodies (n_heavy_skipped) stay bounded to the head/tail windows.
     detail_truncated = bool(
         _SESSION_DETAIL_FULL_SCAN_MAX_BYTES
         and path.stat().st_size > _SESSION_DETAIL_FULL_SCAN_MAX_BYTES
     )
+    n_heavy_skipped = 0
     if detail_truncated:
-        events = await asyncio.to_thread(_read_events_head_tail, run_id)
+        events, n_heavy_skipped = await asyncio.to_thread(
+            _read_events_head_tail, run_id
+        )
         steps_truncated = False
     else:
         events, steps_truncated = await asyncio.to_thread(_read_events, run_id, 20_000)
@@ -748,6 +896,7 @@ async def session_detail(request: Request, run_id: str):
             "n_steps": len(steps),
             "steps_truncated": steps_truncated,
             "detail_truncated": detail_truncated,
+            "n_heavy_skipped": n_heavy_skipped,
             "size_mb": round(path.stat().st_size / 1_048_576, 1),
         },
     )

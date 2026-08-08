@@ -15,6 +15,7 @@ two smells the route modules had grown:
 from __future__ import annotations
 
 import json
+import logging
 import math
 import threading
 import time
@@ -525,4 +526,6 @@ def log_robustness(
             with open(ROBUSTNESS_LOG, "a") as f:
                 f.write(json.dumps(record, default=str) + "\n")
     except Exception:
-        pass
+        logging.getLogger(__name__).warning(
+            "log_robustness: write failed for spec_id=%s", spec_id, exc_info=True
+        )

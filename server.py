@@ -42,15 +42,38 @@ for _stream in (_sys.stdout, _sys.stderr):
         pass
 
 import hashlib as _hashlib
+import hmac as _hmac
+import os as _os
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Form, Request
+from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from markupsafe import Markup, escape
 
 from data import load_bybit_bars
+
+# Optional single-operator access gate. If NAU_ACCESS_TOKEN is unset (the
+# default for local dev), auth is a no-op and behavior is unchanged. If set,
+# every request except /login and /static/* must carry a cookie derived from
+# the token (see _require_auth below).
+_ACCESS_TOKEN = _os.environ.get("NAU_ACCESS_TOKEN", "").strip()
+_AUTH_COOKIE = "nau_auth"
+
+
+def _auth_cookie_value(token: str) -> str:
+    return _hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def _is_authenticated(request: Request) -> bool:
+    if not _ACCESS_TOKEN:
+        return True
+    got = request.cookies.get(_AUTH_COOKIE, "")
+    return _hmac.compare_digest(got, _auth_cookie_value(_ACCESS_TOKEN))
+
 
 # Default instrument shown in the topbar.
 _DEFAULT_SYMBOL = "BTCUSDT"
@@ -93,6 +116,39 @@ def _loop_running() -> bool:
 templates.env.globals["loop_running"] = _loop_running
 
 
+def _engine_model_label() -> str:
+    """Sidebar ENGINE card's model line. Was a hardcoded string ('Claude Fable 5')
+    regardless of which model AUTO/SIMPLE/PRO actually ran with — this resolves
+    the same way the AUTO cockpit's own model slot does (agent.model_label),
+    so switching models (or the credit-exhaustion fallback kicking in) is
+    reflected sitewide instead of only where llm_badge() happened to be wired."""
+    try:
+        from agent import model_label
+
+        return model_label()
+    except Exception:
+        return "Claude"
+
+
+templates.env.globals["engine_model_label"] = _engine_model_label
+
+
+def _first_studio_strategy_id() -> str | None:
+    """Nav link target for 'Strategy Builder' — the most recently updated
+    strategy, so a fresh install (no seed_studio.py run) doesn't 404 on a
+    hardcoded demo id."""
+    try:
+        from strategy_studio.store import StrategyStore
+
+        meta = StrategyStore().list_meta()
+        return meta[0].strategy_id if meta else None
+    except Exception:
+        return None
+
+
+templates.env.globals["first_studio_strategy_id"] = _first_studio_strategy_id
+
+
 def _datetimefmt(unix_ts: int) -> str:
     from datetime import datetime
 
@@ -104,6 +160,13 @@ def _datetimefmt(unix_ts: int) -> str:
 
 
 templates.env.filters["datetimefmt"] = _datetimefmt
+
+
+def _nl2br(value) -> Markup:
+    return Markup(str(escape(value)).replace("\n", "<br>"))
+
+
+templates.env.filters["nl2br"] = _nl2br
 
 _context: dict = {"bars": None, "market": None}
 
@@ -194,6 +257,61 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Nautilus Lab", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+
+
+_LOGIN_PAGE = """<!doctype html><html><head><meta charset="utf-8">
+<title>Nautilus Lab — Giriş</title>
+<style>body{{background:#0b0f14;color:#e5e7eb;font-family:system-ui,sans-serif;
+display:flex;align-items:center;justify-content:center;height:100vh;margin:0}}
+form{{background:#111827;padding:2rem;border-radius:8px;min-width:280px}}
+input{{width:100%;padding:.6rem;margin:.5rem 0 1rem;border-radius:4px;border:1px solid #374151;
+background:#1f2937;color:#e5e7eb;box-sizing:border-box}}
+button{{width:100%;padding:.6rem;border-radius:4px;border:none;background:#2563eb;color:#fff;
+cursor:pointer}}
+p.err{{color:#f87171}}</style></head><body>
+<form method="post" action="/login">
+<h2>Nautilus Lab</h2>
+{error}
+<input type="password" name="token" placeholder="Erişim kodu" autofocus>
+<button type="submit">Giriş</button>
+</form></body></html>"""
+
+
+@app.get("/login", response_class=HTMLResponse)
+async def login_form():
+    return HTMLResponse(_LOGIN_PAGE.format(error=""))
+
+
+@app.post("/login")
+async def login_submit(token: str = Form(...)):
+    if _ACCESS_TOKEN and _hmac.compare_digest(token, _ACCESS_TOKEN):
+        resp = RedirectResponse(url="/", status_code=303)
+        resp.set_cookie(
+            _AUTH_COOKIE,
+            _auth_cookie_value(_ACCESS_TOKEN),
+            httponly=True,
+            samesite="lax",
+            max_age=60 * 60 * 24 * 30,
+        )
+        return resp
+    return HTMLResponse(
+        _LOGIN_PAGE.format(error='<p class="err">Yanlış erişim kodu.</p>'),
+        status_code=401,
+    )
+
+
+@app.middleware("http")
+async def _require_auth(request: Request, call_next):
+    path = request.url.path
+    if not _ACCESS_TOKEN or path == "/login" or path.startswith("/static/"):
+        return await call_next(request)
+    if _is_authenticated(request):
+        return await call_next(request)
+    if request.headers.get("HX-Request") == "true":
+        resp = Response(status_code=401)
+        resp.headers["HX-Redirect"] = "/login"
+        return resp
+    return RedirectResponse(url="/login", status_code=303)
 
 
 from web.routes import (

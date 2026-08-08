@@ -30,7 +30,7 @@
       <div class="chat-thread-list" id="chat-bubbles">
         {% for b in bubbles %}
           <div class="chat-bubble {{ 'chat-user' if b.role == 'user' else 'chat-assistant' }}">
-            {{ b.content | replace('\n', '<br>') | safe }}
+            {{ b.content | nl2br }}
           </div>
         {% endfor %}
       </div>

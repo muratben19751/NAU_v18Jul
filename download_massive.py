@@ -212,47 +212,75 @@ def download_minute_bars(
     }
     slices = _year_slices(start, end)
     t0 = time.time()
+    failed: dict[str, str] = {}
     for tk in sorted(tickers):
         bt = BarType.from_str(f"{tk}.{venue}-1-MINUTE-LAST-EXTERNAL")
         st = stats[tk]
-        for lo, hi in slices:
-            rows, state = fetch_minute_aggs(tk, lo, hi, key, pacer, adjusted=adjusted)
-            if state == "plan":
-                _log(
-                    f"  {tk} {lo.year}: plan dışı (bu anahtarın geçmiş penceresi dışında)"
+        try:
+            for lo, hi in slices:
+                rows, state = fetch_minute_aggs(
+                    tk, lo, hi, key, pacer, adjusted=adjusted
                 )
-                continue
-            if state == "empty":
-                _log(f"  {tk} {lo.year}: veri yok")
-                continue
-            bars = []
-            for r in rows:
-                ts = int(r["t"]) * 1_000_000 + _MIN_NS  # ms→ns, pencere BAŞI → KAPANIŞ
-                bars.append(
-                    Bar(
-                        bt,
-                        Price(float(r["o"]), _PRICE_PRECISION),
-                        Price(float(r["h"]), _PRICE_PRECISION),
-                        Price(float(r["l"]), _PRICE_PRECISION),
-                        Price(float(r["c"]), _PRICE_PRECISION),
-                        Quantity(int(round(float(r.get("v") or 0))), 0),
-                        ts,
-                        ts,
+                if state == "plan":
+                    _log(
+                        f"  {tk} {lo.year}: plan dışı (bu anahtarın geçmiş penceresi dışında)"
                     )
+                    continue
+                if state == "empty":
+                    _log(f"  {tk} {lo.year}: veri yok")
+                    continue
+                bars = []
+                for r in rows:
+                    ts = (
+                        int(r["t"]) * 1_000_000 + _MIN_NS
+                    )  # ms→ns, pencere BAŞI → KAPANIŞ
+                    bars.append(
+                        Bar(
+                            bt,
+                            Price(float(r["o"]), _PRICE_PRECISION),
+                            Price(float(r["h"]), _PRICE_PRECISION),
+                            Price(float(r["l"]), _PRICE_PRECISION),
+                            Price(float(r["c"]), _PRICE_PRECISION),
+                            Quantity(int(round(float(r.get("v") or 0))), 0),
+                            ts,
+                            ts,
+                        )
+                    )
+                cat.write_data(bars)
+                st["bars"] += len(bars)
+                fd = (
+                    datetime.fromtimestamp(int(rows[0]["t"]) / 1e3, UTC)
+                    .date()
+                    .isoformat()
                 )
-            cat.write_data(bars)
-            st["bars"] += len(bars)
-            fd = datetime.fromtimestamp(int(rows[0]["t"]) / 1e3, UTC).date().isoformat()
-            ld = (
-                datetime.fromtimestamp(int(rows[-1]["t"]) / 1e3, UTC).date().isoformat()
-            )
-            if st["first"] is None or fd < st["first"]:
-                st["first"] = fd
-            if st["last"] is None or ld > st["last"]:
-                st["last"] = ld
-            _log(
-                f"  {tk} {lo.year}: {len(bars):,} dakika bar ({time.time() - t0:.0f}s)"
-            )
+                ld = (
+                    datetime.fromtimestamp(int(rows[-1]["t"]) / 1e3, UTC)
+                    .date()
+                    .isoformat()
+                )
+                if st["first"] is None or fd < st["first"]:
+                    st["first"] = fd
+                if st["last"] is None or ld > st["last"]:
+                    st["last"] = ld
+                _log(
+                    f"  {tk} {lo.year}: {len(bars):,} dakika bar ({time.time() - t0:.0f}s)"
+                )
+        except MassiveError as e:
+            # One ticker's failure (rate limit exhaustion, plan boundary hit
+            # mid-run, transient 5xx) must not orphan the tickers already
+            # written above: without this, the caller's exception aborts
+            # download() before write_manifest() runs for ANY ticker, leaving
+            # real parquet data on disk with no manifest entry — the same
+            # "data present but undiscoverable" failure class
+            # download_flatfiles.py's atomic .part→replace avoids.
+            failed[tk] = str(e)
+            _log(f"  {tk}: HATA, sonraki ticker'a geçiliyor — {e}")
+            continue
+    if failed:
+        _log(
+            f"{len(failed)} ticker başarısız oldu (kısmen indirilmiş olabilir, "
+            f"manifest'e yalnız bar'ı olanlar girecek): {sorted(failed)}"
+        )
     return stats
 
 

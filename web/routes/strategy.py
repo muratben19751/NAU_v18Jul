@@ -30,6 +30,12 @@ from wiki_helper import read_wiki_page
 
 router = APIRouter(prefix="/strategy")
 
+# label/description only had a non-empty check — nothing capped a pasted
+# multi-MB block against an expensive LLM call. Same bound as
+# backtest.py's _MAX_LLM_TEXT_LEN (kept local: a single shared constant for
+# this doesn't justify a new cross-module import here).
+_MAX_LLM_TEXT_LEN = 4000
+
 
 # Multi-turn "AI ile düzenle" sohbet store'ları (web.shared.ChatStore — backtest'in
 # "AI ile iyileştir" deseni genelleştirildi). A: custom block KODU, B: draft LİSTESİ.
@@ -728,6 +734,12 @@ async def generate_custom_block(request: Request):
     if not label or not description:
         return HTMLResponse(
             "<div class='empty-state'>Label and description are required.</div>",
+            status_code=400,
+        )
+    if len(label) > _MAX_LLM_TEXT_LEN or len(description) > _MAX_LLM_TEXT_LEN:
+        return HTMLResponse(
+            f"<div class='empty-state'>Label/description too long (max "
+            f"{_MAX_LLM_TEXT_LEN} characters).</div>",
             status_code=400,
         )
     if role_hint not in ("entry", "exit", "both"):

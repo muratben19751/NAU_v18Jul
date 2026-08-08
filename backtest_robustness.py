@@ -35,6 +35,7 @@ def _stable_symbol_iteration_id(symbol: str) -> int:
     """Cross-process stable backtest trace id for a symbol."""
     return int(hashlib.sha1(symbol.encode()).hexdigest(), 16) % 10000
 
+
 # M268/M431: unit-timeout for the parallel batches in robustness — so a hung
 # custom-block unit does not hold the whole suite hostage to the sandbox's 900s
 # global timeout (wholesale loss of all the work). Batch budget < global timeout.
@@ -319,29 +320,9 @@ def _derive_test_objective(metrics: dict, objective: str):
 
 def _stamp_window_benchmark(metrics: dict | None, bars: pd.DataFrame) -> None:
     """Attach slice-local buy-and-hold/excess returns to a test result."""
-    if not metrics or bars is None or len(bars) < 2 or "close" not in bars:
-        return
-    try:
-        first = float(bars["close"].iloc[0])
-        last = float(bars["close"].iloc[-1])
-        if not np.isfinite(first) or not np.isfinite(last) or first <= 0:
-            return
-        from backtest import STARTING_CASH
+    from app_constants import stamp_buy_hold_benchmark
 
-        pnl_pct = metrics.get("pnl_pct")
-        if pnl_pct is None:
-            pnl_pct = float(metrics.get("pnl") or 0.0) / float(STARTING_CASH)
-        benchmark = last / first - 1.0
-        excess = float(pnl_pct) - benchmark
-        metrics["benchmark_return_fraction"] = benchmark
-        metrics["excess_return_fraction"] = excess
-        # Legacy aliases keep archived viewers and old callers readable.
-        metrics["benchmark_return_pct"] = benchmark
-        metrics["excess_pnl_pct"] = excess
-        metrics["benchmark_cost_basis"] = "gross_buy_and_hold_no_costs"
-        metrics["strategy_return_cost_basis"] = "net_simulated_costs"
-    except (TypeError, ValueError, KeyError):
-        return
+    stamp_buy_hold_benchmark(metrics, bars)
 
 
 def _wfo_window_entry(
@@ -1151,6 +1132,60 @@ def run_multi_symbol(
             except Exception:
                 pass
 
+    def _format_symbol_result(sym: str, m: dict, error=None) -> dict:
+        """Score + log one symbol's completed backtest.
+
+        Shared by the parallel and serial branches below so a metrics/
+        formatting change (as already happened once here, switching the
+        headline number from raw PnL% to excess-return) needs one edit
+        instead of two copies silently drifting apart.
+        """
+        pnl = m.get("pnl", 0.0) or 0.0
+        sharpe = m.get("sharpe")
+        n_trades = m.get("n_trades", 0) or 0
+        pnl_pct = m.get("pnl_pct", pnl / STARTING_CASH)
+        benchmark = m.get("benchmark_return_fraction")
+        excess = m.get("excess_return_fraction")
+        icon = "✓" if excess is not None and excess > 0 else "✗"
+        sharpe_str = f"{sharpe:.2f}" if sharpe is not None else "—"
+        excess_str = f"{100 * excess:+.1f}%" if excess is not None else "—"
+        _p(
+            f"  [{sym}] {icon} PnL={pnl:+.2f} {cur} ({100 * pnl_pct:+.1f}%) · "
+            f"Excess={excess_str} · Sharpe={sharpe_str} · {n_trades} trade"
+        )
+        return {
+            "symbol": sym,
+            "pnl": round(pnl, 2),
+            "pnl_pct": round(pnl_pct, 6),
+            "benchmark_return_fraction": round(benchmark, 6)
+            if benchmark is not None
+            else None,
+            "excess_return_fraction": round(excess, 6) if excess is not None else None,
+            "sharpe": round(sharpe, 2) if sharpe is not None else None,
+            "n_trades": n_trades,
+            "error": error,
+        }
+
+    def _no_data_result(sym: str) -> dict:
+        _p(f"  [{sym}] ⚠ No data — skipping")
+        return {
+            "symbol": sym,
+            "pnl": None,
+            "sharpe": None,
+            "n_trades": 0,
+            "error": "no data",
+        }
+
+    def _error_result(sym: str, err) -> dict:
+        _p(f"  [{sym}] ✗ Error: {err}")
+        return {
+            "symbol": sym,
+            "pnl": None,
+            "sharpe": None,
+            "n_trades": 0,
+            "error": str(err),
+        }
+
     end_dt = datetime.now(UTC)
     start_dt = end_dt - timedelta(days=days)
     cur = "USD" if source == "external" else "USDT"
@@ -1193,59 +1228,13 @@ def run_multi_symbol(
             p = payloads.get(f"ms:{sym}")
             err = p.get("error") if p else "no result"
             if err == "no data":
-                _p(f"  [{sym}] ⚠ No data — skipping")
-                results.append(
-                    {
-                        "symbol": sym,
-                        "pnl": None,
-                        "sharpe": None,
-                        "n_trades": 0,
-                        "error": "no data",
-                    }
-                )
+                results.append(_no_data_result(sym))
                 continue
             if err:
-                _p(f"  [{sym}] ✗ Error: {err}")
-                results.append(
-                    {
-                        "symbol": sym,
-                        "pnl": None,
-                        "sharpe": None,
-                        "n_trades": 0,
-                        "error": str(err),
-                    }
-                )
+                results.append(_error_result(sym, err))
                 continue
             m = p.get("metrics") or {}
-            pnl = m.get("pnl", 0.0) or 0.0
-            sharpe = m.get("sharpe")
-            n_trades = m.get("n_trades", 0) or 0
-            pnl_pct = m.get("pnl_pct", pnl / STARTING_CASH)
-            benchmark = m.get("benchmark_return_fraction")
-            excess = m.get("excess_return_fraction")
-            icon = "✓" if excess is not None and excess > 0 else "✗"
-            sharpe_str = f"{sharpe:.2f}" if sharpe is not None else "—"
-            excess_str = f"{100 * excess:+.1f}%" if excess is not None else "—"
-            _p(
-                f"  [{sym}] {icon} PnL={pnl:+.2f} {cur} ({100 * pnl_pct:+.1f}%) · "
-                f"Excess={excess_str} · Sharpe={sharpe_str} · {n_trades} trade"
-            )
-            results.append(
-                {
-                    "symbol": sym,
-                    "pnl": round(pnl, 2),
-                    "pnl_pct": round(pnl_pct, 6),
-                    "benchmark_return_fraction": round(benchmark, 6)
-                    if benchmark is not None
-                    else None,
-                    "excess_return_fraction": round(excess, 6)
-                    if excess is not None
-                    else None,
-                    "sharpe": round(sharpe, 2) if sharpe is not None else None,
-                    "n_trades": n_trades,
-                    "error": None,
-                }
-            )
+            results.append(_format_symbol_result(sym, m))
     else:
         for sym in symbols:
             _p(f"  [{sym}] Loading data…")
@@ -1268,16 +1257,7 @@ def run_multi_symbol(
                         end=end_dt,
                     )
                 if df.empty:
-                    _p(f"  [{sym}] ⚠ No data — skipping")
-                    results.append(
-                        {
-                            "symbol": sym,
-                            "pnl": None,
-                            "sharpe": None,
-                            "n_trades": 0,
-                            "error": "no data",
-                        }
-                    )
+                    results.append(_no_data_result(sym))
                     continue
 
                 _p(f"  [{sym}] {len(df):,} bar · backtest running…")
@@ -1309,60 +1289,13 @@ def run_multi_symbol(
                     # + pnl=None on an in-band error; the sequential branch should
                     # follow the same format too (instead of the misleading
                     # '✗ PnL=+0.00 · 0 trade' success line).
-                    _p(f"  [{sym}] ✗ Error: {r.error}")
-                    results.append(
-                        {
-                            "symbol": sym,
-                            "pnl": None,
-                            "sharpe": None,
-                            "n_trades": 0,
-                            "error": str(r.error),
-                        }
-                    )
+                    results.append(_error_result(sym, r.error))
                     continue
                 m = r.metrics
-                pnl = m.get("pnl", 0.0) or 0.0
-                sharpe = m.get("sharpe")
-                n_trades = m.get("n_trades", 0) or 0
                 _stamp_window_benchmark(m, df)
-                pnl_pct = m.get("pnl_pct", pnl / STARTING_CASH)
-                benchmark = m.get("benchmark_return_fraction")
-                excess = m.get("excess_return_fraction")
-
-                icon = "✓" if excess is not None and excess > 0 else "✗"
-                sharpe_str = f"{sharpe:.2f}" if sharpe is not None else "—"
-                excess_str = f"{100 * excess:+.1f}%" if excess is not None else "—"
-                _p(
-                    f"  [{sym}] {icon} PnL={pnl:+.2f} {cur} ({100 * pnl_pct:+.1f}%) · "
-                    f"Excess={excess_str} · Sharpe={sharpe_str} · {n_trades} trade"
-                )
-                results.append(
-                    {
-                        "symbol": sym,
-                        "pnl": round(pnl, 2),
-                        "pnl_pct": round(pnl_pct, 6),
-                        "benchmark_return_fraction": round(benchmark, 6)
-                        if benchmark is not None
-                        else None,
-                        "excess_return_fraction": round(excess, 6)
-                        if excess is not None
-                        else None,
-                        "sharpe": round(sharpe, 2) if sharpe is not None else None,
-                        "n_trades": n_trades,
-                        "error": r.error,
-                    }
-                )
+                results.append(_format_symbol_result(sym, m, error=r.error))
             except Exception as e:
-                _p(f"  [{sym}] ✗ Error: {e}")
-                results.append(
-                    {
-                        "symbol": sym,
-                        "pnl": None,
-                        "sharpe": None,
-                        "n_trades": 0,
-                        "error": str(e),
-                    }
-                )
+                results.append(_error_result(sym, e))
 
     # Results with enough trades and an actually measured alpha. Missing market
     # data must not silently become a pass merely because the strategy made

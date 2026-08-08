@@ -7,12 +7,16 @@ Returns JSON: {candles: [...], trades: [], indicators: {overlays:[...], panes:[.
 
 from __future__ import annotations
 
+import logging
+import re
 from datetime import UTC
 
 from fastapi import APIRouter, Query
 from fastapi.responses import JSONResponse
 
 router = APIRouter(prefix="/chart")
+
+_SYMBOL_RE = re.compile(r"^[A-Z0-9]{1,20}$")
 
 
 @router.get("/data", response_class=JSONResponse)
@@ -28,7 +32,19 @@ async def chart_data(
     """Return OHLCV bars + strategy indicators. Window by ts range or last N bars."""
     from datetime import datetime, timedelta
 
-    from data import load_bybit_bars
+    from data import BYBIT_ALL_INTERVALS, BYBIT_CATEGORIES, load_bybit_bars
+
+    # /backtest/run and /data validate against the same whitelists; this
+    # endpoint didn't, so a malformed/adversarial symbol|category|interval
+    # went straight into load_bybit_bars and its exception text (file paths,
+    # internal names) came back verbatim to the client (see the except below).
+    symbol = symbol.upper()
+    if not _SYMBOL_RE.match(symbol):
+        return JSONResponse({"error": "invalid symbol"}, status_code=400)
+    if category not in BYBIT_CATEGORIES:
+        return JSONResponse({"error": "invalid category"}, status_code=400)
+    if interval not in dict(BYBIT_ALL_INTERVALS):
+        return JSONResponse({"error": "invalid interval"}, status_code=400)
 
     _SEC_PER_BAR = {
         "1": 60,
@@ -175,9 +191,17 @@ async def chart_data(
         return JSONResponse(await asyncio.to_thread(_build_payload))
 
     except Exception as e:
+        logging.warning(
+            "chart_data failed for %s/%s/%s: %s",
+            symbol,
+            category,
+            interval,
+            e,
+            exc_info=True,
+        )
         return JSONResponse(
             {
-                "error": str(e),
+                "error": "chart data unavailable",
                 "candles": [],
                 "trades": [],
                 "indicators": {"overlays": [], "panes": []},

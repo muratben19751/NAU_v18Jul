@@ -15,6 +15,7 @@ import asyncio
 import csv
 import io
 import json
+import logging
 import re
 from datetime import UTC
 from pathlib import Path
@@ -257,11 +258,27 @@ def _rob_fields(rob: dict | None) -> dict:
 _PARSE_CACHE: dict[str, tuple[tuple, list]] = {}
 
 
+_CSV_FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r")
+
+
+def _csv_safe(value: str) -> str:
+    """Neutralize CSV/formula injection (Excel/Sheets execute a leading
+    =/+/-/@ as a formula). ``spec_name`` is a user-typed strategy name with
+    no character restriction, so it can carry a payload straight into the
+    Reports export."""
+    if value and value[0] in _CSV_FORMULA_PREFIXES:
+        return "'" + value
+    return value
+
+
 def _parsed_log_records() -> list[dict]:
     try:
         st = BACKTEST_LOG.stat()
         key = (st.st_mtime_ns, st.st_size)
     except OSError:
+        logging.warning(
+            "_parsed_log_records: stat failed for %s", BACKTEST_LOG, exc_info=True
+        )
         return []
     cached = _PARSE_CACHE.get("backtest_log")
     if cached and cached[0] == key:
@@ -729,7 +746,7 @@ async def export_csv(request: Request):
             [
                 r["ts"],
                 r["test_period_fmt"],
-                r["spec_name"],
+                _csv_safe(r["spec_name"]),
                 r["symbol"],
                 r["starting_cash_fmt"],
                 r["category"],
@@ -754,7 +771,7 @@ async def export_csv(request: Request):
                 r["rob_mc_median_fmt"],
                 r["rob_mc_dd_p95_fmt"],
                 r["rob_wf_pass_fmt"],
-                r["error"][:80] if r["error"] else "",
+                _csv_safe(r["error"][:80]) if r["error"] else "",
             ]
         )
 

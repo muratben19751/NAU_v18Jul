@@ -265,7 +265,15 @@ def _parse_bool_form(v: str) -> bool:
 # the backtest blows past the sandbox wall). When the user gives NO explicit
 # start/end, bound the run to the most recent N bars so the default completes;
 # an explicit range is always honored in full. Interval-agnostic (bar count).
+import logging
+
 _DEFAULT_MAX_BARS = 100_000
+
+# describe()/chat endpoints only checked a LOWER bound on user text (>=10-12
+# chars) — nothing stopped a multi-MB paste from going straight into an
+# LLM call. Upper bound is generous (a real strategy description is a
+# paragraph, not a novel) but caps the worst case.
+_MAX_LLM_TEXT_LEN = 4000
 
 # BACKTEST_LOG, _rotate_if_large, _sanitize_floats, _chart_url and _log_backtest
 # now live in web.shared (imported above as re-export aliases) — single source
@@ -409,6 +417,7 @@ def _recent_runs(limit: int = 6) -> list[dict]:
             if len(out) >= limit:
                 break
     except Exception:
+        logging.warning("_recent_runs: read failed for %s", BACKTEST_LOG, exc_info=True)
         return []
     return out
 
@@ -725,6 +734,11 @@ async def run(
                         "Fetch them first from the Data catalog."
                     )
                     return
+                if not bybit_start and len(bars) > _DEFAULT_MAX_BARS:
+                    # No explicit start: the 365-day default window can still
+                    # exceed the sandbox wall on sub-daily intervals (365d of
+                    # 1m bars is ~525k rows). Trim to the most recent N.
+                    bars = bars.iloc[-_DEFAULT_MAX_BARS:]
                 # Infer base currency from symbol (ETHUSDT → ETH, SOLUSDT → SOL).
                 base_guess = "BTC"
                 for suffix in ("USDT", "USDC", "USD"):
@@ -1151,6 +1165,12 @@ async def describe(
             "from this text.</div>",
             status_code=400,
         )
+    if len(desc) > _MAX_LLM_TEXT_LEN:
+        return HTMLResponse(
+            f"<div class='empty-state'>Description is too long (max "
+            f"{_MAX_LLM_TEXT_LEN} characters).</div>",
+            status_code=400,
+        )
 
     # Server-side date validation — same rule as /run (the generation would
     # otherwise burn LLM calls and then chain into a doomed backtest).
@@ -1319,7 +1339,7 @@ async def describe(
                     results_map[_name] = (blk, role)
 
             # Reconstruct in original order so entry/exit ordering is stable.
-            for name, cond in named_conds:
+            for name, _cond in named_conds:
                 blk, role = results_map[name]
                 if blk is None:
                     if role == "exit":
@@ -1846,7 +1866,7 @@ async def plan_preview(
     from server import templates
 
     desc = (description or "").strip()
-    if len(desc) < 12:
+    if len(desc) < 12 or len(desc) > _MAX_LLM_TEXT_LEN:
         return templates.TemplateResponse(
             request, "fragments/plan_preview.html", {"stage": "prompt"}
         )
@@ -2106,7 +2126,7 @@ async def chat_new(
     from server import templates
 
     desc = (description or "").strip()
-    if len(desc) < 12:
+    if len(desc) < 12 or len(desc) > _MAX_LLM_TEXT_LEN:
         return templates.TemplateResponse(
             request, "fragments/chat_thread.html", {"stage": "prompt"}
         )

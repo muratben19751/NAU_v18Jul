@@ -168,14 +168,14 @@ def _llm_request_token_bound(
         "configured_output_tokens": configured_output,
         "observed_output_reserve": observed_output,
         "output_reservation_mode": (
-            "observed_high_water" if observed_output > configured_output else "configured_hint"
+            "observed_high_water"
+            if observed_output > configured_output
+            else "configured_hint"
         ),
     }
 
 
-def _admit_llm_request(
-    kwargs: dict, *, model: str = "", purpose: str = ""
-) -> None:
+def _admit_llm_request(kwargs: dict, *, model: str = "", purpose: str = "") -> None:
     admit = getattr(_LLM_CONTROL, "admit_check", None)
     if callable(admit):
         admit(_llm_request_token_bound(kwargs, model=model, purpose=purpose))
@@ -230,6 +230,19 @@ def is_terminal_llm_error(exc: BaseException) -> bool:
         "permission denied",
     )
     return any(marker in text for marker in markers)
+
+
+def _tag_degraded(fb: dict, e: BaseException) -> dict:
+    """Stamp a fallback dict with a machine-readable degradation marker, in place.
+
+    Shared by every "LLM call failed, hand back a fallback instead" path so
+    the degraded-fallback contract (which fields exist, truncation length,
+    terminal-error flag) is defined once instead of drifting between copies.
+    """
+    fb["degraded"] = type(e).__name__
+    fb["degraded_detail"] = str(e)[:500]
+    fb["degraded_terminal"] = is_terminal_llm_error(e)
+    return fb
 
 
 _random_ctx = threading.local()
@@ -798,13 +811,13 @@ def _create_message(client, _purpose: str = "", **kwargs):
     if learned > base:
         # This endpoint has already proven it needs the bigger budget. Unused
         # ceiling is free; a truncated response is a wasted call in full.
-        kwargs = {**kwargs, "max_tokens": learned}
+        base = learned
+        kwargs = {**kwargs, "max_tokens": base}
 
     resp = _create_message_once(client, _purpose, **kwargs)
     if not _was_truncated(resp):
         return resp
 
-    base = int(kwargs.get("max_tokens") or 0)  # may have been raised above
     bigger = min(base * _TRUNCATION_RETRY_SCALE, _TRUNCATION_RETRY_CAP)
     if base <= 0 or bigger <= base:
         raise TruncatedResponse(
@@ -846,10 +859,18 @@ def _create_message_once(client, _purpose: str = "", **kwargs):
     global _active_model
     _check_llm_cancelled()
     kwargs = dict(kwargs)
-    kwargs.setdefault(
-        "timeout", float(os.environ.get("NAUTILUS_LLM_CALL_TIMEOUT", "120"))
-    )
+    if not isinstance(client, _ClaudeCLIClient):
+        # The CLI backend has its own ceiling (NAUTILUS_CLI_TIMEOUT, default
+        # 300s — a subprocess with real thinking time, not a bare HTTP call)
+        # applied in _ClaudeCLIMessages.create. Injecting this shorter
+        # cross-backend safety net into its kwargs too would silently cap
+        # slow high-effort CLI calls that used to fit comfortably under 300s.
+        kwargs.setdefault(
+            "timeout", float(os.environ.get("NAUTILUS_LLM_CALL_TIMEOUT", "120"))
+        )
     model = current_model()
+
+    requested_max_tokens = int(kwargs.get("max_tokens") or 0)
 
     def _call(called_model: str, fn):
         # Admission happens for every real provider attempt, including a
@@ -865,7 +886,7 @@ def _create_message_once(client, _purpose: str = "", **kwargs):
                 purpose=_purpose or "llm",
                 usage=None,
                 duration_s=round(time.monotonic() - started, 3),
-                max_tokens=int(kwargs.get("max_tokens") or 0),
+                max_tokens=requested_max_tokens,
                 status="cancelled" if isinstance(exc, LLMCallCancelled) else "error",
                 error=f"{type(exc).__name__}: {exc}"[:500],
             )
@@ -876,12 +897,12 @@ def _create_message_once(client, _purpose: str = "", **kwargs):
             purpose=_purpose or "llm",
             usage=usage,
             duration_s=round(time.monotonic() - started, 3),
-            max_tokens=int(kwargs.get("max_tokens") or 0),
+            max_tokens=requested_max_tokens,
             status="truncated" if _was_truncated(response) else "ok",
             **_output_cap_telemetry(
                 client,
                 usage,
-                int(kwargs.get("max_tokens") or 0),
+                requested_max_tokens,
                 provider_enforced=model.startswith("or:"),
             ),
         )
@@ -1017,9 +1038,7 @@ class _CLIUsage:
 
 
 class _CLIResponse:
-    def __init__(
-        self, text: str, usage: dict, cost_usd: float | None = None
-    ) -> None:
+    def __init__(self, text: str, usage: dict, cost_usd: float | None = None) -> None:
         self.content = [_CLITextBlock(text)]
         self.usage = _CLIUsage(usage, cost_usd=cost_usd)
         # CLI'nin max_tokens karşılığı yok (bkz. _ClaudeCLIMessages.create) —
@@ -1040,6 +1059,34 @@ class _CLIError(RuntimeError):
         super().__init__(text)
         self.status = status
         self.message = message
+
+
+def _poll_until_deadline(
+    deadline_s: float, poll_interval: float, step, timeout_msg: str
+):
+    """Poll ``step(wait_s)`` under a cooperative-cancel + hard-deadline regime.
+
+    Shared skeleton behind the CLI subprocess loop and the OpenRouter
+    multiprocessing loop below — both poll a child process for completion
+    while checking ``_check_llm_cancelled()`` and a monotonic deadline, just
+    with different "is it done yet" primitives (subprocess.communicate vs a
+    multiprocessing Pipe), so only the loop math is factored out here; each
+    caller still owns its own child-process cleanup around this call.
+
+    ``step`` attempts one bounded wait and returns the result once ready, or
+    ``None`` if nothing completed yet (it may itself raise to signal a
+    definitive failure, e.g. the child process died). ``timeout_msg`` raises
+    ``TimeoutError`` once the deadline is exceeded.
+    """
+    deadline = time.monotonic() + deadline_s
+    while True:
+        _check_llm_cancelled()
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError(timeout_msg)
+        result = step(min(poll_interval, remaining))
+        if result is not None:
+            return result
 
 
 class _ClaudeCLIMessages:
@@ -1115,9 +1162,12 @@ class _ClaudeCLIMessages:
             ):
                 env.pop(var, None)
 
-            deadline_s = min(
-                float(timeout or 120),
-                float(os.environ.get("NAUTILUS_CLI_TIMEOUT", "300")),
+            cli_ceiling = float(os.environ.get("NAUTILUS_CLI_TIMEOUT", "300"))
+            # No caller-supplied timeout → use the CLI's own ceiling outright
+            # rather than blending in an unrelated default; a caller that DID
+            # pass one still can't exceed the hard ceiling.
+            deadline_s = (
+                cli_ceiling if timeout is None else min(float(timeout), cli_ceiling)
             )
             if not callable(getattr(_LLM_CONTROL, "cancel_check", None)):
                 proc = subprocess.run(
@@ -1145,30 +1195,30 @@ class _ClaudeCLIMessages:
                     cwd=tempfile.gettempdir(),
                     creationflags=NO_WINDOW_FLAGS,
                 )
-                started = time.monotonic()
                 first = True
-                while True:
+
+                def _cli_step(wait_s):
+                    nonlocal first
                     try:
-                        _check_llm_cancelled()
-                    except LLMCallCancelled:
-                        proc.kill()
-                        proc.communicate()
-                        raise
-                    remaining = deadline_s - (time.monotonic() - started)
-                    if remaining <= 0:
-                        proc.kill()
-                        proc.communicate()
-                        raise TimeoutError(
-                            f"claude CLI exceeded {deadline_s:g}s LLM call timeout"
+                        result = proc.communicate(
+                            input=prompt if first else None, timeout=wait_s
                         )
-                    try:
-                        stdout, stderr = proc.communicate(
-                            input=prompt if first else None,
-                            timeout=min(0.25, remaining),
-                        )
-                        break
                     except subprocess.TimeoutExpired:
                         first = False
+                        return None
+                    return result
+
+                try:
+                    stdout, stderr = _poll_until_deadline(
+                        deadline_s,
+                        0.25,
+                        _cli_step,
+                        f"claude CLI exceeded {deadline_s:g}s LLM call timeout",
+                    )
+                except (LLMCallCancelled, TimeoutError):
+                    proc.kill()
+                    proc.communicate()
+                    raise
                 proc.stdout = stdout
                 proc.stderr = stderr
         finally:
@@ -1401,28 +1451,30 @@ def _run_openrouter_killable(request: dict, config: dict, timeout: float) -> dic
     )
     proc.start()
     child.close()
-    deadline = time.monotonic() + max(0.1, float(timeout))
-    try:
-        while True:
-            _check_llm_cancelled()
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise TimeoutError(
-                    f"OpenRouter call exceeded {float(timeout):g}s hard deadline"
-                )
-            if parent.poll(min(0.1, remaining)):
-                payload = parent.recv()
-                if not payload.get("ok"):
-                    raise _OpenRouterProcessError(
-                        f"{payload.get('type', 'OpenRouterError')}: "
-                        f"{payload.get('message', 'provider call failed')}",
-                        status_code=payload.get("status_code"),
-                    )
-                return payload
-            if not proc.is_alive():
+
+    def _or_step(wait_s):
+        if parent.poll(wait_s):
+            payload = parent.recv()
+            if not payload.get("ok"):
                 raise _OpenRouterProcessError(
-                    f"OpenRouter worker exited without a response (exit={proc.exitcode})"
+                    f"{payload.get('type', 'OpenRouterError')}: "
+                    f"{payload.get('message', 'provider call failed')}",
+                    status_code=payload.get("status_code"),
                 )
+            return payload
+        if not proc.is_alive():
+            raise _OpenRouterProcessError(
+                f"OpenRouter worker exited without a response (exit={proc.exitcode})"
+            )
+        return None
+
+    try:
+        return _poll_until_deadline(
+            max(0.1, float(timeout)),
+            0.1,
+            _or_step,
+            f"OpenRouter call exceeded {float(timeout):g}s hard deadline",
+        )
     finally:
         _stop_provider_process(proc)
         parent.close()
@@ -1561,7 +1613,13 @@ def _build_openrouter_client() -> _OpenRouterClient:
         extra_headers["X-Title"] = title
 
     timeout = float(os.environ.get("NAUTILUS_LLM_CALL_TIMEOUT", "120"))
-    max_retries = int(os.environ.get("NAUTILUS_OPENROUTER_SDK_RETRIES", "0"))
+    # Default matches the OpenAI SDK's own default (2): the synchronous
+    # fallback branch in _OpenRouterMessages.create (used by any non-AUTO
+    # caller — chat_edit_block, propose_custom_block outside an AUTO run) has
+    # no other retry/backoff wrapping it, so zeroing this out by default would
+    # turn a transient connection blip or 502/503 into a user-visible failure
+    # that the SDK used to absorb silently.
+    max_retries = int(os.environ.get("NAUTILUS_OPENROUTER_SDK_RETRIES", "2"))
     logging.info("LLM backend: openrouter (%s)", base_url)
     return _OpenRouterClient(
         OpenAI(
@@ -1701,8 +1759,12 @@ def _fallback_proposal() -> dict:
 def propose_strategy(history: list[Any]) -> dict:
     try:
         client = _get_client()
-    except Exception:
-        return _fallback_proposal()
+    except Exception as e:
+        logging.warning("propose_strategy: client setup failed: %s", e, exc_info=True)
+        fb = _fallback_proposal()
+        fb["rationale"] = f"fallback ({type(e).__name__})"
+        _tag_degraded(fb, e)
+        return fb
 
     user_msg = f"""Past iterations:
 {_summarize_history(history)}
@@ -2131,23 +2193,44 @@ def _validate_composed(data: dict) -> dict:
     }
 
 
-_TF_HUMAN = {
-    "1": "1-minute",
-    "5": "5-minute",
-    "15": "15-minute",
-    "30": "30-minute",
-    "60": "1-hour",
-    "240": "4-hour",
-    "720": "12-hour",
-    "D": "daily",
-    "1-MINUTE": "1-minute",
-    "5-MINUTE": "5-minute",
-    "15-MINUTE": "15-minute",
-    "30-MINUTE": "30-minute",
-    "1-HOUR": "1-hour",
-    "4-HOUR": "4-hour",
-    "1-DAY": "daily",
+_TF_ABBREV_TO_SPELLED = {
+    "1m": "1-minute",
+    "5m": "5-minute",
+    "15m": "15-minute",
+    "30m": "30-minute",
+    "1h": "1-hour",
+    "4h": "4-hour",
+    "12h": "12-hour",
+    "1d": "daily",
 }
+
+
+def _build_tf_human() -> dict[str, str]:
+    """Bybit-code / external-DSL → human phrase for LLM prompts.
+
+    Derived from data.py's canonical interval tables (BYBIT_ALL_INTERVALS,
+    EXTERNAL_GRAN_BY_BYBIT_CODE) instead of a third hand-maintained copy of
+    the same code set — data.py already has two (BYBIT_ALL_INTERVALS and
+    web/mission.py's ``_tf_short``); a new interval added there is now picked
+    up here automatically instead of silently degrading to the raw code in
+    the LLM prompt.
+    """
+    from data import BYBIT_ALL_INTERVALS, EXTERNAL_GRAN_BY_BYBIT_CODE
+
+    out: dict[str, str] = {}
+    for code, abbrev in BYBIT_ALL_INTERVALS:
+        spelled = _TF_ABBREV_TO_SPELLED.get(abbrev, abbrev)
+        out[code] = spelled
+        dsl = EXTERNAL_GRAN_BY_BYBIT_CODE.get(code)
+        if dsl:
+            out[dsl] = spelled
+    # 30m has no external-catalog counterpart (EXTERNAL_GRAN_BY_BYBIT_CODE
+    # excludes it) but the DSL spelling is kept for callers that still pass it.
+    out.setdefault("30-MINUTE", _TF_ABBREV_TO_SPELLED["30m"])
+    return out
+
+
+_TF_HUMAN = _build_tf_human()
 
 
 def _timeframe_line(timeframe: str) -> str:
@@ -2193,8 +2276,16 @@ def propose_composed_strategy(
     """
     try:
         client = _get_client()
-    except Exception:
-        return _fallback_composed(), None
+    except Exception as e:
+        logging.warning(
+            "propose_composed_strategy: client setup failed: %s", e, exc_info=True
+        )
+        fb = _fallback_composed()
+        fb["description"] = (
+            fb.get("description", "") + f" · fallback ({type(e).__name__})"
+        ).strip()
+        _tag_degraded(fb, e)
+        return fb, None
 
     market_context = (
         f"trading strategies for {market} — a US stock from a historical Nautilus "
@@ -2248,9 +2339,7 @@ Design a new {market_target} composed strategy as specified. Return JSON only.""
         # Makine-okunur bozulma işareti. Açıklamanın kuyruğundaki metni ayrıştırmak
         # kırılgan; koşu bu alanı sayar ve fazı "degraded" kapatır — fallback bir
         # koşuyu başarı gibi göstermesin.
-        fb["degraded"] = type(e).__name__
-        fb["degraded_detail"] = str(e)[:500]
-        fb["degraded_terminal"] = is_terminal_llm_error(e)
+        _tag_degraded(fb, e)
         return fb, None
 
 
@@ -2269,6 +2358,28 @@ from codegate import safe_builtins as _safe_builtins  # noqa: E402
 from codegate import (
     validate_generated_code as _validate_generated_code,
 )
+
+
+def _find_evaluate_def(tree):
+    """Find the top-level ``def evaluate(...)`` in a parsed module, if any.
+
+    Shared by the AST role-contract checks below, which each independently
+    searched for this same node with different empty-case handling (fallback
+    to the whole tree vs. ``None``) — a predicate duplicated with different
+    syntax makes it easy for the two checks to diverge over time even though
+    they're meant to enforce the same rule.
+    """
+    import ast
+
+    return next(
+        (
+            node
+            for node in tree.body
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and node.name == "evaluate"
+        ),
+        None,
+    )
 
 
 def _test_execute_generated(
@@ -2305,13 +2416,8 @@ def _test_execute_generated(
     except SyntaxError as exc:
         raise GeneratedCodeError(f"invalid Python syntax: {exc}") from exc
     allowed_literals = {"long", "short"} if role_hint == "entry" else {"exit"}
-    evaluate_defs = [
-        node
-        for node in tree.body
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-        and node.name == "evaluate"
-    ]
-    for node in ast.walk(evaluate_defs[0] if evaluate_defs else tree):
+    evaluate_def = _find_evaluate_def(tree)
+    for node in ast.walk(evaluate_def if evaluate_def is not None else tree):
         if not isinstance(node, ast.Return) or node.value is None:
             continue
         if not isinstance(node.value, ast.Constant):
@@ -2628,8 +2734,8 @@ def _custom_block_system_prompt(role_hint: str) -> str:
         lock = (
             "\n\nROLE LOCK — EXIT ONLY:\n"
             "This call generates an EXIT block. Every firing branch in evaluate() "
-            "must return the literal \"exit\". Non-firing branches return None. "
-            "The strings \"long\" and \"short\" are forbidden anywhere in a "
+            'must return the literal "exit". Non-firing branches return None. '
+            'The strings "long" and "short" are forbidden anywhere in a '
             "return statement. Do not infer direction; closing either open side is "
             "the engine's responsibility."
         )
@@ -2637,8 +2743,8 @@ def _custom_block_system_prompt(role_hint: str) -> str:
         lock = (
             "\n\nROLE LOCK — ENTRY ONLY:\n"
             "This call generates an ENTRY block. Every firing branch in evaluate() "
-            "must return the literal \"long\" or \"short\". Non-firing branches "
-            "return None. The string \"exit\" is forbidden in return statements."
+            'must return the literal "long" or "short". Non-firing branches '
+            'return None. The string "exit" is forbidden in return statements.'
         )
     # Custom generation was the dominant AUTO token consumer in live runs:
     # one idea plus entry/exit code could spend several 4k+ CLI responses.
@@ -2654,6 +2760,23 @@ def _custom_block_system_prompt(role_hint: str) -> str:
     return CUSTOM_BLOCK_SYSTEM_PROMPT + lock + compact
 
 
+def _env_bounded(name: str, default, *, lo=None, hi=None, cast=int):
+    """Parse a numeric env var with clamping and a safe fallback on a bad value.
+
+    Shared by the custom-block tunables below, which each independently
+    hand-rolled the same try/except-ValueError + clamp shape.
+    """
+    try:
+        v = cast(os.environ.get(name, str(default)))
+    except (TypeError, ValueError):
+        return cast(default)
+    if lo is not None:
+        v = max(cast(lo), v)
+    if hi is not None:
+        v = min(cast(hi), v)
+    return v
+
+
 def _call_claude_for_block(
     user_prompt: str,
     *,
@@ -2663,23 +2786,17 @@ def _call_claude_for_block(
 ) -> tuple[dict, dict]:
     """Returns (parsed_json, usage) — M1583: count custom-block tokens too."""
     client = _get_client()
-    try:
-        # Compact JSON-only custom blocks do not need the generic 4k ceiling.
-        # Keeping the limit below the prompt's 1,800-token contract reduces
-        # OpenRouter latency and prevents oversized retry spend.
-        custom_max_tokens = max(
-            512, min(1_800, int(os.environ.get("AGENT_CUSTOM_BLOCK_MAX_TOKENS", "1800")))
-        )
-    except ValueError:
-        custom_max_tokens = 1_800
-    try:
-        # A custom-block timeout should be shorter than the generic research
-        # call deadline; the composer can safely select a builtin fallback.
-        custom_timeout = max(
-            15.0, min(120.0, float(os.environ.get("AGENT_CUSTOM_BLOCK_TIMEOUT", "75")))
-        )
-    except ValueError:
-        custom_timeout = 75.0
+    # Compact JSON-only custom blocks do not need the generic 4k ceiling.
+    # Keeping the limit below the prompt's 1,800-token contract reduces
+    # OpenRouter latency and prevents oversized retry spend.
+    custom_max_tokens = _env_bounded(
+        "AGENT_CUSTOM_BLOCK_MAX_TOKENS", 1_800, lo=512, hi=1_800
+    )
+    # A custom-block timeout should be shorter than the generic research
+    # call deadline; the composer can safely select a builtin fallback.
+    custom_timeout = _env_bounded(
+        "AGENT_CUSTOM_BLOCK_TIMEOUT", 75.0, lo=15.0, hi=120.0, cast=float
+    )
     request = {
         "_purpose": "custom_block",
         "max_tokens": custom_max_tokens,
@@ -2777,15 +2894,7 @@ def _repair_exit_return_literals(src: str) -> str | None:
         tree = ast.parse(src, filename="<custom_block_repair>")
     except SyntaxError:
         return None
-    evaluate = next(
-        (
-            node
-            for node in tree.body
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-            and node.name == "evaluate"
-        ),
-        None,
-    )
+    evaluate = _find_evaluate_def(tree)
     if evaluate is None:
         return None
     changed = False
@@ -3120,18 +3229,8 @@ Return the JSON only."""
 
     last_error = None
     _acc_usage: dict = {}
-    try:
-        _attempt_limit = max(
-            1, min(2, int(os.environ.get("AGENT_CUSTOM_BLOCK_MAX_ATTEMPTS", "2")))
-        )
-    except ValueError:
-        _attempt_limit = 2
-    try:
-        _token_limit = max(
-            4_000, int(os.environ.get("AGENT_CUSTOM_BLOCK_TOKEN_LIMIT", "25000"))
-        )
-    except ValueError:
-        _token_limit = 25_000
+    _attempt_limit = _env_bounded("AGENT_CUSTOM_BLOCK_MAX_ATTEMPTS", 2, lo=1, hi=2)
+    _token_limit = _env_bounded("AGENT_CUSTOM_BLOCK_TOKEN_LIMIT", 25_000, lo=4_000)
 
     def _spent_tokens() -> int:
         return sum(
@@ -3154,6 +3253,16 @@ Return the JSON only."""
             )
             return False
         return True
+
+    def _retry_with(next_prompt: str) -> bool:
+        """Set the next retry prompt; report whether another attempt is allowed.
+
+        Every failure branch below ends with "set the next prompt, then break
+        if the retry budget is spent" — this collapses that pair to one call.
+        """
+        nonlocal user_prompt
+        user_prompt = next_prompt
+        return _retry_allowed()
 
     for attempt in range(_attempt_limit):
         try:
@@ -3183,8 +3292,9 @@ Return the JSON only."""
             # failure so AUTO's existing role-safe builtin fallback is used.
             if isinstance(e, TimeoutError):
                 break
-            user_prompt = f"Previous request failed ({type(e).__name__}). {user_prompt}"
-            if not _retry_allowed():
+            if not _retry_with(
+                f"Previous request failed ({type(e).__name__}). {user_prompt}"
+            ):
                 break
             continue
 
@@ -3195,8 +3305,9 @@ Return the JSON only."""
             or "code" not in data
         ):
             last_error = f"schema mismatch: missing keys in {list(data.keys()) if isinstance(data, dict) else type(data).__name__}"
-            user_prompt = f"Your last output was invalid: {last_error}. Return JSON with keys name/meta/code."
-            if not _retry_allowed():
+            if not _retry_with(
+                f"Your last output was invalid: {last_error}. Return JSON with keys name/meta/code."
+            ):
                 break
             continue
 
@@ -3207,8 +3318,9 @@ Return the JSON only."""
         # Basic name validation happens later in the store; validate meta shape here.
         if not isinstance(meta, dict) or "label" not in meta or "params" not in meta:
             last_error = "meta must have label and params"
-            user_prompt = f"Your last output was invalid: {last_error}. Fix and return valid JSON."
-            if not _retry_allowed():
+            if not _retry_with(
+                f"Your last output was invalid: {last_error}. Fix and return valid JSON."
+            ):
                 break
             continue
 
@@ -3253,15 +3365,14 @@ Return the JSON only."""
                             "usage": _acc_usage,
                             "repair": "exit_literal_normalized",
                         }
-            user_prompt = (
+            if not _retry_with(
                 f"Your last code was REJECTED with this error:\n\n{last_error}\n\n"
                 f"ROLE CONTRACT (still mandatory): {role_contract}\n"
                 "Fix the code and return the same JSON schema. Remember: no imports, "
                 "no leading underscore names, no try/with/lambda/global/nonlocal, only whitelisted "
                 "attributes (.params/.role/.value/.upper/.lower/.middle/.initialized/.get/.keys/"
                 ".values/.items) and only whitelisted builtins."
-            )
-            if not _retry_allowed():
+            ):
                 break
             continue
 
@@ -3382,7 +3493,9 @@ def chat_edit_block(
         # Güvenlik + smoke: propose_custom_block:1554-1566 ile birebir defense-in-depth.
         try:
             _validate_generated_code(new_code)
-            edit_role = str(existing_meta.get("role") or new_meta.get("role") or "entry")
+            edit_role = str(
+                existing_meta.get("role") or new_meta.get("role") or "entry"
+            )
             new_meta = dict(new_meta)
             new_meta["role"] = edit_role
             _test_execute_generated(
@@ -3846,9 +3959,7 @@ def _propose_agent_strategy_idea(
         # bir yedek (ör. "RSI Oversold Reversal") sıralamada gerçek önerilerle
         # yarışır ve "kazanan" ilan edilir.
         fb = dict(_FALLBACK_IDEAS[idx])
-        fb["degraded"] = type(e).__name__
-        fb["degraded_detail"] = str(e)[:500]
-        fb["degraded_terminal"] = is_terminal_llm_error(e)
+        _tag_degraded(fb, e)
         return fb
 
 
