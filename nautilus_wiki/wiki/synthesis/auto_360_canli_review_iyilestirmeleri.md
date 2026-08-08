@@ -13,7 +13,8 @@ related:
   - wiki/synthesis/auto_arama_ekonomisi.md
   - wiki/synthesis/llm_maliyet_kaldiraclari.md
   - wiki/synthesis/nau_performans_denetimi.md
-last_updated: 2026-08-06
+  - wiki/synthesis/nau_deepr_toplu_sertlestirme_2026_08.md
+last_updated: 2026-08-08
 ---
 
 # AUTO 360° canlı inceleme ve güvenilirlik iyileştirmeleri
@@ -419,6 +420,23 @@ gosterdi:
 - `started_round`, `completed_rounds` ve `total_rounds` ayrildi. `session_end` ile
   session listesi yalniz tamamlanmis tur sayisini raporlar; aday cikmayan tur da
   makine-okunur `no_eligible_candidate` sonucuyla kapanir.
+
+### Ek not (2026-08-08): eksik alfa fail-closed'i test fixture'ıyla senkron değildi
+
+Yukarıdaki `excess_return_fraction` fail-closed kuralı + strict modda
+`mc.max_dd_p95` zorunluluğu bu sayfadaki geçişte `_robustness_passed`'e
+eklendi, ama `tests/test_regression_anchors_high.py::TestRobustnessPassed`'ın
+`_clean()` fixture'ı (bu dosyanın dışında, güncellenmeden kaldı) hiçbirini
+taşımıyordu — DeepR'ın 2026-08-08 turu bunu **2 test FAIL** olarak yakaladı
+("temiz 3/4 kriterli aday bile strict modda reddediliyor" okunuşuyla, ki bu
+production'da gerçek bir semptomdu: fixture'daki eksik alan production'daki
+eski/arşiv-formatlı bir payload'ı simüle ediyordu). Kapı mantığı **bilinçli
+olarak değiştirilmedi** — burada belgelenen fail-closed tasarımı geçerliliğini
+koruyor; düzeltme yalnızca `_clean()`'i (ve `mc` sözlüğünü ezen iki teste) yeni
+sözleşmeyi yansıtacak şekilde güncellemekti. Ders: bu tür bir kapı sıkılaştırması
+production kodunu DEĞİL de yalnız test dosyasını güncellemeyi unutursa, test
+suite'i sessizce (CI kırmızı çıkana kadar fark edilmeden) referans/regresyon
+değerini kaybediyor.
 
 ### Dogrulama (dorduncu dalga)
 

@@ -4,8 +4,8 @@ type: synthesis
 sources:
   - https://github.com/nautechsystems/nautilus_trader
   - sources/02_architecture_docs.md
-last_updated: 2026-07-28
-summary: /studio/{id} altındaki görsel strateji kurucu; sürümlü şema → derleyici → to_nautilus → composer spec → run_composed_backtest zinciri, çeviremediğini sessizce atmak yerine gerekçesiyle reddeder; sweep pencereli walk-forward ve deflate edilmiş DSR ile skorlanır. Nav'da "Strategy Builder"; /canvas altında aynı stratejinin node graf'ı ikinci yüzey olarak durur (2026-07-27).
+last_updated: 2026-08-08
+summary: /studio/{id} altındaki görsel strateji kurucu; sürümlü şema → derleyici → to_nautilus → composer spec → run_composed_backtest zinciri, çeviremediğini sessizce atmak yerine gerekçesiyle reddeder; sweep pencereli walk-forward ve deflate edilmiş DSR ile skorlanır. Nav'da "Strategy Builder"; /canvas altında aynı stratejinin node graf'ı ikinci yüzey olarak durur (2026-07-27). Varsayılan stub motoru artık UI'da "SİMÜLE" rozetiyle işaretleniyor (2026-08-08).
 key_concepts:
   - strategy_and_actor
   - backtesting_guide
@@ -15,6 +15,7 @@ related:
   - wiki/synthesis/webapp_module_map.md
   - wiki/synthesis/backtesting_guide.md
   - wiki/entities/portfolio.md
+  - wiki/synthesis/nau_deepr_toplu_sertlestirme_2026_08.md
 ---
 
 # Strategy Studio (görsel strateji kurucu)
@@ -188,6 +189,31 @@ elenmediği en kötü durum (`min(sweep, 400) × (1 + folds)`) kullanılır.
 Stub adaptör silinmedi ve **her yerde varsayılandır**: piyasa verisi olmadan tüm
 UI döngüsü çalışır, test takımı çevrimdışı kalır (`tests/studio`, 196 geçti +
 1 atlandı — 2026-07-26'da tekrar ölçüldü — env flag'siz yeşil).
+
+## "SİMÜLE" rozeti: stub motoru artık UI'da görünür (2026-08-08)
+
+DeepR'ın brutal-review geçişi (bkz. [[nau_deepr_toplu_sertlestirme_2026_08]])
+bu sayfanın en başından beri bilinen gerçeği ("stub her yerde varsayılan")
+**KRİTİK** bulgu olarak işaretledi: hiçbir template gerçek/sahte ayrımını
+göstermiyordu — `STUDIO_BACKTEST=nautilus` bilmeyen bir operatör tamamen
+rastgele sayılara bakarak strateji kararı verebilirdi.
+
+- **`_ctx()`** (`web/routes/strategy_studio.py`) artık her template'e
+  `engine_is_stub = isinstance(ADAPTER, StubBacktestAdapter)` geçiyor — tek
+  kaynak, tüm sayfalar (`page.html`, `canvas.html`, footer/results-pane HTMX
+  partial'ları) `_ctx`/`_side_ctx` üzerinden aynı bayrağı görüyor.
+- **`_footer_metrics.html`**: run durumundan bağımsız (running/failed/done/
+  boş) her zaman görünen amber `⚠ SİMÜLE — gerçek backtest değil` rozeti
+  (`.sim-badge`, `studio.css`).
+- **`_results_pane.html`**: fold/aggregate tablosunun başına aynı rozet —
+  footer'ı kaçıran bir kullanıcı için ikinci bağımsız yüzey.
+- Bilinçli kapsam sınırı: `TRIAL_ADAPTER` (optimizer sweep + AI trial'ları)
+  ayrı bir switch olduğu için rozet şimdilik yalnız `ADAPTER` (tek-koşu Run
+  butonu) üzerinden tetikleniyor — `_side_panel.html`'deki iterasyon
+  geçmişi henüz kapsanmadı, ayrı bir görev.
+- Test: `tests/studio/test_review_fixes.py::test_stub_engine_shows_a_simulated_badge`,
+  `::test_real_engine_hides_the_simulated_badge`,
+  `::test_results_pane_also_discloses_the_stub_engine`.
 
 ## Backtest tarih aralığı (2026-08-01)
 
@@ -581,6 +607,7 @@ tekrar çalışıyor · stop → node yıkıldı, thread kalmadı, sahte `failed
 <!-- BACKLINKS:BEGIN -->
 ## Referenced by
 
+- [[nau_deepr_ikinci_tur_2026_08_08]]
 - [[nau_guvenlik_dayaniklilik_duzeltmeleri]]
 - [[portfolio]]
 - [[webapp_module_map]]

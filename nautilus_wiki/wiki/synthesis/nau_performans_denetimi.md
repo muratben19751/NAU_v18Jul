@@ -72,17 +72,44 @@ performans-tarafı devamıdır: **hız için strateji doğruluğunu feda etme.**
 - **Equity N-bar örnekleme** (`composer.py` `on_bar`): `_mtm_equity` telemetri değil **birincil
   metrik kaynağı**; örneklemek max_dd ve Sharpe'ı bozar.
 - **"O(n²) kilitlenir"** (`indicators.calc_nadaraya_watson`): n her yolda ≤~1040 sınırlı —
-  premis yanlış.
+  "kilitlenir" premisi yanlış. Yine de DeepR'ın 2026-08-08 turu aynı fonksiyonu
+  algoritmik gereksizlik olarak tekrar işaretledi (kilitlenme değil, boşa iş);
+  Gauss çekirdeği 6-bandwidth ötesinde ~0 olduğundan iç döngü artık her satırda
+  tam `n` yerine `±6·bandwidth` penceresiyle sınırlı — çıktı bit-bit aynı
+  (kesilen terimler 1e-8 altı), maliyet O(n²) → O(n·bandwidth).
 - **Thread-executor'a geçiş** (`sandbox.py`): killability'i kaybettirir ([[single_threaded_core]]
   GIL — thread güvenle öldürülemez); bilinçli bir takas.
 
 ## Güvenli hızlı kazanımlar (S efor, parite korur)
 
 - `indicators.sma()` running-sum (bit-identical, tol 1e-9) + monotonik-deque min/max.
+  **Running-sum kısmı uygulandı (2026-08-08, DeepR ikinci tur)** — O(n) artık;
+  deque min/max hâlâ açık.
 - `composer.py` `on_bar` FFI çağrılarını (`is_net_long`/`is_net_short`) sinyal-guard altına al.
 - `backtest.py` `_extract_trades` `itertuples`; `_metrics` tek `np.asarray`.
 - `wfo_optimizer.py` fold dilimlerini kandidat başına değil bir kez ön-hesapla.
 - `backtest_robustness.py` Monte-Carlo win-rate vektörizasyonu (`(shuffled>0).sum(axis=1)`).
+- `custom_block_store._read_registry()` **uygulandı (2026-08-08, DeepR ikinci tur)** —
+  `composer._read_catalog_raw`'daki (mtime, size) önbellek deseninin aynısı,
+  ayrıca `path`'i de anahtara katarak (composer'ın CATALOG_FILE önbelleğinde
+  olmayan bir güvenlik payı) test fixture'larının `REGISTRY_FILE`'ı farklı
+  `tmp_path`'lere yönlendirmesi eski içeriği sızdırmıyor.
+- `token_ledger.summary()` **uygulandı (2026-08-08, DeepR ikinci tur)** — önceki
+  ikisinden farklı desen: JSONL sadece append edildiği için tam mtime/size
+  önbelleği yetmez (dosya her yazımda değişir); `_parsed_records()` yerine
+  **artımlı** okuyor — path başına `(tüketilen_byte, parse_edilmiş_kayıtlar)`
+  tutup son çağrıdan beri eklenen byte'ları okuyor. Son `\n`'den sonraki
+  tamamlanmamış satır (eşzamanlı bir `record()` yazımı ortasında) offset'e
+  dahil edilmiyor — bir sonraki çağrıya bırakılıyor, yoksa "torn line" kalıcı
+  olarak atlanırdı. `/tokens/badge` aynı isteği için `summary()`'i 2 kez
+  (session + all-time) çağırıyor, ikisi de artık aynı önbelleği paylaşıyor.
+- `data._bybit_rows()` **uygulandı (2026-08-08, DeepR ikinci tur)** — önceki
+  üçünden farklı desen: 72 hücre (3 sembol × 3 kategori × 8 interval) çoklu
+  dosyadan geldiğinden tek bir mtime/size anahtarı yok; basit TTL önbelleği
+  (`_BYBIT_ROWS_TTL_S=30s`, `strategy_studio._SYMBOLS_TTL_S`/`BARS_TTL_S` ile
+  aynı desen). `refresh_row("bybit", ...)` `_invalidate_bybit_rows_cache()`
+  ile önbelleği açıkça geçersiz kılıyor — yoksa force-refresh sonrası
+  kullanıcıya bayat (refresh-öncesi) satır dönerdi.
 
 Dikkat gerektiren (invalidasyon/off-by-one): `data.py`/`web/routes/backtest.py` mtime-keyed
 cache'leri custom-block durumu + dir-mtime anahtarına katmalı; WFO pencere label-slice

@@ -11,7 +11,8 @@ related:
   - wiki/synthesis/model_secici_ve_gorunurluk.md
   - wiki/synthesis/auto_mission_control.md
   - wiki/synthesis/webapp_module_map.md
-last_updated: 2026-08-03
+  - wiki/synthesis/nau_deepr_toplu_sertlestirme_2026_08.md
+last_updated: 2026-08-08
 ---
 
 # Kesilme (max_tokens) ve degrade görünürlüğü
@@ -67,6 +68,15 @@ artık `fallback (TruncatedResponse)` yazar — sebep okunabilir kalır.
 Koşu tarafında `_mark_degraded()` sayar (`fallback_count` + tekrarsız
 `fallback_reasons`), `_done_phase(..., degraded=True)` fazı ✓ yerine ⚠ kapatır ve
 kokpitte `⚠ DEGRADED ×N` rozeti çıkar.
+
+**4. Öğrenilen tavan kilitlendi (2026-08-08, DeepR).** Büyütülmüş tavan
+`_LEARNED_MAX_TOKENS[(model, purpose)]`'a yazılır — aynı uç bir daha ilk
+çağrıyı çöpe atmasın diye. Sözlük kilitsizdi: AUTO birden fazla worker
+thread'i çalıştırabildiğinden, aynı anahtarı aynı anda büyüten iki thread
+birbirinin yazdığını ezebiliyordu (çökme değil, "öğrenilen tavan" ara sıra
+kaybolup bir sonraki çağrının yine kesilip 2× maliyete düşmesi). Düzeltme:
+`_LEARNED_MAX_TOKENS_LOCK` + yazımda `max(bigger, mevcut)` — küçük bir eşzamanlı
+yazım artık daha büyük, zaten kanıtlanmış bir tavanı geriletemiyor.
 
 Faz `status` değeri yine `"done"` kalır — `mission_view` ilerlemeyi
 `all(s == "done")` ile sayar ve akışı bozmak istemiyoruz; bozulma **ayrı bir

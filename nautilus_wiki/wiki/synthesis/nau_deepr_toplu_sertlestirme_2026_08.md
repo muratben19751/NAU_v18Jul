@@ -24,6 +24,9 @@ her bulguyu adversarial verify ile doğruladı. Rapor: `deepr_report_2026-08-08_
 (repo kökü). ~80 ham bulgu 35 konsolide göreve indirgendi; **her biri düzeltmeden
 önce gerçek kodda doğrulandı**, sonra düzeltildi, sonra test edildi.
 
+Aynı gün öğleden sonra ikinci bir DeepR turu (bu kez Workflow tool ile, 152
+ajan) tetiklendi — devamı [[nau_deepr_ikinci_tur_2026_08_08]].
+
 ## En kritik 3 bulgu
 
 1. **Auth yok + internete açık + chat XSS.** Uygulama Cloudflare tüneli üzerinden
@@ -82,6 +85,16 @@ Kapsam dışı bırakılan (bilinçli): büyük god-module bölmeleri (`agent.py
 `web/routes/agent_backtest.py`, `composer.py`) — test kapsamı olmadan riskli,
 ayrı bir işe ihtiyaç var.
 
+## İkinci tur küçük not: B904 (2026-08-08)
+
+`raise ... from err`/`from None` — 23 nokta (`strategy_studio/mutations.py` 6,
+`compiler.py` 2, `web/routes/strategy_studio.py` 11, `data.py` 1,
+`web/routes/wiki.py` 1). Ruff'ın `select` listesinde B (bugbear) yok, yani
+bu proje `ruff check .`'ta hiç görünmüyordu — davranış değişikliği yok, salt
+okunabilirlik: orijinal exception zincirlendiğinde (`as e` + mesajda `{e}`)
+`from e`, mesaj kendi kendine yeterliyken (`KeyError`/`ValueError` gibi
+düşük-seviye hatanın metni zaten anlamsız) `from None`.
+
 ## Süreç notu
 
 Toplu iş onaylandıktan ("hepsini yap") sonra bir uygulama-detayı tasarım seçimi
@@ -93,5 +106,7 @@ sormak gerektiği anlamına geliyor.
 <!-- BACKLINKS:BEGIN -->
 ## Referenced by
 
+- [[nau_deepr_ikinci_tur_2026_08_08]]
+- [[strategy_studio]]
 - [[webapp_module_map]]
 <!-- BACKLINKS:END -->
