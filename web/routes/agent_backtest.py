@@ -31,6 +31,18 @@ kuralları (a6ddb5a, 2026-08-07) ile `tests/test_regression_anchors_high.py`
 fixture'ının senkronsuzluğu — DeepR'ın yakaladığı 2 test FAIL — 2026-08-08'de
 düzeltildi; kapı mantığı değişmedi, yalnız test fixture'ı güncellendi. Bkz.
 [[auto_kapi_ve_geri_bildirim]] ve [[nau_deepr_toplu_sertlestirme_2026_08]].
+
+`_agent_worker` (DeepR #47, 2026-08-08) kademeli olarak modül-seviyesi
+fonksiyonlara bölünüyor: `_market_for`/`_iv_for`/`_recipe`, `_WorkerState`
+(round-persistent durum), `_cleanup_generated`/`_winless_bump`/
+`_winless_stop`, `_make_llm_control`, `_rank_and_filter`,
+`_propose_initial_strategy`, `_scan_one_candidate`, `_run_promotion_gate`
+(sealed-holdout finansal bütünlük kapısı), `_run_backtest_iteration` çıkarıldı
+(A0-A9) — her biri kendi birim testiyle, davranış korunarak. Faz 2'nin
+"sıradaki spec'i üret" bloğu (spec'in aynı loop değişkenine yeniden atanması +
+3 katmanlı exception hiyerarşisi) ve Faz 0'ın veri/holdout yükleyicisi
+(`_load_tf`/`_load_tf_uncached` — planın en riskli adımı) bilinçli olarak bu
+turda ertelendi. Bkz. [[nau_deepr_ikinci_tur_2026_08_08]].
 """
 
 from __future__ import annotations

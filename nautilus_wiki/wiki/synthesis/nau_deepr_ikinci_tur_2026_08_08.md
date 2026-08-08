@@ -1,7 +1,7 @@
 ---
 title: nautilus_web_app DeepR İkinci Tur (2026-08-08, öğleden sonra)
 type: synthesis
-summary: Aynı gün ikinci bir DeepR koşusu — 152 ajan, 0 hata, 33 doğrulanmış bulgu (deepr_report_2026-08-08_1204.md); 31'i düzeltildi/test edildi, 2'si (_agent_worker bölme, backtest.py domain-mantığı çıkarma) bilinçli olarak ayrı bir oturuma bırakıldı.
+summary: Aynı gün ikinci bir DeepR koşusu — 152 ajan, 0 hata, 33 doğrulanmış bulgu; 31'i aynı oturumda düzeltildi, #47 (_agent_worker bölme) ayrı oturumda kademeli olarak A0-A9 adımlarıyla sürüyor (A11 en riskli adım, henüz yapılmadı), #59 sırada.
 key_concepts:
   - crash_only_design
 sources:
@@ -51,16 +51,45 @@ Ders: production mantığını sıkılaştıran bir commit, o mantığı sınaya
 regresyon testlerini de AYNI commit'te güncellemeli; aksi halde test suite'i
 CI kırmızı çıkana kadar sessizce referans değerini kaybediyor.
 
-## Kapsam dışı bırakılanlar (bilinçli, kullanıcı onaylı)
+## #47 — `_agent_worker` bölme: kademeli, test-önce çıkarım (2026-08-08, devam ediyor)
 
-- **#47 — `_agent_worker` bölme** (`web/routes/agent_backtest.py`, ~1750
-  satır, 20 parametre, AUTO'nun canlı continuous-mode worker'ı) ve
-  **#59 — `backtest.py` route'undan domain mantığını ayırma** (aynı desenin
-  küçük ölçekli tekrarı, `web/routes/backtest.py`): her ikisi de büyük
-  mimari çıkarma + gerçek regresyon riski taşıyor, DeepR'ın kendi raporunda
-  bile "test kapsamı olmadan riskli" diye 35-görevlik ilk turda kapsam dışı
-  bırakılmıştı. Kullanıcıya soruldu, "şimdilik atla, ayrı dikkatli oturumda
-  ele alınacak" onayı alındı.
+#47 ve #59 önce "şimdilik atla, ayrı dikkatli oturumda ele alınacak" onayıyla
+kapsam dışı bırakılmıştı; kullanıcı sonra "ona devam et → ikisi birden,
+sırayla" dedi. Plan mode ile 2 Explore + 2 Plan ajanı kod haritası çıkardı;
+onaylanan strateji: **aynı dosyada** (yeni bir alt-paket DEĞİL —
+`tests/test_lock_nesting.py`'nin AST taraması sabit olarak yalnız
+`agent_backtest.py`'yi hedefliyor, taşınan kilit-dokunan kod bu tek
+regresyon testinin kör noktasına düşerdi) düz modül fonksiyonlarına, her
+adım kendi commit'i + kendi testiyle, "önce test yaz, davranış korunsun"
+disipliniyle.
+
+Tamamlanan adımlar (A0-A9): `_market_for`/`_iv_for`/`_recipe`, `_WorkerState`
+dataclass (round-persistent durum), `_cleanup_generated`/`_winless_bump`/
+`_winless_stop`, `_make_llm_control` (bütçe/iptal kapısı — önceden SIFIR test
+kapsamı), `_rank_and_filter`, `_propose_initial_strategy`, `_scan_one_candidate`
+(effective-score işaret-güvenliği mutasyon testiyle doğrulandı),
+`_run_promotion_gate` (sealed-holdout finansal bütünlük kapısı — planın en
+dikkatli incelenen adımı, sadece yeşil testle değil elle diff okuyarak da
+gözden geçirildi), `_run_backtest_iteration`.
+
+**Aynı hata sınıfı 4 kez tekrarlandı ve her seferinde yakalandı:** ruff'ın
+otomatik-fix hook'u, bir import'u kullanan kod satırı henüz eklenmeden önceki
+ara kayıt anında "kullanılmıyor" sanıp sessizce siliyor (`dataclasses`,
+`Callable`, `web.shared.log_robustness`, `web.shared.log_backtest`) — her
+adımdan sonra tam test suite'i koşturma disiplini olmasa fark edilmezdi. Ayrı
+bir gerçek davranış hatası da yakalandı: closure→fabrika çıkarımında değerin
+erken bağlanması (bkz. ikinci beyin: `closure_fabrika_erken_baglama`).
+
+**Kapsam dışı (bu turda bilinçli ertelendi):**
+- **A10 — Faz 2'nin "sıradaki spec'i üret" bloğu**: `spec`'in aynı loop
+  değişkenine yeniden atanması + 3 katmanlı exception hiyerarşisi (iptal/
+  bütçe re-raise, generic'te önceki spec'le devam) — yanlış çıkarım ya
+  iptal/bütçeyi sessizce yutar ya geçici bir hata koşumu bitirir.
+- **A11a/A11b — Faz 0 veri/holdout yükleyici** (`_load_tf`/`_load_tf_uncached`):
+  planın **en riskli adımı**, bilinçli olarak en sona bırakıldı — henüz
+  yapılmadı.
+- **#59 — `backtest.py` route'undan domain mantığını ayırma**: #47 bitince
+  sırada.
 - **#69 (`download_grouped_daily.py`), #60/#61 (`repair_massive_intraday.py`
   — bkz. finding'in kendi metni)**: bu dosyalar untracked (`git status: ??`)
   — kullanıcının bu projeyle ilgisiz kendi ayrı script'leri, önceki 35-görevlik
@@ -103,4 +132,5 @@ düzeltildi — tam tersi değil.
 ## Referenced by
 
 - [[nau_deepr_toplu_sertlestirme_2026_08]]
+- [[webapp_module_map]]
 <!-- BACKLINKS:END -->
