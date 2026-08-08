@@ -292,6 +292,19 @@ class TestComputeQty:
         )
         assert got == pytest.approx(0.95 * cap / price)
 
+    def test_vol_target_survives_a_zero_close_in_the_series(self):
+        """DeepR 2026-08-08 [YÜKSEK]: calc_ewma_vol only guarded the log()
+        denominator, not the numerator — a single 0.0/negative close bar
+        (bad data row, delisting, a genuinely negative futures print) raised
+        ValueError with no try/except at this call site, crashing the whole
+        backtest/AUTO run. This must complete without raising."""
+        closes = [100.0] * 5 + [0.0] + [100.0] * 34
+        got = self._qty(
+            _qty_self("vol_target", trade_size=0.1, vol_span=10, closes=closes),
+            50_000.0,
+        )
+        assert got > 0
+
 
 # ---------------------------------------------------------------------------
 # #3 (critical) — wfo objective_value / _calmar (M236/M240): calmar GA selection

@@ -2,9 +2,14 @@
 
 Wiki References
 ---------------
-See: [[backtesting_guide]], [[environment_contexts]], [[parquet_data_catalog]]
+See: [[backtesting_guide]], [[environment_contexts]], [[parquet_data_catalog]], [[nau_deepr_toplu_sertlestirme_2026_08]]
 
 The Backtest leg of [[environment_contexts]].
+
+`run()`'s worker: the `_log_backtest`/`_save_result_snapshot` except blocks
+now log a warning instead of a bare `pass` (2026-08-08 DeepR finding) — a
+persistently failing write (disk full, permission error) previously had no
+observable symptom beyond /sessions and the tear sheet staying empty.
 
 Not: ``describe`` üretimi bitince chain-tetiği (``#bt-chain-trigger``
 data-attr'ları → JS ile ``/backtest/run|/sweep``) SADECE BİR kez ``#result``'a
@@ -1014,7 +1019,14 @@ async def run(
                     run_id=run_id,
                 )
             except Exception:
-                pass  # log I/O failure must not hide the result
+                # log I/O failure must not hide the result — but it must not
+                # vanish without a trace either (DeepR 2026-08-08 [DÜŞÜK]:
+                # this was a bare `pass`, so a persistently failing log write
+                # — disk full, permission error — had no observable symptom
+                # beyond /sessions and the tear sheet quietly staying empty).
+                logging.getLogger(__name__).warning(
+                    "run %s: _log_backtest failed", run_id, exc_info=True
+                )
 
             if result.error is None:
                 try:
@@ -1023,7 +1035,10 @@ async def run(
                         _result_viewmodel(result, spec.name, narrative, bars_info),
                     )
                 except Exception:
-                    pass  # snapshot failure must not hide the result
+                    # Same reasoning as the log-write except above.
+                    logging.getLogger(__name__).warning(
+                        "run %s: _save_result_snapshot failed", run_id, exc_info=True
+                    )
         except Exception as e:
             with _RUN_PROGRESS_LOCK:
                 if run_id in _RUN_PROGRESS:

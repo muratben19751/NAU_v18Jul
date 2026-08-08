@@ -93,6 +93,115 @@ def test_torn_lines_skipped(tmp_path):
     assert s["models"]["claude-fable-5"]["calls"] == 2  # blank + torn skipped
 
 
+# ---------------------------------------------------------------------------
+# _parsed_records() incremental cache (DeepR 2026-08-08 [ORTA])
+# ---------------------------------------------------------------------------
+
+
+def test_summary_is_not_rereading_unchanged_bytes(tmp_path, monkeypatch):
+    """A second summary() call on an unchanged ledger must not touch disk —
+    the cache should serve the previously-parsed records directly."""
+    ledger = tmp_path / "token_usage.jsonl"
+    token_ledger._PARSE_CACHE.clear()
+    line = json.dumps(
+        {
+            "ts": "2026-07-24T00:00:00+00:00",
+            "model": "claude-fable-5",
+            "input": 10,
+            "output": 5,
+            "cache_read": 0,
+            "cache_write": 0,
+        }
+    )
+    ledger.write_text(line + "\n", encoding="utf-8")
+
+    token_ledger.summary(ledger)  # primes the cache
+
+    import builtins
+
+    calls = {"n": 0}
+    real_open = builtins.open
+
+    def _counting_open(*a, **k):
+        calls["n"] += 1
+        return real_open(*a, **k)
+
+    monkeypatch.setattr(token_ledger, "open", _counting_open, raising=False)
+
+    s1 = token_ledger.summary(ledger)
+    s2 = token_ledger.summary(ledger)  # all-time called twice, like /tokens/badge
+
+    assert calls["n"] == 0, "unchanged ledger was re-opened for reading"
+    assert s1["total"]["calls"] == s2["total"]["calls"] == 1
+
+
+def test_summary_picks_up_newly_appended_records_only(tmp_path):
+    ledger = tmp_path / "token_usage.jsonl"
+    token_ledger._PARSE_CACHE.clear()
+
+    def _line(model, n):
+        return json.dumps(
+            {
+                "ts": f"2026-07-24T00:00:0{n}+00:00",
+                "model": model,
+                "input": n,
+                "output": 0,
+                "cache_read": 0,
+                "cache_write": 0,
+            }
+        )
+
+    ledger.write_text(_line("claude-fable-5", 1) + "\n", encoding="utf-8")
+    s1 = token_ledger.summary(ledger)
+    assert s1["total"]["calls"] == 1
+
+    with open(ledger, "a", encoding="utf-8") as f:
+        f.write(_line("claude-fable-5", 2) + "\n")
+    s2 = token_ledger.summary(ledger)
+
+    assert s2["total"]["calls"] == 2
+    assert s2["total"]["input"] == 3
+
+
+def test_summary_defers_an_unterminated_trailing_line_to_the_next_call(tmp_path):
+    """A concurrent writer's in-flight append (no trailing '\\n' yet) must not
+    be consumed and permanently skipped once the offset moves past it."""
+    ledger = tmp_path / "token_usage.jsonl"
+    token_ledger._PARSE_CACHE.clear()
+    good = json.dumps(
+        {
+            "ts": "2026-07-24T00:00:00+00:00",
+            "model": "claude-fable-5",
+            "input": 10,
+            "output": 0,
+            "cache_read": 0,
+            "cache_write": 0,
+        }
+    )
+    partial = json.dumps(
+        {
+            "ts": "2026-07-24T00:00:01+00:00",
+            "model": "claude-fable-5",
+            "input": 20,
+            "output": 0,
+            "cache_read": 0,
+            "cache_write": 0,
+        }
+    )
+    # No trailing newline on the second line — simulates a writer mid-flush.
+    ledger.write_text(good + "\n" + partial, encoding="utf-8")
+
+    s1 = token_ledger.summary(ledger)
+    assert s1["total"]["calls"] == 1, "an unterminated line must not be parsed yet"
+
+    with open(ledger, "a", encoding="utf-8") as f:
+        f.write("\n")  # the writer finishes the line
+    s2 = token_ledger.summary(ledger)
+
+    assert s2["total"]["calls"] == 2, "the completed line must be picked up next call"
+    assert s2["total"]["input"] == 30
+
+
 def test_record_never_raises(monkeypatch):
     # Point the ledger at an un-writable path shape; record must swallow the error.
     monkeypatch.setattr(token_ledger, "LEDGER_PATH", Path("\0illegal") / "x.jsonl")

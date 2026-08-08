@@ -35,3 +35,15 @@ jobs:
 
       - name: Pytest
         run: uv run pytest -q tests
+
+      # DeepR 2026-08-08 [YÜKSEK]: the one real end-to-end chain test
+      # (POST /backtest/run → progress poll → result render) is excluded from
+      # the default run above (`addopts = -m "not e2e"`, pyproject.toml) since
+      # it hits real Bybit network and takes ~2 min — but that meant it never
+      # ran ANYWHERE, so a break in the chain (run_id parsing, the HTMX poll
+      # fragment, verdict-badge rendering) went undetected. `continue-on-error`
+      # so a Bybit network hiccup never blocks the pipeline; a real regression
+      # still shows up as a red step here instead of nowhere at all.
+      - name: Pytest (e2e — live Bybit, non-blocking)
+        continue-on-error: true
+        run: uv run pytest -q -m e2e tests

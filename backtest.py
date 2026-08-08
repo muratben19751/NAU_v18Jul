@@ -5,9 +5,15 @@ bars and extracts summary metrics + equity curve.
 
 Wiki References
 ---------------
-See: [[backtest_node]], [[backtesting_guide]], [[environment_contexts]], [[data_wranglers]], [[precision_modes]], [[portfolio]], [[v1_to_v2_migration_lessons]], [[index_backtest_via_equity_proxy]]
+See: [[backtest_node]], [[backtesting_guide]], [[environment_contexts]], [[data_wranglers]], [[precision_modes]], [[portfolio]], [[v1_to_v2_migration_lessons]], [[index_backtest_via_equity_proxy]], [[nau_deepr_toplu_sertlestirme_2026_08]]
 
 Low-level API path; matches the [[backtesting_guide]] "choose BacktestEngine if:" list. `_bars_from_df` is a helper written after `BarDataWrangler.process` was removed in v2 — see [[data_wranglers]] v1→v2 section. Sharpe nan bug: see [[portfolio]] and [[v1_to_v2_migration_lessons]].
+
+`_metrics()`'s three `except Exception: pass` blocks (duration/commission/
+slippage) now log a warning instead of silently zeroing/NaN-ing a metric
+(2026-08-08 DeepR finding) — the slippage one is the exact "$0 slippage
+reads as none" regression class the surrounding code comment already warns
+about.
 """
 
 from __future__ import annotations
@@ -671,7 +677,12 @@ def _metrics(
             dur_ns = pd.to_numeric(positions_df["duration_ns"], errors="coerce")
             avg_duration_mins = float(dur_ns.mean()) / 60e9  # ns → minutes
         except Exception:
-            pass
+            # DeepR 2026-08-08 [ORTA]: was a bare `pass` — a schema drift here
+            # silently reported NaN as if duration were simply unavailable,
+            # not broken.
+            logging.getLogger(__name__).warning(
+                "_metrics: avg_duration_mins computation failed", exc_info=True
+            )
 
     # Commissions
     commission_total = 0.0
@@ -696,7 +707,12 @@ def _metrics(
                 positions_df["commissions"].apply(_parse_commissions).sum()
             )
         except Exception:
-            pass
+            # DeepR 2026-08-08 [ORTA]: was a bare `pass` — a positions_df schema
+            # change silently zeroed commission_total instead of surfacing that
+            # the P&L breakdown is now wrong.
+            logging.getLogger(__name__).warning(
+                "_metrics: commission_total computation failed", exc_info=True
+            )
 
     # Slippage from order fills
     slippage_reported_total = 0.0
@@ -715,14 +731,25 @@ def _metrics(
         # estimate so "model active + 636 fills + $0" is no longer invisible.
         if slippage_model_active and slippage_reported_total == 0 and price_increment:
             qty_col = next(
-                (c for c in ("last_qty", "quantity", "qty", "filled_qty") if c in fills_df),
+                (
+                    c
+                    for c in ("last_qty", "quantity", "qty", "filled_qty")
+                    if c in fills_df
+                ),
                 None,
             )
             if qty_col:
                 quantities = np.abs(_parse_money_column(fills_df[qty_col]))
-                slippage_estimated_total = float(quantities.sum()) * float(price_increment)
+                slippage_estimated_total = float(quantities.sum()) * float(
+                    price_increment
+                )
     except Exception:
-        pass
+        # DeepR 2026-08-08 [ORTA]: was a bare `pass` — this is the exact class
+        # of regression the surrounding comment describes ($0 slippage
+        # reading as "no slippage" instead of "the audit estimate failed").
+        logging.getLogger(__name__).warning(
+            "_metrics: slippage computation failed", exc_info=True
+        )
     slippage_total = slippage_reported_total or slippage_estimated_total
 
     # Realized equity curve for max drawdown (backward-compat) + MTM if available
@@ -783,9 +810,7 @@ def _metrics(
         sharpe_manual = _sharpe_manual(mtm_equity, annualization=annualization)
         sharpe = sharpe_manual if not math.isnan(sharpe_manual) else sharpe_nautilus
         sortino_manual = _sortino_manual(mtm_equity, annualization=annualization)
-        sortino = (
-            sortino_manual if not math.isnan(sortino_manual) else sortino_nautilus
-        )
+        sortino = sortino_manual if not math.isnan(sortino_manual) else sortino_nautilus
     else:
         # H610: no MTM (registry strategies — MACrossover/RSIMeanReversion).
         # realized_equity_full is TRADE-resolution; applying bar-frequency

@@ -2,9 +2,13 @@
 
 Wiki References
 ---------------
-Bkz: [[strategy_and_actor]], [[order_flow_pipeline]]
+Bkz: [[strategy_and_actor]], [[order_flow_pipeline]], [[nau_deepr_toplu_sertlestirme_2026_08]]
 
 The Compose UI reflects the [[strategy_and_actor]] hierarchy.
+
+`_MAX_LLM_TEXT_LEN` (2026-08-08 DeepR finding) now gates all four LLM-calling
+routes (`/suggest`, `/blocks/generate`, `/drafts/chat`, `/blocks/chat`), not
+just `/blocks/generate` as before.
 """
 
 from __future__ import annotations
@@ -34,6 +38,10 @@ router = APIRouter(prefix="/strategy")
 # multi-MB block against an expensive LLM call. Same bound as
 # backtest.py's _MAX_LLM_TEXT_LEN (kept local: a single shared constant for
 # this doesn't justify a new cross-module import here).
+#
+# DeepR 2026-08-08 [ORTA]: originally only /blocks/generate enforced this —
+# /suggest, /drafts/chat, and /blocks/chat took the same free-text fields
+# straight to a Claude call with no limit at all. All four now check it.
 _MAX_LLM_TEXT_LEN = 4000
 
 
@@ -419,6 +427,12 @@ async def suggest(request: Request):
 
     form = await request.form()
     user_desc = (form.get("description") or "").strip()
+    if len(user_desc) > _MAX_LLM_TEXT_LEN:
+        return HTMLResponse(
+            f"<div class='empty-state'>Description too long (max "
+            f"{_MAX_LLM_TEXT_LEN} characters).</div>",
+            status_code=400,
+        )
 
     state = get_state()
     history, _, _, _ = state.snapshot()
@@ -549,6 +563,12 @@ async def drafts_chat_turn(
         )
     if not msg:
         return _render_drafts_chat(request, conv, conv_id, opts, name)
+    if len(msg) > _MAX_LLM_TEXT_LEN:
+        return HTMLResponse(
+            f"<div class='empty-state'>Message too long (max "
+            f"{_MAX_LLM_TEXT_LEN} characters).</div>",
+            status_code=400,
+        )
 
     from agent import chat_edit_blocks
 
@@ -995,6 +1015,12 @@ async def block_chat_turn(
         )
     if not msg:
         return _render_block_chat(request, conv, conv_id)
+    if len(msg) > _MAX_LLM_TEXT_LEN:
+        return HTMLResponse(
+            f"<div class='empty-state'>Message too long (max "
+            f"{_MAX_LLM_TEXT_LEN} characters).</div>",
+            status_code=400,
+        )
 
     from agent import chat_edit_block
 

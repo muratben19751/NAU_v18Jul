@@ -379,3 +379,43 @@ def test_a_broken_trial_engine_does_not_500_the_suggest_button(client, monkeypat
 
     assert r.status_code == 422
     assert "engine exploded" in r.text
+
+
+# ── stub-engine "simulated" disclosure (DeepR 2026-08-08, kritik) ───────────
+
+
+def test_stub_engine_shows_a_simulated_badge(client):
+    """StubBacktestAdapter is the default engine — the page must say so, or a
+    random-walk number reads as a real backtest result."""
+    r = client.get(f"/studio/{SID}")
+
+    assert r.status_code == 200
+    assert "SİMÜLE" in r.text
+
+
+def test_real_engine_hides_the_simulated_badge(client, monkeypatch):
+    from strategy_studio.backtest import NautilusBacktestAdapter
+
+    monkeypatch.setattr(client.main, "ADAPTER", NautilusBacktestAdapter())
+
+    r = client.get(f"/studio/{SID}")
+
+    assert r.status_code == 200
+    assert "SİMÜLE" not in r.text
+
+
+def test_results_pane_also_discloses_the_stub_engine(client):
+    """The fold/aggregate results pane is a second surface for the same
+    numbers — it must not omit the disclosure the footer carries."""
+    defn, _ = client.store.working_copy(SID)
+    from strategy_studio.backtest import StubBacktestAdapter
+    from strategy_studio.compiler import compile_strategy as _compile
+
+    metrics = StubBacktestAdapter().run(_compile(defn))
+    client.store.create_run("r-sim", SID, version=defn.version, is_draft=False)
+    client.store.finish_run("r-sim", metrics.to_json())
+
+    r = client.get(f"/studio/{SID}/runs/latest/folds")
+
+    assert r.status_code == 200
+    assert "SİMÜLE" in r.text

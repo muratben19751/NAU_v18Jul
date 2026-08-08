@@ -29,6 +29,18 @@ Loose analog of Nautilus [[nautilus_kernel]] for the WEB app: bootstraps subsyst
 `_require_auth` (single-operator shared-secret auth via `NAU_ACCESS_TOKEN`) and
 the `nl2br` Jinja filter (XSS-safe chat-bubble rendering) were added in the
 2026-08-08 DeepR hardening pass — see [[nau_deepr_toplu_sertlestirme_2026_08]].
+A second DeepR pass the same day added `_login_rate_limited` (per-IP failed-
+attempt counter, 5/60s, in-memory) since `/login` had no brute-force guard
+and failures were never logged; marked the `nau_auth` cookie `secure=True`
+(it previously lacked the flag); and added `POST /logout` + the
+`auth_enabled()` template global (there was no way to end a session short of
+rotating `NAU_ACCESS_TOKEN` itself); and `_limit_request_body` (app-wide ASGI
+body-size cap, `NAU_MAX_REQUEST_BODY_BYTES`, default 2 MiB) since no route
+bounded request size at all. The whole gate (`_require_auth` HTMX-vs-browser
+redirect split, `_is_authenticated`/`_auth_cookie_value`, login/logout,
+rate-limit, secure cookie) previously had zero test coverage — see
+`tests/test_require_auth_middleware.py`, `tests/test_login_rate_limit.py`,
+`tests/test_auth_cookie_logout.py`.
 """
 
 from __future__ import annotations
@@ -47,18 +59,23 @@ for _stream in (_sys.stdout, _sys.stderr):
 
 import hashlib as _hashlib
 import hmac as _hmac
+import logging as _logging
 import os as _os
+import threading as _threading
+import time as _time
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from fastapi import FastAPI, Form, Request
+from fastapi import FastAPI, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from markupsafe import Markup, escape
 
 from data import load_bybit_bars
+
+_log = _logging.getLogger(__name__)
 
 # Optional single-operator access gate. If NAU_ACCESS_TOKEN is unset (the
 # default for local dev), auth is a no-op and behavior is unchanged. If set,
@@ -77,6 +94,51 @@ def _is_authenticated(request: Request) -> bool:
         return True
     got = request.cookies.get(_AUTH_COOKIE, "")
     return _hmac.compare_digest(got, _auth_cookie_value(_ACCESS_TOKEN))
+
+
+# /login brute-force guard. Single-operator, single-process app — an
+# in-memory per-IP failure count (no external limiter dependency) is enough:
+# DeepR 2026-08-08 [YÜKSEK] flagged that a Cloudflare-tunnelled, internet-
+# facing /login had NO attempt limit and failures were never logged, so a
+# script could grind the shared secret unnoticed.
+_LOGIN_MAX_ATTEMPTS = 5
+_LOGIN_WINDOW_S = 60.0
+_login_failures: dict[str, list[float]] = {}
+_login_lock = _threading.Lock()
+
+
+def _client_ip(request: Request) -> str:
+    return request.client.host if request.client else "unknown"
+
+
+def _login_rate_limited(ip: str) -> bool:
+    """True once `ip` has `_LOGIN_MAX_ATTEMPTS`+ failures in the trailing window."""
+    now = _time.monotonic()
+    with _login_lock:
+        recent = [t for t in _login_failures.get(ip, ()) if now - t < _LOGIN_WINDOW_S]
+        _login_failures[ip] = recent
+        return len(recent) >= _LOGIN_MAX_ATTEMPTS
+
+
+def _record_login_failure(ip: str) -> None:
+    now = _time.monotonic()
+    with _login_lock:
+        # Opportunistic prune so long-idle attackers/IPs do not leak memory —
+        # cheap at the traffic this gate is meant for (one operator, occasional
+        # scans), and only runs on the failure path.
+        stale = [
+            k
+            for k, times in _login_failures.items()
+            if not any(now - t < _LOGIN_WINDOW_S for t in times)
+        ]
+        for k in stale:
+            del _login_failures[k]
+        _login_failures.setdefault(ip, []).append(now)
+
+
+def _clear_login_failures(ip: str) -> None:
+    with _login_lock:
+        _login_failures.pop(ip, None)
 
 
 # Default instrument shown in the topbar.
@@ -151,6 +213,10 @@ def _first_studio_strategy_id() -> str | None:
 
 
 templates.env.globals["first_studio_strategy_id"] = _first_studio_strategy_id
+# Sidebar only offers a Logout link when the access gate is actually on —
+# NAU_ACCESS_TOKEN unset (local dev default) means auth is a no-op, and a
+# logout link there would just redirect to a login screen with no gate.
+templates.env.globals["auth_enabled"] = lambda: bool(_ACCESS_TOKEN)
 
 
 def _datetimefmt(unix_ts: int) -> str:
@@ -287,21 +353,98 @@ async def login_form():
 
 
 @app.post("/login")
-async def login_submit(token: str = Form(...)):
+async def login_submit(request: Request, token: str = Form(...)):
+    ip = _client_ip(request)
+    if _login_rate_limited(ip):
+        _log.warning("login rate-limited: %s", ip)
+        return HTMLResponse(
+            _LOGIN_PAGE.format(
+                error='<p class="err">Çok fazla başarısız deneme. Bir dakika sonra tekrar deneyin.</p>'
+            ),
+            status_code=429,
+        )
     if _ACCESS_TOKEN and _hmac.compare_digest(token, _ACCESS_TOKEN):
+        _clear_login_failures(ip)
         resp = RedirectResponse(url="/", status_code=303)
         resp.set_cookie(
             _AUTH_COOKIE,
             _auth_cookie_value(_ACCESS_TOKEN),
             httponly=True,
             samesite="lax",
+            secure=True,
             max_age=60 * 60 * 24 * 30,
         )
         return resp
+    _record_login_failure(ip)
+    _log.warning("failed login attempt: %s", ip)
     return HTMLResponse(
         _LOGIN_PAGE.format(error='<p class="err">Yanlış erişim kodu.</p>'),
         status_code=401,
     )
+
+
+@app.post("/logout")
+async def logout_submit():
+    """Clear this browser's auth cookie (DeepR 2026-08-08 [ORTA] — there was
+    no way to end a session short of rotating NAU_ACCESS_TOKEN itself).
+
+    The cookie is a static sha256(NAU_ACCESS_TOKEN), not a per-session id —
+    there is nothing to revoke server-side, only the browser's copy to
+    delete. Logging out here does not invalidate any OTHER browser still
+    holding the same cookie; only rotating the token does that.
+    """
+    resp = RedirectResponse(url="/login", status_code=303)
+    resp.delete_cookie(_AUTH_COOKIE)
+    return resp
+
+
+# DeepR 2026-08-08 [ORTA]: no route in the app bounded request body size —
+# web/routes/reports.py's post_layout() parsed `await request.json()` on
+# whatever a client sent, and nothing else was any different. Nothing here
+# legitimately needs more than a few KB (no file-upload endpoint exists; the
+# largest bodies are strategy/report JSON and short chat text). A single
+# ASGI-level cap covers every current and future route without having to
+# remember to add a check to each one.
+_MAX_REQUEST_BODY_BYTES = int(
+    _os.environ.get("NAU_MAX_REQUEST_BODY_BYTES", str(2 * 1024 * 1024))
+)
+
+
+@app.middleware("http")
+async def _limit_request_body(request: Request, call_next):
+    content_length = request.headers.get("content-length")
+    if content_length is not None:
+        try:
+            declared = int(content_length)
+        except ValueError:
+            declared = None
+        if declared is not None and declared > _MAX_REQUEST_BODY_BYTES:
+            return Response(status_code=413, content="Request body too large")
+    # Content-Length can be absent (chunked transfer) or simply wrong — a
+    # client is free to declare anything and then stream more. Wrapping
+    # receive() enforces the cap on bytes actually read, not just the
+    # declared header. Raising mid-stream stops a runaway body from being
+    # buffered further (the actual DoS this guards against); the `exceeded`
+    # flag is checked again below the route ran, since several routes wrap
+    # `await request.json()` in a broad `except Exception` and would
+    # otherwise silently turn a 413 into their own generic 400.
+    state = {"received": 0, "exceeded": False}
+    original_receive = request.receive
+
+    async def _capped_receive():
+        message = await original_receive()
+        if message["type"] == "http.request":
+            state["received"] += len(message.get("body") or b"")
+            if state["received"] > _MAX_REQUEST_BODY_BYTES:
+                state["exceeded"] = True
+                raise HTTPException(413, "Request body too large")
+        return message
+
+    request._receive = _capped_receive
+    response = await call_next(request)
+    if state["exceeded"]:
+        return Response(status_code=413, content="Request body too large")
+    return response
 
 
 @app.middleware("http")

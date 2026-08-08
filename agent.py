@@ -14,7 +14,8 @@ düşürdüğü ve `_purpose`suz çağrıların kör alan oluşturduğu buradan 
 bağımsız ve onunla ÇARPILAN ikinci kol),
 [[kesilme_ve_degrade_gorunurlugu]] (`max_tokens` tavanı modelin üslubuna bağlıdır;
 `TruncatedResponse` + tek seferlik büyük-tavan denemesi, ve fallback'lerin
-`degraded` işaretiyle sayılıp ekrana taşınması).
+`degraded` işaretiyle sayılıp ekrana taşınması; `_LEARNED_MAX_TOKENS_LOCK` +
+`max()` yazımı 2026-08-08 DeepR bulgusu).
 Geri kalanı app-specific; wiki kapsamı dışında (LLM parametre önericisi, bir
 Nautilus kavramı değil).
 """
@@ -780,6 +781,15 @@ MAX_TOKENS_IDEA = 1500
 # terse models and still undershoot the next verbose one. Remembering the
 # escalation instead costs one truncated call per (model, purpose) per process
 # and nothing after that.
+# DeepR 2026-08-08 [DÜŞÜK]: unlocked, unlike every other shared mutable
+# dict in this app (state.py's threading.Lock, token_ledger's _LOCK,
+# custom_block_store's _STORE_LOCK). AUTO can run more than one worker
+# thread; two racing to grow the SAME (model, purpose) ceiling could clobber
+# each other's write. Not a crash (dict ops are GIL-safe), just a silent
+# loss of the learned ceiling — the next call for that key falsely
+# truncates again and re-pays the two-call cost the whole mechanism exists
+# to avoid.
+_LEARNED_MAX_TOKENS_LOCK = threading.Lock()
 _LEARNED_MAX_TOKENS: dict[tuple[str, str], int] = {}
 
 
@@ -807,7 +817,8 @@ def _create_message(client, _purpose: str = "", **kwargs):
     _check_llm_cancelled()
     base = int(kwargs.get("max_tokens") or 0)
     key = (current_model(), _purpose or "llm")
-    learned = _LEARNED_MAX_TOKENS.get(key, 0)
+    with _LEARNED_MAX_TOKENS_LOCK:
+        learned = _LEARNED_MAX_TOKENS.get(key, 0)
     if learned > base:
         # This endpoint has already proven it needs the bigger budget. Unused
         # ceiling is free; a truncated response is a wasted call in full.
@@ -840,7 +851,10 @@ def _create_message(client, _purpose: str = "", **kwargs):
         raise TruncatedResponse(
             f"{_purpose or 'llm'}: yanıt max_tokens={bigger} ile de kesildi"
         )
-    _LEARNED_MAX_TOKENS[key] = bigger
+    with _LEARNED_MAX_TOKENS_LOCK:
+        # max(): a concurrent writer for the same key may have already
+        # learned a larger ceiling — never regress it under a race.
+        _LEARNED_MAX_TOKENS[key] = max(bigger, _LEARNED_MAX_TOKENS.get(key, 0))
     return resp
 
 

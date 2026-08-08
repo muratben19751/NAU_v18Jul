@@ -18,7 +18,7 @@ mode (``ComposedStrategy._compute_qty``) for position sizing. Alpha =
 
 Wiki References
 ---------------
-See: [[webapp_module_map]], [[strategy_and_actor]]
+See: [[webapp_module_map]], [[strategy_and_actor]], [[nau_performans_denetimi]]
 """
 
 from __future__ import annotations
@@ -83,14 +83,19 @@ def calc_rsi_series(closes: list[float], period: int = 14) -> list[float]:
 
 
 def sma(values: list[float], period: int) -> list[float]:
+    """O(n) running sum — was O(n*period), re-summing the whole window on
+    every step (flagged by DeepR 2026-08-08 [ORTA]; ema() right below already
+    does the O(n) equivalent). Adding the new value and dropping the one that
+    fell out of the window is the same arithmetic in a different order — a
+    handful of ULPs of drift on long series, not a behavior change."""
     if len(values) < period:
         return []
     result: list[float] = []
-    for i in range(period - 1, len(values)):
-        s = 0.0
-        for j in range(i - period + 1, i + 1):
-            s += values[j]
-        result.append(s / period)
+    window_sum = sum(values[:period])
+    result.append(window_sum / period)
+    for i in range(period, len(values)):
+        window_sum += values[i] - values[i - period]
+        result.append(window_sum / period)
     return result
 
 
@@ -341,11 +346,17 @@ def calc_nadaraya_watson(
     if len(closes) < 30:
         return None
     n = len(closes)
+    # The Gaussian kernel is ~0 past a few bandwidths: at |i-j| = 6*bandwidth
+    # (dist=6) w = exp(-18) ≈ 1.5e-8, far below float noise from the other
+    # terms in this sum. Capping each row's j-range to that radius turns the
+    # O(n²) double loop into O(n * bandwidth) without changing any output —
+    # points outside the radius would have contributed nothing measurable.
+    radius = max(1, math.ceil(6 * bandwidth))
     y_hat: list[float] = []
     for i in range(n):
         weight_sum = 0.0
         value_sum = 0.0
-        for j in range(n):
+        for j in range(max(0, i - radius), min(n, i + radius + 1)):
             dist = (i - j) / bandwidth
             w = math.exp(-0.5 * dist * dist)
             weight_sum += w
@@ -393,10 +404,15 @@ def calc_ewma_vol(closes: list[float], span: int = 10) -> float | None:
     if len(closes) < span + 1:
         return None
     alpha = 2.0 / (span + 1)
-    lr0 = math.log(closes[1] / closes[0]) if closes[0] > 0 else 0.0
+    # log(a/b) needs BOTH sides positive — a bad bar (delisting, a zero/negative
+    # print, or a genuinely negative future price) on either side of the ratio
+    # raised ValueError here; treated as a zero log-return instead, the same
+    # "skip this step" convention the denominator check already used.
+    lr0 = math.log(closes[1] / closes[0]) if closes[0] > 0 and closes[1] > 0 else 0.0
     ewma = lr0 * lr0
     for i in range(2, len(closes)):
-        lr = math.log(closes[i] / closes[i - 1]) if closes[i - 1] > 0 else 0.0
+        prev, cur = closes[i - 1], closes[i]
+        lr = math.log(cur / prev) if prev > 0 and cur > 0 else 0.0
         ewma = alpha * lr * lr + (1 - alpha) * ewma
     return math.sqrt(ewma) if ewma > 0 else None
 

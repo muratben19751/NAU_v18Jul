@@ -10,7 +10,11 @@ actual result fragment (not an error/empty state).
 
 Hits live Bybit APIs and takes ~2 minutes, so it's marked `e2e` and excluded
 from the default test run (see `addopts` in pyproject.toml) — run explicitly
-with `pytest -m e2e`.
+with `pytest -m e2e`. A second DeepR pass (2026-08-08) found this meant it
+never ran ANYWHERE, including CI; `.github/workflows/ci.yml` now has a
+`continue-on-error` step that runs `pytest -m e2e` too, so a break in this
+chain is visible in Actions without a flaky Bybit blip ever blocking the
+pipeline.
 
 Wiki References: [[deepr_skill]]
 """

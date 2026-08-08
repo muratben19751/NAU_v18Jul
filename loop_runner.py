@@ -5,13 +5,19 @@
 
 Wiki References
 ---------------
-Bkz: [[crash_only_design]]
+Bkz: [[crash_only_design]], [[nau_deepr_toplu_sertlestirme_2026_08]]
 
 Idempotent per-iteration reset (state resettable, engine recreated); [[crash_only_design]]'s reflection onto the webapp: each iteration behaves like a new process.
+
+`bars_df` is re-fetched at the top of every iteration (2026-08-08) instead of
+staying pinned to the single frame `/loop/start` was called with — see
+[[nau_deepr_toplu_sertlestirme_2026_08]] and the `webapp_module_map` row for
+this file.
 """
 
 from __future__ import annotations
 
+import logging
 import time
 import traceback
 from datetime import UTC, datetime
@@ -20,8 +26,11 @@ import pandas as pd
 
 from agent import propose_strategy
 from composer import load_catalog
+from data import load_bybit_bars
 from sandbox import run_backtest_guarded, run_legacy_backtest_guarded
 from state import AppState, IterationResult
+
+log = logging.getLogger(__name__)
 
 SLEEP_BETWEEN_ITER = 5.0
 
@@ -85,6 +94,25 @@ def run_loop(
     try:
         while not state.stop_requested:
             iter_id = len(state.iterations) + 1
+
+            # Refresh market data every iteration. `bars_df` used to be the
+            # ONE snapshot captured when /loop/start was clicked (or, worse,
+            # whatever lifespan() loaded at server boot) and never touched
+            # again — a loop left running for days kept backtesting the exact
+            # same stale window forever, unlike every other data path in the
+            # app (backtest/robustness/lab/chart/reports), which all re-fetch
+            # fresh bars per request. On a fetch failure, keep the previous
+            # bars_df (a stale-but-working iteration beats killing the loop).
+            try:
+                bars_df = load_bybit_bars(
+                    symbol=symbol, interval=interval, category=category
+                )
+            except Exception as e:
+                log.warning(
+                    "loop iter %d: bars refresh failed (%s), reusing prior snapshot",
+                    iter_id,
+                    e,
+                )
 
             if mode == "catalog":
                 catalog = load_catalog()

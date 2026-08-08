@@ -5,11 +5,22 @@ maintains its own on-disk parquet cache under ``~/.cache/nautilus_web_app/``.
 
 Wiki References
 ---------------
-Bkz: [[data_engine]], [[data_wranglers]], [[parquet_data_catalog]], [[bar_aggregation_and_type_syntax]], [[index_backtest_via_equity_proxy]]
+Bkz: [[data_engine]], [[data_wranglers]], [[parquet_data_catalog]], [[bar_aggregation_and_type_syntax]], [[index_backtest_via_equity_proxy]], [[nau_performans_denetimi]]
 
 Feeds raw OHLCV frames into `backtest.py`. Cache-tail-forward parquets are the
 local analog of [[parquet_data_catalog]] — same nanosecond-timestamp Parquet idea,
 smaller scope.
+
+`_bybit_rows()` (2026-08-08 DeepR finding) is now TTL-cached (`_BYBIT_ROWS_TTL_S`,
+30s) instead of rebuilding all 72 symbol×category×interval cells on every
+`/data` GET; `refresh_row("bybit", ...)` invalidates it explicitly so a
+forced refresh never hands back the pre-refresh row.
+
+`_external_catalog_source_label()` (2026-08-08 DeepR finding) — the /data
+external-catalog panel's "(NAU_ev)" title was hardcoded even when the
+NAU_ev root was missing and `EQUITY_CATALOG_DIR` (this project's own
+ingest) silently filled the panel instead; the title now reflects which
+root(s) actually contributed data.
 """
 
 from __future__ import annotations
@@ -166,7 +177,7 @@ def _cache_lock(lock_path: Path, timeout: float = 120.0, stale_after: float = 18
                         broke_stale = True
                         deadline = time.monotonic() + 5.0
                         continue
-                    raise TimeoutError(f"lock timeout: {lock_path}")
+                    raise TimeoutError(f"lock timeout: {lock_path}") from None
                 time.sleep(0.1)
         yield
     finally:
@@ -1126,8 +1137,39 @@ def _size_precision_warning(size_precision: int, asset_class: str) -> list[dict]
 
 # ---- Per-source row builders ----------------------------------------------
 
+# DeepR 2026-08-08 [DÜŞÜK]: every /data GET rebuilt all 3 symbols × 3
+# categories × 8 intervals = 72 cells from scratch — a parquet-footer stat
+# (_read_parquet_stats) and a catalog dir-glob + per-file metadata read
+# (nautilus_catalog_bar_state) per cell. Already off the event loop
+# (web/routes/data.py runs this via asyncio.to_thread), so this was never a
+# blocking-request bug, just repeated disk I/O on every page visit/poll. A
+# short TTL — same shape as strategy_studio's `_SYMBOLS_TTL_S`/`BARS_TTL_S` —
+# is enough: a fresh download becomes visible within one TTL window without
+# a page reload, and `refresh_row()`'s force-refresh path is untouched.
+_BYBIT_ROWS_TTL_S = 30.0
+_bybit_rows_cache: tuple[float, list[dict]] | None = None
+_bybit_rows_lock = threading.Lock()
+
 
 def _bybit_rows() -> list[dict]:
+    global _bybit_rows_cache
+    with _bybit_rows_lock:
+        cached = _bybit_rows_cache
+        if cached is not None and time.monotonic() - cached[0] < _BYBIT_ROWS_TTL_S:
+            return cached[1]
+    rows = _bybit_rows_uncached()
+    with _bybit_rows_lock:
+        _bybit_rows_cache = (time.monotonic(), rows)
+    return rows
+
+
+def _invalidate_bybit_rows_cache() -> None:
+    global _bybit_rows_cache
+    with _bybit_rows_lock:
+        _bybit_rows_cache = None
+
+
+def _bybit_rows_uncached() -> list[dict]:
     rows: list[dict] = []
     for symbol in BYBIT_SYMBOLS:
         # Top-level meta uses the linear (default) identity for precision display;
@@ -2082,6 +2124,30 @@ def coverage_range(
     return {"start": str(first)[:10], "end": str(last)[:10]}
 
 
+def _external_catalog_source_label() -> str:
+    """Which root(s) the /data external panel is actually reading from.
+
+    DeepR 2026-08-08 [DÜŞÜK]: the panel title was hardcoded "(NAU_ev)"
+    regardless of which root(s) were live — when only the NAU_ev desk root
+    (D:\\NAU_ev\\... by default, unreachable on most boxes) was configured but
+    missing, the panel wasn't empty as the title implied: EQUITY_CATALOG_DIR
+    (this project's own ingest_equities.py output) silently filled it
+    instead, so the user read "NAU_ev" data that was actually their own
+    local ingest. Same "root exists + has a data/bar dir" test the row
+    scanner uses.
+    """
+    active = [r for r in EXTERNAL_CATALOGS if (r / "data" / "bar").exists()]
+    has_local = EQUITY_CATALOG_DIR in active
+    has_other = any(r != EQUITY_CATALOG_DIR for r in active)
+    if has_local and has_other:
+        return "NAU_ev + local ingest"
+    if has_local:
+        return "local ingest"
+    if has_other:
+        return "NAU_ev"
+    return "not found"
+
+
 def list_catalog(
     index_query: str | None = None,
     index_limit: int | None = 50,
@@ -2121,6 +2187,7 @@ def list_catalog(
         "external_matched": external["matched"],
         "external_query": external_query,
         "external_limit": external_limit,
+        "external_source_label": _external_catalog_source_label(),
     }
 
 
@@ -2150,6 +2217,8 @@ def refresh_row(source: str, **kw) -> dict:
             end=end,
             force_refresh=True,
         )
+        # The TTL cache above must not hand back the pre-refresh row here.
+        _invalidate_bybit_rows_cache()
         # Return the whole row for this symbol so all cells refresh.
         for row in _bybit_rows():
             if row["key"] == symbol:

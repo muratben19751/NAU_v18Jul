@@ -31,7 +31,11 @@ Kullanım (repo kökü, PYTHONUTF8=1):
 Wiki References
 ---------------
 Bkz: [[parquet_data_catalog]], [[index_backtest_via_equity_proxy]],
-[[bar_aggregation_and_type_syntax]]
+[[bar_aggregation_and_type_syntax]], [[nau_deepr_toplu_sertlestirme_2026_08]]
+
+`mirror()` now raises `FlatFileError` (not a bare `IndexError`) for an empty
+``objects`` list (2026-08-08 DeepR finding) — `main()` already guarded this,
+but `mirror()` is public and tests call it directly.
 """
 
 from __future__ import annotations
@@ -193,6 +197,13 @@ def mirror(
     workers: int = DEFAULT_WORKERS,
 ) -> dict[str, int]:
     """Paralel ayna. {indirilen, atlanan, bayt} döner; ilerleme loglanır."""
+    if not objects:
+        # DeepR 2026-08-08 [DÜŞÜK]: objects[0] below raised a bare IndexError
+        # for an empty list — mirror() is public (tests call it directly, not
+        # only through main(), which already guards this case) and the
+        # module's own error contract is FlatFileError, not an unrelated
+        # builtin exception a caller has no reason to expect.
+        raise FlatFileError("mirror(): objects listesi boş — indirilecek dosya yok")
     _preflight(client, bucket, objects[0][0])
     total_bytes = sum(s for _, s in objects)
     done = skipped = 0

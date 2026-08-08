@@ -1,8 +1,11 @@
-{# ctx: defn, run (dict|None), metrics (BacktestMetrics|None), spark (path|None) #}
+{# ctx: defn, run (dict|None), metrics (BacktestMetrics|None), spark (path|None), engine_is_stub #}
 <footer id="footer-metrics"
   {% if run and run.status == "running" %}
     hx-get="/studio/{{ defn.id }}/runs/latest" hx-trigger="every 2s" hx-swap="outerHTML"
   {% endif %}>
+  {% if engine_is_stub %}
+    <span class="sim-badge" title="STUDIO_BACKTEST=nautilus ayarlanmadığı sürece bu ekrandaki tüm sayılar gerçek piyasa verisiyle değil, rastgele üretilen bir simülasyondan geliyor — strateji kararı vermek için kullanılmamalı.">⚠ SİMÜLE — gerçek backtest değil</span>
+  {% endif %}
   {% if run and run.status == "running" %}
     <div class="metric"><span class="k">Status</span><span class="v">Running…</span></div>
     <span class="status"><span class="pulse-dot"></span>

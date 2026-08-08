@@ -92,6 +92,11 @@
            refreshes each minute — an LLM call is never faster than that matters. #}
         <div id="token-badge-host" hx-get="/tokens/badge"
              hx-trigger="load, every 60s" hx-swap="innerHTML"></div>
+        {% if auth_enabled() %}
+        <form method="post" action="/logout" class="logout-form">
+          <button type="submit" class="logout-btn">Logout</button>
+        </form>
+        {% endif %}
       </div>
     </aside>
 

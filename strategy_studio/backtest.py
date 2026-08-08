@@ -39,6 +39,14 @@ rule ids. The studio surfaces that as a failed run.
 Wiki References
 ---------------
 Bkz: [[strategy_studio]], [[nau_guvenlik_dayaniklilik_duzeltmeleri]], [[backtesting_guide]], [[portfolio]]
+
+``StubBacktestAdapter`` being the default everywhere is a known, load-bearing
+tradeoff (see module docstring above) — but until 2026-08-08 nothing in the UI
+told an operator which engine produced the numbers on screen. The route layer
+(``web/routes/strategy_studio.py``, ``_ctx()``) now derives an
+``engine_is_stub`` flag from ``isinstance(ADAPTER, StubBacktestAdapter)`` and
+every template that renders a metric shows a "SİMÜLE" badge when it is set —
+see [[strategy_studio]] for the full disclosure design.
 """
 
 from __future__ import annotations

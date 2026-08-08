@@ -145,7 +145,9 @@ class TestManualSharpe:
             / float(np.sqrt(np.mean(np.square(np.minimum(returns, 0.0)))))
             * math.sqrt(1764)
         )
-        assert _sortino_manual(list(equity), annualization=1764) == pytest.approx(expected)
+        assert _sortino_manual(list(equity), annualization=1764) == pytest.approx(
+            expected
+        )
 
     def test_metrics_uses_365_annualization(self):
         """metrics['annualization'] must be 365 and sharpe_nautilus is separate."""
@@ -259,6 +261,86 @@ class TestFeeConstants:
         assert metrics["slippage_estimated_total"] == pytest.approx(1.5)
         assert metrics["slippage_total"] == pytest.approx(1.5)
         assert metrics["slippage_fill_count"] == 2
+
+    def test_slippage_computation_failure_is_logged_not_silent(self, caplog):
+        """DeepR 2026-08-08 [ORTA]: this except used to be a bare `pass` — the
+        exact failure class the surrounding comment warns about ($0 slippage
+        reading as 'none' instead of 'the audit estimate broke')."""
+        from unittest.mock import MagicMock
+
+        from backtest import _metrics
+
+        positions = _fake_positions_df([10.0, -2.0])
+        engine = MagicMock()
+        engine.portfolio.analyzer.get_performance_stats_returns.return_value = {}
+        engine.portfolio.analyzer.get_performance_stats_general.return_value = {}
+        engine.portfolio.analyzer.currencies = []
+        engine.trader.generate_order_fills_report.side_effect = RuntimeError("boom")
+
+        with caplog.at_level(logging.WARNING, logger="backtest"):
+            metrics = _metrics(engine, positions, slippage_model_active=True)
+
+        assert metrics["slippage_total"] == 0.0
+        assert any(
+            "slippage computation failed" in r.message.lower() for r in caplog.records
+        )
+
+    def test_commission_computation_failure_is_logged_not_silent(
+        self, monkeypatch, caplog
+    ):
+        from unittest.mock import MagicMock
+
+        from backtest import _metrics
+
+        positions = _fake_positions_df([10.0, -2.0])
+        engine = MagicMock()
+        engine.portfolio.analyzer.get_performance_stats_returns.return_value = {}
+        engine.portfolio.analyzer.get_performance_stats_general.return_value = {}
+        engine.portfolio.analyzer.currencies = []
+        engine.trader.generate_order_fills_report.return_value = pd.DataFrame()
+
+        def _boom(self, *a, **k):
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr(pd.Series, "apply", _boom)
+
+        with caplog.at_level(logging.WARNING, logger="backtest"):
+            metrics = _metrics(engine, positions)
+
+        assert metrics["commission_total"] == 0.0
+        assert any(
+            "commission_total computation failed" in r.message.lower()
+            for r in caplog.records
+        )
+
+    def test_duration_computation_failure_is_logged_not_silent(
+        self, monkeypatch, caplog
+    ):
+        from unittest.mock import MagicMock
+
+        import backtest
+        from backtest import _metrics
+
+        positions = _fake_positions_df([10.0, -2.0])
+        engine = MagicMock()
+        engine.portfolio.analyzer.get_performance_stats_returns.return_value = {}
+        engine.portfolio.analyzer.get_performance_stats_general.return_value = {}
+        engine.portfolio.analyzer.currencies = []
+        engine.trader.generate_order_fills_report.return_value = pd.DataFrame()
+
+        def _boom(*a, **k):
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr(backtest.pd, "to_numeric", _boom)
+
+        with caplog.at_level(logging.WARNING, logger="backtest"):
+            metrics = _metrics(engine, positions)
+
+        assert math.isnan(metrics["avg_duration_mins"])
+        assert any(
+            "avg_duration_mins computation failed" in r.message.lower()
+            for r in caplog.records
+        )
 
 
 # ---------------------------------------------------------------------------

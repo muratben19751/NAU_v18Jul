@@ -125,3 +125,60 @@ def test_corrupt_registry_leaves_the_catalog_untouched(store, tmp_path, monkeypa
 
     assert json.loads(catalog_file.read_text(encoding="utf-8")) == [spec]
     assert [s.id for s in catalog] == ["s-corrupt"]
+
+
+# ---------------------------------------------------------------------------
+# _read_registry() mtime/size cache (DeepR 2026-08-08 [ORTA])
+# ---------------------------------------------------------------------------
+
+
+def test_registry_is_not_reread_when_the_file_is_unchanged(store, monkeypatch):
+    calls = {"n": 0}
+    real_read_text = type(store.REGISTRY_FILE).read_text
+
+    def _counting_read_text(self, *a, **k):
+        calls["n"] += 1
+        return real_read_text(self, *a, **k)
+
+    monkeypatch.setattr(type(store.REGISTRY_FILE), "read_text", _counting_read_text)
+
+    store.list_custom()
+    store.list_custom()
+    store.list_custom()
+
+    assert calls["n"] == 1, "unchanged registry.json was re-read from disk"
+
+
+def test_registry_cache_invalidates_on_save(store):
+    before = [b["name"] for b in store.list_custom()]
+    assert before == ["blk_one"]
+
+    store.save_custom("blk_two", {"label": "Two", "params": {}}, "def evaluate(): ...")
+
+    after = sorted(b["name"] for b in store.list_custom())
+    assert after == ["blk_one", "blk_two"], "cache served stale content after a save"
+
+
+def test_registry_cache_does_not_leak_across_different_registry_files(
+    tmp_path, monkeypatch
+):
+    """Two stores pointed at DIFFERENT files must never see each other's
+    cached content, even if their (mtime_ns, size) happened to collide."""
+    import custom_block_store as cbs
+
+    dir_a, dir_b = tmp_path / "a", tmp_path / "b"
+    dir_a.mkdir()
+    dir_b.mkdir()
+
+    monkeypatch.setattr(cbs, "STORE_DIR", dir_a)
+    monkeypatch.setattr(cbs, "REGISTRY_FILE", dir_a / "registry.json")
+    cbs.save_custom("only_in_a", {"label": "A", "params": {}}, "def evaluate(): ...")
+    names_a = [b["name"] for b in cbs.list_custom()]
+
+    monkeypatch.setattr(cbs, "STORE_DIR", dir_b)
+    monkeypatch.setattr(cbs, "REGISTRY_FILE", dir_b / "registry.json")
+    cbs.save_custom("only_in_b", {"label": "B", "params": {}}, "def evaluate(): ...")
+    names_b = [b["name"] for b in cbs.list_custom()]
+
+    assert names_a == ["only_in_a"]
+    assert names_b == ["only_in_b"]

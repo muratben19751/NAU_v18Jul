@@ -82,7 +82,7 @@ def _coerce(value: Any, spec: ParamSpec, rule_id: str, name: str) -> Any:
     except (TypeError, ValueError):
         raise CompileError(
             f"param '{name}' must be {spec.type}, got {value!r}", rule_id, name
-        )
+        ) from None
     if spec.type in ("int", "float"):
         if spec.min is not None and v < spec.min:
             raise CompileError(
@@ -154,7 +154,9 @@ def _risk_value(p: Param, name: str) -> float:
     try:
         return float(p.value)
     except (TypeError, ValueError):
-        raise CompileError(f"risk param '{name}' must be numeric", "risk", name)
+        raise CompileError(
+            f"risk param '{name}' must be numeric", "risk", name
+        ) from None
 
 
 # ── public API ───────────────────────────────────────────────────

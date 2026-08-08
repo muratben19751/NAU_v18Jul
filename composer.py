@@ -13,9 +13,14 @@ Aligned with Nautilus wiki (Strategy & Actor + Order Flow Pipeline):
 
 Wiki References
 ---------------
-See: [[strategy_and_actor]], [[order_flow_pipeline]]
+See: [[strategy_and_actor]], [[order_flow_pipeline]], [[nau_deepr_toplu_sertlestirme_2026_08]]
 
 Blocks emit signals; the composer wires them into a Nautilus `Strategy`. Order submission enters exactly into [[order_flow_pipeline]] (`submit_order` → OrderEmulator/ExecutionAlgorithms/RiskEngine/Adapter).
+
+`_current_equity`'s constant (`STARTING_CASH`) fallback used to be silent and
+uncached (2026-08-08 DeepR finding); it now logs once and caches into
+`_equity_mode="constant"` so the rest of the run short-circuits past both
+failing real-data paths instead of retrying them every candle.
 """
 
 from __future__ import annotations
@@ -1766,6 +1771,7 @@ class ComposedStrategy(Strategy):
         # _current_equity fast path: the first successful strategy is used directly
         # by subsequent ones ("portfolio" | "balances" | None=not yet known)
         self._equity_mode: str | None = None
+        self._equity_constant_value: float = 0.0  # set when _equity_mode=="constant"
         self._equity_ccy: str | None = None  # settlement currency code, resolved once
         self._prev_state: dict = {}
         # Per-block Nautilus indicators, keyed by block index.
@@ -1925,6 +1931,11 @@ class ComposedStrategy(Strategy):
         the same value in other units, so summing them would double count.
         """
         venue = self._iid_obj.venue
+        # Terminal fallback already determined on an earlier candle — return
+        # the cached constant directly, skip re-trying two paths already
+        # known to fail on every remaining candle of the run.
+        if self._equity_mode == "constant":
+            return self._equity_constant_value
         # 1) Portfolio.equity(venue) — v2 native path
         if self._equity_mode in (None, "portfolio"):
             try:
@@ -1946,8 +1957,8 @@ class ComposedStrategy(Strategy):
                         return float(
                             money.as_double() if hasattr(money, "as_double") else money
                         )
-            except Exception:
-                pass
+            except Exception as e:
+                self.log.warning(f"_current_equity: portfolio.equity() failed: {e}")
         # 2) Scan account balances — USDT/USD preferred, then the first found
         try:
             account = self.portfolio.account(venue)
@@ -1990,14 +2001,28 @@ class ComposedStrategy(Strategy):
                                 return result
                             except Exception:
                                 continue
-        except Exception:
-            pass
+        except Exception as e:
+            self.log.warning(f"_current_equity: balance scan failed: {e}")
         # L43: fallback from a single source (app_constants.STARTING_CASH) — a
         # copied constant could silently diverge. app_constants is an independent
         # module, no circular import risk.
+        #
+        # Both real paths failed (or returned nothing usable): cache the
+        # constant and the "constant" mode itself, so (a) every remaining
+        # candle short-circuits straight past both failing paths above instead
+        # of re-attempting them, and (b) this degradation is logged exactly
+        # once instead of staying invisible — the equity/max_dd/Sharpe this
+        # run reports from here on are NOT real P&L.
         from app_constants import STARTING_CASH
 
-        return float(STARTING_CASH)
+        self._equity_mode = "constant"
+        self._equity_constant_value = float(STARTING_CASH)
+        self.log.warning(
+            f"_current_equity: portfolio.equity() and balance scan both failed — "
+            f"falling back to constant STARTING_CASH={STARTING_CASH}; equity/"
+            f"max_dd/Sharpe for the rest of this run will not reflect real P&L"
+        )
+        return self._equity_constant_value
 
     def _compute_qty(self, price: float) -> float:
         mode = self.spec.trade_size_mode

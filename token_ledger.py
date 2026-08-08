@@ -6,7 +6,9 @@ See: [[webapp_module_map]] (bu modülün rolü + `_create_message` ledger-hook'u
 [[crash_only_design]] (best-effort append; ledger I/O bir LLM çağrısını asla
 bozamaz — restart'ta veri kaybolmasın diye diske yazılır),
 [[llm_maliyet_kaldiraclari]] (bu defterden çıkarılan maliyet denetimi: kalem
-kırılımı, model kıyası, çağrı-sınıfı başına cache oranı).
+kırılımı, model kıyası, çağrı-sınıfı başına cache oranı), [[nau_performans_denetimi]]
+(`_parsed_records` — `/tokens/badge`'in 60sn'de bir tetiklediği tam-dosya
+yeniden okuma/parse maliyeti, 2026-08-08).
 
 Every LLM call in the app funnels through ``agent._create_message`` (and the four
 narrative/summary helpers that were routed through it). Each successful call
@@ -184,6 +186,52 @@ def record(model: str, usage, purpose: str = "") -> None:
         logging.getLogger(__name__).warning("token_ledger.record failed", exc_info=True)
 
 
+# Perf (DeepR 2026-08-08 [ORTA]): incremental JSONL parse cache. `summary()`
+# used to re-read + re-parse the WHOLE ledger from scratch every call — and
+# `/tokens/badge` (polled every 60s per open tab, plus on every page load)
+# called it TWICE (once `since=SERVER_STARTED_AT`, once all-time), so every
+# poll paid for two full-file scans of a file that only ever grows via
+# record()'s append. Cached per path as (bytes_consumed, parsed records);
+# each call only reads bytes appended since the last call. Only consumed up
+# to the last confirmed '\n' — a line still being written concurrently (see
+# record()'s comment on torn lines) is left unconsumed for the NEXT call
+# instead of being permanently skipped once its offset is passed.
+_PARSE_CACHE: dict[Path, tuple[int, list[dict]]] = {}
+_PARSE_CACHE_LOCK = threading.Lock()
+
+
+def _parsed_records(p: Path) -> list[dict]:
+    with _PARSE_CACHE_LOCK:
+        offset, records = _PARSE_CACHE.get(p, (0, []))
+        try:
+            size = p.stat().st_size
+        except OSError:
+            return records
+        if size < offset:
+            # Ledger shrank (rotated/replaced/truncated) — nothing here yet
+            # deletes/rotates it, but starting over beats silently under-
+            # counting or crashing on a negative-length read.
+            offset, records = 0, []
+        if size > offset:
+            with open(p, "rb") as f:
+                f.seek(offset)
+                chunk = f.read()
+            last_nl = chunk.rfind(b"\n")
+            if last_nl != -1:
+                usable = chunk[: last_nl + 1]
+                offset += len(usable)
+                for ln in usable.decode("utf-8", errors="ignore").splitlines():
+                    ln = ln.strip()
+                    if not ln:
+                        continue
+                    try:
+                        records.append(json.loads(ln))
+                    except Exception:
+                        continue  # malformed line — permanently skipped, as before
+        _PARSE_CACHE[p] = (offset, records)
+        return records
+
+
 def summary(path: Path | None = None, *, since: str | None = None) -> dict:
     """Fold the ledger into a per-model breakdown.
 
@@ -231,72 +279,64 @@ def summary(path: Path | None = None, *, since: str | None = None) -> dict:
             "last_ts": None,
         }
     try:
-        with open(p, encoding="utf-8") as f:
-            for ln in f:
-                ln = ln.strip()
-                if not ln:
-                    continue
-                try:
-                    rec = json.loads(ln)
-                except Exception:
-                    continue  # torn line from a concurrent append — skip
-                if since and (rec.get("ts") or "") < since:
-                    continue
-                model = rec.get("model") or "unknown"
-                m = models.setdefault(
-                    model,
-                    {
-                        "calls": 0,
-                        **{fld: 0 for fld in _FIELDS},
-                        "total": 0,
-                        "provider_cost_usd": 0.0,
-                        "provider_cost_calls": 0,
-                        "_estimated_missing_cost_usd": 0.0,
-                        "_unpriced_missing_calls": 0,
-                    },
-                )
-                m["calls"] += 1
-                grand["calls"] += 1
-                for fld in _FIELDS:
-                    v = int(rec.get(fld) or 0)
-                    m[fld] += v
-                    m["total"] += v
-                    grand[fld] += v
-                    grand["total"] += v
-                # TTL split rides along for pricing only — it is a breakdown of
-                # cache_write, so it must NOT be added into "total" again.
-                for fld in ("cache_write_5m", "cache_write_1h"):
-                    v = int(rec.get(fld) or 0)
-                    if v:
-                        m[fld] = m.get(fld, 0) + v
-                reported = rec.get("provider_cost_usd")
-                try:
-                    reported = float(reported) if reported is not None else None
-                except (TypeError, ValueError):
-                    reported = None
-                if reported is not None and math.isfinite(reported) and reported >= 0:
-                    m["provider_cost_usd"] += reported
-                    m["provider_cost_calls"] += 1
-                    grand["provider_cost_usd"] += reported
-                    grand["provider_cost_calls"] += 1
+        for rec in _parsed_records(p):
+            if since and (rec.get("ts") or "") < since:
+                continue
+            model = rec.get("model") or "unknown"
+            m = models.setdefault(
+                model,
+                {
+                    "calls": 0,
+                    **{fld: 0 for fld in _FIELDS},
+                    "total": 0,
+                    "provider_cost_usd": 0.0,
+                    "provider_cost_calls": 0,
+                    "_estimated_missing_cost_usd": 0.0,
+                    "_unpriced_missing_calls": 0,
+                },
+            )
+            m["calls"] += 1
+            grand["calls"] += 1
+            for fld in _FIELDS:
+                v = int(rec.get(fld) or 0)
+                m[fld] += v
+                m["total"] += v
+                grand[fld] += v
+                grand["total"] += v
+            # TTL split rides along for pricing only — it is a breakdown of
+            # cache_write, so it must NOT be added into "total" again.
+            for fld in ("cache_write_5m", "cache_write_1h"):
+                v = int(rec.get(fld) or 0)
+                if v:
+                    m[fld] = m.get(fld, 0) + v
+            reported = rec.get("provider_cost_usd")
+            try:
+                reported = float(reported) if reported is not None else None
+            except (TypeError, ValueError):
+                reported = None
+            if reported is not None and math.isfinite(reported) and reported >= 0:
+                m["provider_cost_usd"] += reported
+                m["provider_cost_calls"] += 1
+                grand["provider_cost_usd"] += reported
+                grand["provider_cost_calls"] += 1
+            else:
+                line_counts = {
+                    fld: int(rec.get(fld) or 0)
+                    for fld in (*_FIELDS, "cache_write_5m", "cache_write_1h")
+                }
+                estimate = cost_usd(line_counts, model)
+                if estimate is None:
+                    m["_unpriced_missing_calls"] += 1
+                    grand["_unpriced_missing_calls"] += 1
                 else:
-                    line_counts = {
-                        fld: int(rec.get(fld) or 0)
-                        for fld in (*_FIELDS, "cache_write_5m", "cache_write_1h")
-                    }
-                    estimate = cost_usd(line_counts, model)
-                    if estimate is None:
-                        m["_unpriced_missing_calls"] += 1
-                        grand["_unpriced_missing_calls"] += 1
-                    else:
-                        m["_estimated_missing_cost_usd"] += estimate
-                        grand["_estimated_missing_cost_usd"] += estimate
-                ts = rec.get("ts")
-                if ts:
-                    if first_ts is None or ts < first_ts:
-                        first_ts = ts
-                    if last_ts is None or ts > last_ts:
-                        last_ts = ts
+                    m["_estimated_missing_cost_usd"] += estimate
+                    grand["_estimated_missing_cost_usd"] += estimate
+            ts = rec.get("ts")
+            if ts:
+                if first_ts is None or ts < first_ts:
+                    first_ts = ts
+                if last_ts is None or ts > last_ts:
+                    last_ts = ts
     except Exception:
         logging.getLogger(__name__).warning(
             "token_ledger.summary read failed", exc_info=True

@@ -137,7 +137,7 @@ class TestDiscoverIndexTickersKwarg:
 
         src = (
             pathlib.Path(__file__).resolve().parents[1] / "web" / "routes" / "data.py"
-        ).read_text()
+        ).read_text(encoding="utf-8")
         assert "force_refresh=" not in src, (
             "force_refresh= kwarg still present in web/routes/data.py"
         )
@@ -193,6 +193,51 @@ class TestCurrentEquity:
         portfolio_mock.account.return_value = None
 
         assert self._call(self._strat(portfolio_mock)) == float(STARTING_CASH)
+
+    def test_fallback_to_constant_is_logged_and_cached(self):
+        """DeepR 2026-08-08 [YÜKSEK]: the constant fallback was silent (no log)
+        and never cached into _equity_mode, so every remaining candle of a
+        possibly years-long run re-attempted both failing paths. Now it must
+        warn once and set _equity_mode so later calls short-circuit."""
+        from app_constants import STARTING_CASH
+
+        portfolio_mock = MagicMock()
+        portfolio_mock.equity.return_value = None
+        portfolio_mock.account.return_value = None
+        strat = self._strat(portfolio_mock)
+
+        result = self._call(strat)
+
+        assert result == float(STARTING_CASH)
+        assert strat._equity_mode == "constant"
+        assert strat._equity_constant_value == float(STARTING_CASH)
+        assert strat.log.warning.called
+
+    def test_cached_constant_mode_skips_the_failing_paths_entirely(self):
+        """Once _equity_mode=='constant', the method must not touch
+        portfolio.equity()/account() again — it returns the cached value."""
+        portfolio_mock = MagicMock()
+        strat = self._strat(portfolio_mock, equity_mode="constant")
+        strat._equity_constant_value = 12_345.0
+
+        result = self._call(strat)
+
+        assert result == 12_345.0
+        portfolio_mock.equity.assert_not_called()
+        portfolio_mock.account.assert_not_called()
+
+    def test_portfolio_equity_exception_is_logged_not_swallowed(self):
+        """The portfolio.equity() except used to be a bare `pass` — a broken
+        v2 native path failed silently on every candle."""
+        portfolio_mock = MagicMock()
+        portfolio_mock.equity.side_effect = RuntimeError("boom")
+        portfolio_mock.account.return_value = None
+        strat = self._strat(portfolio_mock)
+
+        self._call(strat)
+
+        assert strat.log.warning.called
+        assert "portfolio.equity()" in strat.log.warning.call_args_list[0].args[0]
 
 
 class TestOnBarBlockPartition:

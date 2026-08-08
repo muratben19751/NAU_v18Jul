@@ -72,7 +72,7 @@ def _coerce_bounded(value: str, spec: ParamSpec, name: str):
         else:
             v = float(value) if spec.type == "float" else str(value)
     except (TypeError, ValueError):
-        raise MutationError(f"'{name}' must be {spec.type}, got {value!r}")
+        raise MutationError(f"'{name}' must be {spec.type}, got {value!r}") from None
     if spec.type in ("int", "float"):
         if spec.min is not None and v < spec.min:
             raise MutationError(f"'{name}'={v} below min {spec.min}")
@@ -112,7 +112,7 @@ def update_rule_param(
         try:
             new = float(value)
         except (TypeError, ValueError):
-            raise MutationError(f"target must be numeric, got {value!r}")
+            raise MutationError(f"target must be numeric, got {value!r}") from None
         rule.target = Param(value=new, optimize=rule.target.optimize)
         return rule
     known = {p.name: p for p in spec.params}
@@ -170,7 +170,7 @@ def update_risk(defn: StrategyDefinition, name: str, value: str) -> None:
     try:
         v = float(value)
     except (TypeError, ValueError):
-        raise MutationError(f"'{name}' must be numeric, got {value!r}")
+        raise MutationError(f"'{name}' must be numeric, got {value!r}") from None
     lo, hi = _RISK_BOUNDS[name]
     if not (lo <= v <= hi):
         raise MutationError(f"'{name}'={v} outside [{lo}, {hi}]")
@@ -204,7 +204,7 @@ def _default_range(p: Param) -> OptimizeRange:
     try:
         v = float(p.value)
     except (TypeError, ValueError):
-        raise MutationError("only numeric params can be optimized")
+        raise MutationError("only numeric params can be optimized") from None
     lo, hi = sorted((v * 0.5, v * 1.5)) if v != 0 else (-1.0, 1.0)
     step = round((hi - lo) / 6, 6) or 1.0
     if isinstance(p.value, int) and not isinstance(p.value, bool):
@@ -229,7 +229,7 @@ def set_optimize_range(
             min=float(min_v), step=float(step_v), max=float(max_v)
         )
     except (TypeError, ValueError) as e:
-        raise MutationError(f"invalid range: {e}")
+        raise MutationError(f"invalid range: {e}") from e
 
 
 def set_regime_else(defn: StrategyDefinition, mode: str) -> None:
@@ -284,7 +284,7 @@ def update_allocation(defn: StrategyDefinition, name: str, value: str) -> None:
         try:
             v = int(float(value))
         except (TypeError, ValueError):
-            raise MutationError("allocation.top_n must be an integer")
+            raise MutationError("allocation.top_n must be an integer") from None
         if v < 1:
             raise MutationError("allocation.top_n must be >= 1")
         defn.allocation.top_n = v

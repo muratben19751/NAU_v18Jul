@@ -63,7 +63,7 @@ async def wiki_path(request: Request, rel_path: str):
     try:
         candidate.relative_to(WIKI_ROOT.resolve())
     except ValueError:
-        raise HTTPException(404, "Path escapes wiki root")
+        raise HTTPException(404, "Path escapes wiki root") from None
     if not candidate.exists() or candidate.suffix != ".md":
         raise HTTPException(404, f"No wiki page at {rel_path}")
     title = candidate.stem.replace("_", " ")

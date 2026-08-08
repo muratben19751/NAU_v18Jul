@@ -292,6 +292,10 @@ def _ctx(request: Request, defn: StrategyDefinition, **extra) -> dict:
         "other_symbols": other_symbols,
         "external_symbols": external_symbols,
         "timeframe_choices": timeframe_choices(),
+        # StubBacktestAdapter is the default engine (no market data needed) —
+        # every template that renders a metric MUST be able to flag it as
+        # simulated, or a random-walk number reads as a real backtest result.
+        "engine_is_stub": isinstance(ADAPTER, StubBacktestAdapter),
         **extra,
     }
 
@@ -427,7 +431,7 @@ def _load_working(strategy_id: str) -> StrategyDefinition:
     try:
         defn, _ = store.working_copy(strategy_id)
     except KeyError:
-        raise HTTPException(404, f"strategy '{strategy_id}' not found")
+        raise HTTPException(404, f"strategy '{strategy_id}' not found") from None
     return defn
 
 
@@ -458,7 +462,7 @@ def studio_page(request: Request, strategy_id: str, version: int | None = None):
         else:
             defn, is_draft = store.working_copy(strategy_id)
     except KeyError:
-        raise HTTPException(404, f"strategy '{strategy_id}' not found")
+        raise HTTPException(404, f"strategy '{strategy_id}' not found") from None
     run = store.latest_run(strategy_id)
     metrics = spark = None
     if run and run["status"] == "done" and run["metrics"]:
@@ -494,7 +498,7 @@ def canvas_page(request: Request, strategy_id: str):
     try:
         defn, is_draft = store.working_copy(strategy_id)
     except KeyError:
-        raise HTTPException(404, f"strategy '{strategy_id}' not found")
+        raise HTTPException(404, f"strategy '{strategy_id}' not found") from None
     # Same three values studio_page computes for the footer; the canvas renders
     # that same partial compactly in its header rather than duplicating it.
     run = store.latest_run(strategy_id)
@@ -643,7 +647,7 @@ def route_edit_rule(
             update_rule_param(defn, rule_id, param, value)
             block, *_ = find_rule(defn, rule_id)
     except RuleNotFound as e:
-        raise HTTPException(404, str(e))
+        raise HTTPException(404, str(e)) from e
     except MutationError as e:
         return PlainTextResponse(str(e), status_code=422)
     return _render_block(request, defn, block)
@@ -655,7 +659,7 @@ def route_delete_rule(request: Request, strategy_id: str, rule_id: str):
         with _editing(strategy_id) as defn:
             block = delete_rule(defn, rule_id)
     except RuleNotFound as e:
-        raise HTTPException(404, str(e))
+        raise HTTPException(404, str(e)) from e
     except MutationError as e:
         return PlainTextResponse(str(e), status_code=422)
     return _render_block(request, defn, block)
@@ -845,7 +849,7 @@ def route_backtest(
     try:
         defn, is_draft = store.working_copy(strategy_id)
     except KeyError:
-        raise HTTPException(404, f"strategy '{strategy_id}' not found")
+        raise HTTPException(404, f"strategy '{strategy_id}' not found") from None
     # Optional [from, to] window (either side may be blank = open-ended).
     # Validate BEFORE the task starts — a bad date should not consume a run.
     date_from, date_to = date_from.strip(), date_to.strip()
@@ -881,11 +885,11 @@ def route_data_range(strategy_id: str):
     try:
         defn, _ = store.working_copy(strategy_id)
     except KeyError:
-        raise HTTPException(404, f"strategy '{strategy_id}' not found")
+        raise HTTPException(404, f"strategy '{strategy_id}' not found") from None
     try:
         compiled = compile_strategy(defn)
     except CompileError as e:
-        raise HTTPException(422, str(e))
+        raise HTTPException(422, str(e)) from e
     from data import coverage_range
 
     firsts: list[str] = []
@@ -1040,7 +1044,7 @@ def route_opt_toggle(
             toggle_optimize(defn, owner, param)
             block = _block_of_owner(defn, owner)
     except RuleNotFound as e:
-        raise HTTPException(404, str(e))
+        raise HTTPException(404, str(e)) from e
     except MutationError as e:
         return PlainTextResponse(str(e), status_code=422)
     html = _render_side(request, defn)
@@ -1073,7 +1077,7 @@ def route_opt_range(
         with _editing(strategy_id) as defn:
             set_optimize_range(defn, owner, param, min_v, step_v, max_v)
     except RuleNotFound as e:
-        raise HTTPException(404, str(e))
+        raise HTTPException(404, str(e)) from e
     except MutationError as e:
         return PlainTextResponse(str(e), status_code=422)
     return HTMLResponse(_render_side(request, defn))
@@ -1094,7 +1098,7 @@ def route_optimize(
     try:
         defn, is_draft = store.working_copy(strategy_id)
     except KeyError:
-        raise HTTPException(404, f"strategy '{strategy_id}' not found")
+        raise HTTPException(404, f"strategy '{strategy_id}' not found") from None
     sweep = defn.sweep_size()
     if sweep == 0:
         return PlainTextResponse(
@@ -1470,7 +1474,7 @@ def route_deploy_modal(request: Request, strategy_id: str):
     try:
         defn = store.load(strategy_id)  # latest SAVED version only
     except KeyError:
-        raise HTTPException(404, f"strategy '{strategy_id}' not found")
+        raise HTTPException(404, f"strategy '{strategy_id}' not found") from None
     # Show exactly what the gate will judge — the run that measured THIS saved
     # definition — so the modal cannot promise a pass the deploy then refuses.
     metrics = _gate_baseline(defn)
@@ -1521,7 +1525,7 @@ def route_deploy(
     try:
         defn = store.load(strategy_id)  # deploy compiles the SAVED version
     except KeyError:
-        raise HTTPException(404, f"strategy '{strategy_id}' not found")
+        raise HTTPException(404, f"strategy '{strategy_id}' not found") from None
     if environment == "live" and confirm_name.strip() != defn.name:
         return PlainTextResponse(
             "live deploy requires typing the exact strategy name to confirm",

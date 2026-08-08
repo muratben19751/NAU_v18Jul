@@ -25,6 +25,12 @@ neden 1 hisseye sabitlemeyip `percent_equity`'ye geçiriyor, komisyon eşiği,
 [[nau_performans_denetimi]] (`_thin_curves` — oturum loguna yazılan equity
 eğrilerinin indirgenmesi; ham hâli olay başına 3,5 MB yazıyordu),
 [[webapp_module_map]], [[backtesting_guide]], [[strategy_and_actor]]
+
+`_robustness_passed`'in fail-closed `excess_return_fraction`/`max_dd_p95`
+kuralları (a6ddb5a, 2026-08-07) ile `tests/test_regression_anchors_high.py`
+fixture'ının senkronsuzluğu — DeepR'ın yakaladığı 2 test FAIL — 2026-08-08'de
+düzeltildi; kapı mantığı değişmedi, yalnız test fixture'ı güncellendi. Bkz.
+[[auto_kapi_ve_geri_bildirim]] ve [[nau_deepr_toplu_sertlestirme_2026_08]].
 """
 
 from __future__ import annotations

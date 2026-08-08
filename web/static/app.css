@@ -164,6 +164,13 @@ html, body {
 .token-badge .tb-v { color: var(--text-secondary); font-weight: 600; }
 .token-badge .tb-usd { color: var(--accent); font-weight: 600; }
 .token-badge .tb-all { width: 100%; opacity: .75; }
+.logout-form { margin-top: 6px; padding-top: 6px; border-top: 1px solid var(--bg-700); }
+.logout-btn {
+  width: 100%; background: none; border: 1px solid var(--border);
+  border-radius: 5px; padding: 4px 0; font-size: 10px; letter-spacing: .06em;
+  text-transform: uppercase; color: var(--text-muted); cursor: pointer;
+}
+.logout-btn:hover { color: var(--text-secondary); border-color: var(--text-muted); }
 
 /* min-width:0 is required: a grid item's default is min-width:auto — wide
    tables (reports 26 columns ~2400px) were stretching the whole page sideways.

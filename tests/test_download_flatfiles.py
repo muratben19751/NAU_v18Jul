@@ -122,3 +122,14 @@ def test_missing_credentials_is_an_actionable_error(monkeypatch):
     monkeypatch.delenv("MASSIVE_S3_SECRET", raising=False)
     with pytest.raises(dff.FlatFileError, match="MASSIVE_S3_KEY"):
         dff.make_client()
+
+
+def test_mirror_with_no_objects_raises_flatfileerror_not_indexerror(tmp_path: Path):
+    """DeepR 2026-08-08 [DÜŞÜK]: `objects[0][0]` used to raise a bare
+    IndexError for an empty list — mirror() is public (called directly here,
+    not only through main(), which has its own separate empty-list guard)
+    and the module's error contract is FlatFileError."""
+    client = FakeS3([])
+
+    with pytest.raises(dff.FlatFileError, match="objects listesi boş"):
+        dff.mirror(client, [], tmp_path, workers=1)

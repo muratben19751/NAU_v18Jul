@@ -75,8 +75,12 @@ def test_window_benchmark_uses_exact_oos_slice():
 
 
 def test_symbol_iteration_id_is_stable():
-    assert _stable_symbol_iteration_id("SPY.ARCA") == _stable_symbol_iteration_id("SPY.ARCA")
-    assert _stable_symbol_iteration_id("SPY.ARCA") != _stable_symbol_iteration_id("QQQ.NASDAQ")
+    assert _stable_symbol_iteration_id("SPY.ARCA") == _stable_symbol_iteration_id(
+        "SPY.ARCA"
+    )
+    assert _stable_symbol_iteration_id("SPY.ARCA") != _stable_symbol_iteration_id(
+        "QQQ.NASDAQ"
+    )
 
 
 # ---------------------------------------------------------------------------

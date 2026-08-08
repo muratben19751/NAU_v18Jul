@@ -467,6 +467,12 @@
   background:var(--opt);margin-right:6px;animation:pulse 1.4s infinite}
 .studio-embed .status.err{color:var(--short);max-width:50vw;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 
+.studio-embed .sim-badge{
+  display:inline-flex;align-items:center;gap:4px;font-size:.68rem;font-weight:700;
+  letter-spacing:.02em;color:#1a1206;background:var(--opt);
+  border-radius:5px;padding:3px 8px;margin-right:8px;white-space:nowrap;
+}
+
 /* ── Phase 4 additions ─────────────────── */
 .studio-embed .combo.warn b{color:var(--opt)}
 .studio-embed .combo.warn{color:var(--opt)}

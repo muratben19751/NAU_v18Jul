@@ -1,4 +1,7 @@
-{# ctx: defn, metrics, run, symbol_rows (list|None — per-instrument breakdown) #}
+{# ctx: defn, metrics, run, symbol_rows (list|None — per-instrument breakdown), engine_is_stub #}
+{% if engine_is_stub %}
+<p class="opt-note sim-badge" title="STUDIO_BACKTEST=nautilus ayarlanmadığı sürece bu tablodaki tüm sayılar rastgele üretilen bir simülasyondan geliyor.">⚠ SİMÜLE — gerçek backtest değil</p>
+{% endif %}
 <p class="opt-note">Run {{ run.run_id[:6] }} · v{{ run.version }} · fold-by-fold OOS metrics.
   <button type="button" class="tsh-link" title="Tear sheet — this run's performance sheet"
           onclick="openTearsheet('/tearsheet?src=strategy&run_id={{ run.run_id }}')">📈</button></p>

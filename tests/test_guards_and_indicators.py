@@ -415,3 +415,119 @@ class TestBlockIsolation:
                 cbs.delete_custom(name)
             except Exception:
                 pass
+
+
+class TestNadarayaWatsonWindowing:
+    """DeepR 2026-08-08 [YÜKSEK]: the O(n²) double loop now caps each row's
+    j-range to a ±6*bandwidth radius (Gaussian tail is ~0 past that). These
+    pin the windowed result against the original unwindowed math so a future
+    edit cannot silently reintroduce the full O(n²) scan or drift the output.
+    """
+
+    @staticmethod
+    def _reference(closes, bandwidth=6, multiplier=3.0):
+        import math
+
+        n = len(closes)
+        y_hat = []
+        for i in range(n):
+            weight_sum = value_sum = 0.0
+            for j in range(n):
+                dist = (i - j) / bandwidth
+                w = math.exp(-0.5 * dist * dist)
+                weight_sum += w
+                value_sum += w * closes[j]
+            y_hat.append(value_sum / weight_sum if weight_sum > 1e-10 else closes[i])
+        residual_sq_sum = sum((closes[i] - y_hat[i]) ** 2 for i in range(n))
+        std = math.sqrt(residual_sq_sum / n)
+        reg = y_hat[-1]
+        half_band = multiplier * std
+        pos = (
+            max(-1.0, min(1.0, (closes[-1] - reg) / half_band))
+            if half_band > 1e-10
+            else 0.0
+        )
+        slope_len = min(5, n - 1)
+        slope = y_hat[-1] - y_hat[-1 - slope_len]
+        threshold = std * 0.1
+        trend = "up" if slope > threshold else "down" if slope < -threshold else "flat"
+        return {
+            "regression": reg,
+            "upper": reg + multiplier * std,
+            "lower": reg - multiplier * std,
+            "position": pos,
+            "trend": trend,
+        }
+
+    @pytest.mark.parametrize("bandwidth", [2, 6, 8, 20, 200])
+    def test_windowed_matches_unwindowed_reference(self, bandwidth):
+        import random
+
+        from indicators import calc_nadaraya_watson
+
+        rng = random.Random(42)
+        closes = [100 + rng.gauss(0, 2) for _ in range(300)]
+
+        windowed = calc_nadaraya_watson(closes, bandwidth=bandwidth)
+        reference = self._reference(closes, bandwidth=bandwidth)
+
+        assert windowed["trend"] == reference["trend"]
+        for key in ("regression", "upper", "lower", "position"):
+            assert windowed[key] == pytest.approx(reference[key], abs=1e-6)
+
+    def test_short_series_below_the_window_radius_is_unaffected(self):
+        """n < 2*radius+1 (the whole series fits inside one window) must give
+        the exact same result as before — this is the everyday case at the
+        registry default bandwidth=8 with a warmup-sized series."""
+        import random
+
+        from indicators import calc_nadaraya_watson
+
+        rng = random.Random(7)
+        closes = [50 + rng.gauss(0, 1) for _ in range(35)]
+
+        windowed = calc_nadaraya_watson(closes, bandwidth=8)
+        reference = self._reference(closes, bandwidth=8)
+
+        for key in ("regression", "upper", "lower", "position", "trend"):
+            if isinstance(windowed[key], float):
+                assert windowed[key] == pytest.approx(reference[key], abs=1e-9)
+            else:
+                assert windowed[key] == reference[key]
+
+
+class TestSmaRunningSum:
+    """DeepR 2026-08-08 [ORTA]: sma() re-summed the whole window on every
+    step (O(n*period)); now a running sum (O(n)), matching ema()'s existing
+    shape. Pins the new output against the original re-sum-per-step math."""
+
+    @staticmethod
+    def _reference(values, period):
+        result = []
+        for i in range(period - 1, len(values)):
+            s = 0.0
+            for j in range(i - period + 1, i + 1):
+                s += values[j]
+            result.append(s / period)
+        return result
+
+    @pytest.mark.parametrize("period", [1, 2, 3, 20, 50])
+    def test_matches_the_original_resum_per_step_reference(self, period):
+        import random
+
+        from indicators import sma
+
+        rng = random.Random(3)
+        values = [100 + rng.gauss(0, 5) for _ in range(300)]
+
+        got = sma(values, period)
+        expected = self._reference(values, period)
+
+        assert len(got) == len(expected)
+        for g, e in zip(got, expected, strict=True):
+            assert g == pytest.approx(e, abs=1e-9)
+
+    def test_shorter_than_period_returns_empty(self):
+        from indicators import sma
+
+        assert sma([1.0, 2.0], 5) == []

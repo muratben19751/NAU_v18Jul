@@ -18,9 +18,13 @@ I/O failure is raised, never flattened into "no blocks".
 
 Wiki References
 ---------------
-Bkz: [[strategy_and_actor]], [[nau_guvenlik_dayaniklilik_duzeltmeleri]]
+Bkz: [[strategy_and_actor]], [[nau_guvenlik_dayaniklilik_duzeltmeleri]], [[nau_performans_denetimi]]
 
 Block codes are imported at run time; each block is a single function (`evaluate`).
+
+`_read_registry()` is memoized by `(path, mtime, size)` (2026-08-08 DeepR
+finding) — the same shape as `composer._read_catalog_raw`'s catalog.json
+cache; see [[nau_performans_denetimi]].
 """
 
 from __future__ import annotations
@@ -159,6 +163,20 @@ def _registry_guard():
                 handle.close()
 
 
+# Perf (DeepR 2026-08-08 [ORTA]): memoize the parsed registry by (path, mtime,
+# size) — the same pattern composer._read_catalog_raw already uses for
+# catalog.json (path included here too, so redirecting REGISTRY_FILE — every
+# test in this suite that exercises the store does — can never serve another
+# path's cached content). list_custom()/load_catalog() call this on ~18 hot
+# paths per composer.py's own comment, and AUTO's desc_*/agnt_* entries can
+# accumulate into the hundreds (see save_custom's docstring), so every route
+# that touches custom blocks was re-reading + re-parsing a growing file on
+# every call. Every caller already holds _STORE_LOCK around _read_registry(),
+# so this needs no locking of its own; a save (mtime/size change) invalidates
+# it automatically.
+_REGISTRY_CACHE: tuple[Path, int, int, dict[str, dict[str, Any]]] | None = None
+
+
 def _read_registry() -> dict[str, dict[str, Any]]:
     """Return the registry mapping or raise ``RegistryUnavailable``.
 
@@ -168,6 +186,7 @@ def _read_registry() -> dict[str, dict[str, Any]]:
     single Windows sharing violation during a concurrent save renamed the whole
     registry away and every custom block registration was lost.
     """
+    global _REGISTRY_CACHE
     if not REGISTRY_FILE.exists():
         # A malformed registry is moved aside below for operator recovery. Do
         # not let a later caller mistake that quarantined state for a newly
@@ -176,6 +195,17 @@ def _read_registry() -> dict[str, dict[str, Any]]:
         if REGISTRY_FILE.with_suffix(".json.bak").exists():
             raise RegistryUnavailable("registry.json is quarantined as malformed")
         return {}
+    try:
+        st = REGISTRY_FILE.stat()
+    except OSError:
+        st = None
+    if st is not None:
+        cached = _REGISTRY_CACHE
+        if (
+            cached is not None
+            and (REGISTRY_FILE, st.st_mtime_ns, st.st_size) == cached[:3]
+        ):
+            return cached[3]
     last_err: Exception | None = None
     for attempt in range(_READ_RETRIES):
         try:
@@ -190,6 +220,8 @@ def _read_registry() -> dict[str, dict[str, Any]]:
             data = json.loads(raw)
             if not isinstance(data, dict):
                 raise ValueError("registry.json is not a dict")
+            if st is not None:
+                _REGISTRY_CACHE = (REGISTRY_FILE, st.st_mtime_ns, st.st_size, data)
             return data
         except (ValueError, TypeError) as e:
             # Preserve bad content for recovery, but never start empty:

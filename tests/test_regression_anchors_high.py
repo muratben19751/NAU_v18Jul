@@ -181,14 +181,27 @@ class TestRobustnessPassed:
 
     def _clean(self):
         # 3 criteria are ACTUALLY evaluated (IS/OOS, WFO, MC), none of them failed.
+        # The a6ddb5a hardening (2026-08-07) added two fail-closed strict
+        # requirements this fixture predates (see _robustness_passed):
+        #   - every valid WFO window needs excess_return_fraction (missing
+        #     alpha is an error, not a free pass — a pnl-negative window with
+        #     positive excess is exactly the case that field exists for: beat
+        #     the benchmark, lost nominal $);
+        #   - strict mode needs mc.max_dd_p95 (the adverse-tail check) too.
         return {
             "split": {"overfitting_label": "✓ Robust"},
             "wfo_windows": [
-                {"test_n_trades": 5, "test_metrics": {"pnl": 1.0}},
-                {"test_n_trades": 5, "test_metrics": {"pnl": -1.0}},
+                {
+                    "test_n_trades": 5,
+                    "test_metrics": {"pnl": 1.0, "excess_return_fraction": 0.05},
+                },
+                {
+                    "test_n_trades": 5,
+                    "test_metrics": {"pnl": -1.0, "excess_return_fraction": 0.02},
+                },
             ],
             "oos_sharpe_penalized": 1.0,
-            "mc": {"max_dd_p50": -10.0},
+            "mc": {"max_dd_p50": -10.0, "max_dd_p95": -15.0},
         }
 
     def test_clean_three_eval_strict_passes(self):
@@ -222,7 +235,9 @@ class TestRobustnessPassed:
         import web.routes.agent_backtest as ab
 
         rob = self._clean()
-        rob["mc"] = {"max_dd_p50": -20.0}  # > -25.0 → passes
+        # both strict MC checks need to clear: median (> -25.0) and the
+        # adverse tail (max_dd_p95 > -35.0, see _clean's docstring note).
+        rob["mc"] = {"max_dd_p50": -20.0, "max_dd_p95": -15.0}
         assert ab._robustness_passed(rob, strict=True) is True
 
     def test_penalized_sharpe_non_positive_fails(self):

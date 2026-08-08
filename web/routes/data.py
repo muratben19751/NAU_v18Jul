@@ -13,15 +13,21 @@ can hot-swap the DOM in place without re-fetching the whole page.
 Wiki References
 ---------------
 See: [[parquet_data_catalog]], [[bar_aggregation_and_type_syntax]],
-[[index_backtest_via_equity_proxy]], [[precision_modes]]
+[[index_backtest_via_equity_proxy]], [[precision_modes]], [[nau_deepr_toplu_sertlestirme_2026_08]]
 
 The screen surfaces wiki-flagged pitfalls (size_precision=0 Equity trap; BarType DSL
 origin distinction; book_type ↔ granularity mismatch) as badges.
+
+`refresh_index` now validates `start`/`end` the same way
+`web/routes/backtest.py`'s `_invalid_date_range` does (2026-08-08 DeepR
+finding) — a bad date used to fall through to the blanket
+`except Exception: 500` and leak the raw `ValueError` text to the client.
 """
 
 from __future__ import annotations
 
 import asyncio
+from datetime import date
 
 from fastapi import APIRouter, Form, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
@@ -38,6 +44,27 @@ from data import (
 )
 
 router = APIRouter(prefix="/data")
+
+
+def _invalid_date_range(start: str | None, end: str | None) -> str | None:
+    """Same contract as web/routes/backtest.py's helper of the same name
+    (DeepR 2026-08-08 [DÜŞÜK] — this route had no equivalent, so a bad date
+    fell through to the generic `except Exception: 500` below and leaked the
+    raw ValueError text to the client). Blank values are fine (blank = full
+    cache); only rejects when both are given and start > end, or either
+    fails to parse as YYYY-MM-DD.
+    """
+    s, e = (start or "").strip(), (end or "").strip()
+    if not s and not e:
+        return None
+    try:
+        sd = date.fromisoformat(s) if s else None
+        ed = date.fromisoformat(e) if e else None
+    except ValueError:
+        return "Dates must be in YYYY-MM-DD format."
+    if sd and ed and sd > ed:
+        return "End date cannot be before the start date."
+    return None
 
 
 def _template_ctx(request, **extra):
@@ -160,6 +187,9 @@ async def refresh_index(
             f"unsupported granularity {granularity!r}; "
             f"supported: {list(_GRAN_BARSPEC)}",
         )
+    date_err = _invalid_date_range(start, end)
+    if date_err:
+        raise HTTPException(400, date_err)
     try:
         row = await asyncio.to_thread(
             refresh_row,

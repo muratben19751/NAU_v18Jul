@@ -695,6 +695,72 @@ def test_truncation_surviving_the_retry_raises_its_own_type(monkeypatch):
     assert len(seen) == 2  # bir kez yeniden denendi, sonsuza kadar değil
 
 
+def test_learned_ceiling_survives_a_concurrent_smaller_write(monkeypatch):
+    """DeepR 2026-08-08 [DÜŞÜK]: _LEARNED_MAX_TOKENS was an unlocked dict — two
+    threads racing to grow the SAME (model, purpose) ceiling could clobber
+    each other's write. Both threads read the pre-race value (0) via a
+    barrier, so neither sees the other's result before computing its own
+    "bigger" — exactly the race window the fix's `max()` guard protects.
+    Thread A (the larger ceiling) writes FIRST; thread B (the smaller one,
+    delayed) writes SECOND — without max(), B's plain overwrite would
+    clobber A's already-larger value. Verified against a regression: with
+    the fix reverted to a bare `_LEARNED_MAX_TOKENS[key] = bigger`, this
+    test fails (final value 200*SCALE instead of 1000*SCALE).
+    """
+    import threading
+    import time
+
+    import agent
+
+    key = ("claude-fable-5", "composed")
+    monkeypatch.setattr(agent, "_LEARNED_MAX_TOKENS", {})
+    monkeypatch.setattr(agent, "_ledger_record", lambda *a, **k: None)
+    monkeypatch.setattr(agent, "current_model", lambda: "claude-fable-5")
+
+    barrier = threading.Barrier(2)
+    results: dict[str, object] = {}
+
+    def _client_for(base: int, delay: float):
+        seen: list[int] = []
+
+        class _Msgs:
+            def create(self, **kw):
+                seen.append(int(kw.get("max_tokens") or 0))
+                if len(seen) == 1:
+                    barrier.wait(timeout=5)  # both threads read `learned` first
+                    time.sleep(delay)  # controls write order after the race
+                    return _FakeResp("max_tokens")
+                return _FakeResp("end_turn")
+
+        class _C:
+            messages = _Msgs()
+
+        return _C()
+
+    def _run(name: str, base: int, delay: float):
+        client = _client_for(base, delay)
+        results[name] = agent._create_message(
+            client, "composed", max_tokens=base, messages=[]
+        )
+
+    # A's base (1000) beats B's (200): A learns 1000*SCALE, B learns 200*SCALE.
+    # A writes first (no delay); B writes second (delayed) — the harmful
+    # order, since B's smaller value is the one that ends up written last.
+    t_a = threading.Thread(target=_run, args=("a", 1000, 0.0))
+    t_b = threading.Thread(target=_run, args=("b", 200, 0.15))
+    t_a.start()
+    t_b.start()
+    t_a.join(timeout=5)
+    t_b.join(timeout=5)
+
+    bigger_a = 1000 * agent._TRUNCATION_RETRY_SCALE
+    bigger_b = 200 * agent._TRUNCATION_RETRY_SCALE
+    assert bigger_b < bigger_a, "test setup must produce a genuinely smaller loser"
+    assert agent._LEARNED_MAX_TOKENS[key] == bigger_a, (
+        "a concurrent smaller write clobbered the larger learned ceiling"
+    )
+
+
 def test_openai_finish_reason_length_maps_to_max_tokens():
     """OpenAI-uyumlu uçlar "length" der; tek alan okunabilsin diye çevrilir."""
     import agent
