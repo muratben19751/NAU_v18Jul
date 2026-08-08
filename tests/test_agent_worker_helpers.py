@@ -26,6 +26,9 @@
   gate) promoted to a module function. Catalog append, the _AGENT_PROGRESS
   winner-fields write, and the final winner/session_end logging stay in
   `_agent_worker`.
+- A9: `_run_backtest_iteration` (Phase 2's run-backtest-and-log-result half)
+  promoted to a module function; the 'propose next spec' lookahead-generation
+  block (deferred #47-A10 in the plan) stays in `_agent_worker`.
 """
 
 from __future__ import annotations
@@ -656,6 +659,127 @@ class TestRunPromotionGate:
 
         assert gate.promotion_passed is False
         assert "sealed holdout exception:" in gate.promotion_reason
+
+
+def _bars(n=5):
+    idx = pd.date_range("2026-01-01", periods=n, freq="1h", tz="UTC")
+    return pd.DataFrame(
+        {
+            "open": [100.0] * n,
+            "high": [101.0] * n,
+            "low": [99.0] * n,
+            "close": [100.5] * n,
+            "volume": [10.0] * n,
+        },
+        index=idx,
+    )
+
+
+class TestRunBacktestIteration:
+    def _spec(self):
+        return SimpleNamespace(
+            name="Strat",
+            id="spec-1",
+            blocks=[SimpleNamespace(type="momentum", role="entry", params={})],
+        )
+
+    def _quiet(self, monkeypatch):
+        for name in ("_add_step", "_tl_begin", "_tl_end", "_set_phase", "_session_log"):
+            monkeypatch.setattr(ab, name, lambda *a, **k: None)
+        monkeypatch.setattr(ab, "_stamp_buy_hold_benchmark", lambda *a, **k: None)
+
+    def _result(self, *, n_trades=0, error=None):
+        return SimpleNamespace(
+            error=error,
+            metrics={"n_trades": n_trades, "pnl": 0.0},
+            trades=[],
+            equity_curve=[],
+            equity_dates=[],
+        )
+
+    def _args(self, wstate, run_result):
+        monkeypatch_target = "sandbox.run_backtest_guarded"
+        return (
+            monkeypatch_target,
+            dict(
+                run_id="run-1",
+                run_number=1,
+                i=0,
+                n_iterations=3,
+                spec=self._spec(),
+                iter_iv="60",
+                iter_df=_bars(),
+                is_external=False,
+                symbol="BTCUSDT",
+                instrument_id="",
+                category="linear",
+                wstate=wstate,
+                max_hours=0.0,
+            ),
+            run_result,
+        )
+
+    def test_happy_path_stamps_result_and_updates_wstate(self, monkeypatch):
+        self._quiet(monkeypatch)
+        wstate = ab._WorkerState()
+        target, args, run_result = self._args(wstate, self._result(n_trades=0))
+        monkeypatch.setattr(target, lambda *a, **k: run_result)
+        monkeypatch.setattr(ab, "_log_backtest", lambda *a, **k: "ts-1")
+
+        r = ab._run_backtest_iteration(**args)
+
+        assert r.strategy == "composed:Strat [momentum]"
+        assert r.bars_info["symbol"] == "BTCUSDT"
+        assert (
+            ab._candidate_fingerprint(args["spec"])
+            in wstate.seen_candidate_fingerprints
+        )
+        assert (
+            ab._candidate_fingerprint(args["spec"], family=True)
+            in wstate.zero_trade_families
+        )
+
+    def test_non_zero_trades_does_not_mark_zero_trade_family(self, monkeypatch):
+        self._quiet(monkeypatch)
+        wstate = ab._WorkerState()
+        target, args, run_result = self._args(wstate, self._result(n_trades=5))
+        monkeypatch.setattr(target, lambda *a, **k: run_result)
+        monkeypatch.setattr(ab, "_log_backtest", lambda *a, **k: "ts-1")
+
+        ab._run_backtest_iteration(**args)
+
+        assert (
+            ab._candidate_fingerprint(args["spec"], family=True)
+            not in wstate.zero_trade_families
+        )
+
+    def test_error_result_does_not_raise(self, monkeypatch):
+        self._quiet(monkeypatch)
+        wstate = ab._WorkerState()
+        target, args, run_result = self._args(
+            wstate, self._result(error="backtest exploded")
+        )
+        monkeypatch.setattr(target, lambda *a, **k: run_result)
+        monkeypatch.setattr(ab, "_log_backtest", lambda *a, **k: "ts-1")
+
+        r = ab._run_backtest_iteration(**args)  # must not raise
+
+        assert r.error == "backtest exploded"
+
+    def test_log_backtest_write_failure_is_swallowed(self, monkeypatch):
+        self._quiet(monkeypatch)
+        wstate = ab._WorkerState()
+        target, args, run_result = self._args(wstate, self._result(n_trades=0))
+        monkeypatch.setattr(target, lambda *a, **k: run_result)
+        monkeypatch.setattr(
+            ab,
+            "_log_backtest",
+            lambda *a, **k: (_ for _ in ()).throw(OSError("disk full")),
+        )
+
+        r = ab._run_backtest_iteration(**args)  # must not raise
+
+        assert r is run_result
 
 
 class _FakeRobProgress:

@@ -1789,6 +1789,184 @@ def _run_promotion_gate(
     )
 
 
+def _run_backtest_iteration(
+    run_id: str,
+    run_number: int,
+    i: int,
+    n_iterations: int,
+    spec,
+    iter_iv: str,
+    iter_df,
+    is_external: bool,
+    symbol: str,
+    instrument_id: str,
+    category: str,
+    wstate: _WorkerState,
+    max_hours: float,
+):
+    """Phase 2's run-backtest-and-log-result half of one iteration (the
+    'propose next spec' lookahead-generation block stays in the caller — see
+    #47-A9/A10 in the decomposition plan). Loop control, stop-check, and
+    history/results accumulation also stay in the caller."""
+    from sandbox import run_backtest_guarded
+
+    if is_external:
+        iter_bars_info = {
+            "ticker": instrument_id,
+            "granularity": iter_iv,
+            "n_bars": len(iter_df),
+            "start": str(iter_df.index[0].date()),
+            "end": str(iter_df.index[-1].date()),
+        }
+        tf_label = f" [{iter_iv}]"
+    else:
+        iter_bars_info = {
+            "symbol": symbol,
+            "category": category,
+            "interval": iter_iv,
+            "n_bars": len(iter_df),
+            "start": str(iter_df.index[0].date()),
+            "end": str(iter_df.index[-1].date()),
+        }
+        tf_label = f" [{iter_iv}m]" if iter_iv != "D" else " [1D]"
+
+    _add_step(
+        run_id,
+        f"[{i + 1}/{n_iterations}] Backtest{tf_label}: {spec.name}…",
+    )
+    run_label = instrument_id if is_external else symbol
+    _tl_begin(
+        run_id,
+        "backtest",
+        f"bt-r{run_number}-i{i + 1}",
+        f"Backtest {i + 1}/{n_iterations} · {spec.name} [{iter_iv}]",
+        round_num=run_number,
+        iter=i + 1,
+        name=spec.name,
+    )
+    # Run in a killable child process: a Nautilus backtest holds the
+    # GIL for its whole run and would otherwise freeze the async web
+    # server's event loop. The timeout also kills a hung backtest.
+    _bt_t0 = time.perf_counter()
+    r = run_backtest_guarded(
+        spec,
+        iter_df,
+        _recipe(is_external, instrument_id, symbol, category, iter_iv),
+        iteration_id=i,
+        rationale=f"agent-run · iter {i + 1}/{n_iterations} · {run_label} {iter_iv}",
+        progress_fn=lambda m, _i=i: _add_step(run_id, f"  └ {m}"),
+        timeout_s=_remaining_phase_timeout(wstate.worker_t0, max_hours, 150.0),
+        force_subprocess=True,
+    )
+    _bt_elapsed = time.perf_counter() - _bt_t0
+    # Add the block type list to the strategy field → Claude sees this info
+    block_types_str = "+".join(b.type for b in spec.blocks)
+    r.strategy = f"composed:{spec.name} [{block_types_str}]"
+    _stamp_buy_hold_benchmark(r, iter_df)
+    # Stamp the run context onto the result: _summarize_composed_history
+    # reads the timeframe from here. Without it the model saw only
+    # "pnl=-8514" with no idea the spec had been scored on 15m bars.
+    r.bars_info = dict(iter_bars_info)
+    wstate.seen_candidate_fingerprints.add(_candidate_fingerprint(spec))
+    if int((r.metrics or {}).get("n_trades") or 0) == 0:
+        wstate.zero_trade_families.add(_candidate_fingerprint(spec, family=True))
+    # The returned ts is this iteration's key into the backtest log
+    # — the cockpit card links its tear sheet with it.
+    _bt_log_ts = ""
+    try:
+        _bt_log_ts = _log_backtest(
+            spec,
+            r,
+            "External" if is_external else "Bybit",
+            iter_bars_info,
+            elapsed_sec=_bt_elapsed,
+            run_id=run_id,
+        )
+    except Exception as log_exc:
+        _add_step(run_id, f"  ⚠ Could not write log: {log_exc}")
+
+    sc = _score(r)
+    # Add to state for the live backtest table
+    m_bt = r.metrics or {}
+    with _AGENT_LOCK:
+        s = _AGENT_PROGRESS.get(run_id)
+        if s is not None:
+            s["backtest_results"].append(
+                {
+                    "iter": i + 1,
+                    "round": run_number,
+                    "interval": iter_iv,
+                    "spec_name": spec.name,
+                    "ts": _bt_log_ts,
+                    "score": round(sc, 4) if sc > float("-inf") else None,
+                    "pnl": m_bt.get("pnl"),
+                    "pnl_pct": m_bt.get("pnl_pct"),
+                    "benchmark_return_fraction": m_bt.get("benchmark_return_fraction"),
+                    "excess_return_fraction": m_bt.get("excess_return_fraction"),
+                    "sharpe": m_bt.get("sharpe"),
+                    "profit_factor": m_bt.get("profit_factor"),
+                    "max_dd": m_bt.get("max_dd"),
+                    "win_rate": m_bt.get("win_rate"),
+                    "n_trades": m_bt.get("n_trades", 0),
+                    "avg_dur": m_bt.get("avg_duration_mins"),
+                    "error": r.error,
+                    # AUTO Mission Control sparkline: the raw curve
+                    # can hold 100k+ points — downsample to ~40 so
+                    # a 1s poll never ships a megabyte of JSON.
+                    "equity": _spark_points(r.equity_curve),
+                }
+            )
+    # Session log: backtest result. The equity curve and its date
+    # axis are reduced TOGETHER (see _thin_pair) — raw, they made
+    # this the heaviest event in the log at ~301 KB apiece.
+    _eq_curve, _eq_dates = _thin_pair(
+        r.equity_curve, r.equity_dates, cap=_SESSION_CURVE_CAP
+    )
+    _session_log(
+        run_id,
+        "backtest_result",
+        iteration=i,
+        round=run_number,
+        interval=iter_iv,
+        spec_name=spec.name,
+        spec_id=spec.id,
+        spec_blocks=[
+            {"type": b.type, "role": b.role, "params": b.params} for b in spec.blocks
+        ],
+        score=round(sc, 4),
+        # Metrics can themselves contain bar-resolution equity
+        # arrays (equity_curve_mtm/realized). Thin recursively; the
+        # previous top-level-only reduction left ~47 MB/hour growth.
+        metrics=_thin_curves(r.metrics, cap=_SESSION_CURVE_CAP),
+        equity_curve=_eq_curve,
+        equity_dates=_eq_dates,
+        n_trades=len(r.trades) if r.trades else 0,
+        bars_info=iter_bars_info,
+        error=r.error,
+    )
+    if r.error:
+        _add_step(run_id, f"  ✗ Error: {r.error[:80]}")
+        _tl_end(run_id, f"bt-r{run_number}-i{i + 1}", status="fail")
+    else:
+        m = r.metrics or {}
+        _add_step(
+            run_id,
+            f"  ✓ PnL={m.get('pnl', 0):+.2f} · "
+            f"Sharpe={m.get('sharpe', float('nan')):.2f} · "
+            f"Trades={m.get('n_trades', 0)} · Score={sc:.3f}",
+        )
+        _tl_end(
+            run_id,
+            f"bt-r{run_number}-i{i + 1}",
+            status="warn" if (m.get("n_trades", 0) or 0) == 0 else "ok",
+            pnl=m.get("pnl"),
+            score=round(sc, 4) if sc > float("-inf") else None,
+        )
+
+    _set_phase(run_id, 2, f"{i + 1}/{n_iterations} completed")
+    return r
+
+
 # Liquid peer basket for multi-symbol robustness on external (US equity) runs.
 # Real instrument ids from the catalog — SPY/IWM are on the ARCA venue, not NASDAQ.
 EXTERNAL_PEER_BASKET = [
@@ -2590,9 +2768,6 @@ def _agent_worker(
 
     from composer import load_catalog
     from data import _bybit_cache_path
-    from sandbox import (
-        run_backtest_guarded,
-    )
 
     is_external = source == "external"
     if continuous_mode:
@@ -3038,171 +3213,23 @@ def _agent_worker(
                 # the spec was written for THIS bar.
                 iter_iv = _iv_for(i, run_number, intervals)
                 iter_df = _load_tf(iter_iv)
-                if is_external:
-                    iter_bars_info = {
-                        "ticker": instrument_id,
-                        "granularity": iter_iv,
-                        "n_bars": len(iter_df),
-                        "start": str(iter_df.index[0].date()),
-                        "end": str(iter_df.index[-1].date()),
-                    }
-                    tf_label = f" [{iter_iv}]"
-                else:
-                    iter_bars_info = {
-                        "symbol": symbol,
-                        "category": category,
-                        "interval": iter_iv,
-                        "n_bars": len(iter_df),
-                        "start": str(iter_df.index[0].date()),
-                        "end": str(iter_df.index[-1].date()),
-                    }
-                    tf_label = f" [{iter_iv}m]" if iter_iv != "D" else " [1D]"
-
-                _add_step(
+                r = _run_backtest_iteration(
                     run_id,
-                    f"[{i + 1}/{n_iterations}] Backtest{tf_label}: {spec.name}…",
-                )
-                run_label = instrument_id if is_external else symbol
-                _tl_begin(
-                    run_id,
-                    "backtest",
-                    f"bt-r{run_number}-i{i + 1}",
-                    f"Backtest {i + 1}/{n_iterations} · {spec.name} [{iter_iv}]",
-                    round_num=run_number,
-                    iter=i + 1,
-                    name=spec.name,
-                )
-                # Run in a killable child process: a Nautilus backtest holds the
-                # GIL for its whole run and would otherwise freeze the async web
-                # server's event loop. The timeout also kills a hung backtest.
-                _bt_t0 = time.perf_counter()
-                r = run_backtest_guarded(
+                    run_number,
+                    i,
+                    n_iterations,
                     spec,
+                    iter_iv,
                     iter_df,
-                    _recipe(is_external, instrument_id, symbol, category, iter_iv),
-                    iteration_id=i,
-                    rationale=f"agent-run · iter {i + 1}/{n_iterations} · {run_label} {iter_iv}",
-                    progress_fn=lambda m, _i=i: _add_step(run_id, f"  └ {m}"),
-                    timeout_s=_remaining_phase_timeout(
-                        wstate.worker_t0, max_hours, 150.0
-                    ),
-                    force_subprocess=True,
+                    is_external,
+                    symbol,
+                    instrument_id,
+                    category,
+                    wstate,
+                    max_hours,
                 )
-                _bt_elapsed = time.perf_counter() - _bt_t0
-                # Add the block type list to the strategy field → Claude sees this info
-                block_types_str = "+".join(b.type for b in spec.blocks)
-                r.strategy = f"composed:{spec.name} [{block_types_str}]"
-                _stamp_buy_hold_benchmark(r, iter_df)
-                # Stamp the run context onto the result: _summarize_composed_history
-                # reads the timeframe from here. Without it the model saw only
-                # "pnl=-8514" with no idea the spec had been scored on 15m bars.
-                r.bars_info = dict(iter_bars_info)
                 history.append(r)
                 results.append((spec, r, iter_iv))
-                wstate.seen_candidate_fingerprints.add(_candidate_fingerprint(spec))
-                if int((r.metrics or {}).get("n_trades") or 0) == 0:
-                    wstate.zero_trade_families.add(
-                        _candidate_fingerprint(spec, family=True)
-                    )
-                # The returned ts is this iteration's key into the backtest log
-                # — the cockpit card links its tear sheet with it.
-                _bt_log_ts = ""
-                try:
-                    _bt_log_ts = _log_backtest(
-                        spec,
-                        r,
-                        "External" if is_external else "Bybit",
-                        iter_bars_info,
-                        elapsed_sec=_bt_elapsed,
-                        run_id=run_id,
-                    )
-                except Exception as log_exc:
-                    _add_step(run_id, f"  ⚠ Could not write log: {log_exc}")
-
-                sc = _score(r)
-                # Add to state for the live backtest table
-                m_bt = r.metrics or {}
-                with _AGENT_LOCK:
-                    s = _AGENT_PROGRESS.get(run_id)
-                    if s is not None:
-                        s["backtest_results"].append(
-                            {
-                                "iter": i + 1,
-                                "round": run_number,
-                                "interval": iter_iv,
-                                "spec_name": spec.name,
-                                "ts": _bt_log_ts,
-                                "score": round(sc, 4) if sc > float("-inf") else None,
-                                "pnl": m_bt.get("pnl"),
-                                "pnl_pct": m_bt.get("pnl_pct"),
-                                "benchmark_return_fraction": m_bt.get(
-                                    "benchmark_return_fraction"
-                                ),
-                                "excess_return_fraction": m_bt.get(
-                                    "excess_return_fraction"
-                                ),
-                                "sharpe": m_bt.get("sharpe"),
-                                "profit_factor": m_bt.get("profit_factor"),
-                                "max_dd": m_bt.get("max_dd"),
-                                "win_rate": m_bt.get("win_rate"),
-                                "n_trades": m_bt.get("n_trades", 0),
-                                "avg_dur": m_bt.get("avg_duration_mins"),
-                                "error": r.error,
-                                # AUTO Mission Control sparkline: the raw curve
-                                # can hold 100k+ points — downsample to ~40 so
-                                # a 1s poll never ships a megabyte of JSON.
-                                "equity": _spark_points(r.equity_curve),
-                            }
-                        )
-                # Session log: backtest result. The equity curve and its date
-                # axis are reduced TOGETHER (see _thin_pair) — raw, they made
-                # this the heaviest event in the log at ~301 KB apiece.
-                _eq_curve, _eq_dates = _thin_pair(
-                    r.equity_curve, r.equity_dates, cap=_SESSION_CURVE_CAP
-                )
-                _session_log(
-                    run_id,
-                    "backtest_result",
-                    iteration=i,
-                    round=run_number,
-                    interval=iter_iv,
-                    spec_name=spec.name,
-                    spec_id=spec.id,
-                    spec_blocks=[
-                        {"type": b.type, "role": b.role, "params": b.params}
-                        for b in spec.blocks
-                    ],
-                    score=round(sc, 4),
-                    # Metrics can themselves contain bar-resolution equity
-                    # arrays (equity_curve_mtm/realized). Thin recursively; the
-                    # previous top-level-only reduction left ~47 MB/hour growth.
-                    metrics=_thin_curves(r.metrics, cap=_SESSION_CURVE_CAP),
-                    equity_curve=_eq_curve,
-                    equity_dates=_eq_dates,
-                    n_trades=len(r.trades) if r.trades else 0,
-                    bars_info=iter_bars_info,
-                    error=r.error,
-                )
-                if r.error:
-                    _add_step(run_id, f"  ✗ Error: {r.error[:80]}")
-                    _tl_end(run_id, f"bt-r{run_number}-i{i + 1}", status="fail")
-                else:
-                    m = r.metrics or {}
-                    _add_step(
-                        run_id,
-                        f"  ✓ PnL={m.get('pnl', 0):+.2f} · "
-                        f"Sharpe={m.get('sharpe', float('nan')):.2f} · "
-                        f"Trades={m.get('n_trades', 0)} · Score={sc:.3f}",
-                    )
-                    _tl_end(
-                        run_id,
-                        f"bt-r{run_number}-i{i + 1}",
-                        status="warn" if (m.get("n_trades", 0) or 0) == 0 else "ok",
-                        pnl=m.get("pnl"),
-                        score=round(sc, 4) if sc > float("-inf") else None,
-                    )
-
-                _set_phase(run_id, 2, f"{i + 1}/{n_iterations} completed")
 
                 if i < n_iterations - 1:
                     next_i = i + 1
