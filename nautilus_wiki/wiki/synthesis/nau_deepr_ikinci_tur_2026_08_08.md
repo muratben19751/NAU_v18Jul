@@ -1,7 +1,7 @@
 ---
 title: nautilus_web_app DeepR İkinci Tur (2026-08-08, öğleden sonra)
 type: synthesis
-summary: Aynı gün ikinci bir DeepR koşusu — 152 ajan, 0 hata, 33 doğrulanmış bulgu; 31'i aynı oturumda düzeltildi, #47 (_agent_worker bölme) ayrı oturumda kademeli olarak A0-A9 adımlarıyla sürüyor (A11 en riskli adım, henüz yapılmadı), #59 sırada.
+summary: Aynı gün ikinci bir DeepR koşusu — 152 ajan, 0 hata, 33 doğrulanmış bulgu; hepsi kapandı — 31'i aynı oturumda, #47 (_agent_worker bölme, 12 adım A0-A11b) ve #59 (backtest.py characterization, 3 adım B1-B3) ayrı oturumda kademeli, test-önce disiplinle.
 key_concepts:
   - crash_only_design
 sources:
@@ -51,7 +51,7 @@ Ders: production mantığını sıkılaştıran bir commit, o mantığı sınaya
 regresyon testlerini de AYNI commit'te güncellemeli; aksi halde test suite'i
 CI kırmızı çıkana kadar sessizce referans değerini kaybediyor.
 
-## #47 — `_agent_worker` bölme: kademeli, test-önce çıkarım (2026-08-08, devam ediyor)
+## #47 — `_agent_worker` bölme + #59 — `backtest.py` characterization: tamamlandı (2026-08-08, gece)
 
 #47 ve #59 önce "şimdilik atla, ayrı dikkatli oturumda ele alınacak" onayıyla
 kapsam dışı bırakılmıştı; kullanıcı sonra "ona devam et → ikisi birden,
@@ -61,16 +61,39 @@ onaylanan strateji: **aynı dosyada** (yeni bir alt-paket DEĞİL —
 `agent_backtest.py`'yi hedefliyor, taşınan kilit-dokunan kod bu tek
 regresyon testinin kör noktasına düşerdi) düz modül fonksiyonlarına, her
 adım kendi commit'i + kendi testiyle, "önce test yaz, davranış korunsun"
-disipliniyle.
+disipliniyle. Her iki bulgu da tam kapatıldı.
 
-Tamamlanan adımlar (A0-A9): `_market_for`/`_iv_for`/`_recipe`, `_WorkerState`
-dataclass (round-persistent durum), `_cleanup_generated`/`_winless_bump`/
-`_winless_stop`, `_make_llm_control` (bütçe/iptal kapısı — önceden SIFIR test
-kapsamı), `_rank_and_filter`, `_propose_initial_strategy`, `_scan_one_candidate`
-(effective-score işaret-güvenliği mutasyon testiyle doğrulandı),
-`_run_promotion_gate` (sealed-holdout finansal bütünlük kapısı — planın en
-dikkatli incelenen adımı, sadece yeşil testle değil elle diff okuyarak da
-gözden geçirildi), `_run_backtest_iteration`.
+**#47 — 12 adım (A0-A11b), tamam:** `_market_for`/`_iv_for`/`_recipe`,
+`_WorkerState` dataclass (round-persistent durum), `_cleanup_generated`/
+`_winless_bump`/`_winless_stop`, `_make_llm_control` (bütçe/iptal kapısı —
+önceden SIFIR test kapsamı), `_rank_and_filter`, `_propose_initial_strategy`,
+`_scan_one_candidate` (effective-score işaret-güvenliği mutasyon testiyle
+doğrulandı), `_run_promotion_gate` (sealed-holdout finansal bütünlük kapısı
+— planın en dikkatli incelenen adımı, sadece yeşil testle değil elle diff
+okuyarak da gözden geçirildi), `_run_backtest_iteration`, `_load_timeframe_bars`
++ `_TfLoader` (Faz 0 veri/holdout yükleyici — **planın en riskli adımı**,
+bilinçli olarak en sona bırakıldı; regresyon kanıtı:
+`tests/test_agent_fixes.py::TestContinuousCircuitBreaker` her iki alt-adımdan
+sonra da DEĞİŞTİRİLMEDEN yeşil kaldı — mevcut tek Faz-0 uçtan-uca kapsamı).
+A10 (Faz 2'nin "sıradaki spec'i üret" bloğu — `spec`'in aynı loop değişkenine
+yeniden atanması + 3 katmanlı exception hiyerarşisi) ve A12 (alt-paket
+bölmesi) bilinçli olarak plan dışı bırakıldı; gelecekte ayrı bir iş.
+
+**#59 — 3 adım (B1-B3), tamam:** production kodu HİÇ değişmedi, yalnız
+characterization test yazıldı (`_is_equity_target`/`_local_fallback_breakdown`/
+`_predict_plan_warnings`'in 5 kuralı zaten tek-çağrı-noktalı düz fonksiyonlardı
+— asıl boşluk mimari değil test kapsamıydı). `_preview_signals` (en büyük test
+yükü) için sentetik 4-fazlı BTC 1m fiyat serisi + `data.BYBIT_CACHE_DIR`'ı
+tmp_path'e yönlendirme; fixture'lar EMPİRİK türetildi (önce gerçek fonksiyona
+karşı koşturulup gerçek ateşleme noktaları keşfedildi, kaynak okunarak
+tahmin edilmedi) — bu, `price_breakout`'un bu veri üzerindeki doğal ilk
+ateşlemesinin bir SHORT olduğunu ortaya çıkardı, ki bu da allow_short
+bastırma testinin ta kendisi oldu (short'u kapatmak sinyali silmiyor, bir
+sonraki LONG fırsatını ortaya çıkarıyor). `run()`'ın 3 instrument-kind dalı,
+`describe()`'ın worker gövdesi, `_preview_signals`'ın composer.py `_eval_*`
+ile birleştirilmesi bilinçli olarak plan dışı — gerçek bir tekrar ama farklı
+obje modelleri (post-position Strategy vs. ham pre-position seri) yüzünden
+kolay birleşmiyor.
 
 **Aynı hata sınıfı 4 kez tekrarlandı ve her seferinde yakalandı:** ruff'ın
 otomatik-fix hook'u, bir import'u kullanan kod satırı henüz eklenmeden önceki
@@ -78,18 +101,18 @@ ara kayıt anında "kullanılmıyor" sanıp sessizce siliyor (`dataclasses`,
 `Callable`, `web.shared.log_robustness`, `web.shared.log_backtest`) — her
 adımdan sonra tam test suite'i koşturma disiplini olmasa fark edilmezdi. Ayrı
 bir gerçek davranış hatası da yakalandı: closure→fabrika çıkarımında değerin
-erken bağlanması (bkz. ikinci beyin: `closure_fabrika_erken_baglama`).
+erken bağlanması (bkz. ikinci beyin: `closure_fabrika_erken_baglama`); ve bir
+üçüncüsü A7'de: extract edilen fonksiyonun log mesajı çağıranın
+`len(passers)`'ına erişemediği için sessizce bilgi kaybediyordu (explicit
+parametre ile düzeltildi), `_MAX_PASSERS`'ın çağıran fonksiyona özel yerel
+değişken olup yeni modül fonksiyonundan görünmediği (modül sabitine
+yükseltildi).
 
-**Kapsam dışı (bu turda bilinçli ertelendi):**
-- **A10 — Faz 2'nin "sıradaki spec'i üret" bloğu**: `spec`'in aynı loop
-  değişkenine yeniden atanması + 3 katmanlı exception hiyerarşisi (iptal/
-  bütçe re-raise, generic'te önceki spec'le devam) — yanlış çıkarım ya
-  iptal/bütçeyi sessizce yutar ya geçici bir hata koşumu bitirir.
-- **A11a/A11b — Faz 0 veri/holdout yükleyici** (`_load_tf`/`_load_tf_uncached`):
-  planın **en riskli adımı**, bilinçli olarak en sona bırakıldı — henüz
-  yapılmadı.
-- **#59 — `backtest.py` route'undan domain mantığını ayırma**: #47 bitince
-  sırada.
+**Kapsam dışı (bilinçli, gelecekteki ayrı işler):**
+- **A10 — Faz 2'nin "sıradaki spec'i üret" bloğu** ve **A12 — alt-paket bölmesi**.
+- **#59'un ertelenen 3 kalemi**: `run()`'ın 3 dalının birleşmesi,
+  `describe()`'ın worker gövdesinin çıkarılması, `_preview_signals`↔`_eval_*`
+  birleştirmesi.
 - **#69 (`download_grouped_daily.py`), #60/#61 (`repair_massive_intraday.py`
   — bkz. finding'in kendi metni)**: bu dosyalar untracked (`git status: ??`)
   — kullanıcının bu projeyle ilgisiz kendi ayrı script'leri, önceki 35-görevlik
@@ -97,8 +120,9 @@ erken bağlanması (bkz. ikinci beyin: `closure_fabrika_erken_baglama`).
 
 ## Test tabanı büyümesi
 
-931 (35-görevlik ilk turun sonu) → bu ikinci turda **~15 yeni test dosyası**,
-150+ yeni/genişletilmiş test. Öne çıkanlar:
+931 (35-görevlik ilk turun sonu) → ~1090 (33 bulgu düzeltmesi) →
+**1153** (#47+#59 decomposition sonrası, `tests/test_agent_worker_helpers.py`
++ `tests/test_backtest_route_pure_helpers.py` dahil). Öne çıkanlar:
 - `test_wiki_helper_and_route.py`: path-traversal guard'ının **gerçekten**
   yakaladığını mutasyon testiyle (guard'ı geçici kaldır → test kırılsın →
   geri koy → test geçsin) doğruladı — ayrıca httpx'in `..` segmentini
