@@ -281,5 +281,6 @@ Testler: `tests/test_guards_and_indicators.py::TestCostGate`.
 <!-- BACKLINKS:BEGIN -->
 ## Referenced by
 
+- [[nau_deepr_toplu_sertlestirme_2026_08]]
 - [[webapp_module_map]]
 <!-- BACKLINKS:END -->

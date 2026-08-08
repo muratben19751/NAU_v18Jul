@@ -866,3 +866,31 @@ Suit 745 passed / 1 skipped.
 - PM2 `nautilus` online, unstable restart 0; `/studio` HTTP 200.
 - Canlı izleme otomasyonunun artık mevcut olmadığı doğrulandı. Sonraki inceleme
   adjusted veriyle yapılacak yeni AUTO koşusuna bağlandı.
+
+## [2026-08-07] ingest | Test araçları kararı — Semgrep (harici, built-in değil)
+- Claude Code built-in skill'leri (code-review/security-review) yerine bağımsız
+  CLI tercih edildi; birincil: Semgrep. Tamamlayıcı önerileri: SonarQube,
+  Locust, py-spy/scalene.
+- Ayrıntı: [[test_araclari_karari]].
+
+## [2026-08-07] ingest | Semgrep ilk tarama tamamlandı
+- 456 kural / 122 dosya (studio_app, strategy_studio, web, scripts, tests);
+  10 bulgu, triyaj sonrası 1 gerçek (base.html CDN script'lerinde SRI eksik),
+  9'u yanlış pozitif/bilinçli tasarım.
+- Windows'ta semgrep JSON çıktı cp1254 codec hatası veriyor,
+  PYTHONUTF8=1 ile çözülüyor.
+- Ayrıntı: [[test_araclari_karari]].
+
+## [2026-08-08] maintain | DeepR toplu sertleştirme — 35/35 görev tamamlandı
+- Kişisel `mDeep`/DeepR skill'i (Workflow yerine `Agent` tool ile — Workflow'un
+  additional-working-directory kapsam sızıntısı bu koşuda da doğrulandı) 13
+  boyutta NAU_v18Jul'u taradı; rapor `deepr_report_2026-08-08_0038.md`.
+- ~80 ham bulgu 35 konsolide göreve indirgendi; her biri koddan doğrulanıp
+  sonra düzeltildi. En kritik 3: auth yoktu + internete açıktı + chat XSS,
+  iki backtest motoru arası ters-işaretli max-drawdown sözleşmesi, `calc_rsi`
+  negatif `period`'da sessizce yanlış değer.
+- Test tabanı 849 → 931 geçen (0 regresyon, 2 önceden var olan ilgisiz hata
+  değişmedi); yeni `pytest.mark.e2e` gerçek Bybit ağ çağrısı yapan testleri
+  varsayılan koşumdan ayırıyor.
+- Ayrıntı: [[nau_deepr_toplu_sertlestirme_2026_08]], kod↔wiki köprüsü
+  `server.py` satırı [[webapp_module_map]]'te güncellendi.

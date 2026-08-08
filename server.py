@@ -22,9 +22,13 @@ Run (dev — auto-reload):
 
 Wiki References
 ---------------
-See: [[nautilus_kernel]], [[event_driven_architecture]]
+See: [[nautilus_kernel]], [[event_driven_architecture]], [[nau_deepr_toplu_sertlestirme_2026_08]]
 
 Loose analog of Nautilus [[nautilus_kernel]] for the WEB app: bootstraps subsystems in `lifespan()`, then routers dispatch requests. Same "compose, then run" shape.
+
+`_require_auth` (single-operator shared-secret auth via `NAU_ACCESS_TOKEN`) and
+the `nl2br` Jinja filter (XSS-safe chat-bubble rendering) were added in the
+2026-08-08 DeepR hardening pass — see [[nau_deepr_toplu_sertlestirme_2026_08]].
 """
 
 from __future__ import annotations
