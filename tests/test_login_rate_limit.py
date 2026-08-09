@@ -101,3 +101,48 @@ class TestLoginRateLimit:
         # must have aged out, so this IP is no longer rate-limited
         assert server._login_rate_limited("2.2.2.2") is False
         server._login_failures.clear()
+
+
+class TestClientIpPrefersCloudflareHeader:
+    """DeepR 2026-08-09 [DÜŞÜK]: this app is only reachable through a
+    Cloudflare Tunnel, so request.client.host is always the tunnel's own
+    local peer -- every real caller collapsed into one rate-limit bucket.
+    CF-Connecting-IP is the edge-computed real caller IP."""
+
+    def test_two_different_cf_connecting_ip_values_get_independent_buckets(
+        self, auth_client
+    ):
+        for _ in range(server._LOGIN_MAX_ATTEMPTS):
+            r = auth_client.post(
+                "/login",
+                data={"token": "wrong"},
+                headers={"CF-Connecting-IP": "5.6.7.8"},
+                follow_redirects=False,
+            )
+            assert r.status_code == 401
+
+        blocked = auth_client.post(
+            "/login",
+            data={"token": "wrong"},
+            headers={"CF-Connecting-IP": "5.6.7.8"},
+            follow_redirects=False,
+        )
+        assert blocked.status_code == 429
+
+        # A different CF-Connecting-IP must not inherit the first one's count,
+        # even though both requests share the same underlying TestClient
+        # connection (i.e. the same request.client.host).
+        still_open = auth_client.post(
+            "/login",
+            data={"token": "wrong"},
+            headers={"CF-Connecting-IP": "9.9.9.9"},
+            follow_redirects=False,
+        )
+        assert still_open.status_code == 401
+
+    def test_missing_header_falls_back_to_request_client_host(self, auth_client):
+        for _ in range(server._LOGIN_MAX_ATTEMPTS):
+            auth_client.post("/login", data={"token": "wrong"}, follow_redirects=False)
+
+        r = auth_client.post("/login", data={"token": "wrong"}, follow_redirects=False)
+        assert r.status_code == 429

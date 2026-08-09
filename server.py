@@ -22,7 +22,7 @@ Run (dev — auto-reload):
 
 Wiki References
 ---------------
-See: [[nautilus_kernel]], [[event_driven_architecture]], [[nau_deepr_toplu_sertlestirme_2026_08]]
+See: [[nautilus_kernel]], [[event_driven_architecture]], [[nau_deepr_toplu_sertlestirme_2026_08]], [[nau_deepr_ucuncu_tur_2026_08_09]]
 
 Loose analog of Nautilus [[nautilus_kernel]] for the WEB app: bootstraps subsystems in `lifespan()`, then routers dispatch requests. Same "compose, then run" shape.
 
@@ -41,6 +41,12 @@ redirect split, `_is_authenticated`/`_auth_cookie_value`, login/logout,
 rate-limit, secure cookie) previously had zero test coverage — see
 `tests/test_require_auth_middleware.py`, `tests/test_login_rate_limit.py`,
 `tests/test_auth_cookie_logout.py`.
+
+`_client_ip` (the rate-limit bucketing key) prefers the `CF-Connecting-IP`
+header over `request.client.host`: behind the Cloudflare Tunnel this app
+actually runs on (see `serve.py`), `request.client.host` is always the
+tunnel's own local peer, so the "per-IP" limiter was really one global
+bucket for every real caller (DeepR 2026-08-09 [DÜŞÜK]).
 """
 
 from __future__ import annotations
@@ -130,6 +136,22 @@ _login_lock = _threading.Lock()
 
 
 def _client_ip(request: Request) -> str:
+    """Rate-limit bucketing key.
+
+    Prefers CF-Connecting-IP over request.client.host: this app is only
+    reachable through a Cloudflare Tunnel (see serve.py's docstring), so
+    request.client.host is always the tunnel's own local peer, not the
+    real caller -- every request collapses into one bucket and the
+    "per-IP" limiter degrades to a single global one (DeepR 2026-08-09
+    [DÜŞÜK]). CF-Connecting-IP is set by Cloudflare's edge from the actual
+    TLS connection and is not attacker-suppliable as long as the origin
+    has no path that bypasses the tunnel. Falls back to
+    request.client.host for local/direct-uvicorn runs, where there is no
+    Cloudflare edge to set the header at all.
+    """
+    cf_ip = request.headers.get("CF-Connecting-IP")
+    if cf_ip:
+        return cf_ip.strip()
     return request.client.host if request.client else "unknown"
 
 
