@@ -25,7 +25,7 @@
            On the standalone page the guard makes this a no-op. #}
         <button class="btn btn-icon" type="button"
                 onclick="if(window.studioBacktestSpec)studioBacktestSpec('{{ s.id }}')"
-                title="Bu stratejiyle Backtest sekmesine geç">▶</button>
+                title="Switch to the Backtest tab with this strategy">▶</button>
         {# Edit: load this strategy back into the composer. ✎ overwrites the same
            record on Save; ⎘ saves as a NEW strategy (original preserved). Both
            switch to the Compose tab on /studio (no-op on the standalone page). #}
@@ -33,12 +33,12 @@
                 hx-post="/strategy/{{ s.id }}/edit?mode=overwrite"
                 hx-target="#drafts" hx-swap="outerHTML"
                 onclick="if(window.labTab)labTab('compose')"
-                title="Düzenle (Save üzerine yazar)">✎</button>
+                title="Edit (Save overwrites this record)">✎</button>
         <button class="btn btn-icon" type="button"
                 hx-post="/strategy/{{ s.id }}/edit?mode=copy"
                 hx-target="#drafts" hx-swap="outerHTML"
                 onclick="if(window.labTab)labTab('compose')"
-                title="Kopyala (Save yeni strateji oluşturur)">⎘</button>
+                title="Copy (Save creates a new strategy)">⎘</button>
         <button class="btn btn-icon" hx-delete="/strategy/{{ s.id }}" hx-target="#catalog" hx-swap="innerHTML"
                 hx-confirm="Delete '{{ s.name }}'?">🗑</button>
       </td>
