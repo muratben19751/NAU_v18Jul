@@ -28,8 +28,6 @@ import multiprocessing
 import os
 import random
 import shutil
-import subprocess
-import tempfile
 import threading
 import time
 from pathlib import Path
@@ -61,8 +59,6 @@ def _interruptible_sleep(seconds: float) -> None:
 
 from anthropic import Anthropic
 
-from app_constants import NO_WINDOW_FLAGS
-
 # Adım 2: MODEL/FALLBACK_MODEL/_active_model/_model_lock and (below)
 # _MODEL_OVERRIDE through current_model() extracted to llm_client.py,
 # re-exported below. Listed in __all__ (further down) so ruff's F401
@@ -86,13 +82,19 @@ from llm_client import (  # noqa: E402
     TerminalLLMError,
     _admit_llm_request,
     _check_llm_cancelled,
+    _ClaudeCLIClient,
+    _ClaudeCLIMessages,
+    _CLIError,
+    _CLIResponse,
     _fallback_rng,
     _is_free,
     _llm_request_token_bound,
     _observe_llm,
     _output_cap_telemetry,
+    _poll_until_deadline,
     _raise_if_llm_control_abort,
     _random_ctx,
+    _record_cli_side_models,
     _tag_degraded,
     current_effort,
     current_model,
@@ -121,6 +123,10 @@ __all__ = [
     "SELECTABLE_EFFORTS",
     "SELECTABLE_MODELS",
     "TerminalLLMError",
+    "_CLIError",
+    "_CLIResponse",
+    "_ClaudeCLIClient",
+    "_ClaudeCLIMessages",
     "_LLM_CONTROL",
     "_OBSERVED_OUTPUT_HIGH_WATER",
     "_OUTPUT_RESERVATION_LOCK",
@@ -131,8 +137,10 @@ __all__ = [
     "_llm_request_token_bound",
     "_observe_llm",
     "_output_cap_telemetry",
+    "_poll_until_deadline",
     "_raise_if_llm_control_abort",
     "_random_ctx",
+    "_record_cli_side_models",
     "_tag_degraded",
     "current_effort",
     "current_model",
@@ -519,311 +527,10 @@ def _create_message_once(client, _purpose: str = "", **kwargs):
 # below.
 from web_research import web_research_strategies  # noqa: E402
 
-# ── Claude Code CLI backend (subscription / OAuth — no ANTHROPIC_API_KEY needed) ─
-#
-# `claude -p` uses Claude Code's existing session (Pro/Max subscription) in
-# headless mode. It mimics the minimal messages.create surface the app uses:
-# a single user message + optional system prompt → a text-block response.
-
-
-class _CLITextBlock:
-    type = "text"
-
-    def __init__(self, text: str) -> None:
-        self.text = text
-
-
-class _CLIUsage:
-    def __init__(self, usage: dict, cost_usd: float | None = None) -> None:
-        self.input_tokens = int(usage.get("input_tokens", 0) or 0)
-        self.output_tokens = int(usage.get("output_tokens", 0) or 0)
-        self.cache_read_input_tokens = int(usage.get("cache_read_input_tokens", 0) or 0)
-        self.cache_creation_input_tokens = int(
-            usage.get("cache_creation_input_tokens", 0) or 0
-        )
-        # 5m/1h TTL split — the CLI writes cache with the 1-HOUR TTL, which
-        # prices at 2× input (not the 5-minute 1.25×); the ledger needs the
-        # split to bill writes correctly (see token_ledger.cost_usd).
-        self.cache_creation = dict(usage.get("cache_creation") or {})
-        # Claude CLI's result envelope exposes its own notional charge as
-        # ``total_cost_usd``.  Keep that provenance on the normalized response
-        # instead of silently recomputing the same call from a local table.
-        self.cost_usd = float(cost_usd) if cost_usd is not None else None
-
-
-class _CLIResponse:
-    def __init__(self, text: str, usage: dict, cost_usd: float | None = None) -> None:
-        self.content = [_CLITextBlock(text)]
-        self.usage = _CLIUsage(usage, cost_usd=cost_usd)
-        # CLI'nin max_tokens karşılığı yok (bkz. _ClaudeCLIMessages.create) —
-        # bu yolda tavana dayanıp kesilme olamaz.
-        self.stop_reason = None
-
-
-class _CLIError(RuntimeError):
-    """claude CLI error; preserves typed fields if a JSON body is present.
-
-    ``message`` (the envelope's ``result``) is kept separate from the raw text:
-    the expression that separates a permanent spend limit from a transient
-    rate-limit lives there, and it can be lost when the raw text is truncated →
-    see _is_credit_exhausted.
-    """
-
-    def __init__(self, text: str, status: int | None = None, message: str = "") -> None:
-        super().__init__(text)
-        self.status = status
-        self.message = message
-
-
-def _poll_until_deadline(
-    deadline_s: float, poll_interval: float, step, timeout_msg: str
-):
-    """Poll ``step(wait_s)`` under a cooperative-cancel + hard-deadline regime.
-
-    Shared skeleton behind the CLI subprocess loop and the OpenRouter
-    multiprocessing loop below — both poll a child process for completion
-    while checking ``_check_llm_cancelled()`` and a monotonic deadline, just
-    with different "is it done yet" primitives (subprocess.communicate vs a
-    multiprocessing Pipe), so only the loop math is factored out here; each
-    caller still owns its own child-process cleanup around this call.
-
-    ``step`` attempts one bounded wait and returns the result once ready, or
-    ``None`` if nothing completed yet (it may itself raise to signal a
-    definitive failure, e.g. the child process died). ``timeout_msg`` raises
-    ``TimeoutError`` once the deadline is exceeded.
-    """
-    deadline = time.monotonic() + deadline_s
-    while True:
-        _check_llm_cancelled()
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            raise TimeoutError(timeout_msg)
-        result = step(min(poll_interval, remaining))
-        if result is not None:
-            return result
-
-
-class _ClaudeCLIMessages:
-    def __init__(self, cli_path: str) -> None:
-        self._cli = cli_path
-
-    def create(
-        self,
-        *,
-        model: str,
-        messages: list[dict],
-        system: str | None = None,
-        max_tokens: int = 0,  # no equivalent in the CLI; prompts already request short answers
-        timeout: float | None = None,
-        **_ignored: Any,
-    ) -> _CLIResponse:
-        # Single-turn calls (every existing proposer) join user content verbatim
-        # — unchanged behaviour. Multi-turn chat prefixes each turn with a
-        # speaker label so the model sees its own prior replies (the CLI runs
-        # with --no-session-persistence, so conversation state lives server-side
-        # and the full history is re-sent as the prompt each call).
-        prompt = "\n\n".join(
-            (
-                m["content"]
-                if len(messages) == 1
-                else f"{'Kullanıcı' if m['role'] == 'user' else 'Asistan'}: {m['content']}"
-            )
-            for m in messages
-            if isinstance(m.get("content"), str)
-            and m.get("role") in ("user", "assistant")
-        )
-        cmd = [
-            self._cli,
-            "-p",
-            "--output-format",
-            "json",
-            "--model",
-            model,
-            "--tools",
-            "",  # all tools off: a pure LLM call
-            "--no-session-persistence",
-            "--strict-mcp-config",
-        ]
-
-        # Düşünme bütçesi. Bayrağı YALNIZ seçildiğinde geç: "" olduğunda CLI
-        # kendi varsayılanını uygular ve komut satırı bugünkü davranışla
-        # birebir aynı kalır.
-        effort = current_effort()
-        if effort:
-            cmd += ["--effort", effort]
-
-        # The system prompt is passed via a file: on Windows the command line
-        # over the .cmd shim is limited to ~8K chars; prompts containing the
-        # catalog can exceed that.
-        sys_file: str | None = None
-        try:
-            if system:
-                with tempfile.NamedTemporaryFile(
-                    mode="w", suffix=".txt", delete=False, encoding="utf-8"
-                ) as f:
-                    f.write(system)
-                    sys_file = f.name
-                cmd += ["--system-prompt-file", sys_file]
-
-            # Clear the API key/base URL from the env so the subscription (OAuth)
-            # is used; make cwd a neutral directory so the project CLAUDE.md/settings
-            # are not loaded.
-            env = os.environ.copy()
-            for var in (
-                "ANTHROPIC_API_KEY",
-                "ANTHROPIC_AUTH_TOKEN",
-                "ANTHROPIC_BASE_URL",
-            ):
-                env.pop(var, None)
-
-            cli_ceiling = float(os.environ.get("NAUTILUS_CLI_TIMEOUT", "300"))
-            # No caller-supplied timeout → use the CLI's own ceiling outright
-            # rather than blending in an unrelated default; a caller that DID
-            # pass one still can't exceed the hard ceiling.
-            deadline_s = (
-                cli_ceiling if timeout is None else min(float(timeout), cli_ceiling)
-            )
-            if not callable(getattr(_LLM_CONTROL, "cancel_check", None)):
-                proc = subprocess.run(
-                    cmd,
-                    input=prompt,
-                    capture_output=True,
-                    text=True,
-                    encoding="utf-8",
-                    errors="replace",
-                    env=env,
-                    cwd=tempfile.gettempdir(),
-                    timeout=deadline_s,
-                    creationflags=NO_WINDOW_FLAGS,
-                )
-            else:
-                proc = subprocess.Popen(
-                    cmd,
-                    stdin=subprocess.PIPE,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True,
-                    encoding="utf-8",
-                    errors="replace",
-                    env=env,
-                    cwd=tempfile.gettempdir(),
-                    creationflags=NO_WINDOW_FLAGS,
-                )
-                first = True
-
-                def _cli_step(wait_s):
-                    nonlocal first
-                    try:
-                        result = proc.communicate(
-                            input=prompt if first else None, timeout=wait_s
-                        )
-                    except subprocess.TimeoutExpired:
-                        first = False
-                        return None
-                    return result
-
-                try:
-                    stdout, stderr = _poll_until_deadline(
-                        deadline_s,
-                        0.25,
-                        _cli_step,
-                        f"claude CLI exceeded {deadline_s:g}s LLM call timeout",
-                    )
-                except (LLMCallCancelled, TimeoutError):
-                    proc.kill()
-                    proc.communicate()
-                    raise
-                proc.stdout = stdout
-                proc.stderr = stderr
-        finally:
-            if sys_file:
-                try:
-                    os.unlink(sys_file)
-                except OSError:
-                    pass
-
-        # The error body also comes back as JSON (even when exit≠0) and the real
-        # cause is in its ``result``/``api_error_status`` fields — truncating the
-        # raw stdout and embedding it into a string lost this signal.
-        #
-        # Envelope shape depends on the CLI version: historically one JSON
-        # object; newer CLIs emit the whole event stream as one JSON ARRAY
-        # (system/assistant/rate_limit_event/... events) whose terminal
-        # ``type=="result"`` item is the old envelope. Normalize both — the
-        # array shape crashed every LLM call here on 2026-08-01
-        # ("'list' object has no attribute 'get'").
-        envelope: dict[str, Any] = {}
-        try:
-            parsed = json.loads(proc.stdout)
-        except (json.JSONDecodeError, TypeError):
-            parsed = None
-        if isinstance(parsed, dict):
-            envelope = parsed
-        elif isinstance(parsed, list):
-            dicts = [x for x in parsed if isinstance(x, dict)]
-            envelope = next(
-                (x for x in reversed(dicts) if x.get("type") == "result"),
-                dicts[-1] if dicts else {},
-            )
-
-        if proc.returncode != 0 or envelope.get("is_error"):
-            message = str(envelope.get("result") or "")
-            status = envelope.get("api_error_status")
-            detail = message or (proc.stderr or proc.stdout or "").strip()
-            raise _CLIError(
-                f"claude CLI exited {proc.returncode}: {detail[:500]}",
-                status=status if isinstance(status, int) else None,
-                message=message,
-            )
-        if envelope.get("subtype") != "success":
-            # If envelope is empty (stdout not JSON) show the raw output, not "None".
-            detail = str(envelope.get("result") or (proc.stdout or "").strip())
-            raise _CLIError(
-                f"claude CLI error ({envelope.get('subtype')}): {detail[:500]}"
-            )
-        _record_cli_side_models(envelope, model)
-        return _CLIResponse(
-            envelope.get("result") or "",
-            envelope.get("usage") or {},
-            cost_usd=envelope.get("total_cost_usd"),
-        )
-
-
-def _record_cli_side_models(envelope: dict, called_model: str) -> None:
-    """Ledger the CLI's INTERNAL side-model calls from ``modelUsage``.
-
-    Each `claude -p` run makes small helper calls on other models (e.g. a
-    Haiku topic/safety pass, ~$0.0006/çağrı). The envelope's top-level
-    ``usage`` covers only the main model, so without this the ledger silently
-    drops them. The main model's own entry is skipped — ``_create_message``
-    already records it from ``resp.usage``. Best-effort: never raises.
-    """
-    try:
-        import token_ledger
-
-        for name, u in (envelope.get("modelUsage") or {}).items():
-            if not isinstance(u, dict):
-                continue
-            canon = str(u.get("canonicalModel") or name)
-            if name.startswith(called_model) or canon.startswith(called_model):
-                continue  # main call — recorded via resp.usage, don't double-count
-            token_ledger.record(
-                canon,
-                {
-                    "input_tokens": u.get("inputTokens", 0),
-                    "output_tokens": u.get("outputTokens", 0),
-                    "cache_read_input_tokens": u.get("cacheReadInputTokens", 0),
-                    "cache_creation_input_tokens": u.get("cacheCreationInputTokens", 0),
-                },
-                "cli_internal",
-            )
-    except Exception:
-        pass
-
-
-class _ClaudeCLIClient:
-    def __init__(self, cli_path: str) -> None:
-        self.messages = _ClaudeCLIMessages(cli_path)
+# Adım 4: the Claude Code CLI backend (_CLITextBlock/_CLIUsage/
+# _CLIResponse/_CLIError, _poll_until_deadline, _ClaudeCLIMessages,
+# _record_cli_side_models, _ClaudeCLIClient) extracted to llm_client.py,
+# re-exported below.
 
 
 class _ORTextBlock:

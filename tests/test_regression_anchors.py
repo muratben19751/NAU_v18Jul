@@ -877,7 +877,8 @@ class TestNoConsoleWindow:
             assert NO_WINDOW_FLAGS == 0
 
     def test_every_subprocess_call_hides_console(self):
-        """Every subprocess.run/Popen in agent.py/data.py must pass creationflags.
+        """Every subprocess.run/Popen in agent.py/data.py/llm_client.py must
+        pass creationflags.
 
         Source-level guard: breaks if a NEW call is added that forgets the flag
         (which surfaces to the user as a terminal window, a silent regression).
@@ -887,7 +888,7 @@ class TestNoConsoleWindow:
 
         root = pathlib.Path(__file__).resolve().parents[1]
         offenders = []
-        for name in ("agent.py", "data.py"):
+        for name in ("agent.py", "data.py", "llm_client.py"):
             tree = _ast.parse((root / name).read_text(encoding="utf-8"))
             for node in _ast.walk(tree):
                 if not isinstance(node, _ast.Call):
