@@ -1,19 +1,25 @@
-"""LLM client selection: model/effort pins, OpenRouter catalog.
+"""LLM client selection: model/effort pins, OpenRouter catalog, control plane.
 
-agent.py decomposition (Adım 2, safe-first slice): extracted verbatim from
-agent.py's Domain B (model/effort/OpenRouter-catalog selection). Self-
-contained — nothing here depends on anything else in agent.py.
+agent.py decomposition (Adım 2-3, safe-first slice): extracted verbatim from
+agent.py's Domain B (model/effort/OpenRouter-catalog selection, Adım 2) and
+Domain A (cancellation/budget-admission/telemetry/degradation-tagging
+control plane, Adım 3, landed after B since _observe_llm/_llm_request_token_bound
+call current_model()). Self-contained — nothing here depends on anything
+else in agent.py.
 
-`model_unavailable_reason` stayed BEHIND in agent.py rather than moving here
-with its former neighbors: it calls `_get_openrouter_client()`, which is
-still part of agent.py's not-yet-extracted transport/dispatch layer (a
-later, separate, more careful session — see the decomposition plan). Moving
-it here would have made this module reach back into agent.py, exactly the
-reverse-dependency direction the decomposition is meant to avoid.
+`model_unavailable_reason` and `_interruptible_sleep` stayed BEHIND in
+agent.py rather than moving here with their former neighbors:
+`model_unavailable_reason` calls `_get_openrouter_client()`, `_interruptible_sleep`
+calls `_sleep` (the patchable `time.sleep` alias used by OpenRouter's 429
+backoff) — both still part of agent.py's not-yet-extracted transport/dispatch
+layer (a later, separate, more careful session — see the decomposition
+plan). Moving either here would have made this module reach back into
+agent.py, exactly the reverse-dependency direction the decomposition is
+meant to avoid.
 
 Wiki References
 ---------------
-See: [[model_secici_ve_gorunurluk]], [[llm_maliyet_kaldiraclari]].
+See: [[model_secici_ve_gorunurluk]], [[llm_maliyet_kaldiraclari]], [[kesilme_ve_degrade_gorunurlugu]].
 """
 
 from __future__ import annotations
@@ -21,6 +27,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import random
 import threading
 import time
 
@@ -352,3 +359,220 @@ def current_model() -> str:
     if _active_model:
         return _active_model
     return pin or MODEL
+
+
+# ── Control plane: cancellation / telemetry / budget-admission / degradation
+# tagging (agent.py decomposition, Adım 3) ──────────────────────────────────
+
+
+class TerminalLLMError(RuntimeError):
+    """Non-retryable provider failure (credit/auth/permission)."""
+
+
+class LLMCallCancelled(RuntimeError):
+    """The owning AUTO run requested stop while an LLM call was in flight."""
+
+
+class LLMTokenBudgetExceeded(RuntimeError):
+    """A local caller budget rejected an LLM provider attempt before billing."""
+
+
+_LLM_CONTROL = threading.local()
+
+# The Claude CLI deliberately has no ``max_tokens`` flag.  For that backend a
+# configured output ceiling is therefore a request *hint*, not a billing cap.
+# Keep the largest observed output per (actual model, purpose) and reserve it
+# on the next attempt. This is intentionally conservative, but not advertised
+# as a hard provider-side limit.
+_OUTPUT_RESERVATION_LOCK = threading.Lock()
+_OBSERVED_OUTPUT_HIGH_WATER: dict[tuple[str, str], int] = {}
+
+
+def set_thread_llm_control(cancel_check=None, observer=None, admit_check=None) -> None:
+    """Install AUTO-scoped cancellation, telemetry and budget admission hooks."""
+    _LLM_CONTROL.cancel_check = cancel_check
+    _LLM_CONTROL.observer = observer
+    _LLM_CONTROL.admit_check = admit_check
+
+
+def _check_llm_cancelled() -> None:
+    check = getattr(_LLM_CONTROL, "cancel_check", None)
+    if callable(check) and check():
+        raise LLMCallCancelled("AUTO stop requested")
+
+
+def _observe_llm(**event) -> None:
+    usage = event.get("usage") or {}
+    if isinstance(usage, dict):
+        try:
+            observed_output = max(0, int(usage.get("output_tokens") or 0))
+        except (TypeError, ValueError):
+            observed_output = 0
+        if observed_output:
+            key = (
+                str(event.get("model") or current_model() or "unknown"),
+                str(event.get("purpose") or "llm"),
+            )
+            with _OUTPUT_RESERVATION_LOCK:
+                _OBSERVED_OUTPUT_HIGH_WATER[key] = max(
+                    observed_output, _OBSERVED_OUTPUT_HIGH_WATER.get(key, 0)
+                )
+    observer = getattr(_LLM_CONTROL, "observer", None)
+    if callable(observer):
+        try:
+            observer(event)
+        except Exception:
+            logging.exception("LLM observer failed")
+
+
+def _output_cap_telemetry(
+    client,
+    usage: dict,
+    max_tokens: int,
+    *,
+    provider_enforced: bool = False,
+) -> dict[str, int | str | bool]:
+    """Describe whether an output ceiling was enforced or merely requested.
+
+    Claude Code's CLI accepts no output-token switch.  Without this explicit
+    distinction the session log made a 4k request look like a 4k hard cap even
+    after the CLI returned more than 4k tokens.  Keep the proof alongside each
+    usage event so budget reviews do not have to infer it from implementation
+    details.
+    """
+    # Temporary lazy import: _ClaudeCLIClient is Domain C (CLI backend), still
+    # in agent.py until Adım 4 moves it here too — at which point this becomes
+    # a plain module-level reference, no import needed. Lazy (not module-level)
+    # so this module and agent.py can import each other without a cycle.
+    from agent import _ClaudeCLIClient
+
+    requested = max(0, int(max_tokens or 0))
+    output = max(0, int(usage.get("output_tokens") or 0))
+    # A thread may be pinned to OpenRouter while the process-default client is
+    # still the Claude CLI.  The transport, not that cached default client,
+    # determines whether ``max_tokens`` is a hard provider limit.
+    is_cli = isinstance(client, _ClaudeCLIClient) and not provider_enforced
+    exceeded = bool(is_cli and requested and output > requested)
+    return {
+        "output_cap_mode": "advisory_cli" if is_cli else "provider_enforced",
+        "output_cap_requested": requested,
+        "output_cap_exceeded": exceeded,
+        "output_cap_excess_tokens": max(0, output - requested) if exceeded else 0,
+    }
+
+
+def _llm_request_token_bound(
+    kwargs: dict, *, model: str = "", purpose: str = ""
+) -> dict[str, int | str]:
+    """Conservative token upper bound used before an LLM request is admitted.
+
+    UTF-8 bytes are a safe upper bound for BPE-style input tokenization and do
+    not require a model-specific tokenizer. For API-backed models the output
+    side is bounded by ``max_tokens``. Claude CLI has no equivalent switch, so
+    its reservation is the configured hint raised to the observed high-water
+    mark for this model/purpose. This is a conservative admission estimate,
+    not a provider-enforced hard cap.
+    """
+
+    payloads: list[str] = []
+    system = kwargs.get("system")
+    if isinstance(system, str):
+        payloads.append(system)
+    for message in kwargs.get("messages") or []:
+        if not isinstance(message, dict):
+            continue
+        content = message.get("content")
+        if isinstance(content, str):
+            payloads.append(content)
+    input_bound = sum(len(text.encode("utf-8")) for text in payloads)
+    # Account for role/message framing without pretending to know the provider's
+    # exact chat template.
+    input_bound += 64 * (len(payloads) + 1)
+    configured_output = max(0, int(kwargs.get("max_tokens") or 0))
+    key = (
+        str(model or current_model() or "unknown"),
+        str(purpose or "llm"),
+    )
+    with _OUTPUT_RESERVATION_LOCK:
+        observed_output = _OBSERVED_OUTPUT_HIGH_WATER.get(key, 0)
+    output_bound = max(configured_output, observed_output)
+    return {
+        "input_token_bound": input_bound,
+        "output_token_bound": output_bound,
+        "total_token_bound": input_bound + output_bound,
+        "configured_output_tokens": configured_output,
+        "observed_output_reserve": observed_output,
+        "output_reservation_mode": (
+            "observed_high_water"
+            if observed_output > configured_output
+            else "configured_hint"
+        ),
+    }
+
+
+def _admit_llm_request(kwargs: dict, *, model: str = "", purpose: str = "") -> None:
+    admit = getattr(_LLM_CONTROL, "admit_check", None)
+    if callable(admit):
+        admit(_llm_request_token_bound(kwargs, model=model, purpose=purpose))
+
+
+def _raise_if_llm_control_abort(exc: BaseException) -> None:
+    """Never disguise STOP/budget control flow as a successful fallback."""
+
+    if isinstance(exc, LLMCallCancelled) or bool(
+        getattr(exc, "llm_control_abort", False)
+    ):
+        raise exc
+
+
+def is_terminal_llm_error(exc: BaseException) -> bool:
+    """Return True when fallback/retry cannot possibly heal the provider call.
+
+    OpenAI-compatible SDKs do not share one exception class, so inspect the
+    stable HTTP status plus a conservative message fallback. Rate limits (429),
+    timeouts and 5xx responses remain retryable; credit/auth failures do not.
+    """
+
+    status = getattr(exc, "status_code", None)
+    response = getattr(exc, "response", None)
+    if status is None and response is not None:
+        status = getattr(response, "status_code", None)
+    if status in (401, 402, 403):
+        return True
+    text = f"{type(exc).__name__}: {exc}".lower()
+    markers = (
+        "insufficient credit",
+        "insufficient_credit",
+        "payment required",
+        "invalid api key",
+        "authentication failed",
+        "not authorized",
+        "permission denied",
+    )
+    return any(marker in text for marker in markers)
+
+
+def _tag_degraded(fb: dict, e: BaseException) -> dict:
+    """Stamp a fallback dict with a machine-readable degradation marker, in place.
+
+    Shared by every "LLM call failed, hand back a fallback instead" path so
+    the degraded-fallback contract (which fields exist, truncation length,
+    terminal-error flag) is defined once instead of drifting between copies.
+    """
+    fb["degraded"] = type(e).__name__
+    fb["degraded_detail"] = str(e)[:500]
+    fb["degraded_terminal"] = is_terminal_llm_error(e)
+    return fb
+
+
+_random_ctx = threading.local()
+
+
+def set_thread_random_seed(seed: str | int | None) -> None:
+    """Pin deterministic fallback exploration to the current AUTO worker."""
+
+    _random_ctx.rng = random.Random(str(seed)) if seed is not None else None
+
+
+def _fallback_rng():
+    return getattr(_random_ctx, "rng", None) or random

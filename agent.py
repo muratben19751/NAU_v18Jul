@@ -38,161 +38,12 @@ from typing import Any
 import llm_client  # noqa: F401  # module-qualified _model_lock/_active_model below
 
 
-class TerminalLLMError(RuntimeError):
-    """Non-retryable provider failure (credit/auth/permission)."""
-
-
-class LLMCallCancelled(RuntimeError):
-    """The owning AUTO run requested stop while an LLM call was in flight."""
-
-
-class LLMTokenBudgetExceeded(RuntimeError):
-    """A local caller budget rejected an LLM provider attempt before billing."""
-
-
-_LLM_CONTROL = threading.local()
-
-# The Claude CLI deliberately has no ``max_tokens`` flag.  For that backend a
-# configured output ceiling is therefore a request *hint*, not a billing cap.
-# Keep the largest observed output per (actual model, purpose) and reserve it
-# on the next attempt. This is intentionally conservative, but not advertised
-# as a hard provider-side limit.
-_OUTPUT_RESERVATION_LOCK = threading.Lock()
-_OBSERVED_OUTPUT_HIGH_WATER: dict[tuple[str, str], int] = {}
-
-
-def set_thread_llm_control(cancel_check=None, observer=None, admit_check=None) -> None:
-    """Install AUTO-scoped cancellation, telemetry and budget admission hooks."""
-    _LLM_CONTROL.cancel_check = cancel_check
-    _LLM_CONTROL.observer = observer
-    _LLM_CONTROL.admit_check = admit_check
-
-
-def _check_llm_cancelled() -> None:
-    check = getattr(_LLM_CONTROL, "cancel_check", None)
-    if callable(check) and check():
-        raise LLMCallCancelled("AUTO stop requested")
-
-
-def _observe_llm(**event) -> None:
-    usage = event.get("usage") or {}
-    if isinstance(usage, dict):
-        try:
-            observed_output = max(0, int(usage.get("output_tokens") or 0))
-        except (TypeError, ValueError):
-            observed_output = 0
-        if observed_output:
-            key = (
-                str(event.get("model") or current_model() or "unknown"),
-                str(event.get("purpose") or "llm"),
-            )
-            with _OUTPUT_RESERVATION_LOCK:
-                _OBSERVED_OUTPUT_HIGH_WATER[key] = max(
-                    observed_output, _OBSERVED_OUTPUT_HIGH_WATER.get(key, 0)
-                )
-    observer = getattr(_LLM_CONTROL, "observer", None)
-    if callable(observer):
-        try:
-            observer(event)
-        except Exception:
-            logging.exception("LLM observer failed")
-
-
-def _output_cap_telemetry(
-    client,
-    usage: dict,
-    max_tokens: int,
-    *,
-    provider_enforced: bool = False,
-) -> dict[str, int | str | bool]:
-    """Describe whether an output ceiling was enforced or merely requested.
-
-    Claude Code's CLI accepts no output-token switch.  Without this explicit
-    distinction the session log made a 4k request look like a 4k hard cap even
-    after the CLI returned more than 4k tokens.  Keep the proof alongside each
-    usage event so budget reviews do not have to infer it from implementation
-    details.
-    """
-
-    requested = max(0, int(max_tokens or 0))
-    output = max(0, int(usage.get("output_tokens") or 0))
-    # A thread may be pinned to OpenRouter while the process-default client is
-    # still the Claude CLI.  The transport, not that cached default client,
-    # determines whether ``max_tokens`` is a hard provider limit.
-    is_cli = isinstance(client, _ClaudeCLIClient) and not provider_enforced
-    exceeded = bool(is_cli and requested and output > requested)
-    return {
-        "output_cap_mode": "advisory_cli" if is_cli else "provider_enforced",
-        "output_cap_requested": requested,
-        "output_cap_exceeded": exceeded,
-        "output_cap_excess_tokens": max(0, output - requested) if exceeded else 0,
-    }
-
-
-def _llm_request_token_bound(
-    kwargs: dict, *, model: str = "", purpose: str = ""
-) -> dict[str, int | str]:
-    """Conservative token upper bound used before an LLM request is admitted.
-
-    UTF-8 bytes are a safe upper bound for BPE-style input tokenization and do
-    not require a model-specific tokenizer. For API-backed models the output
-    side is bounded by ``max_tokens``. Claude CLI has no equivalent switch, so
-    its reservation is the configured hint raised to the observed high-water
-    mark for this model/purpose. This is a conservative admission estimate,
-    not a provider-enforced hard cap.
-    """
-
-    payloads: list[str] = []
-    system = kwargs.get("system")
-    if isinstance(system, str):
-        payloads.append(system)
-    for message in kwargs.get("messages") or []:
-        if not isinstance(message, dict):
-            continue
-        content = message.get("content")
-        if isinstance(content, str):
-            payloads.append(content)
-    input_bound = sum(len(text.encode("utf-8")) for text in payloads)
-    # Account for role/message framing without pretending to know the provider's
-    # exact chat template.
-    input_bound += 64 * (len(payloads) + 1)
-    configured_output = max(0, int(kwargs.get("max_tokens") or 0))
-    key = (
-        str(model or current_model() or "unknown"),
-        str(purpose or "llm"),
-    )
-    with _OUTPUT_RESERVATION_LOCK:
-        observed_output = _OBSERVED_OUTPUT_HIGH_WATER.get(key, 0)
-    output_bound = max(configured_output, observed_output)
-    return {
-        "input_token_bound": input_bound,
-        "output_token_bound": output_bound,
-        "total_token_bound": input_bound + output_bound,
-        "configured_output_tokens": configured_output,
-        "observed_output_reserve": observed_output,
-        "output_reservation_mode": (
-            "observed_high_water"
-            if observed_output > configured_output
-            else "configured_hint"
-        ),
-    }
-
-
-def _admit_llm_request(kwargs: dict, *, model: str = "", purpose: str = "") -> None:
-    admit = getattr(_LLM_CONTROL, "admit_check", None)
-    if callable(admit):
-        admit(_llm_request_token_bound(kwargs, model=model, purpose=purpose))
-
-
-def _raise_if_llm_control_abort(exc: BaseException) -> None:
-    """Never disguise STOP/budget control flow as a successful fallback."""
-
-    if isinstance(exc, LLMCallCancelled) or bool(
-        getattr(exc, "llm_control_abort", False)
-    ):
-        raise exc
-
-
+# Adım 3: TerminalLLMError/LLMCallCancelled/LLMTokenBudgetExceeded,
+# _LLM_CONTROL/_OUTPUT_RESERVATION_LOCK/_OBSERVED_OUTPUT_HIGH_WATER,
+# set_thread_llm_control through _tag_degraded, _random_ctx/
+# set_thread_random_seed/_fallback_rng extracted to llm_client.py, imported
+# back further down. _interruptible_sleep stays here — it calls _sleep
+# (Domain C's patchable time.sleep alias), still not extracted.
 def _interruptible_sleep(seconds: float) -> None:
     # Non-AUTO callers have no cancellation source; preserve one sleep call
     # (also keeps deterministic unit tests fast when _sleep is replaced).
@@ -206,59 +57,6 @@ def _interruptible_sleep(seconds: float) -> None:
         if remaining <= 0:
             return
         _sleep(min(0.25, remaining))
-
-
-def is_terminal_llm_error(exc: BaseException) -> bool:
-    """Return True when fallback/retry cannot possibly heal the provider call.
-
-    OpenAI-compatible SDKs do not share one exception class, so inspect the
-    stable HTTP status plus a conservative message fallback. Rate limits (429),
-    timeouts and 5xx responses remain retryable; credit/auth failures do not.
-    """
-
-    status = getattr(exc, "status_code", None)
-    response = getattr(exc, "response", None)
-    if status is None and response is not None:
-        status = getattr(response, "status_code", None)
-    if status in (401, 402, 403):
-        return True
-    text = f"{type(exc).__name__}: {exc}".lower()
-    markers = (
-        "insufficient credit",
-        "insufficient_credit",
-        "payment required",
-        "invalid api key",
-        "authentication failed",
-        "not authorized",
-        "permission denied",
-    )
-    return any(marker in text for marker in markers)
-
-
-def _tag_degraded(fb: dict, e: BaseException) -> dict:
-    """Stamp a fallback dict with a machine-readable degradation marker, in place.
-
-    Shared by every "LLM call failed, hand back a fallback instead" path so
-    the degraded-fallback contract (which fields exist, truncation length,
-    terminal-error flag) is defined once instead of drifting between copies.
-    """
-    fb["degraded"] = type(e).__name__
-    fb["degraded_detail"] = str(e)[:500]
-    fb["degraded_terminal"] = is_terminal_llm_error(e)
-    return fb
-
-
-_random_ctx = threading.local()
-
-
-def set_thread_random_seed(seed: str | int | None) -> None:
-    """Pin deterministic fallback exploration to the current AUTO worker."""
-
-    _random_ctx.rng = random.Random(str(seed)) if seed is not None else None
-
-
-def _fallback_rng():
-    return getattr(_random_ctx, "rng", None) or random
 
 
 from anthropic import Anthropic
@@ -275,14 +73,30 @@ from app_constants import NO_WINDOW_FLAGS
 # _client/_client_lock stay here — this module's own not-yet-extracted
 # transport-layer state.
 from llm_client import (  # noqa: E402
+    _LLM_CONTROL,
+    _OBSERVED_OUTPUT_HIGH_WATER,
+    _OUTPUT_RESERVATION_LOCK,
     EFFORT,
     FALLBACK_MODEL,
     MODEL,
     SELECTABLE_EFFORTS,
     SELECTABLE_MODELS,
+    LLMCallCancelled,
+    LLMTokenBudgetExceeded,
+    TerminalLLMError,
+    _admit_llm_request,
+    _check_llm_cancelled,
+    _fallback_rng,
     _is_free,
+    _llm_request_token_bound,
+    _observe_llm,
+    _output_cap_telemetry,
+    _raise_if_llm_control_abort,
+    _random_ctx,
+    _tag_degraded,
     current_effort,
     current_model,
+    is_terminal_llm_error,
     model_id,
     model_label,
     openrouter_catalog,
@@ -292,19 +106,37 @@ from llm_client import (  # noqa: E402
     resolve_effort,
     selectable_models,
     set_thread_effort,
+    set_thread_llm_control,
     set_thread_model,
+    set_thread_random_seed,
 )
 from strategies import STRATEGY_PARAM_SPEC
 
 __all__ = [
     "EFFORT",
     "FALLBACK_MODEL",
+    "LLMCallCancelled",
+    "LLMTokenBudgetExceeded",
     "MODEL",
     "SELECTABLE_EFFORTS",
     "SELECTABLE_MODELS",
+    "TerminalLLMError",
+    "_LLM_CONTROL",
+    "_OBSERVED_OUTPUT_HIGH_WATER",
+    "_OUTPUT_RESERVATION_LOCK",
+    "_admit_llm_request",
+    "_check_llm_cancelled",
+    "_fallback_rng",
     "_is_free",
+    "_llm_request_token_bound",
+    "_observe_llm",
+    "_output_cap_telemetry",
+    "_raise_if_llm_control_abort",
+    "_random_ctx",
+    "_tag_degraded",
     "current_effort",
     "current_model",
+    "is_terminal_llm_error",
     "model_id",
     "model_label",
     "openrouter_catalog",
@@ -314,7 +146,9 @@ __all__ = [
     "resolve_effort",
     "selectable_models",
     "set_thread_effort",
+    "set_thread_llm_control",
     "set_thread_model",
+    "set_thread_random_seed",
 ]
 
 _client: Anthropic | _ClaudeCLIClient | _OpenRouterClient | None = None

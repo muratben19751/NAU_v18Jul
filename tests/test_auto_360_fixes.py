@@ -301,8 +301,14 @@ def test_custom_block_cap_rejects_truncation_retry_before_second_provider_call(
 def test_cli_output_reservation_uses_observed_model_purpose_high_water(monkeypatch):
     """Claude CLI lacks max_tokens: later admissions reserve observed output."""
     import agent
+    import llm_client
 
-    monkeypatch.setattr(agent, "_OBSERVED_OUTPUT_HIGH_WATER", {})
+    # agent.py decomposition Adım 3: _observe_llm/_llm_request_token_bound now
+    # live in llm_client.py and read _OBSERVED_OUTPUT_HIGH_WATER as a bare
+    # global there -- patching agent's rebound name was inert (nothing reads
+    # it), silently relying on whatever the real dict already held for this
+    # key from earlier tests instead of starting clean.
+    monkeypatch.setattr(llm_client, "_OBSERVED_OUTPUT_HIGH_WATER", {})
     agent._observe_llm(
         model="claude-fable-5",
         purpose="custom_block",
