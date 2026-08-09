@@ -1,7 +1,7 @@
 ---
 title: nautilus_web_app DeepR Üçüncü Tur (2026-08-09, NAU app'e odaklı)
 type: synthesis
-summary: Üçüncü DeepR koşusu (164 ajan, 37 bulgu) — ilk deneme nautilus_wiki/ alt-dizinine kapsam-sızdı, envanterden isim çıkarılınca düzeldi; 6/6 YÜKSEK bulgu tamamlandı (composer, AUTO E2E, repair script, delete_custom_batch testi, CI e2e retry, route-modülü private-state erişimi), 31 ORTA/DÜŞÜK/BİLGİ henüz ele alınmadı.
+summary: Üçüncü DeepR koşusu (164 ajan, 37 bulgu) — ilk deneme nautilus_wiki/ alt-dizinine kapsam-sızdı, envanterden isim çıkarılınca düzeldi. 6/6 YÜKSEK tamamlandı; kullanıcı "hepsini yap" dedi, kalan 31 ORTA/DÜŞÜK/BİLGİ sırayla kapanıyor (bkz. ilerleme listesi).
 key_concepts:
   - crash_only_design
 sources:
@@ -125,13 +125,33 @@ sorunu. Rapor (`deepr_report_2026-08-09_0040.md`) tam listeyi tutuyor.
    simüle edilmiş kirlenmeye karşı doğrulandı. İkinci koşum: 1170 geçti, 0
    kaldı.
 
-Kullanıcının bu geçişte seçtiği 6/6 YÜKSEK bulgu tamamlandı. Kalan 31
-ORTA/DÜŞÜK/BİLGİ bulgu henüz ele alınmadı — rapor
-(`deepr_report_2026-08-09_0040.md`) tam listeyi tutuyor.
+Kullanıcının bu geçişte seçtiği 6/6 YÜKSEK bulgu tamamlandı. Kullanıcı sonra
+kalan 34'ün tam listesini, ardından ORTA listesini istedi, sonra **"hepsini
+yap"** dedi — kalan 31 ORTA/DÜŞÜK/BİLGİ de sırayla ele alınıyor. Rapor
+(`deepr_report_2026-08-09_0040.md`) tam listeyi tutuyor; her madde ayrı
+commit, aşağıda yalnız gerçek bir sürprizi/kararı olanlar detaylandırılıyor,
+geri kalanı tek satır.
+
+## Kalan 31 (ORTA/DÜŞÜK/BİLGİ) — "hepsini yap"
+
+- ✅ `NAU_ACCESS_TOKEN` fail-open — pm2 (PM2_HOME) altında token boşsa artık uyarıyor.
+- ✅ `atr_period`/`commission_pct` sunucu-taraflı doğrulama/clamp (composer.validate() + backtest.py).
+- ✅ `codegate.py` LShift DoS — `_check_pow`'un eşdeğeri, `_fold_literal`'ın "bitwise büyümez" varsayımı LShift için yanlıştı.
+- ✅ `_terminal_message` run_id doğrulaması — path-traversal dosya-varlık oracle'ı kapandı.
+- ✅ `_index_rows()` artık `_bybit_rows()` ile aynı TTL cache deseninde.
+- ✅ `_env_float`/`_env_int` `app_constants.py`'ye konsolide edildi (3 kopya → 1).
+- ✅ **`backtest.py`'de ~467 satır ölü kod silindi** (`run_backtest_node`/`run_composed_backtest_node`,
+  BacktestNode yolu) — **beklenmedik bulgu**: `webapp_module_map.md`'nin "Uçtan uca akış" bölümü bu
+  kodu hâlâ AKTİF mimari diye belgeliyordu ("katalogda veri varsa → BacktestNode"), ama
+  `sandbox.run_backtest_guarded` repo genelinde bu iki fonksiyonu SIFIR yerde çağırıyordu — wiki, kod
+  `sandbox.py`'nin tek-yol subprocess mimarisine geçtikten sonra hiç güncellenmemiş. Akış bölümü
+  düzeltildi; [[backtest_node]] (Nautilus'un kendi BacktestNode API'si, hâlâ geçerli genel doküman)
+  "webapp'te ölçüldü" notlarına "bu entegrasyon kaldırıldı" açıklaması eklendi.
 
 <!-- BACKLINKS:BEGIN -->
 ## Referenced by
 
+- [[backtest_node]]
 - [[nau_deepr_ikinci_tur_2026_08_08]]
 - [[webapp_module_map]]
 <!-- BACKLINKS:END -->

@@ -2,6 +2,28 @@
 
 Append-only. Her ingest, query veya lint operasyonu bir satır bırakır.
 
+## 2026-08-09 (5) — Kullanıcı "hepsini yap" dedi: kalan 31 ORTA/DÜŞÜK/BİLGİ, sırayla (kod → wiki)
+
+- **rapor** — 6/6 YÜKSEK bulgu kapandıktan sonra kullanıcı ORTA listesini
+  istedi, sonra "hepsini yap" dedi — kalan 31 bulgu tek tek, aynı
+  disiplinle (fix → test → mutasyon testi gereken yerde → commit → push)
+  ele alınıyor.
+- **fix (bu geçiş)** — NAU_ACCESS_TOKEN fail-open, atr_period/commission_pct
+  server-side doğrulama, codegate LShift DoS, _terminal_message run_id
+  doğrulaması, _index_rows TTL cache, _env_float/_env_int konsolidasyonu,
+  backtest.py'de ~467 satır ölü kod silindi.
+- **beklenmedik bulgu** — ölü kod silinirken `webapp_module_map.md`'nin
+  "Uçtan uca akış" bölümünün, kaldırılmış bir mimariyi (otomatik
+  BacktestNode/BacktestEngine motor seçimi) hâlâ AKTİF diye belgelediği
+  ortaya çıktı — `sandbox.run_backtest_guarded` bu iki fonksiyonu repo
+  genelinde sıfır yerde çağırıyordu, wiki muhtemelen sandbox.py'nin
+  tek-yol mimarisine geçişte hiç güncellenmemiş. Akış bölümü düzeltildi;
+  [[backtest_node]] (Nautilus'un kendi API'si, hâlâ geçerli) "webapp'te
+  ölçüldü" notlarına netleştirme eklendi.
+- **wiki** — `nau_deepr_ucuncu_tur_2026_08_09.md`'ye kompakt ilerleme
+  listesi eklendi (kalan öğeler için tek satır, yalnız gerçek sürprizler
+  detaylandırılıyor — sayfa boyutu kontrol altında tutuluyor).
+
 ## 2026-08-09 (4) — Route modülleri private-state erişimi kapandı; DeepR üçüncü turun 6/6 YÜKSEK'i tamam (kod → wiki, wiki-sync skill)
 
 - **rapor** — Bağlam kullanımı otomatik wiki-sync eşiğini aştı; bu geçiş

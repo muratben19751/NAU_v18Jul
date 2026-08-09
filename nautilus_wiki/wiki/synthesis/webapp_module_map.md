@@ -113,21 +113,26 @@ Kullanıcı web UI'da bir strateji seçip **Run backtest**'e tıkladığında ol
 
 1. **State** — `web/routes/backtest.py` spec'i `state.py`'den okur (draft/composed).
 2. **Data** — `data.py:load_btc_bars()` cached parquet döndürür ([[data_engine]] ingest paritesi).
-3. **Engine seçimi** — `web/routes/backtest.py` **otomatik seçim** yapar:
-   - Katalogda veri varsa → `backtest.py:run_composed_backtest_node` (**BacktestNode** yolu)
-   - Yoksa → `backtest.py:run_composed_backtest` (**BacktestEngine** yolu)
-4. **BacktestNode yolu** — `run_composed_backtest_node(spec, instrument_id, bar_type, start_ns, end_ns, ...)`:
-   - `BacktestNode + ParquetDataCatalog` kullanır
-   - `ImportableStrategyConfig` ile `composer:ComposedStrategy` yükler
-   - `BacktestDataConfig(bar_types=[bar_type_str], start_time=start_ns, end_time=end_ns)` ile veri filtresi
-   - Per-trade detayı (giriş/çıkış zamanları) yok — `total_positions` ve özet metrikler döner
-5. **BacktestEngine yolu** — `run_composed_backtest`:
+3. **Sandbox** — `sandbox.run_backtest_guarded(force_subprocess=True)` her zaman TEK yoldan çalıştırır (**BacktestEngine**, `backtest.py:run_composed_backtest`) — killable bir child process'te, event loop'un bir Nautilus koşusu boyunca donmaması için.
+4. **BacktestEngine yolu** — `run_composed_backtest`:
    - `BacktestEngineConfig(...)` + `BacktestEngine(config=...)` ([[nautilus_kernel]] küçük ölçekte)
    - `add_venue` + `add_instrument` + `add_data(bars)` + `add_strategy(spec)`
-6. **Nautilus** — Strategy `submit_order` → [[order_flow_pipeline]] (OrderEmulator → ExecAlgo → RiskEngine → Adapter → Venue)
-7. **Metrics** — `engine.portfolio.statistics()` ([[portfolio]] surface, v2 rc1 sharpe NaN buglığıyla) → `_metrics()` → `_equity_curve()`
-8. **State** — Sonuç `IterationResult` olarak state'e append ([[cache]] eşdeğeri)
-9. **UI** — HTMX fragment ile ekranda güncelleme.
+5. **Nautilus** — Strategy `submit_order` → [[order_flow_pipeline]] (OrderEmulator → ExecAlgo → RiskEngine → Adapter → Venue)
+6. **Metrics** — `engine.portfolio.statistics()` ([[portfolio]] surface, v2 rc1 sharpe NaN buglığıyla) → `_metrics()` → `_equity_curve()`
+7. **State** — Sonuç `IterationResult` olarak state'e append ([[cache]] eşdeğeri)
+8. **UI** — HTMX fragment ile ekranda güncelleme.
+
+**Düzeltme (2026-08-09, DeepR [ORTA]):** yukarıdaki akış eskiden "katalogda veri
+varsa BacktestNode, yoksa BacktestEngine" diye otomatik motor seçiminden
+bahsediyordu — `backtest.py:run_backtest_node`/`run_composed_backtest_node`
+(BacktestNode + ParquetDataCatalog yolu, ~450 satır). Bu sayfa hiç
+güncellenmemiş: `sandbox.run_backtest_guarded` gerçekte HİÇBİR ZAMAN bu iki
+fonksiyonu çağırmıyordu (repo genelinde sıfır çağıran doğrulandı) — hangi
+geçişte kaldırıldığı belirsiz, muhtemelen sandbox.py'nin tek-yol subprocess
+mimarisine geçişte. Kod artık silindi (bkz.
+[[nau_deepr_ucuncu_tur_2026_08_09]]); Nautilus'un BacktestNode API'sinin
+kendisi hâlâ [[backtest_node]] sayfasında belgeli (webapp'in bunu kullandığı
+iddiası kaldırıldı, API referansı kaldı).
 
 ## Karpathy loop: neden bu köprü var
 

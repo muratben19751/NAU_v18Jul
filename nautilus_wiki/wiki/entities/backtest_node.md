@@ -84,7 +84,14 @@ importable_cfg = ImportableStrategyConfig(
 - `result.total_positions` → backtest boyunca açılan toplam pozisyon (trade) sayısı.
 - `result.stats_general` sözlüğünde "Total Trade Count" v2 rc1'de bulunmuyor; `total_positions` kullan.
 
-### Hız Referansı (webapp'te ölçüldü)
+### Hız Referansı (webapp'te ölçüldü — entegrasyon 2026-08-09'da kaldırıldı)
+
+> Not: bu ölçümler ve aşağıdaki "v2.0.0rc1'de Çalışma Sırası" webapp'in
+> ARTIK VAR OLMAYAN bir BacktestNode entegrasyonundan geliyordu
+> (`backtest.py:run_backtest_node`/`run_composed_backtest_node`, DeepR
+> 2026-08-09 [ORTA] ile dead code olarak silindi — bkz.
+> [[nau_deepr_ucuncu_tur_2026_08_09]]). Ölçümler API'nin kendisi için hâlâ
+> geçerli/bilgilendirici, yalnız artık bu koddan yeniden üretilemezler.
 
 | Senaryo | Süre |
 |---|---|
@@ -127,6 +134,7 @@ results = node.run()
 - [[backtesting_guide]]
 - [[getting_started_roadmap]]
 - [[live_node]]
+- [[nau_deepr_ucuncu_tur_2026_08_09]]
 - [[option_greeks_pipeline]]
 - [[parquet_data_catalog]]
 - [[visualization]]
