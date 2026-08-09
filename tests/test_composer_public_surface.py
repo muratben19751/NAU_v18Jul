@@ -24,6 +24,13 @@ dropping them here. (2) names deliberately never re-exported in the first
 place. What must NEVER drop is a name something outside composer.py
 actually reaches through `composer.<name>` — that is what this test polices.
 
+Adım 4 is the same pattern applied to the type/stdlib scaffolding, not just
+domain code: moving SignalBlock/ComposedStrategySpec (+ the 7 Literal
+aliases, + _as_bool) to composer_spec.py took Literal/UTC/asdict/dataclass/
+datetime/field/uuid out of composer.py's own namespace too, since nothing
+left in composer.py uses them directly anymore — confirmed the same way,
+grep for zero remaining real (non-comment) occurrences before dropping.
+
 Wiki References
 ---------------
 See: [[webapp_module_map]].
@@ -46,38 +53,28 @@ _GOLDEN_SET = frozenset(
         "BLOCK_REGISTRY",
         "Bar",
         "BarType",
-        "BlockRole",
-        "BlockType",
         "CATALOG_FILE",
         "ComposedStrategy",
         "ComposedStrategyConfig",
         "ComposedStrategySpec",
         "Decimal",
-        "EntryExitLogic",
         "InstrumentId",
-        "Literal",
         "NAU_WINDOW",
         "OrderSide",
         "OrderType",
-        "OrderTypeOpt",
         "Path",
-        "SLType",
         "SignalBlock",
         "SimpleNamespace",
         "Strategy",
         "StrategyConfig",
-        "TPType",
         "TimeInForce",
-        "TradeSizeMode",
         "TriggerType",
-        "UTC",
         "_BUILTIN_META",
         "_CATALOG_LOCK",
         "_CATALOG_RAW_CACHE",
         "_NAU_RECURSIVE_BLOCKS",
         "_PortfolioView",
         "_REGISTRY_LOCK",
-        "_as_bool",
         "_catalog_block_names",
         "_catalog_is_valid",
         "_eval_adx_threshold",
@@ -132,12 +129,8 @@ _GOLDEN_SET = frozenset(
         "_validate_cross_fast_slow",
         "annotations",
         "append_to_catalog",
-        "asdict",
         "build_spec",
-        "dataclass",
-        "datetime",
         "deque",
-        "field",
         "json",
         "load_catalog",
         "logging",
@@ -150,7 +143,6 @@ _GOLDEN_SET = frozenset(
         "save_catalog",
         "threading",
         "unregister_custom_block",
-        "uuid",
     }
 )
 
