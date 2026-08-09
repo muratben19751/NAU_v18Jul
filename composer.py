@@ -1271,8 +1271,8 @@ def register_custom_from_disk(name: str) -> None:
 def _load_custom_blocks() -> None:
     """Load all custom blocks from the on-disk store into BLOCK_REGISTRY.
 
-    Broken modules are skipped with a warning printed to stderr — one bad
-    block must not take down the whole catalog. This runs at import time
+    Broken modules are skipped with a logged warning — one bad block must
+    not take down the whole catalog. This runs at import time
     (module-level call below), so the same discipline extends one level up:
     a registry.json that is itself unreadable (RegistryUnavailable — see
     custom_block_store's docstring on why that's raised rather than
@@ -1284,7 +1284,7 @@ def _load_custom_blocks() -> None:
     try:
         import custom_block_store as cbs
     except Exception as e:  # pragma: no cover
-        print(f"[composer] cannot import custom_block_store: {e}")
+        logging.getLogger(__name__).warning("cannot import custom_block_store: %s", e)
         return
     try:
         custom_blocks = cbs.list_custom()
@@ -1300,7 +1300,9 @@ def _load_custom_blocks() -> None:
         try:
             register_custom_from_disk(name)
         except Exception as e:
-            print(f"[composer] skipping broken custom block '{name}': {e}")
+            logging.getLogger(__name__).warning(
+                "skipping broken custom block '%s': %s", name, e
+            )
 
 
 _load_custom_blocks()
@@ -1667,7 +1669,9 @@ def load_catalog() -> list[ComposedStrategySpec]:
     try:
         custom_names = {rec["name"] for rec in cbs.list_custom()}
     except Exception as e:
-        print(f"[composer] custom block registry unreadable ({e}) — catalog untouched")
+        logging.getLogger(__name__).warning(
+            "custom block registry unreadable (%s) — catalog untouched", e
+        )
         custom_names = None
 
     # M1342: per-record try/except — a SINGLE broken record (unknown field,

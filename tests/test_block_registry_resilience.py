@@ -248,3 +248,57 @@ def test_load_custom_blocks_still_registers_blocks_on_the_happy_path(
     composer._load_custom_blocks()
 
     assert "blk_valid" in composer.BLOCK_REGISTRY
+
+
+# ---------------------------------------------------------------------------
+# print() -> logging consistency (DeepR 2026-08-09 [DÜŞÜK])
+# ---------------------------------------------------------------------------
+#
+# _load_custom_blocks()'s per-block skip and load_catalog()'s registry-unreadable
+# branch used to print() to stdout instead of going through the same logger the
+# sibling branch right next to each already used. Now both log; these confirm
+# the messages actually reach the logger (and, for the per-block case, that a
+# broken block still doesn't stop its siblings from registering).
+
+
+def test_load_custom_blocks_logs_and_skips_one_broken_block_among_many(
+    tmp_path, monkeypatch, caplog
+):
+    import composer
+    import custom_block_store as cbs
+
+    monkeypatch.setattr(cbs, "STORE_DIR", tmp_path)
+    monkeypatch.setattr(cbs, "REGISTRY_FILE", tmp_path / "registry.json")
+    valid_source = (
+        "def evaluate(state, block, closes, indicators, portfolio):\n    return None\n"
+    )
+    cbs.save_custom("blk_valid", {"label": "Valid", "params": {}}, valid_source)
+    cbs.save_custom("blk_broken", {"label": "Broken", "params": {}}, "x = 1\n")
+    monkeypatch.setattr(composer, "BLOCK_REGISTRY", {})
+
+    with caplog.at_level("WARNING"):
+        composer._load_custom_blocks()
+
+    assert "blk_valid" in composer.BLOCK_REGISTRY
+    assert "blk_broken" not in composer.BLOCK_REGISTRY
+    assert "blk_broken" in caplog.text
+
+
+def test_load_catalog_logs_a_warning_when_the_registry_is_unreadable(
+    tmp_path, monkeypatch, caplog
+):
+    import composer
+    import custom_block_store as cbs
+
+    catalog_file = tmp_path / "catalog.json"
+    catalog_file.write_text("[]", encoding="utf-8")
+    monkeypatch.setattr(composer, "CATALOG_FILE", catalog_file)
+    monkeypatch.setattr(composer, "_CATALOG_RAW_CACHE", None)
+    monkeypatch.setattr(
+        cbs, "list_custom", lambda: (_ for _ in ()).throw(RuntimeError("unavailable"))
+    )
+
+    with caplog.at_level("WARNING"):
+        composer.load_catalog()
+
+    assert "registry unreadable" in caplog.text
