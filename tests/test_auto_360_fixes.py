@@ -284,7 +284,13 @@ def test_custom_block_cap_rejects_truncation_retry_before_second_provider_call(
         )
     )
     monkeypatch.setattr(agent, "_get_client", lambda: client)
-    monkeypatch.setattr(agent, "_ledger_record", lambda *args, **kwargs: None)
+    # The first (truncated) response still carries real nonzero usage and is
+    # ledger-recorded before the retry's admission check rejects it (Adım 9:
+    # _create_message_once reads _ledger_record as llm_dispatch.py's own bare
+    # module global now -- patching agent's re-exported copy would not reach
+    # it and would silently write a real row to the developer's actual
+    # ~/.cache/nautilus_web_app/token_usage.jsonl).
+    monkeypatch.setattr("token_ledger.record", lambda *args, **kwargs: None)
     agent.set_thread_llm_control(lambda: False, None, None)
     try:
         with pytest.raises(agent.LLMTokenBudgetExceeded, match="cannot admit"):
@@ -891,8 +897,14 @@ def test_explicit_model_is_used_for_cost_accounting(monkeypatch):
     assert seen["model"] == "or:vendor/model"
 
 
-def test_llm_observer_sees_each_actual_provider_response():
+def test_llm_observer_sees_each_actual_provider_response(monkeypatch):
     import agent
+
+    # Real nonzero usage below would otherwise write a real row into the
+    # developer's actual ~/.cache/nautilus_web_app/token_usage.jsonl (this
+    # test drives the real agent._create_message_once (llm_dispatch.py,
+    # Adım 9), which calls llm_dispatch._ledger_record, unmocked).
+    monkeypatch.setattr("token_ledger.record", lambda *a, **k: None)
 
     events = []
 

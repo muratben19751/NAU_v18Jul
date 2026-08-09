@@ -23,6 +23,7 @@ See: [[model_secici_ve_gorunurluk]].
 from __future__ import annotations
 
 import shutil
+from types import SimpleNamespace
 
 import pytest
 from anthropic import Anthropic
@@ -152,3 +153,64 @@ class TestGetClient:
 
         assert first is second
         assert len(calls) == 1
+
+
+class TestLedgerRecord:
+    """`agent._ledger_record` (Adım 8 characterization -- zero direct tests
+    before this; every caller monkeypatches it wholesale to avoid a real
+    ledger write, so its own logic -- the resp.model-or-called-model
+    attribution, the best-effort exception swallow -- has never actually run
+    in a test).
+
+    Patches ``token_ledger.record`` via the STRING form, never
+    ``agent._ledger_record`` directly -- the documented-safe pattern from
+    test_regression_anchors.py's ``_no_real_ledger_writes`` autouse fixture,
+    so a real row is never written to the developer's actual
+    ~/.cache/nautilus_web_app/token_usage.jsonl.
+    """
+
+    def test_attributes_to_the_actual_responding_model(self, monkeypatch):
+        captured = {}
+        monkeypatch.setattr(
+            "token_ledger.record",
+            lambda model, usage, purpose: captured.update(
+                model=model, usage=usage, purpose=purpose
+            ),
+        )
+        resp = SimpleNamespace(model="claude-opus-4-8", usage=SimpleNamespace())
+
+        agent._ledger_record(resp, "claude-fable-5", "composed")
+
+        assert captured["model"] == "claude-opus-4-8"
+        assert captured["purpose"] == "composed"
+
+    def test_falls_back_to_called_model_when_response_has_no_model_attribute(
+        self, monkeypatch
+    ):
+        captured = {}
+        monkeypatch.setattr(
+            "token_ledger.record",
+            lambda model, usage, purpose: captured.update(model=model),
+        )
+        # No `.model` attribute at all -- matches the Claude CLI backend's
+        # real response shape (llm_client._CLIResponse has only `content`,
+        # `usage`, `stop_reason`).
+        resp = SimpleNamespace(usage=SimpleNamespace())
+
+        agent._ledger_record(resp, "claude-fable-5", "composed")
+
+        assert captured["model"] == "claude-fable-5"
+
+    def test_swallows_a_token_ledger_write_failure(self, monkeypatch):
+        def _raise(*args, **kwargs):
+            raise OSError("disk full")
+
+        monkeypatch.setattr("token_ledger.record", _raise)
+        resp = SimpleNamespace(model="claude-opus-4-8", usage=SimpleNamespace())
+
+        agent._ledger_record(resp, "claude-fable-5", "composed")  # must not raise
+
+    def test_is_credit_exhausted_recognizes_the_insufficient_credit_signal(self):
+        assert agent._is_credit_exhausted(
+            Exception("Error: insufficient credit balance")
+        )
