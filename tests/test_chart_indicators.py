@@ -126,6 +126,14 @@ class TestSeries:
     def test_empty_inputs_return_empty(self):
         assert ci._series([], []) == []
 
+    def test_mismatched_lengths_raise_instead_of_silently_truncating(self):
+        # DeepR 2026-08-09 [BİLGİ]/B905: zip() without strict= used to just
+        # stop at the shorter list -- a caller bug (misaligned times/vals)
+        # would silently zip timestamps to the wrong values instead of
+        # surfacing anywhere.
+        with pytest.raises(ValueError):
+            ci._series([1, 2, 3], [1.0, 2.0])
+
 
 class TestIndicatorsForSpecMaCross:
     def test_default_periods_are_10_and_30(self):

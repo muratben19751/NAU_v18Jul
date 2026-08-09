@@ -113,8 +113,18 @@ def _bollinger(closes: list[float], period: int, k: float):
 def _series(times: list[int], vals: list[float | None]) -> list[dict]:
     # 8 decimals — for low-priced instruments (SHIB/PEPE ~1e-5..1e-8)
     # round(v, 4) flattened the line to 0.0.
+    #
+    # strict=True (DeepR 2026-08-09 [BİLGİ]/B905): every caller derives vals
+    # from calc(closes, period), always len(closes)-shaped, and times/closes
+    # come from the same DataFrame in web/routes/chart.py — same length by
+    # construction. A mismatch would only mean a caller bug (misaligned
+    # timestamps silently zipped to the wrong values); surface it instead
+    # of truncating. chart.py already wraps this call in a broad
+    # except-and-degrade, so a raise here cannot break the chart.
     return [
-        {"time": t, "value": round(v, 8)} for t, v in zip(times, vals) if v is not None
+        {"time": t, "value": round(v, 8)}
+        for t, v in zip(times, vals, strict=True)
+        if v is not None
     ]
 
 
