@@ -243,7 +243,17 @@ def test_load_custom_blocks_still_registers_blocks_on_the_happy_path(
         "def evaluate(state, block, closes, indicators, portfolio):\n    return None\n"
     )
     cbs.save_custom("blk_valid", {"label": "Valid", "params": {}}, valid_source)
+    # BLOCK_CATALOG must be isolated too, not just BLOCK_REGISTRY:
+    # _rebuild_catalog() (called by register_custom_block, called by
+    # _load_custom_blocks below) does BLOCK_CATALOG.clear()+.update() on
+    # whatever object composer.BLOCK_CATALOG currently is -- it never
+    # reassigns the name, so patching BLOCK_REGISTRY alone still lets this
+    # test permanently wipe the REAL, process-wide BLOCK_CATALOG down to
+    # just this test's blocks (discovered via composer.py's own catalog
+    # tests failing when run after this file: BLOCK_CATALOG went from 370
+    # entries to 1 and never recovered for the rest of the session).
     monkeypatch.setattr(composer, "BLOCK_REGISTRY", {})
+    monkeypatch.setattr(composer, "BLOCK_CATALOG", {})
 
     composer._load_custom_blocks()
 
@@ -274,7 +284,17 @@ def test_load_custom_blocks_logs_and_skips_one_broken_block_among_many(
     )
     cbs.save_custom("blk_valid", {"label": "Valid", "params": {}}, valid_source)
     cbs.save_custom("blk_broken", {"label": "Broken", "params": {}}, "x = 1\n")
+    # BLOCK_CATALOG must be isolated too, not just BLOCK_REGISTRY:
+    # _rebuild_catalog() (called by register_custom_block, called by
+    # _load_custom_blocks below) does BLOCK_CATALOG.clear()+.update() on
+    # whatever object composer.BLOCK_CATALOG currently is -- it never
+    # reassigns the name, so patching BLOCK_REGISTRY alone still lets this
+    # test permanently wipe the REAL, process-wide BLOCK_CATALOG down to
+    # just this test's blocks (discovered via composer.py's own catalog
+    # tests failing when run after this file: BLOCK_CATALOG went from 370
+    # entries to 1 and never recovered for the rest of the session).
     monkeypatch.setattr(composer, "BLOCK_REGISTRY", {})
+    monkeypatch.setattr(composer, "BLOCK_CATALOG", {})
 
     with caplog.at_level("WARNING"):
         composer._load_custom_blocks()
