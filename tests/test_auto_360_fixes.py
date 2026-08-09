@@ -545,6 +545,35 @@ def test_delete_custom_batch_removes_files_and_registry_entries(monkeypatch, tmp
     assert store.get_custom("block_c") is not None  # untouched
 
 
+def test_delete_custom_logs_when_the_in_memory_unregister_fails(
+    monkeypatch, tmp_path, caplog
+):
+    """DeepR 2026-08-09 [DÜŞÜK]: delete_custom's in-memory unregister used to
+    swallow a failure silently -- unlike delete_custom_batch's identical
+    try/except right below it (log.exception). The disk-side delete has
+    already committed by this point either way; what must not happen is
+    losing the signal that BLOCK_REGISTRY is now stale for this name."""
+    import composer
+    import custom_block_store as store
+
+    monkeypatch.setattr(store, "STORE_DIR", tmp_path)
+    monkeypatch.setattr(store, "REGISTRY_FILE", tmp_path / "registry.json")
+    store.save_custom("flaky", {"role": "entry"}, "x = 1\n")
+
+    def _boom(name):
+        raise RuntimeError("memory registry corrupted")
+
+    monkeypatch.setattr(composer, "unregister_custom_block", _boom)
+
+    with caplog.at_level("ERROR"):
+        result = store.delete_custom("flaky")  # must not raise
+
+    assert result is True
+    assert store.get_custom("flaky") is None  # disk/registry side still committed
+    assert "flaky" in caplog.text
+    assert "unregister" in caplog.text.lower()
+
+
 def test_delete_custom_batch_ignores_names_not_in_the_registry(monkeypatch, tmp_path):
     """Docstring contract: 'Missing names are harmless.'"""
     import custom_block_store as store

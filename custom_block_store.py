@@ -513,13 +513,18 @@ def delete_custom(name: str) -> bool:
             pass
         del reg[name]
         _write_registry(reg)
-    # Clear in-memory — a block deleted in the same session should not run
+    # Clear in-memory — a block deleted in the same session should not run.
+    # DeepR 2026-08-09 [DÜŞÜK]: silently swallowed here, unlike the identical
+    # try/except in delete_custom_batch below (log.exception) — the disk-side
+    # delete has already committed either way, so this can't roll anything
+    # back, but a failure here means BLOCK_REGISTRY still holds a definition
+    # for a block whose file/registry entry are gone, silently.
     try:
         from composer import unregister_custom_block
 
         unregister_custom_block(name)
     except Exception:
-        pass
+        log.exception("could not unregister deleted custom block %r from memory", name)
     return True
 
 
