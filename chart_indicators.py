@@ -25,6 +25,20 @@ from __future__ import annotations
 
 from typing import Any
 
+# DeepR 2026-08-09 [ORTA] re-checked against current code: the finding claimed
+# indicators.py's O(n·period)→O(n) SMA/EMA/RSI fix (2026-08-08) never reached
+# these — false as of this check. _sma's running sum, _ema's incremental
+# blend, and _rsi's Wilder recurrence below are each already O(n); none
+# re-scans the window per step. The remaining duplication IS real but is
+# shape-driven, not an oversight: these return a list the SAME LENGTH as
+# `closes`, None-padded before the indicator is computable, so `_series()`
+# can zip it 1:1 against the time axis for the chart. indicators.py's
+# sma()/ema()/calc_rsi_series() return only the computed values (no
+# leading padding) for backtest signal evaluation, which never needs
+# positional alignment to a timestamp. Sharing one core would still need a
+# per-caller padding/trimming wrapper — not attempted here without a
+# concrete second consumer that would need the padded form.
+
 
 def _sma(closes: list[float], period: int) -> list[float | None]:
     out: list[float | None] = [None] * len(closes)
