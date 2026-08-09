@@ -55,6 +55,34 @@ def test_the_deploy_artifact_lowers_onto_a_sandbox_node(artifact):
     assert json.loads(s.config["spec_json"]) == artifact["spec"]
 
 
+def test_the_deploy_artifact_resolves_to_a_real_composed_strategy(artifact):
+    """Drives the actual deploy-time mechanism, not just the string it uses.
+
+    Nautilus's ``StrategyFactory.create()`` resolves ``strategy_path``/
+    ``config_path`` via a bare ``importlib.import_module(module) +
+    getattr(mod, cls)`` (``nautilus_trader.common.config.resolve_path``) — a
+    plain string this repo's own tooling does not track as an import.
+    ``test_the_deploy_artifact_lowers_onto_a_sandbox_node`` only asserts the
+    string values (``"composer:ComposedStrategy"``); nothing exercises the
+    resolution + construction chain itself, so a typo or a renamed/moved
+    ``ComposedStrategy``/``ComposedStrategyConfig`` would only surface at a
+    real deploy. Permanently valuable regardless of whether either class ever
+    moves out of composer.py.
+    """
+    from nautilus_trader.trading.config import StrategyFactory
+
+    import composer
+
+    cfg = build_node_config(artifact, trader_id="STUDIO-TEST")
+
+    strategy = StrategyFactory.create(cfg.strategies[0])
+
+    assert isinstance(strategy, composer.ComposedStrategy)
+    assert isinstance(strategy.config, composer.ComposedStrategyConfig)
+    assert str(strategy.config.instrument_id) == "BTCUSDT-LINEAR.BYBIT"
+    assert json.loads(strategy.config.spec_json) == artifact["spec"]
+
+
 def test_the_sandbox_account_starts_with_the_deployed_capital(artifact):
     cfg = build_node_config(artifact, trader_id="STUDIO-TEST")
 
