@@ -38,21 +38,22 @@ fonksiyonlara bölünüyor: `_market_for`/`_iv_for`/`_recipe`, `_WorkerState`
 (round-persistent durum), `_cleanup_generated`/`_winless_bump`/
 `_winless_stop`, `_make_llm_control`, `_rank_and_filter`,
 `_propose_initial_strategy`, `_scan_one_candidate`, `_run_promotion_gate`
-(sealed-holdout finansal bütünlük kapısı), `_run_backtest_iteration` çıkarıldı
-(A0-A9) — her biri kendi birim testiyle, davranış korunarak. Faz 2'nin
-"sıradaki spec'i üret" bloğu (spec'in aynı loop değişkenine yeniden atanması +
-3 katmanlı exception hiyerarşisi) ve Faz 0'ın veri/holdout yükleyicisi
-(`_load_tf`/`_load_tf_uncached` — planın en riskli adımı) bilinçli olarak bu
-turda ertelendi. Bkz. [[nau_deepr_ikinci_tur_2026_08_08]].
+(sealed-holdout finansal bütünlük kapısı), `_run_backtest_iteration`,
+ve Faz 0'ın veri/holdout yükleyicisi (`_load_timeframe_bars` + `_TfLoader`
+— planın en riskli adımı, A11a/A11b) çıkarıldı — her biri kendi birim
+testiyle, davranış korunarak; `TestContinuousCircuitBreaker` (tek Faz-0
+regresyon kanıtı) hâlâ yeşil. Faz 2'nin "sıradaki spec'i üret" bloğu
+(spec'in aynı loop değişkenine yeniden atanması + 3 katmanlı exception
+hiyerarşisi, ~satır 3350-3440, plandaki Adım 10) ve alt-paket bölmesi
+(Adım 12) bilinçli olarak planın YÜRÜTÜLEN kapsamı dışında bırakıldı —
+gelecekte ayrı bir iş. Bkz. [[nau_deepr_ikinci_tur_2026_08_08]].
 
 2026-08-09 DeepR turu dosyayı yine (5000+ satır) çok büyük diye işaretledi
-([DÜŞÜK]) — A0-A9 sonrası hâlâ büyük çünkü ~40 modül-seviyesi yardımcı
-BİLİNÇLİ OLARAK aynı dosyada tutuluyor (`tests/test_lock_nesting.py`'nin AST
-taraması bu dosyayı hedefliyor; ayrı bir alt-pakete taşımak o regresyon
-testini kör bırakır — planın "Adım 12: YAPILMAYACAK" kararı). Kalan riskli
-adımlar (Faz 2 lookahead-generation bloğu, Faz 0 veri/holdout yükleyicisi)
-hâlâ kasıtlı olarak ayrı, dikkatli bir oturuma bırakılmış durumda — bu turda
-tekrar denenmedi.
+([DÜŞÜK]) — A0-A9+A11a/A11b sonrası hâlâ büyük çünkü ~40 modül-seviyesi
+yardımcı BİLİNÇLİ OLARAK aynı dosyada tutuluyor (`tests/test_lock_nesting.py`'nin
+AST taraması bu dosyayı hedefliyor; ayrı bir alt-pakete taşımak o regresyon
+testini kör bırakır — planın "Adım 12: YAPILMAYACAK" kararı). Tek kalan
+adım (Adım 10) bu turda da denenmedi.
 """
 
 from __future__ import annotations
