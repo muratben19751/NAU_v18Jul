@@ -76,7 +76,17 @@ def _try_log(
             spec, result, instrument_kind, bars_info, elapsed_sec=elapsed_sec
         )
     except Exception:
-        pass
+        # log I/O failure must not stop the loop — but it must not vanish
+        # without a trace either (DeepR 2026-08-09 [ORTA]: sibling code path
+        # web/routes/backtest.py's run() worker had the same bare `pass`,
+        # fixed 2026-08-08; this one wasn't). A persistently failing log
+        # write (disk full, permission error) had no observable symptom
+        # beyond /reports quietly staying empty.
+        log.warning(
+            "loop iteration %s: _log_backtest failed",
+            getattr(result, "id", "?"),
+            exc_info=True,
+        )
 
 
 def run_loop(
