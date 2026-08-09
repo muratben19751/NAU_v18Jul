@@ -733,6 +733,7 @@ class TestLLMCreditFallback:
         import os
 
         import agent
+        import llm_client
 
         # These tests assert the CODE DEFAULTS (claude-fable-5 / opus fallback).
         # A NAUTILUS_LLM_MODEL/…_FALLBACK_MODEL env override (e.g. from
@@ -743,6 +744,14 @@ class TestLLMCreditFallback:
             for k in ("NAUTILUS_LLM_MODEL", "NAUTILUS_LLM_FALLBACK_MODEL")
         }
         try:
+            # agent.py decomposition Adım 2: _active_model/MODEL/FALLBACK_MODEL
+            # now live in llm_client.py. Reloading only agent no longer resets
+            # them (agent's `import llm_client` just re-binds the name to the
+            # SAME already-loaded module) — reload llm_client first so its
+            # module-level `_active_model = None` re-executes, then reload
+            # agent so its `from llm_client import ...` re-exports pick up
+            # the fresh functions/state.
+            importlib.reload(llm_client)
             return importlib.reload(agent)  # reset _active_model
         finally:
             for k, v in saved.items():

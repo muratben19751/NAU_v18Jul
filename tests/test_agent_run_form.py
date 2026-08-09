@@ -331,8 +331,13 @@ def test_openrouter_pin_survives_the_claude_credit_fallback(monkeypatch):
     and walking the call straight back into the same wall.
     """
     import agent
+    import llm_client
 
-    monkeypatch.setattr(agent, "_active_model", agent.FALLBACK_MODEL)
+    # agent.py decomposition Adım 2: _active_model now lives in llm_client.py
+    # (agent.current_model just re-exports llm_client.current_model, which
+    # reads llm_client._active_model as a bare global -- patching agent's own
+    # rebound name would not affect it).
+    monkeypatch.setattr(llm_client, "_active_model", agent.FALLBACK_MODEL)
 
     # A plain preference still loses to the billing fact…
     agent.set_thread_model("claude-haiku-4-5")
@@ -361,11 +366,16 @@ def test_selectable_models_openrouter_entries(monkeypatch):
 def test_selectable_models_free_only(monkeypatch):
     """Picker varsayılanda yalnız ücretsiz OpenRouter uçlarını listeler."""
     import agent
+    import llm_client
 
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
     monkeypatch.delenv("NAUTILUS_OPENROUTER_MODELS", raising=False)
+    # agent.py decomposition Adım 2: selectable_models/_openrouter_options/
+    # openrouter_catalog all now live in llm_client.py -- _openrouter_options'
+    # unqualified openrouter_catalog() call resolves against llm_client's own
+    # globals, not agent's rebound re-export.
     monkeypatch.setattr(
-        agent,
+        llm_client,
         "openrouter_catalog",
         lambda force=False: [
             ("paid/one", "Paid One", False),
@@ -387,12 +397,15 @@ def test_selectable_models_free_only(monkeypatch):
 def test_selectable_models_paid_extra_alongside_free(monkeypatch):
     """Ücretsizler + elle izin verilen paralı uç; paralı olan etiketinde söyler."""
     import agent
+    import llm_client
 
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
     monkeypatch.delenv("NAUTILUS_OPENROUTER_MODELS", raising=False)
     monkeypatch.delenv("NAUTILUS_OPENROUTER_FREE_ONLY", raising=False)
+    # agent.py decomposition Adım 2: see the analogous note in
+    # test_selectable_models_free_only above.
     monkeypatch.setattr(
-        agent,
+        llm_client,
         "openrouter_catalog",
         lambda force=False: [
             ("free/one:free", "Free One", True),
@@ -433,6 +446,7 @@ def test_selectable_models_paid_extra_alongside_free(monkeypatch):
 def test_openrouter_free_flag_and_fallback(monkeypatch):
     """Ücretsizlik ham fiyattan okunur; katalog boşsa yedek de paralı olamaz."""
     import agent
+    import llm_client
 
     assert agent._is_free({"prompt": "0", "completion": "0"})
     assert not agent._is_free({"prompt": "0", "completion": "0.0000002"})
@@ -448,7 +462,7 @@ def test_openrouter_free_flag_and_fallback(monkeypatch):
     # uçlar (geliştirici makinesinde ortamda tanımlı olabilir) iddiayı ilgisiz
     # yere düşürür. Testin okuduğu HER ortam anahtarı testte sabitlenmeli.
     monkeypatch.delenv("NAUTILUS_OPENROUTER_EXTRA_MODELS", raising=False)
-    monkeypatch.setattr(agent, "openrouter_catalog", lambda force=False: [])
+    monkeypatch.setattr(llm_client, "openrouter_catalog", lambda force=False: [])
     vals = [v for v, _ in agent.selectable_models() if v.startswith("or:")]
     assert vals, "katalog çekilemeyince statik yedek listelenmeli"
     assert all(v.endswith(":free") or v == "or:openrouter/free" for v in vals)
