@@ -1114,3 +1114,27 @@ Suit 745 passed / 1 skipped.
   taşınmıyor.
 - Ayrıntı: kod↔wiki köprüsü [[webapp_module_map]]'te güncellendi (agent.py/
   composer.py satırlarına kademeli-çıkarım önsözü + 6 yeni modül satırı).
+
+## [2026-08-09] maintain | Faz 2 bu oturum için kapandı: composer_spec.py + katalog testleri + agent.py Adım 7
+
+Önceki girdinin "Kalan" listesi tamamlandı, 3 commit daha (`764bd9b`,
+`3792f75`, `6ab1702`): composer.py'nin spec modeli + spec-upsert servisi
+(`SignalBlock`/`ComposedStrategySpec`/`build_spec`/`new_spec_id`) →
+`composer_spec.py` (composer.py'nin kendi decomposition'ında ilk kez
+in-file tüketicisi olmayan bir isim re-export edildi, ilk `__all__`
+listesi bunun için eklendi); katalog I/O'nun 4 boşluğu için 9 yeni test
+(kod taşınmadı); agent.py'nin `_build_client`/`_get_client` backend-seçim
+dallanması için 11 yeni test. Yol boyunca ikinci gerçek hata bulunup
+düzeltildi: iki test `BLOCK_REGISTRY`'yi monkeypatch'leyip `BLOCK_CATALOG`'u
+unutuyordu — `_rebuild_catalog()`'un kimlik-koruması yüzünden GERÇEK,
+süreç-geneli `BLOCK_CATALOG` 370→1'e kalıcı bozuluyordu (yeni bir katalog
+test dosyası tek başına 9/9 geçerken bu dosyayla birlikte 5/9 düşerek
+ortaya çıktı).
+
+Adım 6 (katalog I/O'nun `strategy_catalog.py`'ye taşınması) planın kendi
+tasarımı gereği taahhüt edilmemiş bir karar noktasıydı — kullanıcıya
+soruldu, **"burada dur" seçildi**. composer.py'nin registry çekirdeği +
+custom-block entegrasyonuyla (ComposedStrategy örnek-durumuna çalışma-anında
+erişen özel risk sınıfı) birlikte, tamamen ayrı bir oturuma bırakıldı.
+Faz 2'nin planı (`~/.claude/plans/seninle-deepr-skillini-g-zden-abundant-hellman.md`)
+bu kararla güncellendi.
