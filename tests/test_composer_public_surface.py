@@ -13,6 +13,17 @@ Not scoped to any one extraction step — this stays green (and keeps
 protecting) through every future composer.py decomposition step, including
 ones this plan defers.
 
+Two kinds of name legitimately drop out of dir(composer), and neither is a
+bug: (1) an indicator/helper composer.py imported only because a function
+that has now MOVED needed it — e.g. Adım 2 moved _onstart_bollinger_break/
+_onstart_ema_cross/_snap_rsi_threshold to block_library_classic.py, which
+took BollingerBands/ExponentialMovingAverage/RelativeStrengthIndex with it
+as their own import, since nothing outside composer.py ever depended on
+`composer.BollingerBands` as a re-export — confirmed via grep before
+dropping them here. (2) names deliberately never re-exported in the first
+place. What must NEVER drop is a name something outside composer.py
+actually reaches through `composer.<name>` — that is what this test polices.
+
 Wiki References
 ---------------
 See: [[webapp_module_map]].
@@ -22,11 +33,11 @@ from __future__ import annotations
 
 import composer
 
-# Captured 2026-08-09, before any composer.py extraction step. Every name
-# below must remain reachable as composer.<name> forever — extraction steps
-# add re-exports, they never remove names from this set. New names (e.g. a
-# future block_registry.py's re-exports) are fine and do not need to be
-# added here; this is a floor, not a mirror.
+# Captured 2026-08-09, before any composer.py extraction step; pruned as
+# each step's grep confirms a name was never externally depended on (see
+# the module docstring). New names (e.g. a future block_registry.py's
+# re-exports) are fine and do not need to be added here; this is a floor
+# on the names that MUST stay, not a mirror of composer.py's exact exports.
 _GOLDEN_SET = frozenset(
     {
         "Any",
@@ -37,14 +48,12 @@ _GOLDEN_SET = frozenset(
         "BarType",
         "BlockRole",
         "BlockType",
-        "BollingerBands",
         "CATALOG_FILE",
         "ComposedStrategy",
         "ComposedStrategyConfig",
         "ComposedStrategySpec",
         "Decimal",
         "EntryExitLogic",
-        "ExponentialMovingAverage",
         "InstrumentId",
         "Literal",
         "NAU_WINDOW",
@@ -52,7 +61,6 @@ _GOLDEN_SET = frozenset(
         "OrderType",
         "OrderTypeOpt",
         "Path",
-        "RelativeStrengthIndex",
         "SLType",
         "SignalBlock",
         "SimpleNamespace",
