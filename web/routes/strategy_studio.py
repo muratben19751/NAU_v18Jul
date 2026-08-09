@@ -1611,10 +1611,25 @@ def _reconcile_deployments() -> None:
         store.set_deployment_status(deploy_id, "failed", reason)
 
 
-try:
-    _reconcile_deployments()
-except Exception:  # noqa: BLE001 — a stale row must not stop the app booting
-    pass
+def _reconcile_deployments_at_startup() -> None:
+    """Run _reconcile_deployments() once at import time without letting a
+    stale row stop the app booting. Extracted (DeepR 2026-08-09 [ORTA]) so
+    the "log on failure" behavior is directly testable — this used to be
+    inline module-level code with a silent `except: pass`, un-callable
+    on its own."""
+    try:
+        _reconcile_deployments()
+    except Exception:  # noqa: BLE001 — a stale row must not stop the app booting
+        # This used to be a silent `pass` — if reconciliation itself fails,
+        # the app boots straight into exactly the "looks fine but isn't"
+        # state _reconcile_deployments()'s own docstring warns about, with
+        # zero trace anywhere. warning (not this file's existing log.debug
+        # sibling at the bybit-universe-warm call) because that one is
+        # "never worth a traceback"; a stale green deploy badge is.
+        log.warning("startup deployment reconciliation failed", exc_info=True)
+
+
+_reconcile_deployments_at_startup()
 
 
 def _render_deployments(
