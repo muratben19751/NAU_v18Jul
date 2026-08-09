@@ -2,6 +2,30 @@
 
 Append-only. Her ingest, query veya lint operasyonu bir satır bırakır.
 
+## 2026-08-09 (7) — main'e merge, branch silindi; DeepR #47'nin son adımı (A10) kapandı
+
+- **merge** — `fix/auto-gate-and-artifact-identity` (58 commit, 37 DeepR
+  bulgusu) main'e fast-forward merge edildi (1312 test yeşil), branch
+  local+origin'den silindi.
+- **keşif** — "başka bir düzeltme var mı" sorusu üzerine agent_backtest.py'nin
+  docstring'i taranırken bir yanlışlık bulundu: Faz 0 veri/holdout
+  yükleyicisinin (DeepR #47'nin A11a/A11b, planın en riskli adımı) hâlâ
+  ertelendiğini söylüyordu — kod ve testler zaten tamamlandığını gösteriyordu
+  (`_load_timeframe_bars`+`_TfLoader` mevcut, `TestContinuousCircuitBreaker`
+  yeşil). Docstring düzeltildi (davranış değişmedi).
+- **fix (kullanıcı onayıyla)** — #47'nin GERÇEKTEN tek açık kalemi olan Adım
+  10 (Faz 2 lookahead-generation bloğu) `_propose_next_strategy` olarak
+  çıkarıldı — literal taşıma, davranış korundu. Test yazımı iki ince
+  pre-existing (değiştirilmeyen) davranışı ortaya çıkardı:
+  `degraded_terminal` Faz-1'in aksine burada propagate olmuyor (önceki
+  spec'e düşülebildiği için genel except'e düşüp yutuluyor); ve o alt-durumda
+  `spec` raise'den önce zaten yeni teklife atanmış oluyor. 11 yeni test, 2'si
+  mutasyon testiyle doğrulandı (cancel/bütçe re-raise'i geçici kaldırıp
+  testlerin kırıldığı, geri alınca yeşile döndüğü kanıtlandı). Tam suite:
+  1323 yeşil. main'e doğrudan commit+push edildi (repo'nun alışılmış akışı).
+- **wiki** — [[nau_deepr_ikinci_tur_2026_08_08]] ve
+  [[nau_deepr_ucuncu_tur_2026_08_09]] çapraz-linkli eklerle güncellendi.
+
 ## 2026-08-09 (6) — DeepR üçüncü tur kapandı: 37/37 bulgu karara bağlandı
 
 - **rapor** — (5)'te başlayan "hepsini yap" geçişinin devamı: kalan 18 ORTA

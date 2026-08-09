@@ -37,6 +37,19 @@
 - A11b: `_TfLoader` class (the `_load_tf` extraction) — tf_cache/
   holdout_cache as instance attributes instead of closure-captured locals;
   one fresh instance per round. Same regression gate as A11a.
+- A10 (2026-08-09, after the rest): `_propose_next_strategy` (Phase 2's
+  lookahead-generation half — `_run_backtest_iteration`/A9's sibling)
+  promoted to a module function. Writing its tests surfaced two things a
+  same-file read wouldn't: `degraded_terminal` does NOT propagate here the
+  way it does from `_propose_initial_strategy` (A6) — TerminalLLMError
+  isn't in the `(LLMCallCancelled, AgentBudgetReached)` re-raise list, so it
+  falls into the generic except and is swallowed like any transient error
+  (Phase 2 has a previous spec to fall back on; Phase 1 does not). And in
+  that specific sub-case `spec` has ALREADY been reassigned to the new
+  (proposal-derived) spec before the raise, so the except handler's own "…
+  continuing with previous strategy" log line is technically inexact there
+  — pre-existing behavior, pinned as-is (this was a literal extraction, no
+  logic change; see TestProposeNextStrategy).
 """
 
 from __future__ import annotations
@@ -426,6 +439,274 @@ class TestProposeInitialStrategy:
     def test_returned_spec_is_always_stamped(self, monkeypatch):
         wstate = ab._WorkerState()
         spec = self._call(monkeypatch, wstate)
+        assert spec.trend_filter is True
+        assert spec.trend_interval == "60"
+        assert spec.model_slippage is True
+
+
+class TestProposeNextStrategy:
+    """#47-A10: the lookahead-generation half of Phase 2's loop, previously
+    an inline block in _agent_worker with zero isolated coverage."""
+
+    def _quiet(self, monkeypatch):
+        monkeypatch.setattr(ab, "_add_step", lambda *a, **k: None)
+        monkeypatch.setattr(ab, "_tl_begin", lambda *a, **k: None)
+        monkeypatch.setattr(ab, "_tl_end", lambda *a, **k: None)
+        monkeypatch.setattr(ab, "_session_log", lambda *a, **k: None)
+        monkeypatch.setattr(ab, "_enforce_token_budget", lambda run_id: None)
+        monkeypatch.setattr(
+            ab, "_mark_degraded", lambda run_id, reason, what: f"degraded:{reason}"
+        )
+        monkeypatch.setattr("composer.load_catalog", lambda: [])
+
+    def _call(
+        self,
+        monkeypatch,
+        wstate,
+        *,
+        i=0,  # even i -> next_i=1 (odd) -> use_custom=True
+        spec=None,
+        proposal=None,
+        generate_custom_spec=None,
+    ):
+        self._quiet(monkeypatch)
+        monkeypatch.setattr(
+            "agent.propose_composed_strategy",
+            lambda *a, **k: (proposal or _proposal(), {"input_tokens": 1}),
+        )
+        if generate_custom_spec is not None:
+            monkeypatch.setattr(ab, "_generate_custom_spec", generate_custom_spec)
+        return ab._propose_next_strategy(
+            "run-1",
+            1,  # run_number
+            i,
+            n_iterations=5,
+            intervals=["60"],
+            hint="hint",
+            history=[],
+            used_concepts=[],
+            spec=spec or SimpleNamespace(name="previous", id="prev-id"),
+            is_external=False,
+            instrument_id="",
+            trend_filter=True,
+            trend_interval="60",
+            wstate=wstate,
+        )
+
+    def test_use_custom_alternates_by_parity_of_next_i(self, monkeypatch):
+        """i=0 -> next_i=1 (odd) -> custom; i=1 -> next_i=2 (even) -> builtin."""
+        calls = []
+        monkeypatch.setattr(
+            ab,
+            "_generate_custom_spec",
+            lambda *a, **k: calls.append("custom") or None,
+        )
+        self._call(monkeypatch, ab._WorkerState(), i=0)  # next_i=1, odd
+        self._call(monkeypatch, ab._WorkerState(), i=1)  # next_i=2, even -- no custom
+
+        assert calls == ["custom"]
+
+    def test_custom_spec_is_used_when_generator_returns_one(self, monkeypatch):
+        custom = SimpleNamespace(
+            name="custom strat", id="c-1", blocks=[SimpleNamespace(type="agnt_e_x")]
+        )
+        spec = self._call(
+            monkeypatch,
+            ab._WorkerState(),
+            i=0,
+            generate_custom_spec=lambda *a, **k: custom,
+        )
+
+        assert spec is custom
+        assert spec.trend_filter is True  # still stamped afterwards
+
+    def test_custom_spec_generation_extends_used_concepts(self, monkeypatch):
+        custom = SimpleNamespace(
+            name="custom strat", id="c-1", blocks=[SimpleNamespace(type="agnt_e_x")]
+        )
+        used_concepts: list[str] = []
+        self._quiet(monkeypatch)
+        monkeypatch.setattr(ab, "_generate_custom_spec", lambda *a, **k: custom)
+        monkeypatch.setattr(
+            "agent.propose_composed_strategy",
+            lambda *a, **k: (_proposal(), {"input_tokens": 1}),
+        )
+
+        ab._propose_next_strategy(
+            "run-1",
+            1,
+            0,
+            n_iterations=5,
+            intervals=["60"],
+            hint="hint",
+            history=[],
+            used_concepts=used_concepts,
+            spec=SimpleNamespace(name="previous", id="prev-id"),
+            is_external=False,
+            instrument_id="",
+            trend_filter=True,
+            trend_interval="60",
+            wstate=ab._WorkerState(),
+        )
+
+        assert used_concepts == ["agnt_e_x"]
+
+    def test_falls_back_to_builtin_when_custom_generator_returns_none(
+        self, monkeypatch
+    ):
+        spec = self._call(
+            monkeypatch,
+            ab._WorkerState(),
+            i=0,  # next_i=1, odd -> would try custom first
+            generate_custom_spec=lambda *a, **k: None,
+        )
+
+        assert spec.name == "Test Strategy"  # from the default _proposal()
+
+    def test_degraded_non_terminal_returns_spec_and_records_id(self, monkeypatch):
+        wstate = ab._WorkerState()
+        spec = self._call(
+            monkeypatch,
+            wstate,
+            i=1,  # next_i=2, even -> builtin path (simpler to assert on)
+            proposal=_proposal(degraded="rate_limited"),
+        )
+        assert spec is not None
+        assert spec.id in wstate.degraded_spec_ids
+
+    def test_degraded_terminal_is_swallowed_not_propagated(self, monkeypatch):
+        """Unlike _propose_initial_strategy (Phase 1, no fallback possible --
+        degraded_terminal there aborts the round), lookahead generation has a
+        natural fallback. TerminalLLMError is not in the (LLMCallCancelled,
+        AgentBudgetReached) re-raise list, so it falls into the generic
+        except -- the function does not raise, does not crash the round.
+
+        NOT the same as "returns the untouched previous spec", though: `spec`
+        is already reassigned to the new (proposal-derived) spec by the time
+        degraded_terminal is checked -- the exception handler's own "…
+        continuing with previous strategy" log line is technically inexact
+        for this one sub-case. That inexactness is pre-existing (this is a
+        literal extraction, #47-A10) and out of scope here; pinned as-is."""
+        wstate = ab._WorkerState()
+        spec = self._call(
+            monkeypatch,
+            wstate,
+            i=1,
+            spec=SimpleNamespace(name="previous", id="prev-id"),
+            proposal=_proposal(degraded="down", degraded_terminal=True),
+        )
+        assert spec.name == "Test Strategy"  # the NEW proposal's spec, not "previous"
+        assert spec.id in wstate.degraded_spec_ids
+
+    def test_llm_call_cancelled_propagates_instead_of_being_swallowed(
+        self, monkeypatch
+    ):
+        from agent import LLMCallCancelled
+
+        self._quiet(monkeypatch)
+        monkeypatch.setattr(
+            "agent.propose_composed_strategy",
+            lambda *a, **k: (_ for _ in ()).throw(LLMCallCancelled("stopped")),
+        )
+
+        with pytest.raises(LLMCallCancelled):
+            ab._propose_next_strategy(
+                "run-1",
+                1,
+                1,
+                n_iterations=5,
+                intervals=["60"],
+                hint="hint",
+                history=[],
+                used_concepts=[],
+                spec=SimpleNamespace(name="previous", id="prev-id"),
+                is_external=False,
+                instrument_id="",
+                trend_filter=True,
+                trend_interval="60",
+                wstate=ab._WorkerState(),
+            )
+
+    def test_agent_budget_reached_propagates_instead_of_being_swallowed(
+        self, monkeypatch
+    ):
+        self._quiet(monkeypatch)
+        monkeypatch.setattr(
+            "agent.propose_composed_strategy",
+            lambda *a, **k: (_ for _ in ()).throw(ab.AgentBudgetReached("budget")),
+        )
+
+        with pytest.raises(ab.AgentBudgetReached):
+            ab._propose_next_strategy(
+                "run-1",
+                1,
+                1,
+                n_iterations=5,
+                intervals=["60"],
+                hint="hint",
+                history=[],
+                used_concepts=[],
+                spec=SimpleNamespace(name="previous", id="prev-id"),
+                is_external=False,
+                instrument_id="",
+                trend_filter=True,
+                trend_interval="60",
+                wstate=ab._WorkerState(),
+            )
+
+    def test_a_non_fatal_error_logs_a_warning_and_returns_the_previous_spec_unchanged(
+        self, monkeypatch
+    ):
+        """The core resilience property: a transient generation failure must
+        not abort the search or lose the current strategy -- it continues
+        refining with whatever spec was already running."""
+        previous = SimpleNamespace(name="previous", id="prev-id")
+        logged = []
+        self._quiet(monkeypatch)
+        monkeypatch.setattr(ab, "_add_step", lambda run_id, msg: logged.append(msg))
+        monkeypatch.setattr(
+            "agent.propose_composed_strategy",
+            lambda *a, **k: (_ for _ in ()).throw(RuntimeError("provider hiccup")),
+        )
+
+        spec = ab._propose_next_strategy(
+            "run-1",
+            1,
+            1,  # next_i=2, even -> builtin path
+            n_iterations=5,
+            intervals=["60"],
+            hint="hint",
+            history=[],
+            used_concepts=[],
+            spec=previous,
+            is_external=False,
+            instrument_id="",
+            trend_filter=True,
+            trend_interval="60",
+            wstate=ab._WorkerState(),
+        )
+
+        assert spec is previous  # unchanged, not None, not a half-built spec
+        assert any("provider hiccup" in m for m in logged)
+        assert any("continuing with previous strategy" in m for m in logged)
+
+    def test_dedup_receives_wstate_sets_by_reference_not_copy(self, monkeypatch):
+        wstate = ab._WorkerState()
+        seen_arg = {}
+
+        def fake_dedup(spec, *, seen, zero_trade_families, **kw):
+            seen_arg["seen"] = seen
+            seen_arg["zero_trade_families"] = zero_trade_families
+            return spec
+
+        monkeypatch.setattr(ab, "_deduplicate_candidate", fake_dedup)
+        self._call(monkeypatch, wstate, i=1)
+
+        assert seen_arg["seen"] is wstate.seen_candidate_fingerprints
+        assert seen_arg["zero_trade_families"] is wstate.zero_trade_families
+
+    def test_returned_spec_is_always_stamped(self, monkeypatch):
+        spec = self._call(monkeypatch, ab._WorkerState(), i=1)
         assert spec.trend_filter is True
         assert spec.trend_interval == "60"
         assert spec.model_slippage is True

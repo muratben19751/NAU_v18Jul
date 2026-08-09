@@ -1,7 +1,7 @@
 ---
 title: nautilus_web_app DeepR İkinci Tur (2026-08-08, öğleden sonra)
 type: synthesis
-summary: Aynı gün ikinci bir DeepR koşusu — 152 ajan, 0 hata, 33 doğrulanmış bulgu; hepsi kapandı — 31'i aynı oturumda, #47 (_agent_worker bölme, 12 adım A0-A11b) ve #59 (backtest.py characterization, 3 adım B1-B3) ayrı oturumda kademeli, test-önce disiplinle.
+summary: Aynı gün ikinci bir DeepR koşusu — 152 ajan, 0 hata, 33 doğrulanmış bulgu; hepsi kapandı — 31'i aynı oturumda, #47 (_agent_worker bölme, A0-A11b bu oturumda + A10 2026-08-09'da, A12 hariç) ve #59 (backtest.py characterization, 3 adım B1-B3) ayrı oturumda kademeli, test-önce disiplinle.
 key_concepts:
   - crash_only_design
 sources:
@@ -13,7 +13,8 @@ related:
   - wiki/synthesis/nau_performans_denetimi.md
   - wiki/synthesis/kesilme_ve_degrade_gorunurlugu.md
   - wiki/synthesis/auto_360_canli_review_iyilestirmeleri.md
-last_updated: 2026-08-08
+  - wiki/synthesis/nau_deepr_ucuncu_tur_2026_08_09.md
+last_updated: 2026-08-09
 ---
 
 # DeepR İkinci Tur — 2026-08-08 (öğleden sonra)
@@ -78,6 +79,17 @@ sonra da DEĞİŞTİRİLMEDEN yeşil kaldı — mevcut tek Faz-0 uçtan-uca kaps
 A10 (Faz 2'nin "sıradaki spec'i üret" bloğu — `spec`'in aynı loop değişkenine
 yeniden atanması + 3 katmanlı exception hiyerarşisi) ve A12 (alt-paket
 bölmesi) bilinçli olarak plan dışı bırakıldı; gelecekte ayrı bir iş.
+
+**Ek (2026-08-09):** A10 da tamamlandı — `_propose_next_strategy` olarak
+çıkarıldı, davranış korunarak. Test yazımı iki ince davranışı ortaya
+çıkardı: `degraded_terminal` burada A6'nın aksine PROPAGATE OLMUYOR
+(`TerminalLLMError` `(LLMCallCancelled, AgentBudgetReached)` re-raise
+listesinde değil, genel except'e düşüp yutuluyor — Faz 2'de düşülecek bir
+önceki spec var, Faz 1'de yok); ve tam o alt-durumda `spec` raise'den ÖNCE
+zaten yeni teklife atanmış oluyor, yani except'in "önceki stratejiyle
+devam" log mesajı o özel durumda tam doğru değil — ikisi de mevcut,
+değiştirilmeyen davranış, testle sabitlendi. A12 hâlâ plan dışı. Bkz.
+[[nau_deepr_ucuncu_tur_2026_08_09]].
 
 **#59 — 3 adım (B1-B3), tamam:** production kodu HİÇ değişmedi, yalnız
 characterization test yazıldı (`_is_equity_target`/`_local_fallback_breakdown`/

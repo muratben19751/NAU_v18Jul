@@ -239,6 +239,27 @@ gerekmedi.
 `download_grouped_daily.py` (ve ikisinin testleri) kullanıcının kendi scriptleri — bilinçli
 olarak commit dışı kaldı, yalnız diskte düzeltildi + test edildi.
 
+Branch `fix/auto-gate-and-artifact-identity` main'e fast-forward merge edildi (58 commit,
+1312 test yeşil), branch silindi (local + origin).
+
+## Ek: DeepR #47'nin son adımı da kapandı (aynı gün, ayrı istek)
+
+37/37 kapandıktan sonra "başka bir düzeltme var mı" sorusuna verilen taramada iki şey bulundu:
+(1) bu sayfanın kendi docstring notu [[nau_deepr_ikinci_tur_2026_08_08]]'deki #47 planının Faz 0
+yükleyicisinin (A11a/A11b, planın en riskli adımı) hâlâ ertelendiğini söylüyordu — halbuki kod
+zaten tamamlamıştı (`_load_timeframe_bars`+`_TfLoader` mevcut, `TestContinuousCircuitBreaker`
+yeşil); yalnız docstring güncellendi. (2) #47'nin GERÇEKTEN tek açık kalemi ortaya çıktı: Adım 10
+(Faz 2'nin lookahead-generation bloğu). Kullanıcı onayıyla tamamlandı:
+`_propose_next_strategy` olarak çıkarıldı (davranış korunarak, literal taşıma). Test yazımı iki
+ince pre-existing davranışı ortaya çıkardı (ikisi de DEĞİŞTİRİLMEDİ, yalnız testle sabitlendi):
+`degraded_terminal` burada Faz-1'in aksine propagate olmuyor (bir önceki spec'e düşülebildiği
+için `TerminalLLMError` genel except'e düşüp yutuluyor); ve o özel alt-durumda `spec` raise'den
+ÖNCE zaten yeni teklife atanmış oluyor, yani "önceki stratejiyle devam" log mesajı tam doğru
+değil. 11 yeni test, ikisi mutasyon testiyle doğrulandı (cancel/bütçe re-raise'i geçici olarak
+kaldırıp testlerin gerçekten kırıldığını, geri alınca yeşile döndüğünü kanıtladı). Tam suite:
+1323 yeşil. Ayrıntı: [[nau_deepr_ikinci_tur_2026_08_08]]. A12 (alt-paket bölmesi) hâlâ bilinçli
+olarak plan dışı.
+
 <!-- BACKLINKS:BEGIN -->
 ## Referenced by
 

@@ -39,21 +39,25 @@ fonksiyonlara bölünüyor: `_market_for`/`_iv_for`/`_recipe`, `_WorkerState`
 `_winless_stop`, `_make_llm_control`, `_rank_and_filter`,
 `_propose_initial_strategy`, `_scan_one_candidate`, `_run_promotion_gate`
 (sealed-holdout finansal bütünlük kapısı), `_run_backtest_iteration`,
-ve Faz 0'ın veri/holdout yükleyicisi (`_load_timeframe_bars` + `_TfLoader`
-— planın en riskli adımı, A11a/A11b) çıkarıldı — her biri kendi birim
-testiyle, davranış korunarak; `TestContinuousCircuitBreaker` (tek Faz-0
-regresyon kanıtı) hâlâ yeşil. Faz 2'nin "sıradaki spec'i üret" bloğu
-(spec'in aynı loop değişkenine yeniden atanması + 3 katmanlı exception
-hiyerarşisi, ~satır 3350-3440, plandaki Adım 10) ve alt-paket bölmesi
-(Adım 12) bilinçli olarak planın YÜRÜTÜLEN kapsamı dışında bırakıldı —
-gelecekte ayrı bir iş. Bkz. [[nau_deepr_ikinci_tur_2026_08_08]].
+Faz 0'ın veri/holdout yükleyicisi (`_load_timeframe_bars` + `_TfLoader` —
+planın en riskli adımı, A11a/A11b), ve Faz 2'nin lookahead-generation
+bloğu (`_propose_next_strategy`, Adım 10 — spec'in aynı loop değişkenine
+yeniden atanması + 3 katmanlı exception hiyerarşisi; `degraded_terminal`
+Faz-1'in aksine burada PROPAGATE OLMAZ, `(LLMCallCancelled,
+AgentBudgetReached)` dışındaki her hata "önceki stratejiyle devam" olarak
+yutulur — bilinçli, çünkü burada bir önceki spec'e düşülebilir, Faz-1'de
+düşülemez) çıkarıldı — her biri kendi birim testiyle, davranış korunarak;
+`TestContinuousCircuitBreaker` (tek Faz-0 regresyon kanıtı) hâlâ yeşil.
+Yalnız alt-paket bölmesi (Adım 12) bilinçli olarak planın YÜRÜTÜLEN
+kapsamı dışında — gelecekte ayrı bir iş. Bkz.
+[[nau_deepr_ikinci_tur_2026_08_08]].
 
 2026-08-09 DeepR turu dosyayı yine (5000+ satır) çok büyük diye işaretledi
-([DÜŞÜK]) — A0-A9+A11a/A11b sonrası hâlâ büyük çünkü ~40 modül-seviyesi
-yardımcı BİLİNÇLİ OLARAK aynı dosyada tutuluyor (`tests/test_lock_nesting.py`'nin
+([DÜŞÜK]) — A0-A11b sonrası hâlâ büyük çünkü ~40 modül-seviyesi yardımcı
+BİLİNÇLİ OLARAK aynı dosyada tutuluyor (`tests/test_lock_nesting.py`'nin
 AST taraması bu dosyayı hedefliyor; ayrı bir alt-pakete taşımak o regresyon
-testini kör bırakır — planın "Adım 12: YAPILMAYACAK" kararı). Tek kalan
-adım (Adım 10) bu turda da denenmedi.
+testini kör bırakır — planın "Adım 12: YAPILMAYACAK" kararı). Adım 10
+sonradan (aynı gün) tamamlandı — dosya bilinçli olarak yine de büyük.
 """
 
 from __future__ import annotations
@@ -2018,6 +2022,189 @@ def _run_backtest_iteration(
     return r
 
 
+def _propose_next_strategy(
+    run_id: str,
+    run_number: int,
+    i: int,
+    n_iterations: int,
+    intervals: list[str],
+    hint: str,
+    history: list,
+    used_concepts: list[str],
+    spec,
+    is_external: bool,
+    instrument_id: str,
+    trend_filter: bool,
+    trend_interval: str,
+    wstate: _WorkerState,
+):
+    """Phase 2's lookahead-generation half of one iteration (#47-A10 — the
+    run-backtest-and-log half is `_run_backtest_iteration` above, A9).
+    Proposes the spec for iteration i+1 while i's backtest just finished.
+
+    Reassigns and returns `spec` (the caller's loop variable) on success.
+    On a non-fatal error, logs a warning and returns the unchanged `spec`
+    passed in — the search continues with the previous strategy instead of
+    aborting. LLMCallCancelled/AgentBudgetReached propagate unchanged:
+    those must abort the whole run, not just this one generation attempt.
+    """
+    from agent import LLMCallCancelled, TerminalLLMError, propose_composed_strategy
+    from composer import load_catalog
+
+    next_i = i + 1
+    use_custom = next_i % 2 == 1
+    _add_step(
+        run_id,
+        f"[{next_i + 1}/{n_iterations}] "
+        + (
+            "Generating custom block…"
+            if use_custom
+            else "Claude is generating a new strategy…"
+        ),
+    )
+    _tl_begin(
+        run_id,
+        "llm",
+        f"llm-refine-r{run_number}-i{next_i + 1}",
+        ("Custom block generation" if use_custom else "Claude new strategy"),
+        round_num=run_number,
+        iter=next_i + 1,
+    )
+    # The TF the NEXT iteration will use is already decided by the
+    # round-robin — pass it down so periods/thresholds are sized
+    # for that bar rather than for an unknown one.
+    next_iv = _iv_for(next_i, run_number, intervals)
+    next_market = _market_for(is_external, instrument_id, next_iv)
+    try:
+        if use_custom:
+            custom_spec = _generate_custom_spec(
+                run_id,
+                next_i,
+                hint,
+                history,
+                used_concepts=used_concepts,
+                round_num=run_number,
+                market=next_market,
+                timeframe=next_iv,
+            )
+            if custom_spec is not None:
+                spec = custom_spec
+                # Accumulate the generated block labels
+                for b in spec.blocks:
+                    used_concepts.append(b.type)
+                _add_step(run_id, f"  → {spec.name} (custom)")
+            else:
+                proposal, _u = propose_composed_strategy(
+                    history,
+                    load_catalog(),
+                    hint=hint,
+                    market=next_market,
+                    timeframe=next_iv,
+                )
+                _enforce_token_budget(run_id)
+                spec = _proposal_to_spec(proposal)
+                if proposal.get("degraded"):
+                    _mark_degraded(
+                        run_id,
+                        proposal["degraded"],
+                        "strategy proposal",
+                    )
+                    wstate.degraded_spec_ids.add(spec.id)
+                    if proposal.get("degraded_terminal"):
+                        raise TerminalLLMError(
+                            proposal.get("degraded_detail")
+                            or "terminal LLM provider failure"
+                        )
+                _session_log(
+                    run_id,
+                    "strategy_proposed",
+                    iteration=next_i,
+                    round=run_number,
+                    spec=proposal,
+                    source="builtin_fallback",
+                    usage=_u,
+                )
+                _add_step(run_id, f"  → {spec.name} (fallback builtin)")
+        else:
+            proposal, _u = propose_composed_strategy(
+                history,
+                load_catalog(),
+                hint=hint,
+                market=next_market,
+                timeframe=next_iv,
+            )
+            _enforce_token_budget(run_id)
+            spec = _proposal_to_spec(proposal)
+            if proposal.get("degraded"):
+                _mark_degraded(run_id, proposal["degraded"], "strategy proposal")
+                wstate.degraded_spec_ids.add(spec.id)
+                if proposal.get("degraded_terminal"):
+                    raise TerminalLLMError(
+                        proposal.get("degraded_detail")
+                        or "terminal LLM provider failure"
+                    )
+            _session_log(
+                run_id,
+                "strategy_proposed",
+                iteration=next_i,
+                round=run_number,
+                spec=proposal,
+                source="builtin",
+                usage=_u,
+            )
+            _add_step(run_id, f"  → {spec.name}")
+        spec = _deduplicate_candidate(
+            spec,
+            seen=wstate.seen_candidate_fingerprints,
+            zero_trade_families=wstate.zero_trade_families,
+            run_id=run_id,
+            round_num=run_number,
+            iteration=next_i,
+        )
+        # H9: trend_filter/trend_interval was only applied to the
+        # first (phase 1) spec; EVERY spec generated in refine
+        # kept the composer default (trend_filter=False), making
+        # inter-iteration comparison inconsistent and saving the
+        # winner without a filter. Apply it to every spec.
+        spec.trend_filter = trend_filter
+        spec.trend_interval = trend_interval
+        spec.model_slippage = True
+        if is_external:
+            _exposure_change = _clamp_spec_trade_size(spec)
+            if _exposure_change:
+                _session_log(
+                    run_id,
+                    "exposure_normalized",
+                    round=run_number,
+                    iteration=next_i,
+                    spec_id=spec.id,
+                    **_exposure_change,
+                )
+        with _AGENT_LOCK:
+            if run_id in _AGENT_PROGRESS:
+                _AGENT_PROGRESS[run_id]["strategy_name"] = spec.name
+        _tl_end(
+            run_id,
+            f"llm-refine-r{run_number}-i{next_i + 1}",
+            status="ok",
+            name=spec.name,
+        )
+        return spec
+    except (LLMCallCancelled, AgentBudgetReached):
+        raise
+    except Exception as e:
+        _add_step(
+            run_id,
+            f"  ⚠ Could not get proposal: {e} — continuing with previous strategy",
+        )
+        _tl_end(
+            run_id,
+            f"llm-refine-r{run_number}-i{next_i + 1}",
+            status="warn",
+        )
+        return spec
+
+
 def _load_timeframe_bars(
     run_id: str,
     is_external: bool,
@@ -2996,7 +3183,6 @@ def _agent_worker(
     from agent import (
         LLMCallCancelled,
         TerminalLLMError,
-        propose_composed_strategy,
         set_thread_effort,
         set_thread_llm_control,
         set_thread_model,
@@ -3011,8 +3197,6 @@ def _agent_worker(
     # bileşik −81%). "" = CLI/uç kendi varsayılanını uygular.
     set_thread_effort(effort or None)
     set_thread_random_seed(run_id)
-
-    from composer import load_catalog
 
     is_external = source == "external"
     if continuous_mode:
@@ -3324,162 +3508,22 @@ def _agent_worker(
                 results.append((spec, r, iter_iv))
 
                 if i < n_iterations - 1:
-                    next_i = i + 1
-                    use_custom = next_i % 2 == 1
-                    _add_step(
+                    spec = _propose_next_strategy(
                         run_id,
-                        f"[{next_i + 1}/{n_iterations}] "
-                        + (
-                            "Generating custom block…"
-                            if use_custom
-                            else "Claude is generating a new strategy…"
-                        ),
+                        run_number,
+                        i,
+                        n_iterations,
+                        intervals,
+                        hint,
+                        history,
+                        used_concepts,
+                        spec,
+                        is_external,
+                        instrument_id,
+                        trend_filter,
+                        trend_interval,
+                        wstate,
                     )
-                    _tl_begin(
-                        run_id,
-                        "llm",
-                        f"llm-refine-r{run_number}-i{next_i + 1}",
-                        (
-                            "Custom block generation"
-                            if use_custom
-                            else "Claude new strategy"
-                        ),
-                        round_num=run_number,
-                        iter=next_i + 1,
-                    )
-                    # The TF the NEXT iteration will use is already decided by the
-                    # round-robin — pass it down so periods/thresholds are sized
-                    # for that bar rather than for an unknown one.
-                    next_iv = _iv_for(next_i, run_number, intervals)
-                    next_market = _market_for(is_external, instrument_id, next_iv)
-                    try:
-                        if use_custom:
-                            custom_spec = _generate_custom_spec(
-                                run_id,
-                                next_i,
-                                hint,
-                                history,
-                                used_concepts=used_concepts,
-                                round_num=run_number,
-                                market=next_market,
-                                timeframe=next_iv,
-                            )
-                            if custom_spec is not None:
-                                spec = custom_spec
-                                # Accumulate the generated block labels
-                                for b in spec.blocks:
-                                    used_concepts.append(b.type)
-                                _add_step(run_id, f"  → {spec.name} (custom)")
-                            else:
-                                proposal, _u = propose_composed_strategy(
-                                    history,
-                                    load_catalog(),
-                                    hint=hint,
-                                    market=next_market,
-                                    timeframe=next_iv,
-                                )
-                                _enforce_token_budget(run_id)
-                                spec = _proposal_to_spec(proposal)
-                                if proposal.get("degraded"):
-                                    _mark_degraded(
-                                        run_id,
-                                        proposal["degraded"],
-                                        "strategy proposal",
-                                    )
-                                    wstate.degraded_spec_ids.add(spec.id)
-                                    if proposal.get("degraded_terminal"):
-                                        raise TerminalLLMError(
-                                            proposal.get("degraded_detail")
-                                            or "terminal LLM provider failure"
-                                        )
-                                _session_log(
-                                    run_id,
-                                    "strategy_proposed",
-                                    iteration=next_i,
-                                    round=run_number,
-                                    spec=proposal,
-                                    source="builtin_fallback",
-                                    usage=_u,
-                                )
-                                _add_step(run_id, f"  → {spec.name} (fallback builtin)")
-                        else:
-                            proposal, _u = propose_composed_strategy(
-                                history,
-                                load_catalog(),
-                                hint=hint,
-                                market=next_market,
-                                timeframe=next_iv,
-                            )
-                            _enforce_token_budget(run_id)
-                            spec = _proposal_to_spec(proposal)
-                            if proposal.get("degraded"):
-                                _mark_degraded(
-                                    run_id, proposal["degraded"], "strategy proposal"
-                                )
-                                wstate.degraded_spec_ids.add(spec.id)
-                                if proposal.get("degraded_terminal"):
-                                    raise TerminalLLMError(
-                                        proposal.get("degraded_detail")
-                                        or "terminal LLM provider failure"
-                                    )
-                            _session_log(
-                                run_id,
-                                "strategy_proposed",
-                                iteration=next_i,
-                                round=run_number,
-                                spec=proposal,
-                                source="builtin",
-                                usage=_u,
-                            )
-                            _add_step(run_id, f"  → {spec.name}")
-                        spec = _deduplicate_candidate(
-                            spec,
-                            seen=wstate.seen_candidate_fingerprints,
-                            zero_trade_families=wstate.zero_trade_families,
-                            run_id=run_id,
-                            round_num=run_number,
-                            iteration=next_i,
-                        )
-                        # H9: trend_filter/trend_interval was only applied to the
-                        # first (phase 1) spec; EVERY spec generated in refine
-                        # kept the composer default (trend_filter=False), making
-                        # inter-iteration comparison inconsistent and saving the
-                        # winner without a filter. Apply it to every spec.
-                        spec.trend_filter = trend_filter
-                        spec.trend_interval = trend_interval
-                        spec.model_slippage = True
-                        if is_external:
-                            _exposure_change = _clamp_spec_trade_size(spec)
-                            if _exposure_change:
-                                _session_log(
-                                    run_id,
-                                    "exposure_normalized",
-                                    round=run_number,
-                                    iteration=next_i,
-                                    spec_id=spec.id,
-                                    **_exposure_change,
-                                )
-                        with _AGENT_LOCK:
-                            if run_id in _AGENT_PROGRESS:
-                                _AGENT_PROGRESS[run_id]["strategy_name"] = spec.name
-                        _tl_end(
-                            run_id,
-                            f"llm-refine-r{run_number}-i{next_i + 1}",
-                            status="ok",
-                            name=spec.name,
-                        )
-                    except (LLMCallCancelled, AgentBudgetReached):
-                        raise
-                    except Exception as e:
-                        _add_step(
-                            run_id,
-                            f"  ⚠ Could not get proposal: {e} — continuing with previous strategy",
-                        )
-                        _tl_end(
-                            run_id,
-                            f"llm-refine-r{run_number}-i{next_i + 1}",
-                            status="warn",
-                        )
 
             with _AGENT_LOCK:
                 _stopped_during_iterations = bool(
