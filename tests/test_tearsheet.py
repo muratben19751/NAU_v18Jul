@@ -142,9 +142,12 @@ class TestSessionResolver:
 
     @pytest.fixture
     def session(self, tmp_path, monkeypatch):
-        from web.routes import agent_backtest as ab
+        import web.shared as shared
 
-        monkeypatch.setattr(ab, "SESSION_LOG_DIR", tmp_path)
+        # tearsheet._session_events reads web.shared.SESSION_LOG_DIR directly
+        # (a local import) — not agent_backtest's re-bound copy, which the
+        # autouse _isolate_session_logs fixture already points elsewhere.
+        monkeypatch.setattr(shared, "SESSION_LOG_DIR", tmp_path)
         lines = [
             {"event": "step", "msg": "noise"},
             {

@@ -103,7 +103,7 @@ def _log_view(ts: str) -> dict:
 
 
 def _session_events(run_id: str) -> list[dict]:
-    from web.routes.agent_backtest import SESSION_LOG_DIR
+    from web.shared import SESSION_LOG_DIR
 
     path = SESSION_LOG_DIR / f"{run_id}.jsonl"
     if not path.exists():

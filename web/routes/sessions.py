@@ -27,13 +27,9 @@ from pathlib import Path
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, Response
 
-router = APIRouter(prefix="/sessions")
+from web.shared import SESSION_LOG_DIR
 
-# Canonical path — shared with agent_backtest.py (import avoids duplication)
-try:
-    from web.routes.agent_backtest import SESSION_LOG_DIR
-except ImportError:
-    SESSION_LOG_DIR = Path.home() / ".cache" / "nautilus_web_app" / "agent_sessions"
+router = APIRouter(prefix="/sessions")
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 

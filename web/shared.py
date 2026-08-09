@@ -235,6 +235,13 @@ _CACHE_DIR = Path.home() / ".cache" / "nautilus_web_app"
 BACKTEST_LOG = _CACHE_DIR / "backtest_log.jsonl"
 ROBUSTNESS_LOG = _CACHE_DIR / "robustness_log.jsonl"
 
+# AUTO session event log directory. Formerly defined in
+# web/routes/agent_backtest.py with web/routes/sessions.py and
+# web/routes/tearsheet.py both reaching into that route module to read it
+# (DeepR 2026-08-09 [YÜKSEK] — one feature file owned a constant 3 modules
+# needed). Lives here now, alongside the other shared log paths above.
+SESSION_LOG_DIR = _CACHE_DIR / "agent_sessions"
+
 # Append-only JSONL logs were growing without bound (backtest_log ~10MB,
 # robustness ~5MB). On threshold exceed, roll over to a single-generation
 # archive: the active file starts clean, and readers (tail-read / full read)

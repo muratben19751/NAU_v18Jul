@@ -129,39 +129,39 @@ STRATEGY_TEMPLATES: list[dict] = [
 @router.get("", response_class=HTMLResponse)
 def page(request: Request):
     # Sync handler → FastAPI runs it in a threadpool, so the blocking disk I/O
-    # (load_catalog + custom-block listing + read_wiki_page + _recent_runs)
+    # (load_catalog + custom-block listing + read_wiki_page + recent_runs)
     # doesn't stall the event loop.
     import custom_block_store as cbs
     from server import get_market_info, templates
 
-    # Import backtest-side helpers lazily to avoid import-time coupling; these
-    # are the same functions the standalone /backtest page uses.
+    # Import backtest/strategy-side helpers lazily to avoid import-time
+    # coupling; these are the same functions the standalone /backtest and
+    # /strategy pages use (DeepR 2026-08-09 [YÜKSEK]: previously reached
+    # into as `_`-prefixed private names — see nau_deepr_ucuncu_tur_2026_08_09.md).
     from web.routes.backtest import (
-        _catalog_index_symbols,
-        _last_result_get,
-        _recent_runs,
-        _result_viewmodel,
+        catalog_index_symbols,
+        last_result_get,
+        recent_runs,
+        result_viewmodel,
     )
-    from web.routes.strategy import _drafts, _wiki_html_for
+    from web.routes.strategy import session_drafts, wiki_html_for
 
     sid = session_id(request)
     catalog = load_catalog()
     default_type = next(iter(BLOCK_CATALOG.keys()))
-    wiki_active, wiki_html = _wiki_html_for(default_type)
+    wiki_active, wiki_html = wiki_html_for(default_type)
 
     # Autonomous mode: bind the studio cockpit to the newest still-running agent
     # run (System B), so switching to OTONOM after a restart/refresh reconnects
     # to a live loop even if it was started elsewhere (the /agent page or API).
-    # Mirrors web.routes.agent_backtest.page's reverse-scan of the store.
-    active_run_id = None
+    # Same accessor web.routes.agent_backtest.page's own AUTO panel uses (DeepR
+    # 2026-08-09 [YÜKSEK] — this used to import and scan the raw
+    # _AGENT_LOCK/_AGENT_PROGRESS itself, a second unmonitored acquirer of a
+    # lock with a documented deadlock incident; see the accessor's docstring).
     try:
-        from web.routes.agent_backtest import _AGENT_LOCK, _AGENT_PROGRESS
+        from web.routes.agent_backtest import newest_active_run_id
 
-        with _AGENT_LOCK:
-            for rid, st in reversed(_AGENT_PROGRESS.items()):
-                if not st.get("done"):
-                    active_run_id = rid
-                    break
+        active_run_id = newest_active_run_id()
     except Exception:
         active_run_id = None
 
@@ -170,10 +170,10 @@ def page(request: Request):
     _models = _llm_models()
 
     # Backtest tab: session-scoped last result (Faz 3).
-    slot = _last_result_get(sid)
+    slot = last_result_get(sid)
     last_row = None
     if slot["r"] is not None:
-        last_row = _result_viewmodel(
+        last_row = result_viewmodel(
             slot["r"],
             slot["spec_name"],
             slot.get("narrative", ""),
@@ -189,7 +189,7 @@ def page(request: Request):
         # ── Compose tab context ──
         "block_catalog": BLOCK_CATALOG,
         "default_type": default_type,
-        "drafts": _drafts(sid),
+        "drafts": session_drafts(sid),
         "wiki_active": wiki_active,
         "wiki_html": wiki_html,
         "custom_blocks": cbs.list_custom(include_ephemeral=False),
@@ -222,11 +222,11 @@ def page(request: Request):
         # ── Backtest tab context ──
         "last": last_row,
         "preferred_spec_id": request.query_params.get("spec_id", ""),
-        "recent_runs": _recent_runs(6),
+        "recent_runs": recent_runs(6),
         "bybit_symbols": _bybit_symbols(),
         "bybit_categories": BYBIT_CATEGORIES,
         "bybit_intervals": BYBIT_ALL_INTERVALS,
-        "index_symbols": _catalog_index_symbols(),
+        "index_symbols": catalog_index_symbols(),
         # ── Simple-mode wizard context ──
         "strategy_templates": STRATEGY_TEMPLATES,
         # ── AUTO cockpit: model picker (Claude + varsa OpenRouter) ──

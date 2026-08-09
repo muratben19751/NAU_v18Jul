@@ -69,7 +69,10 @@ from fastapi.responses import HTMLResponse
 
 router = APIRouter(prefix="/agent")
 
-from web.shared import ProgressStore  # noqa: E402
+from web.shared import (
+    SESSION_LOG_DIR,  # noqa: E402
+    ProgressStore,  # noqa: E402
+)
 from web.shared import chart_url as _chart_url  # noqa: E402
 from web.shared import log_backtest as _log_backtest  # noqa: E402
 from web.shared import log_robustness as _log_robustness  # noqa: E402
@@ -79,6 +82,28 @@ from web.shared import log_robustness as _log_robustness  # noqa: E402
 _AGENT_STORE = ProgressStore(50)
 _AGENT_PROGRESS = _AGENT_STORE.raw()
 _AGENT_LOCK = _AGENT_STORE.lock
+
+
+def newest_active_run_id() -> str | None:
+    """The newest still-running AUTO run, or None (first done=False from the
+    end of the insertion-ordered store).
+
+    No leading underscore: web/routes/studio.py's /studio page calls this
+    too (DeepR 2026-08-09 [YÜKSEK] — it used to import the raw _AGENT_LOCK/
+    _AGENT_PROGRESS and scan them itself, a second, unmonitored acquirer of
+    a lock with a documented deadlock incident, see tests/test_lock_nesting.py).
+    This module's own page() below used to duplicate the identical scan
+    inline; both now call this one function instead. Mirrors the
+    lock-guarded-snapshot-then-handoff shape already used for the mission
+    view (search this file for 'Same locked-snapshot pattern as /progress')
+    — the lock is acquired and released here, the caller never touches it.
+    """
+    with _AGENT_LOCK:
+        for rid, st in reversed(_AGENT_PROGRESS.items()):
+            if not st.get("done"):
+                return rid
+    return None
+
 
 # AUTO can fan out into LLM, backtest, and robustness workers. Keep the default
 # deliberately small so two browser clicks cannot oversubscribe the host or
@@ -195,7 +220,10 @@ _AGENT_INDEX_DB = Path.home() / ".cache" / "nautilus_web_app" / "agent_index.db"
 _IPC_Q = None
 
 # ── Session Logger ────────────────────────────────────────────────────────────
-SESSION_LOG_DIR = Path.home() / ".cache" / "nautilus_web_app" / "agent_sessions"
+# SESSION_LOG_DIR moved to web/shared.py (DeepR 2026-08-09 [YÜKSEK]) — the
+# `from web.shared import SESSION_LOG_DIR` near the top of this file's other
+# web.shared imports is the definition now; this module keeps its own bound
+# name (tests patch `ab.SESSION_LOG_DIR` directly) via that import.
 _SESSION_LOG_LOCKS: dict[str, threading.Lock] = {}
 _SESSION_LOG_META: threading.Lock = threading.Lock()  # guards _SESSION_LOG_LOCKS
 
@@ -4238,14 +4266,8 @@ async def page(request: Request):
 
     # If there is an unfinished run, AUTOMATICALLY bind the page to it — so after
     # a server restart / tab refresh the user sees the running run (even if the
-    # run was started from the API, i.e. not from this browser). Pick the newest
-    # active run (first done=False from the end of the insertion-ordered dict).
-    active_run_id = None
-    with _AGENT_LOCK:
-        for rid, st in reversed(_AGENT_PROGRESS.items()):
-            if not st.get("done"):
-                active_run_id = rid
-                break
+    # run was started from the API, i.e. not from this browser).
+    active_run_id = newest_active_run_id()
 
     from agent import selectable_models
 

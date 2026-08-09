@@ -84,7 +84,16 @@ def _sid_cookie(resp: Response, sid: str) -> Response:
     return resp
 
 
-def _drafts(sid: str) -> list[SignalBlock]:
+def session_drafts(sid: str) -> list[SignalBlock]:
+    """This session's draft block list (created empty on first touch).
+
+    No leading underscore: web/routes/studio.py calls this too (DeepR
+    2026-08-09 [YÜKSEK]). Named ``session_drafts`` rather than the bare
+    ``drafts`` — several call sites below already use a local variable
+    named ``drafts`` for this function's return value, which would shadow
+    a same-named function and raise ``UnboundLocalError`` on the
+    self-reassignment (``drafts = drafts(sid)``).
+    """
     if sid not in _DRAFTS and len(_DRAFTS) >= _MAX_DRAFT_SESSIONS:
         # Drop the oldest session (insertion-order) — no unbounded memory growth.
         _DRAFTS.pop(next(iter(_DRAFTS)), None)
@@ -191,7 +200,9 @@ def _slugify(label: str) -> str:
     return s[:40]
 
 
-def _wiki_html_for(block_type: str) -> tuple[str, str]:
+def wiki_html_for(block_type: str) -> tuple[str, str]:
+    """No leading underscore: web/routes/studio.py calls this too (DeepR
+    2026-08-09 [YÜKSEK])."""
     refs = BLOCK_CATALOG.get(block_type, {}).get("wiki_refs", [])
     active = refs[0] if refs else "wiki/entities/strategy_and_actor.md"
     return active, render_md(read_wiki_page(active))
@@ -334,11 +345,11 @@ async def block_form(request: Request, type: str):
 async def wiki_panel(request: Request, type: str):
     from server import templates
 
-    _, html = _wiki_html_for(type)
+    _, html = wiki_html_for(type)
     return templates.TemplateResponse(
         request,
         "fragments/wiki_panel.html",
-        {"wiki_html": html, "wiki_active": _wiki_html_for(type)[0]},
+        {"wiki_html": html, "wiki_active": wiki_html_for(type)[0]},
     )
 
 
@@ -373,14 +384,14 @@ async def add_draft(request: Request):
             params[pname] = raw
 
     sid = _sid(request)
-    _drafts(sid).append(SignalBlock(type=btype, role=role, params=params))
+    session_drafts(sid).append(SignalBlock(type=btype, role=role, params=params))
 
     return _sid_cookie(
         templates.TemplateResponse(
             request,
             "fragments/drafts_list.html",
             {
-                "drafts": _drafts(sid),
+                "drafts": session_drafts(sid),
                 "block_catalog": BLOCK_CATALOG,
                 "options": _options_from_form(form),
                 "name": form.get("name") or "",
@@ -396,7 +407,7 @@ async def delete_draft(request: Request, index: int):
 
     form = await request.form()
     sid = _sid(request)
-    drafts = _drafts(sid)
+    drafts = session_drafts(sid)
     if 0 <= index < len(drafts):
         drafts.pop(index)
     return _sid_cookie(
@@ -455,7 +466,7 @@ async def suggest(request: Request):
             request,
             "fragments/suggestion_result.html",
             {
-                "drafts": _drafts(sid),
+                "drafts": session_drafts(sid),
                 "block_catalog": BLOCK_CATALOG,
                 "name": proposal["name"],
                 "description": description,
@@ -505,7 +516,7 @@ async def drafts_chat_new(request: Request):
 
     form = await request.form()
     sid = _sid(request)
-    blocks = _blocks_to_dicts(_drafts(sid))
+    blocks = _blocks_to_dicts(session_drafts(sid))
     if not blocks:
         return HTMLResponse(
             "<div class='empty-state'>Önce en az bir blok ekle, sonra AI ile düzenle.</div>",
@@ -614,7 +625,7 @@ async def drafts_chat_apply(request: Request, conv_id: str = Form("")):
             request,
             "fragments/drafts_list.html",
             {
-                "drafts": _drafts(sid),
+                "drafts": session_drafts(sid),
                 "block_catalog": BLOCK_CATALOG,
                 "options": _options_from_form(form),
                 "name": form.get("name") or "",
@@ -654,7 +665,7 @@ async def save(
     from server import templates
 
     sid = _sid(request)
-    drafts = _drafts(sid)
+    drafts = session_drafts(sid)
     spec = build_spec(
         name=name,
         description=description,
@@ -1192,7 +1203,7 @@ async def edit_spec(request: Request, spec_id: str, mode: str = "overwrite"):
             request,
             "fragments/edit_result.html",
             {
-                "drafts": _drafts(sid),
+                "drafts": session_drafts(sid),
                 "block_catalog": BLOCK_CATALOG,
                 "name": spec.name,
                 "description": spec.description,

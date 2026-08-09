@@ -58,8 +58,12 @@ from web.shared import log_backtest as _log_backtest  # noqa: E402
 from web.shared import save_result_snapshot as _save_result_snapshot  # noqa: E402
 
 
-def _catalog_index_symbols() -> list[str]:
-    """Return equity/index tickers present in the Nautilus catalog bar/ directory."""
+def catalog_index_symbols() -> list[str]:
+    """Return equity/index tickers present in the Nautilus catalog bar/ directory.
+
+    No leading underscore: web/routes/studio.py imports this directly too
+    (DeepR 2026-08-09 [YÜKSEK] — reached into as a "private" name before).
+    """
     from data import NAUTILUS_CATALOG_DIR
 
     bar_dir = NAUTILUS_CATALOG_DIR / "data" / "bar"
@@ -81,7 +85,7 @@ def _catalog_index_symbols() -> list[str]:
 
 # Last backtest result — now SESSION-SCOPED (sid → slot) instead of a single
 # process-global slot that was last-writer-wins across all users. Bounded like
-# _DRAFTS: drop the oldest sid when over cap. Read via _last_result_get(sid),
+# _DRAFTS: drop the oldest sid when over cap. Read via last_result_get(sid),
 # written by the run worker via _last_result_set(sid, ...).
 _LAST_RESULT: dict[str, dict] = {}
 _LAST_RESULT_LOCK = threading.Lock()
@@ -92,8 +96,12 @@ def _empty_result_slot() -> dict:
     return {"r": None, "spec_name": None, "narrative": "", "bars_info": {}}
 
 
-def _last_result_get(sid: str) -> dict:
-    """Return a copy of this session's last-result slot (empty slot if none)."""
+def last_result_get(sid: str) -> dict:
+    """Return a copy of this session's last-result slot (empty slot if none).
+
+    No leading underscore: web/routes/studio.py calls this too (DeepR
+    2026-08-09 [YÜKSEK]).
+    """
     with _LAST_RESULT_LOCK:
         slot = _LAST_RESULT.get(sid)
         return dict(slot) if slot is not None else _empty_result_slot()
@@ -358,11 +366,12 @@ def _derive_bt_phases(steps: list[dict], done: bool, error: str | None) -> list[
     return out
 
 
-def _result_viewmodel(r, spec_name: str, narrative: str, bars_info: dict) -> dict:
+def result_viewmodel(r, spec_name: str, narrative: str, bars_info: dict) -> dict:
     """Build the full backtest result view-model consumed by
     ``fragments/backtest_result.html``. Shared by page(), the run worker
-    (snapshot write), and the history reload route so all three render the
-    identical result screen. Returns a JSON-serializable dict."""
+    (snapshot write), the history reload route, and web/routes/studio.py's
+    /studio page (DeepR 2026-08-09 [YÜKSEK]) so all render the identical
+    result screen. Returns a JSON-serializable dict."""
     row = iteration_row(r)
     row["rationale"] = r.rationale
     row["equity_curve"] = r.equity_curve
@@ -379,8 +388,12 @@ def _result_viewmodel(r, spec_name: str, narrative: str, bars_info: dict) -> dic
     return row
 
 
-def _recent_runs(limit: int = 6) -> list[dict]:
-    """Read the last N backtest runs from the log (for the Run History panel)."""
+def recent_runs(limit: int = 6) -> list[dict]:
+    """Read the last N backtest runs from the log (for the Run History panel).
+
+    No leading underscore: web/routes/studio.py calls this too (DeepR
+    2026-08-09 [YÜKSEK]).
+    """
     if not BACKTEST_LOG.exists():
         return []
     out: list[dict] = []
@@ -422,7 +435,7 @@ def _recent_runs(limit: int = 6) -> list[dict]:
             if len(out) >= limit:
                 break
     except Exception:
-        logging.warning("_recent_runs: read failed for %s", BACKTEST_LOG, exc_info=True)
+        logging.warning("recent_runs: read failed for %s", BACKTEST_LOG, exc_info=True)
         return []
     return out
 
@@ -1007,7 +1020,7 @@ async def run(
             # Persist the FULL result view-model so the history tab can reload
             # this exact screen later (the jsonl log keeps only scalar metrics).
             # Log BEFORE the snapshot: the returned ts is the tear sheet key and
-            # `_result_viewmodel` copies it off `result`, so a snapshot written
+            # `result_viewmodel` copies it off `result`, so a snapshot written
             # first would be the one view of this run without a tear sheet link.
             try:
                 result.log_ts = _log_backtest(
@@ -1032,7 +1045,7 @@ async def run(
                 try:
                     _save_result_snapshot(
                         run_id,
-                        _result_viewmodel(result, spec.name, narrative, bars_info),
+                        result_viewmodel(result, spec.name, narrative, bars_info),
                     )
                 except Exception:
                     # Same reasoning as the log-write except above.

@@ -104,7 +104,7 @@ def test_snapshot_write_failure_is_logged_not_silent(stub_catalog, monkeypatch, 
         lambda *a, **k: SimpleNamespace(error=None),
     )
     monkeypatch.setattr(bt, "_log_backtest", lambda *a, **k: "2026-08-08T00:00:00")
-    monkeypatch.setattr(bt, "_result_viewmodel", lambda *a, **k: {})
+    monkeypatch.setattr(bt, "result_viewmodel", lambda *a, **k: {})
 
     def _boom(*a, **k):
         raise RuntimeError("disk full")
@@ -129,7 +129,7 @@ def test_a_successful_run_logs_nothing_at_warning_level(
         lambda *a, **k: SimpleNamespace(error=None),
     )
     monkeypatch.setattr(bt, "_log_backtest", lambda *a, **k: "2026-08-08T00:00:00")
-    monkeypatch.setattr(bt, "_result_viewmodel", lambda *a, **k: {})
+    monkeypatch.setattr(bt, "result_viewmodel", lambda *a, **k: {})
     monkeypatch.setattr(bt, "_save_result_snapshot", lambda *a, **k: None)
 
     with caplog.at_level(logging.WARNING, logger="web.routes.backtest"):
