@@ -8,10 +8,13 @@ _interruptible_sleep/_tag_degraded/_fallback_rng were never called by name
 in any test -- only exercised as side effects of other tests driving the
 full _create_message_once dispatch path.
 
-_interruptible_sleep stayed BEHIND in agent.py (it calls _sleep, Domain C's
-patchable time.sleep alias, not yet extracted) -- tested here via
-`agent._interruptible_sleep` rather than `llm_client`, for the same
-"cover the gap regardless of which file it ends up in" reason.
+_interruptible_sleep has since moved to openrouter_backend.py (Faz 2, Adım
+6 -- it calls _sleep, and its only production caller, _or_create_with_backoff,
+is OpenRouter-only). Tested here via `agent._interruptible_sleep` (the
+re-export) for the same "cover the gap regardless of which file it ends up
+in" reason, but the `_sleep` patch target is `openrouter_backend._sleep` --
+`_interruptible_sleep`'s own bare-name lookup now resolves there, not
+against agent's namespace.
 
 Wiki References
 ---------------
@@ -24,6 +27,26 @@ import pytest
 
 import agent
 import llm_client
+import openrouter_backend
+
+
+@pytest.fixture(autouse=True)
+def _reset_llm_control():
+    """Every test in this file installs a thread-local cancel_check without
+    its own cleanup (each relies on the NEXT test in file order resetting
+    it, e.g. test_no_cancel_check_installed_is_a_noop's own opening reset) --
+    fine as long as this file's tests always run consecutively, but a stale
+    `lambda: False`/`lambda: True` cancel_check leaking into a DIFFERENT
+    file's test (e.g. an OpenRouter backoff test that also drives
+    _interruptible_sleep) silently flips it from a single _sleep(wait) call
+    to a real 0.25s-granularity polling loop -- reproduced directly: running
+    this file ahead of test_agent_run_form.py's 429 backoff tests made them
+    spin for millions of iterations instead of asserting on the expected
+    exact sleep durations.
+    """
+    llm_client.set_thread_llm_control(None, None, None)
+    yield
+    llm_client.set_thread_llm_control(None, None, None)
 
 
 class TestCheckLlmCancelled:
@@ -76,7 +99,7 @@ class TestInterruptibleSleep:
     ):
         llm_client.set_thread_llm_control(None, None, None)
         calls = []
-        monkeypatch.setattr(agent, "_sleep", lambda s: calls.append(s))
+        monkeypatch.setattr(openrouter_backend, "_sleep", lambda s: calls.append(s))
 
         agent._interruptible_sleep(0.4)
 
@@ -92,7 +115,9 @@ class TestInterruptibleSleep:
             return polls["n"] > 1
 
         llm_client.set_thread_llm_control(_cancel_check, None, None)
-        monkeypatch.setattr(agent, "_sleep", lambda s: None)  # instant, no real wait
+        monkeypatch.setattr(
+            openrouter_backend, "_sleep", lambda s: None
+        )  # instant, no real wait
 
         with pytest.raises(llm_client.LLMCallCancelled):
             agent._interruptible_sleep(10.0)
@@ -101,7 +126,7 @@ class TestInterruptibleSleep:
 
     def test_a_never_cancelled_sleep_completes_without_raising(self, monkeypatch):
         llm_client.set_thread_llm_control(lambda: False, None, None)
-        monkeypatch.setattr(agent, "_sleep", lambda s: None)
+        monkeypatch.setattr(openrouter_backend, "_sleep", lambda s: None)
 
         agent._interruptible_sleep(0.01)  # must not raise
 

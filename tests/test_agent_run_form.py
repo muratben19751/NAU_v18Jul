@@ -295,6 +295,7 @@ def test_llm_cost_usd_is_notional_not_none(monkeypatch):
 
 def test_openrouter_thread_pin_and_routing(monkeypatch):
     import agent
+    import openrouter_backend
 
     # "or:" pinleri geçerli; bilinmeyen düz ad temizlenir.
     agent.set_thread_model("or:deepseek/deepseek-chat")
@@ -315,7 +316,7 @@ def test_openrouter_thread_pin_and_routing(monkeypatch):
     class _FakeOR:
         messages = _FakeMessages()
 
-    monkeypatch.setattr(agent, "_get_openrouter_client", lambda: _FakeOR())
+    monkeypatch.setattr(openrouter_backend, "_get_openrouter_client", lambda: _FakeOR())
     # client argümanı OR yolunda kullanılmaz — sahte nesne yeterli.
     agent._create_message(object(), max_tokens=5, messages=[])
     assert captured["model"] == "deepseek/deepseek-chat"  # or: öneki soyuldu
@@ -545,11 +546,12 @@ def test_openrouter_429_backs_off_and_succeeds(monkeypatch):
     çevirip bunu başarı gibi gösteriyordu.
     """
     import agent
+    import openrouter_backend
 
     slept: list[float] = []
-    monkeypatch.setattr(agent, "_sleep", slept.append)
+    monkeypatch.setattr(openrouter_backend, "_sleep", slept.append)
     client, state = _or_client_failing(2)
-    monkeypatch.setattr(agent, "_get_openrouter_client", lambda: client)
+    monkeypatch.setattr(openrouter_backend, "_get_openrouter_client", lambda: client)
 
     resp = agent._or_create_with_backoff("deepseek/deepseek-v4-flash-0731")
     assert resp.model == "deepseek/deepseek-v4-flash-0731"
@@ -562,13 +564,14 @@ def test_openrouter_429_backs_off_and_succeeds(monkeypatch):
 
 def test_openrouter_429_honours_retry_after_and_gives_up_within_budget(monkeypatch):
     import agent
+    import openrouter_backend
 
     slept: list[float] = []
-    monkeypatch.setattr(agent, "_sleep", slept.append)
+    monkeypatch.setattr(openrouter_backend, "_sleep", slept.append)
 
     # Sunucu söylüyorsa tahminimiz onu ezmez.
     client, _ = _or_client_failing(1, retry_after="3")
-    monkeypatch.setattr(agent, "_get_openrouter_client", lambda: client)
+    monkeypatch.setattr(openrouter_backend, "_get_openrouter_client", lambda: client)
     agent._or_create_with_backoff("x/y")
     assert slept == [3.0]
 
@@ -576,7 +579,7 @@ def test_openrouter_429_honours_retry_after_and_gives_up_within_budget(monkeypat
     slept.clear()
     monkeypatch.setenv("NAUTILUS_OPENROUTER_429_MAX_WAIT", "10")
     client, state = _or_client_failing(99)
-    monkeypatch.setattr(agent, "_get_openrouter_client", lambda: client)
+    monkeypatch.setattr(openrouter_backend, "_get_openrouter_client", lambda: client)
     with pytest.raises(_FakeRateLimit):
         agent._or_create_with_backoff("x/y")
     assert sum(slept) <= 10
@@ -585,16 +588,17 @@ def test_openrouter_429_honours_retry_after_and_gives_up_within_budget(monkeypat
 def test_openrouter_non_429_is_not_retried(monkeypatch):
     """Yalnız 429 yeniden denenir; başka hata beklemeden çağırana düşer."""
     import agent
+    import openrouter_backend
 
     slept: list[float] = []
-    monkeypatch.setattr(agent, "_sleep", slept.append)
+    monkeypatch.setattr(openrouter_backend, "_sleep", slept.append)
 
     class _Messages:
         def create(self, *, model, **kw):
             raise ValueError("bozuk istek")
 
     monkeypatch.setattr(
-        agent,
+        openrouter_backend,
         "_get_openrouter_client",
         lambda: type("C", (), {"messages": _Messages()})(),
     )

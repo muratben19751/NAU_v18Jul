@@ -907,3 +907,36 @@ class TestNoConsoleWindow:
             "creationflags=NO_WINDOW_FLAGS missing (opens a console window on "
             f"Windows): {offenders}"
         )
+
+    def test_loop_runner_still_imports_sandbox_at_module_level(self):
+        """openrouter_backend.py's multiprocessing.Process() spawn has no
+        creationflags lever (unlike subprocess.run/Popen above) -- its real
+        protection against a console-subsystem child flashing/hanging under a
+        consoleless (pm2/headless) parent is sandbox.py's own
+        `multiprocessing.set_executable(pythonw.exe)` (gated on PM2_HOME),
+        a PROCESS-GLOBAL side effect openrouter_backend.py benefits from only
+        by accident: server.py -> web/routes/loop.py (eager) ->
+        loop_runner.py (eager `from sandbox import ...`) -> sandbox.py's
+        import-time set_executable() call, which must run before this app's
+        first OpenRouter spawn. loop_runner.py looks legacy (its only other
+        consumer is legacy/streamlit_app.py) -- if that import is ever
+        removed or made lazy, OpenRouter's multiprocessing path silently
+        loses this protection with no RUNTIME test able to catch it (PM2_HOME
+        is unset under pytest, so the failure mode this guards against never
+        reproduces in CI regardless). Source-level tripwire only.
+        """
+        import ast as _ast
+        import pathlib
+
+        root = pathlib.Path(__file__).resolve().parents[1]
+        tree = _ast.parse((root / "loop_runner.py").read_text(encoding="utf-8"))
+        has_module_level_sandbox_import = any(
+            isinstance(node, _ast.ImportFrom) and node.module == "sandbox"
+            for node in tree.body  # tree.body only -- module level, not nested
+        )
+        assert has_module_level_sandbox_import, (
+            "loop_runner.py no longer imports sandbox at module level -- "
+            "openrouter_backend.py's multiprocessing spawn just lost its "
+            "only Windows console-freeze protection; see this test's "
+            "docstring"
+        )

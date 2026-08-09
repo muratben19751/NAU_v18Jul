@@ -1142,6 +1142,7 @@ def test_large_session_summary_reads_bounded_head_and_tail(monkeypatch, tmp_path
 
 def test_openrouter_auto_path_uses_killable_process(monkeypatch):
     import agent
+    import openrouter_backend
 
     seen = {}
 
@@ -1156,7 +1157,7 @@ def test_openrouter_auto_path_uses_killable_process(monkeypatch):
             "finish_reason": "stop",
         }
 
-    monkeypatch.setattr(agent, "_run_openrouter_killable", fake_run)
+    monkeypatch.setattr(openrouter_backend, "_run_openrouter_killable", fake_run)
     messages = agent._OpenRouterMessages(
         SimpleNamespace(), process_config={"base_url": "x", "api_key": "y"}
     )

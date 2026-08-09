@@ -1,6 +1,11 @@
 """Real multiprocessing spawn/pipe/timeout/kill coverage for
-``agent._run_openrouter_killable`` (agent.py decomposition, Faz 2 — Adım 5,
-test-first before Adım 6 moves this to openrouter_backend.py).
+``_run_openrouter_killable`` (agent.py decomposition, Faz 2 — Adım 5,
+written test-first; Adım 6 then moved the whole OpenRouter backend to
+openrouter_backend.py, re-exported from agent.py so
+``agent._run_openrouter_killable`` still works unchanged here -- only the
+``_openrouter_process_main`` patch target moved, since
+``_run_openrouter_killable``'s own bare-name lookup now resolves against
+openrouter_backend's namespace, not agent's).
 
 Before this file, the ONLY test touching this path
 (``test_auto_360_fixes.py::test_openrouter_auto_path_uses_killable_process``)
@@ -36,6 +41,7 @@ import pytest
 
 import agent
 import llm_client
+import openrouter_backend
 
 
 @pytest.fixture(autouse=True)
@@ -48,7 +54,9 @@ def _no_cancel_control():
 class TestRunOpenrouterKillable:
     def test_ok_payload_returns_the_real_result(self, monkeypatch):
         monkeypatch.setattr(
-            agent, "_openrouter_process_main", _probe_openrouter.probe_openrouter_main
+            openrouter_backend,
+            "_openrouter_process_main",
+            _probe_openrouter.probe_openrouter_main,
         )
 
         result = agent._run_openrouter_killable(
@@ -65,7 +73,9 @@ class TestRunOpenrouterKillable:
 
     def test_error_payload_raises_process_error_with_status_code(self, monkeypatch):
         monkeypatch.setattr(
-            agent, "_openrouter_process_main", _probe_openrouter.probe_openrouter_main
+            openrouter_backend,
+            "_openrouter_process_main",
+            _probe_openrouter.probe_openrouter_main,
         )
 
         with pytest.raises(agent._OpenRouterProcessError) as exc_info:
@@ -86,7 +96,9 @@ class TestRunOpenrouterKillable:
 
     def test_timeout_kills_the_child_before_it_can_finish(self, monkeypatch, tmp_path):
         monkeypatch.setattr(
-            agent, "_openrouter_process_main", _probe_openrouter.probe_openrouter_main
+            openrouter_backend,
+            "_openrouter_process_main",
+            _probe_openrouter.probe_openrouter_main,
         )
         marker = tmp_path / "reached.marker"
 
