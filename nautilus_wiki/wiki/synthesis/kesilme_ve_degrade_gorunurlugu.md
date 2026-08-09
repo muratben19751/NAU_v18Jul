@@ -131,4 +131,5 @@ kalıcı çözüm tavanı modele göre çözmek olurdu.
 
 - [[llm_maliyet_kaldiraclari]]
 - [[model_secici_ve_gorunurluk]]
+- [[webapp_module_map]]
 <!-- BACKLINKS:END -->

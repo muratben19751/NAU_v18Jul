@@ -1076,3 +1076,41 @@ Suit 745 passed / 1 skipped.
   varsayılan koşumdan ayırıyor.
 - Ayrıntı: [[nau_deepr_toplu_sertlestirme_2026_08]], kod↔wiki köprüsü
   `server.py` satırı [[webapp_module_map]]'te güncellendi.
+
+## [2026-08-09] maintain | agent.py + composer.py kademeli çıkarım — Faz 1 tamam, Faz 2 devam ediyor
+- Faz 1 ("safe-first slice", 10 commit): `agent.py` Adım 0-4 → `web_research.py`
+  + `llm_client.py` (model/effort/OpenRouter-katalog seçimi, LLM kontrol
+  düzlemi, Claude Code CLI backend); `composer.py` Adım 0a-3 → iki kalıcı
+  güvenlik-ağı testi (gerçek deploy-path çözümlemesi + genel-yüzey golden-set)
+  + `block_meta.py`/`block_library_classic.py`/`block_library_nau.py`.
+- Faz 2 (riskli katman, devam ediyor): Adım 5 `_run_openrouter_killable`'ın
+  GERÇEK multiprocessing spawn/pipe/timeout/kill mekaniğini süren 3 test
+  (öncesi: tek test bunu sahteyle değiştiriyordu, gerçek mekanik SIFIR
+  kapsamlıydı) — mutasyon-doğrulandı (`_stop_provider_process` bozulunca
+  sentinel dosya yazılıyor, test yakalıyor). Adım 6: OpenRouter backend'in
+  tamamı → `openrouter_backend.py`. Bu adımda iki gerçek ama bu taşımadan
+  kaynaklanmayan hata bulundu/düzeltildi: (1) `test_llm_client_control.py`
+  thread-local `_LLM_CONTROL`'ü teardown'da sıfırlamıyordu — dosya tek başına
+  ve alfabetik tam suite'te sorunsuzdu, ama farklı sırada birlikte
+  koşturulunca `test_agent_run_form.py`'nin bir 429-backoff testi milyonlarca
+  döngüyle pratikte asıldı (bkz. ikinci-beyin
+  [[thread_local_testte_sonraki_testi_kirletir]]); (2) `_retry_after_seconds`
+  re-export'u, dış tüketiciyi arayan grep deseni yalnız `agent.X` erişimini
+  yakalayıp `from agent import (X, ...)` biçimini kaçırdığı için ilk seferde
+  atlandı — tam suite collection hatasıyla yakalandı.
+- `_run_openrouter_killable`'ın Windows konsol-donması korumasının
+  `sandbox.py`'nin `pythonw.exe`/`set_executable()`'ına KAZA eseri bağımlı
+  olduğu bulundu (`multiprocessing.Process()`'in `creationflags` kolu yok);
+  kaynak-seviyesi AST tripwire testi eklendi
+  (`TestNoConsoleWindow::test_loop_runner_still_imports_sandbox_at_module_level`),
+  bağımlılığı düzeltmek (sandbox.py'den bağımsız, açıkça çağrılan hale
+  getirmek) davranış değiştiren ayrı bir iş olarak ertelendi.
+- Kalan: composer.py Adım 4-5 (spec modeli çıkarımı + katalog I/O'nun 4
+  spesifik boşluğu için karakterizasyon testleri), agent.py Adım 7
+  (opsiyonel `_build_client`/`_get_client` testleri). Registry çekirdeği +
+  custom-block entegrasyonu (composer.py) ve genel dispatch çekirdeği +
+  Domain C (~2200 satır, agent.py) kasıtlı olarak ayrı bir oturuma
+  bırakıldı. `ComposedStrategy`/`ComposedStrategyConfig` kalıcı olarak
+  taşınmıyor.
+- Ayrıntı: kod↔wiki köprüsü [[webapp_module_map]]'te güncellendi (agent.py/
+  composer.py satırlarına kademeli-çıkarım önsözü + 6 yeni modül satırı).
