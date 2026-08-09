@@ -2,6 +2,19 @@
 
 Append-only. Her ingest, query veya lint operasyonu bir satır bırakır.
 
+## 2026-08-09 (8) — wiki-sync (bağlam eşiği %53) — bir bayat referans bulundu, düzeltildi
+
+- **rapor** — otomatik wiki-sync eşiği tetiklendi; son commit (8e32105,
+  Adım 10) zaten wiki'yi kendi içinde güncellemişti, bu geçiş doğrulama
+  amaçlı.
+- **bulgu** — `webapp_module_map.md`'nin `agent_backtest.py` satırı hâlâ
+  "Faz 2'nin lookahead-generation bloğu... bilinçli olarak plan dışı"
+  diyordu — (7)'de tamamlanmıştı, satır bayattı. Düzeltildi + `_propose_next_strategy`/`degraded_terminal`
+  notu eklendi, `last_updated` tazelendi.
+- **doğrulama** — tüm wiki'de "Adım 10"/"Faz 2 lookahead" geçen 3 sayfa
+  tarandı (webapp_module_map + iki DeepR sayfası) — üçü de artık tutarlı.
+  Lint temiz (0 broken_links/orphans/missing_summary/stale/stubs).
+
 ## 2026-08-09 (7) — main'e merge, branch silindi; DeepR #47'nin son adımı (A10) kapandı
 
 - **merge** — `fix/auto-gate-and-artifact-identity` (58 commit, 37 DeepR
