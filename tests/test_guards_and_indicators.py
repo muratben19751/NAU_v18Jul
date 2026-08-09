@@ -223,6 +223,45 @@ class TestCostGate:
     @pytest.mark.parametrize(
         "body",
         [
+            # DeepR 2026-08-09 [ORTA]: Pow had a variable-exponent guard,
+            # LShift did not — same DoS shape, one uninterruptible operation.
+            "    x = closes[-1] << len(closes)\n",  # variable shift amount
+            "    x = 1 << (3 * 10 ** 7 + len(closes))\n",  # computed shift amount
+            "    x = 1 << 65\n",  # literal, over MAX_SHIFT_AMOUNT
+            # _fold_literal treats bitwise ops as "cannot grow" (true for
+            # BitAnd/BitOr/BitXor/RShift, false for LShift) — without
+            # _check_lshift this fully-literal bomb reaches the `<<`
+            # computation itself before any ceiling can reject it.
+            "    x = 1 << 999999999\n",
+        ],
+    )
+    def test_lshift_bomb_rejected(self, body):
+        from codegate import GeneratedCodeError, validate_generated_code
+
+        with pytest.raises(GeneratedCodeError, match="shift amount"):
+            validate_generated_code(self._src(body))
+
+    def test_lshift_bomb_validation_is_itself_cheap(self):
+        """Mirrors test_validation_of_a_bomb_is_itself_cheap for **: rejecting
+        the shift amount happens before `1 << 999999999` is ever computed."""
+        import time
+
+        from codegate import GeneratedCodeError, validate_generated_code
+
+        src = self._src("    x = 1 << 999999999\n")
+        t0 = time.perf_counter()
+        with pytest.raises(GeneratedCodeError):
+            validate_generated_code(src)
+        assert time.perf_counter() - t0 < 1.0
+
+    def test_small_literal_lshift_still_passes(self):
+        from codegate import validate_generated_code
+
+        validate_generated_code(self._src("    x = 1 << 4\n"))  # e.g. a bit flag
+
+    @pytest.mark.parametrize(
+        "body",
+        [
             "    x = (closes[-1] - closes[-2]) ** 2\n",  # variance term
             "    x = closes[-1] ** 0.5\n",  # stdev
             "    x = 1e-9 + closes[-1]\n",  # epsilon

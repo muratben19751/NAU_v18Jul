@@ -309,6 +309,43 @@ def safe_builtins() -> dict:
 MAX_POW_EXPONENT = 64
 
 
+MAX_SHIFT_AMOUNT = 64
+
+
+def _check_lshift(node: ast.BinOp) -> None:
+    """Reject `<<` unless the shift amount is a small literal.
+
+    Same DoS class _check_pow guards against, but `_fold_literal`'s "bitwise
+    ops cannot grow" assumption (see its ops-dict comment) is true for
+    BitAnd/BitOr/BitXor/RShift and FALSE for LShift: `1 << 999999999`
+    produces a ~300,000-digit number from two Constant operands, so the
+    literal-magnitude ceiling never gets a chance to run on the RESULT —
+    computing `a << b` for huge b is itself the expensive step, the same gap
+    `_check_pow`'s docstring describes for chained `**`. And `x << y` with y
+    a runtime value (DeepR 2026-08-09 [ORTA]) is unbounded at validation
+    time for the same reason a variable Pow exponent is: the value is
+    attacker-chosen. (LShift chaining itself is not the exponential-growth
+    hazard `**` chaining is — each `<<` only adds a bounded number of bits —
+    so unlike Pow this needs no companion fold-time check for chained
+    literals, only this one guard per node.)
+    """
+    amount = node.right
+    if isinstance(amount, ast.UnaryOp) and isinstance(amount.op, (ast.USub, ast.UAdd)):
+        amount = amount.operand
+    if not isinstance(amount, ast.Constant) or not isinstance(
+        amount.value, (int, float)
+    ):
+        raise GeneratedCodeError(
+            "the shift amount of `<<` must be a numeric literal "
+            f"(<= {MAX_SHIFT_AMOUNT}); a computed shift amount is unbounded."
+        )
+    if isinstance(amount.value, bool) or abs(amount.value) > MAX_SHIFT_AMOUNT:
+        raise GeneratedCodeError(
+            f"`<<` shift amount {amount.value!r} exceeds the limit of "
+            f"{MAX_SHIFT_AMOUNT}"
+        )
+
+
 def _check_pow(node: ast.BinOp) -> None:
     """Reject `**` unless the exponent is a small literal.
 
@@ -451,6 +488,8 @@ def validate_generated_code(src: str) -> ast.Module:
             raise GeneratedCodeError(f"disallowed node: {type(node).__name__}")
         if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Pow):
             _check_pow(node)
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.LShift):
+            _check_lshift(node)
         if isinstance(node, (ast.Constant, ast.UnaryOp, ast.BinOp)):
             _fold_literal(node)
         # Reject any `__dunder__` identifier — blocks the __class__/__globals__ escape.
