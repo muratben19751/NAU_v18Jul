@@ -62,6 +62,64 @@ def test_clamp_commission_pct_leaves_any_negative_value_alone():
     assert bt._clamp_commission_pct(-0.5) == -0.5
 
 
+# ── DeepR 2026-08-09 [ORTA] · Index date resolution: real errors, not just
+# "bad date format" ───────────────────────────────────────────────────────
+
+
+def test_resolve_index_date_range_uses_explicit_dates_when_given():
+    from datetime import date
+
+    start, end = bt._resolve_index_date_range("QQQ", "1d", "2024-01-01", "2024-06-01")
+
+    assert (start, end) == (date(2024, 1, 1), date(2024, 6, 1))
+
+
+def test_resolve_index_date_range_bad_format_raises_value_error():
+    with pytest.raises(ValueError):
+        bt._resolve_index_date_range("QQQ", "1d", "not-a-date", "2024-06-01")
+
+
+def test_resolve_index_date_range_falls_back_to_the_full_cache_range(monkeypatch):
+    from datetime import date
+
+    import pandas as pd
+
+    import data
+
+    idx = pd.date_range("2020-01-01", periods=3, freq="D")
+    monkeypatch.setattr(data, "_ticker_to_filename", lambda ticker: ticker.lower())
+    monkeypatch.setattr(
+        pd, "read_parquet", lambda path: pd.DataFrame({"close": [1, 2, 3]}, index=idx)
+    )
+    # cache "exists" — Path.exists is instance-bound, patch the class.
+    monkeypatch.setattr(Path, "exists", lambda self: True)
+
+    start, end = bt._resolve_index_date_range("QQQ", "1d", "", "")
+
+    assert (start, end) == (date(2020, 1, 1), date(2020, 1, 3))
+
+
+def test_resolve_index_date_range_a_non_value_error_is_not_mislabeled(monkeypatch):
+    """The regression this fix closes: a broken cache read (corrupt
+    parquet, missing pyarrow, permission error) must surface as ITSELF,
+    not get caught and reported as "bad date format" — the old `except
+    (ValueError, Exception)` was just `except Exception`."""
+    import pandas as pd
+
+    import data
+
+    monkeypatch.setattr(data, "_ticker_to_filename", lambda ticker: ticker.lower())
+    monkeypatch.setattr(Path, "exists", lambda self: True)
+
+    def _boom(path):
+        raise OSError("disk read error")
+
+    monkeypatch.setattr(pd, "read_parquet", _boom)
+
+    with pytest.raises(OSError, match="disk read error"):
+        bt._resolve_index_date_range("QQQ", "1d", "", "")
+
+
 def test_clamp_commission_pct_leaves_an_in_range_value_alone():
     assert bt._clamp_commission_pct(0.055) == 0.055
 

@@ -261,6 +261,35 @@ def _clamp_commission_pct(commission_pct: float) -> float:
     return commission_pct if commission_pct < 0 else min(5.0, commission_pct)
 
 
+def _resolve_index_date_range(
+    ticker: str, granularity: str, start_date: str, end_date: str
+) -> tuple[date, date]:
+    """Explicit dates, or the full cached range when blank.
+
+    Extracted (DeepR 2026-08-09 [ORTA]) so the date-format/other-failure
+    split below is directly testable: `except (ValueError, Exception)`
+    inside run()'s worker was just `except Exception` (ValueError already
+    is one) -- a broken cache read (corrupt parquet, missing pyarrow,
+    permission error) was misreported as "bad date format" to the user and
+    never logged anywhere. Only raises ValueError itself (bad
+    ``date.fromisoformat`` input); any other failure propagates to the
+    caller unchanged, no longer mislabeled.
+    """
+    import pandas as _pd2
+
+    from data import INDEX_CACHE_DIR, _ticker_to_filename
+
+    if start_date and end_date:
+        return date.fromisoformat(start_date), date.fromisoformat(end_date)
+    cp = INDEX_CACHE_DIR / f"{_ticker_to_filename(ticker)}_{granularity}.parquet"
+    if not cp.exists():
+        return date(2000, 1, 1), date.today()
+    _df2 = _pd2.read_parquet(cp)
+    if _df2.empty:
+        return date(2000, 1, 1), date.today()
+    return _df2.index[0].date(), _df2.index[-1].date()
+
+
 # Plan-preview FIFO/TTL cache keyed on (desc_lower, allow_short_bool). Avoids
 # repeated propose_condition_breakdown LLM calls during iterative editing.
 # Eviction is FIFO by insertion ts (not LRU — hits do not refresh ts).
@@ -924,36 +953,17 @@ async def run(
                     _set_error("Ticker required for Index instruments.")
                     return
                 # Resolve dates — if blank, use the full cache range.
+                _progress(f"Reading data · {ticker}/{granularity}…")
                 try:
-                    import pandas as _pd2
-
-                    from data import INDEX_CACHE_DIR, _ticker_to_filename
-
-                    _progress(f"Reading data · {ticker}/{granularity}…")
-                    if start_date and end_date:
-                        start_d = date.fromisoformat(start_date)
-                        end_d = date.fromisoformat(end_date)
-                    else:
-                        cp = (
-                            INDEX_CACHE_DIR
-                            / f"{_ticker_to_filename(ticker)}_{granularity}.parquet"
-                        )
-                        if cp.exists():
-                            _df2 = _pd2.read_parquet(cp)
-                            start_d = (
-                                _df2.index[0].date()
-                                if not _df2.empty
-                                else date(2000, 1, 1)
-                            )
-                            end_d = (
-                                _df2.index[-1].date()
-                                if not _df2.empty
-                                else date.today()
-                            )
-                        else:
-                            start_d = date(2000, 1, 1)
-                            end_d = date.today()
-                except (ValueError, Exception):
+                    start_d, end_d = _resolve_index_date_range(
+                        ticker, granularity, start_date, end_date
+                    )
+                except ValueError:
+                    # A genuinely different failure (corrupt cache, missing
+                    # pyarrow, permission error) is NOT a ValueError and now
+                    # falls through to the outer except below instead of
+                    # being mislabeled as this — see
+                    # _resolve_index_date_range's docstring.
                     _set_error("start_date and end_date must be YYYY-MM-DD.")
                     return
                 bars = load_index_bars(ticker, start_d, end_d, granularity)
@@ -1067,6 +1077,15 @@ async def run(
                         "run %s: _save_result_snapshot failed", run_id, exc_info=True
                     )
         except Exception as e:
+            # DeepR 2026-08-09 [ORTA]: this already reports the real
+            # exception to the UI (type/message), but nothing wrote it to
+            # the server log — the only trace was whatever the user saw in
+            # the progress panel. Now every unexpected failure in this
+            # worker (not just the Index date-resolution one that used to
+            # over-catch into this handler) leaves a log line too.
+            logging.getLogger(__name__).warning(
+                "run %s: worker failed: %s", run_id, e, exc_info=True
+            )
             with _RUN_PROGRESS_LOCK:
                 if run_id in _RUN_PROGRESS:
                     _RUN_PROGRESS[run_id]["error"] = f"{type(e).__name__}: {e}"
