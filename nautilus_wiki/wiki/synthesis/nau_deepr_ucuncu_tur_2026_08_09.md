@@ -1,7 +1,7 @@
 ---
 title: nautilus_web_app DeepR Üçüncü Tur (2026-08-09, NAU app'e odaklı)
 type: synthesis
-summary: Üçüncü DeepR koşusu (164 ajan, 37 bulgu) — ilk deneme nautilus_wiki/ alt-dizinine kapsam-sızdı, envanterden isim çıkarılınca düzeldi; kullanıcının seçtiği en kritik 3 bulgu tamamlandı, kalan 34'ü henüz ele alınmadı.
+summary: Üçüncü DeepR koşusu (164 ajan, 37 bulgu) — ilk deneme nautilus_wiki/ alt-dizinine kapsam-sızdı, envanterden isim çıkarılınca düzeldi; en kritik 3 bulgu + delete_custom_batch test boşluğu tamamlandı, kalanlar üzerinde sırayla devam ediliyor.
 key_concepts:
   - crash_only_design
 sources:
@@ -29,7 +29,7 @@ tamamı gerçek uygulama hakkında, 0 nautilus_wiki sızıntısı. Rapor:
 `deepr_report_2026-08-09_0040.md` (repo kökü; ilk sızıntılı koşumun raporu
 `deepr_report_2026-08-08_2320.md` olarak arşivde kaldı, kullanılmadı).
 
-## Kullanıcının seçtiği en kritik 3 — tamamlandı, kalan 34 bulgu henüz ele alınmadı
+## Kullanıcının seçtiği en kritik 3 — tamamlandı, kalanlar üzerinde devam ediliyor
 
 1. **`composer._load_custom_blocks()` import-zamanı çökme riski [YÜKSEK].**
    Bu fonksiyon `import composer` sırasında modül-seviyesinde çağrılıyor;
@@ -65,11 +65,28 @@ tamamı gerçek uygulama hakkında, 0 nautilus_wiki sızıntısı. Rapor:
    yeniden üretiyor — yalnız TF dosyasını düzeltmek bir sonraki rutin
    ingest'te kayboluyordu), ama proje git geçmişine hiç girmedi.
 
-## Kapsam dışı (henüz)
+## Kalan bulgular üzerinde devam (2026-08-09, aynı gün)
 
-Kalan 34 bulgu (37 − kullanıcının seçtiği 3) bu geçişte ele alınmadı — rapor
-(`deepr_report_2026-08-09_0040.md`) tam listeyi tutuyor, sıradaki oturuma
-kalıyor.
+Kullanıcı kalan 34 bulgunun tam listesini istedi, sonra "devam" dedi — kalan
+3 YÜKSEK bulgudan başlayarak sırayla ele alınıyor (en düşük riskliden en
+yükseğe): birim test boşluğu → CI yapılandırması → cross-module mimari
+sorunu. Rapor (`deepr_report_2026-08-09_0040.md`) tam listeyi tutuyor.
+
+1. **`delete_custom_batch` hiçbir testte yoktu [YÜKSEK, tamamlandı].**
+   Kardeşi `save_custom_batch` rollback dahil test edilmişti (bkz.
+   `tests/test_auto_360_fixes.py::test_custom_batch_validator_failure_rolls_back_registry`),
+   `delete_custom_batch` yalnız `cleanup_agent_run` üzerinden DOLAYLI ve
+   tek-gerçek-silmeli bir senaryoda kapsanıyordu. 5 yeni doğrudan test
+   eklendi (aynı dosyaya, kardeşinin hemen yanına): çoklu-isim atomik silme,
+   registry'de olmayan isimlerin zararsız yok sayılması, boş girdi, geçersiz
+   isim reddi (hiçbir I/O olmadan), ve kısmi-hata rollback'i. Rollback testi
+   mutasyon testiyle doğrulandı: `_registry_transaction`'ın except bloğu
+   geçici olarak devre dışı bırakılınca HEM bu yeni test HEM
+   `save_custom_batch`'in var olan rollback testi aynı anda kırıldı (ikisi
+   aynı ortak transaction mekanizmasını paylaşıyor) — düzeltme geri
+   alınınca ikisi de yeşile döndü.
+
+Kalan 2 YÜKSEK + tüm ORTA/DÜŞÜK/BİLGİ bulgular henüz ele alınmadı.
 
 <!-- BACKLINKS:BEGIN -->
 ## Referenced by

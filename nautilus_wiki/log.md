@@ -2,6 +2,20 @@
 
 Append-only. Her ingest, query veya lint operasyonu bir satır bırakır.
 
+## 2026-08-09 (2) — DeepR üçüncü tur: kalan bulgular, sırayla (kod → wiki)
+
+- **rapor** — Kullanıcı kalan 34 bulgunun tam listesini istedi, sonra "devam"
+  dedi. Kalan 3 YÜKSEK bulgudan en düşük riskliyle başlandı.
+- **fix** — `delete_custom_batch` hiçbir testte yoktu (kardeşi
+  `save_custom_batch` rollback dahil test edilmişti). 5 yeni doğrudan test
+  `tests/test_auto_360_fixes.py`'ye eklendi; rollback testi mutasyon
+  testiyle doğrulandı (`_registry_transaction`'ın except bloğu geçici devre
+  dışı bırakılınca hem yeni test hem kardeşinin var olan testi kırıldı —
+  ortak mekanizmayı paylaştıklarının kanıtı). Production kod değişmedi.
+- **wiki** — `custom_block_store.py` Wiki References'a
+  `[[nau_deepr_ucuncu_tur_2026_08_09]]` eklendi; o sayfa ilerlemeyi
+  yansıtacak şekilde güncellendi. Backlinks + index + lint yenilendi.
+
 ## 2026-08-09 — DeepR üçüncü tur: kritik 3 kapandı (kod → wiki)
 
 - **rapor** — Kullanıcı `/mDeep`'i argümansız tekrar tetikledi; ilk koşum (203

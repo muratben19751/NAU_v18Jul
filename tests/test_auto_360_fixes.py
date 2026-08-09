@@ -474,6 +474,98 @@ def test_agent_run_cleanup_is_atomic_and_keeps_promoted_dependencies(
     assert store.get_custom(other) is not None
 
 
+def test_delete_custom_batch_removes_files_and_registry_entries(monkeypatch, tmp_path):
+    """delete_custom_batch's own atomic-multi-removal contract — previously
+    only exercised indirectly (one real removal) through cleanup_agent_run's
+    test above (DeepR 2026-08-09 [YÜKSEK]: sibling save_custom_batch has
+    rollback coverage, this one had none)."""
+    import custom_block_store as store
+
+    monkeypatch.setattr(store, "STORE_DIR", tmp_path / "store")
+    monkeypatch.setattr(store, "REGISTRY_FILE", tmp_path / "store" / "registry.json")
+    store.save_custom("block_a", {"role": "entry"}, "x = 1\n")
+    store.save_custom("block_b", {"role": "exit"}, "x = 2\n")
+    store.save_custom("block_c", {"role": "entry"}, "x = 3\n")
+
+    removed = store.delete_custom_batch(["block_a", "block_b"])
+
+    assert set(removed) == {"block_a", "block_b"}
+    assert store.get_custom("block_a") is None
+    assert store.get_custom("block_b") is None
+    assert not (tmp_path / "store" / "block_a.py").exists()
+    assert not (tmp_path / "store" / "block_b.py").exists()
+    assert store.get_custom("block_c") is not None  # untouched
+
+
+def test_delete_custom_batch_ignores_names_not_in_the_registry(monkeypatch, tmp_path):
+    """Docstring contract: 'Missing names are harmless.'"""
+    import custom_block_store as store
+
+    monkeypatch.setattr(store, "STORE_DIR", tmp_path / "store")
+    monkeypatch.setattr(store, "REGISTRY_FILE", tmp_path / "store" / "registry.json")
+    store.save_custom("block_a", {"role": "entry"}, "x = 1\n")
+
+    removed = store.delete_custom_batch(["block_a", "never_saved"])
+
+    assert removed == ["block_a"]
+    assert store.get_custom("block_a") is None
+
+
+def test_delete_custom_batch_empty_input_is_a_no_op(monkeypatch, tmp_path):
+    import custom_block_store as store
+
+    monkeypatch.setattr(store, "STORE_DIR", tmp_path / "store")
+    monkeypatch.setattr(store, "REGISTRY_FILE", tmp_path / "store" / "registry.json")
+
+    assert store.delete_custom_batch([]) == []
+
+
+def test_delete_custom_batch_rejects_an_invalid_name_without_deleting_anything(
+    monkeypatch, tmp_path
+):
+    import custom_block_store as store
+
+    monkeypatch.setattr(store, "STORE_DIR", tmp_path / "store")
+    monkeypatch.setattr(store, "REGISTRY_FILE", tmp_path / "store" / "registry.json")
+    store.save_custom("block_a", {"role": "entry"}, "x = 1\n")
+
+    with pytest.raises(ValueError, match="invalid custom block name"):
+        store.delete_custom_batch(["block_a", "Not Valid!"])
+
+    assert store.get_custom("block_a") is not None  # validation ran before any I/O
+
+
+def test_delete_custom_batch_rolls_back_on_partial_failure(monkeypatch, tmp_path):
+    """Mirrors test_custom_batch_validator_failure_rolls_back_registry above:
+    a mid-transaction failure must restore both files and the registry, not
+    leave one block deleted and its sibling intact (the exact "orphan" state
+    cleanup_agent_run relies on this function to prevent)."""
+    from pathlib import Path
+
+    import custom_block_store as store
+
+    monkeypatch.setattr(store, "STORE_DIR", tmp_path / "store")
+    monkeypatch.setattr(store, "REGISTRY_FILE", tmp_path / "store" / "registry.json")
+    store.save_custom("block_a", {"role": "entry"}, "x = 1\n")
+    store.save_custom("block_b", {"role": "exit"}, "x = 2\n")
+
+    real_unlink = Path.unlink
+
+    def flaky_unlink(self, *args, **kwargs):
+        if self.name == "block_b.py":
+            raise OSError("disk error deleting block_b")
+        return real_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", flaky_unlink)
+
+    with pytest.raises(OSError, match="disk error deleting block_b"):
+        store.delete_custom_batch(["block_a", "block_b"])
+
+    assert store.get_custom("block_a") is not None
+    assert store.get_custom("block_b") is not None
+    assert (tmp_path / "store" / "block_a.py").read_text(encoding="utf-8") == "x = 1\n"
+
+
 def test_wfo_requires_half_positive_even_with_positive_penalized_sharpe():
     import web.routes.agent_backtest as ab
 

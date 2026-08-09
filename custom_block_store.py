@@ -18,7 +18,7 @@ I/O failure is raised, never flattened into "no blocks".
 
 Wiki References
 ---------------
-Bkz: [[strategy_and_actor]], [[nau_guvenlik_dayaniklilik_duzeltmeleri]], [[nau_performans_denetimi]]
+Bkz: [[strategy_and_actor]], [[nau_guvenlik_dayaniklilik_duzeltmeleri]], [[nau_performans_denetimi]], [[nau_deepr_ucuncu_tur_2026_08_09]]
 
 Block codes are imported at run time; each block is a single function (`evaluate`).
 
