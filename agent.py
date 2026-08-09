@@ -26,10 +26,8 @@ import json
 import logging
 import os
 import random
-import shutil
 import threading
 import time
-from pathlib import Path
 from typing import Any
 
 # Adım 3: TerminalLLMError/LLMCallCancelled/LLMTokenBudgetExceeded,
@@ -39,11 +37,14 @@ from typing import Any
 # back further down. Adım 6 (Faz 2): _interruptible_sleep + _sleep (the
 # patchable time.sleep alias) extracted to openrouter_backend.py, along
 # with the rest of the OpenRouter backend below -- imported back further
-# down.
-from anthropic import Anthropic
-
-import llm_client  # noqa: F401  # module-qualified _model_lock/_active_model below
-
+# down. Adım 9: the dispatch core -- _client/_client_lock,
+# model_unavailable_reason, credit-exhaustion detection, _ledger_record,
+# TruncatedResponse + the learned-ceiling truncation retry,
+# _create_message/_create_message_once, _find_claude_cli, _build_client,
+# _get_client, and _usage_dict (pulled up from its stranded Domain C spot)
+# extracted to llm_dispatch.py, re-exported below (_client/_client_lock and
+# _ledger_record deliberately NOT re-exported -- see llm_dispatch.py's own
+# docstring).
 # Adım 2: MODEL/FALLBACK_MODEL/_active_model/_model_lock and (below)
 # _MODEL_OVERRIDE through current_model() extracted to llm_client.py,
 # re-exported below. Listed in __all__ (further down) so ruff's F401
@@ -51,8 +52,6 @@ import llm_client  # noqa: F401  # module-qualified _model_lock/_active_model be
 # unused WITHIN this file but still part of agent.<name>'s public surface
 # for every external caller (already happened twice while writing this
 # step — confirmed via a fresh interpreter, not assumed).
-# _client/_client_lock stay here — this module's own not-yet-extracted
-# transport-layer state.
 from llm_client import (  # noqa: E402
     _LLM_CONTROL,
     _OBSERVED_OUTPUT_HIGH_WATER,
@@ -97,6 +96,29 @@ from llm_client import (  # noqa: E402
     set_thread_model,
     set_thread_random_seed,
 )
+
+# Adım 9: the dispatch core (client construction/selection, credit-exhaustion
+# fallback, TruncatedResponse + the learned-ceiling retry, and
+# _create_message/_create_message_once -- the single choke point every app
+# LLM call passes through) extracted to llm_dispatch.py, re-exported below.
+# _client/_client_lock and _ledger_record are deliberately NOT re-exported --
+# see llm_dispatch.py's own docstring; a test needing them imports
+# llm_dispatch directly.
+from llm_dispatch import (  # noqa: E402
+    _TRUNCATION_RETRY_SCALE,
+    MAX_TOKENS_COMPOSED,
+    MAX_TOKENS_IDEA,
+    TruncatedResponse,
+    _build_client,
+    _create_message,
+    _create_message_once,
+    _find_claude_cli,
+    _get_client,
+    _is_credit_exhausted,
+    _usage_dict,
+    _was_truncated,
+    model_unavailable_reason,
+)
 from openrouter_backend import (  # noqa: E402
     _OR_RETRY_WAITS,
     _build_openrouter_client,
@@ -121,10 +143,13 @@ __all__ = [
     "FALLBACK_MODEL",
     "LLMCallCancelled",
     "LLMTokenBudgetExceeded",
+    "MAX_TOKENS_COMPOSED",
+    "MAX_TOKENS_IDEA",
     "MODEL",
     "SELECTABLE_EFFORTS",
     "SELECTABLE_MODELS",
     "TerminalLLMError",
+    "TruncatedResponse",
     "_CLIError",
     "_CLIResponse",
     "_ClaudeCLIClient",
@@ -137,12 +162,19 @@ __all__ = [
     "_OpenRouterMessages",
     "_OpenRouterProcessError",
     "_ORResponse",
+    "_TRUNCATION_RETRY_SCALE",
     "_admit_llm_request",
+    "_build_client",
     "_build_openrouter_client",
     "_check_llm_cancelled",
+    "_create_message",
+    "_create_message_once",
     "_fallback_rng",
+    "_find_claude_cli",
+    "_get_client",
     "_get_openrouter_client",
     "_interruptible_sleep",
+    "_is_credit_exhausted",
     "_is_free",
     "_is_rate_limited",
     "_llm_request_token_bound",
@@ -159,11 +191,14 @@ __all__ = [
     "_run_openrouter_killable",
     "_sleep",
     "_tag_degraded",
+    "_usage_dict",
+    "_was_truncated",
     "current_effort",
     "current_model",
     "is_terminal_llm_error",
     "model_id",
     "model_label",
+    "model_unavailable_reason",
     "openrouter_catalog",
     "openrouter_extra_models",
     "openrouter_free_only",
@@ -176,299 +211,6 @@ __all__ = [
     "set_thread_random_seed",
 ]
 
-_client: Anthropic | _ClaudeCLIClient | _OpenRouterClient | None = None
-_client_lock = threading.Lock()
-
-
-def model_unavailable_reason(model: str | None) -> str:
-    """Bu picker değeri neden KOŞAMAZ — koşabiliyorsa "".
-
-    Ağa çıkmaz; yalnız yapılandırmayı yoklar (anahtar var mı, istemci
-    kurulabiliyor mu). Koşu BAŞLAMADAN çağrılır: eksik yapılandırma yüzünden
-    LLM'e hiç ulaşamayan bir AUTO turu, seçilen modelin önerileri yerine
-    "Random … (Claude unavailable)" kompozisyonları üretir ve bunu normal bir
-    koşu gibi gösterir — sessiz bozulma yerine kapıda ret.
-
-    Yalnız "or:" için anlamlı: Claude yolunun ön koşulu (abonelik CLI'ı ya da
-    ANTHROPIC_API_KEY) uygulamanın varsayılan yolu, ayrıca yoklanmaz.
-    """
-    m = (model or "").strip()
-    if not m.startswith("or:"):
-        return ""
-    try:
-        _get_openrouter_client()
-    except Exception as e:  # eksik anahtar / eksik `openai` paketi
-        return str(e)
-    return ""
-
-
-_CREDIT_EXHAUSTED_SIGNALS = (
-    "credit balance is too low",  # API: 400
-    "billing_error",
-    "insufficient credit",
-    "monthly spend limit",  # claude-cli: 429 but PERMANENT
-)
-
-
-def _is_credit_exhausted(exc: Exception) -> bool:
-    """Is this credit/quota exhaustion? (NOT a rate-limit or transient error)
-
-    The two backends emit two distinct signals:
-
-    - API: HTTP 403 + ``error.type == "billing_error"``. The SDK's `.type` field
-      separates billing_error from permission_error (both are 403), so a typed
-      field is used instead of string matching.
-    - claude-cli (subscription): does not produce a typed exception and reports
-      the spend limit with the SAME 429 code as a transient rate-limit → the
-      distinction can only be made from the message text ("monthly spend limit",
-      which advises switching models as the remedy).
-
-    That's why a bare 429 is DELIBERATELY excluded: it is transient, retried with
-    backoff — permanently switching the model would be wrong. Only the permanent
-    expressions above match.
-    """
-    if getattr(exc, "type", None) == "billing_error":
-        return True
-    msg = f"{getattr(exc, 'message', '')} {exc}".lower()
-    return any(s in msg for s in _CREDIT_EXHAUSTED_SIGNALS)
-
-
-def _ledger_record(resp, called_model: str, purpose: str) -> None:
-    """Append this call's token usage to the persistent per-model ledger.
-
-    Best-effort: a ledger I/O error must never break an LLM call. The model
-    recorded is the one the API actually answered with (``resp.model``) so the
-    Fable→Opus fallback is attributed correctly; the CLI response carries no
-    ``.model``, so we fall back to the model we called with. See
-    ``token_ledger`` + [[nau_token_tuketim_izleme]].
-    """
-    try:
-        import token_ledger
-
-        actual = getattr(resp, "model", None) or called_model
-        token_ledger.record(actual, getattr(resp, "usage", None), purpose)
-    except Exception:
-        pass
-
-
-# Adım 6 (Faz 2): _OR_RETRY_WAITS, _sleep (the patchable time.sleep
-# alias), _is_rate_limited, _retry_after_seconds, _or_create_with_backoff
-# extracted to openrouter_backend.py, imported back further down.
-
-
-class TruncatedResponse(RuntimeError):
-    """Yanıt ``max_tokens`` tavanına dayanıp kesildi — model kusuru değil, bütçe.
-
-    Kesilme kendi adıyla gelmezse aşağıda bir ``JSONDecodeError`` olarak görünür
-    ve suçu **modele** atar ("geçerli JSON üretemedi"); oysa cevabı kesen biziz.
-    Bu tip, o yanlış-atfı kapatmak için var: çağıranların fallback açıklamasında
-    ``fallback (TruncatedResponse)`` yazar ve sebep okunabilir kalır.
-    """
-
-
-# Sağlayıcıların "yer kalmadı" cevabı: Anthropic ``max_tokens``, OpenAI-uyumlu
-# uçlar ``length`` der. _ORResponse ikincisini birincisine çevirir.
-_TRUNCATION_STOP_REASONS = ("max_tokens", "length")
-# Kesilmede tavan bir kez bu katsayıyla büyütülüp yeniden denenir. Kesilme kalıcı
-# bir arıza değil bütçe arızasıdır (429 gibi); fallback'e düşmek koşuyu rastgele
-# kompozisyona çevirir. Ödenen bedel bir fazladan çağrı.
-_TRUNCATION_RETRY_SCALE = 4
-_TRUNCATION_RETRY_CAP = 16000
-
-# JSON döndüren üretim çağrılarının tavanları. Eski değerler (composed 900,
-# idea 400) Claude'un kısa JSON'una göre ayarlanmıştı ve önce düşünüp sonra yazan
-# bir modelde (ölçüm: moonshotai/kimi-k3) çıktının TAMAMI tavana dayanıyordu —
-# 5 çağrının 5'i kesildi, 5'i de fallback'e düştü. Tavan, promptun değil ÜRETENİN
-# özelliğine göre kalibre olduğu için bolluk tarafında hata yapılır: kullanılmayan
-# tavan bedava, yarım JSON toptan kayıp.
-MAX_TOKENS_COMPOSED = 4000
-MAX_TOKENS_IDEA = 1500
-
-# Ceilings LEARNED at runtime, keyed by (model, purpose). The retry below is
-# correct but had no memory: measured on run 3467219a, EVERY `idea` and
-# `custom_block` call to moonshotai/kimi-k3 hit the default ceiling and was
-# retried at 4× — 9 and 10 times respectively, a 100% rate. So each generation
-# cost two calls, the first one's output discarded in full.
-#
-# A static default cannot fix this: the right ceiling is a property of the
-# ENDPOINT (how much a model thinks before it writes), and the endpoint is
-# picked per run from a live list. Raising the constants would overshoot for
-# terse models and still undershoot the next verbose one. Remembering the
-# escalation instead costs one truncated call per (model, purpose) per process
-# and nothing after that.
-# DeepR 2026-08-08 [DÜŞÜK]: unlocked, unlike every other shared mutable
-# dict in this app (state.py's threading.Lock, token_ledger's _LOCK,
-# custom_block_store's _STORE_LOCK). AUTO can run more than one worker
-# thread; two racing to grow the SAME (model, purpose) ceiling could clobber
-# each other's write. Not a crash (dict ops are GIL-safe), just a silent
-# loss of the learned ceiling — the next call for that key falsely
-# truncates again and re-pays the two-call cost the whole mechanism exists
-# to avoid.
-_LEARNED_MAX_TOKENS_LOCK = threading.Lock()
-_LEARNED_MAX_TOKENS: dict[tuple[str, str], int] = {}
-
-
-def _was_truncated(resp) -> bool:
-    """Yanıt tavana dayanıp kesildi mi? (bilgi yoksa hayır)"""
-    return (
-        str(getattr(resp, "stop_reason", "") or "").lower() in _TRUNCATION_STOP_REASONS
-    )
-
-
-def _create_message(client, _purpose: str = "", **kwargs):
-    """``_create_message_once`` + kesilmede tek seferlik büyük-tavan denemesi.
-
-    ``max_tokens`` yapılandırılmış çıktı isteyen bir çağrıda maliyet freni değil
-    **doğruluk önkoşuludur**: yarım JSON hiçbir işe yaramaz. Tavanlar bir kez ve
-    o günkü modelin üslubuna göre ayarlanır; önce düşünüp sonra yazan bir modelde
-    aynı tavan sığmaz. Bu yüzden kesilme burada yakalanır, tavan büyütülüp bir kez
-    yeniden denenir, yine sığmazsa ``TruncatedResponse`` fırlatılır — çağıranın
-    fallback'i devreye girer ama sebep artık okunabilir.
-
-    Başarılı büyütme ``_LEARNED_MAX_TOKENS``'a yazılır: aynı (model, amaç) çifti
-    bir daha ilk çağrıyı çöpe atmaz. Ölçüm: kimi-k3'te her `idea`/`custom_block`
-    çağrısı tavana dayanıyordu, yani her üretim iki çağrı ediyordu.
-    """
-    _check_llm_cancelled()
-    base = int(kwargs.get("max_tokens") or 0)
-    key = (current_model(), _purpose or "llm")
-    with _LEARNED_MAX_TOKENS_LOCK:
-        learned = _LEARNED_MAX_TOKENS.get(key, 0)
-    if learned > base:
-        # This endpoint has already proven it needs the bigger budget. Unused
-        # ceiling is free; a truncated response is a wasted call in full.
-        base = learned
-        kwargs = {**kwargs, "max_tokens": base}
-
-    resp = _create_message_once(client, _purpose, **kwargs)
-    if not _was_truncated(resp):
-        return resp
-
-    bigger = min(base * _TRUNCATION_RETRY_SCALE, _TRUNCATION_RETRY_CAP)
-    if base <= 0 or bigger <= base:
-        raise TruncatedResponse(
-            f"{_purpose or 'llm'}: yanıt max_tokens={base} tavanında kesildi"
-        )
-
-    logging.warning(
-        "%s: yanıt max_tokens=%d tavanında kesildi — %d ile yeniden deneniyor "
-        "(bu uç için öğrenildi, sonraki çağrılar %d ile başlayacak)",
-        _purpose or "llm",
-        base,
-        bigger,
-        bigger,
-    )
-    _check_llm_cancelled()
-    resp = _create_message_once(client, _purpose, **{**kwargs, "max_tokens": bigger})
-    if _was_truncated(resp):
-        # Do NOT learn a ceiling that did not work either — the next call would
-        # then pay the big budget AND still truncate.
-        raise TruncatedResponse(
-            f"{_purpose or 'llm'}: yanıt max_tokens={bigger} ile de kesildi"
-        )
-    with _LEARNED_MAX_TOKENS_LOCK:
-        # max(): a concurrent writer for the same key may have already
-        # learned a larger ceiling — never regress it under a race.
-        _LEARNED_MAX_TOKENS[key] = max(bigger, _LEARNED_MAX_TOKENS.get(key, 0))
-    return resp
-
-
-def _create_message_once(client, _purpose: str = "", **kwargs):
-    """messages.create + automatic Fable→Opus fallback on credit exhaustion.
-
-    The model kwarg is added HERE; callers do not pass a model. On a credit
-    error the active model is permanently switched to FALLBACK_MODEL and the
-    request is retried once (the request body is passed as-is — both models
-    share the same API surface).
-
-    Every successful call is recorded to the persistent per-model token ledger
-    (``token_ledger``); ``_purpose`` tags the call site (best-effort, "" is
-    fine). This is the single choke point through which all app LLM calls pass.
-    """
-    _check_llm_cancelled()
-    kwargs = dict(kwargs)
-    if not isinstance(client, _ClaudeCLIClient):
-        # The CLI backend has its own ceiling (NAUTILUS_CLI_TIMEOUT, default
-        # 300s — a subprocess with real thinking time, not a bare HTTP call)
-        # applied in _ClaudeCLIMessages.create. Injecting this shorter
-        # cross-backend safety net into its kwargs too would silently cap
-        # slow high-effort CLI calls that used to fit comfortably under 300s.
-        kwargs.setdefault(
-            "timeout", float(os.environ.get("NAUTILUS_LLM_CALL_TIMEOUT", "120"))
-        )
-    model = current_model()
-
-    requested_max_tokens = int(kwargs.get("max_tokens") or 0)
-
-    def _call(called_model: str, fn):
-        # Admission happens for every real provider attempt, including a
-        # truncation retry or model fallback.  The AUTO hook can therefore
-        # reject the request before any prompt/output tokens are spent.
-        _admit_llm_request(kwargs, model=called_model, purpose=_purpose or "llm")
-        started = time.monotonic()
-        try:
-            response = fn()
-        except Exception as exc:
-            _observe_llm(
-                model=called_model,
-                purpose=_purpose or "llm",
-                usage=None,
-                duration_s=round(time.monotonic() - started, 3),
-                max_tokens=requested_max_tokens,
-                status="cancelled" if isinstance(exc, LLMCallCancelled) else "error",
-                error=f"{type(exc).__name__}: {exc}"[:500],
-            )
-            raise
-        usage = _usage_dict(response)
-        _observe_llm(
-            model=called_model,
-            purpose=_purpose or "llm",
-            usage=usage,
-            duration_s=round(time.monotonic() - started, 3),
-            max_tokens=requested_max_tokens,
-            status="truncated" if _was_truncated(response) else "ok",
-            **_output_cap_telemetry(
-                client,
-                usage,
-                requested_max_tokens,
-                provider_enforced=model.startswith("or:"),
-            ),
-        )
-        _check_llm_cancelled()
-        return response
-
-    if model.startswith("or:"):
-        # Koşu-başına OpenRouter yolu (thread pin "or:<id>"): varsayılan
-        # backend'e dokunmadan bu çağrı OpenRouter'a gider. Fable→Opus kredi
-        # fallback'i Claude'a özgüdür — burada uygulanmaz; 429 dışındaki hata
-        # çağırana düşer (çağıranların kendi graceful fallback'leri var).
-        or_model = model[3:]
-        resp = _call(or_model, lambda: _or_create_with_backoff(or_model, **kwargs))
-        _ledger_record(resp, or_model, _purpose)
-        return resp
-    try:
-        resp = _call(model, lambda: client.messages.create(model=model, **kwargs))
-        _ledger_record(resp, model, _purpose)
-        return resp
-    except Exception as e:
-        if model == FALLBACK_MODEL or not _is_credit_exhausted(e):
-            raise
-        with llm_client._model_lock:
-            llm_client._active_model = FALLBACK_MODEL
-        logging.warning(
-            "%s credit exhausted (%s) — permanently falling back to %s",
-            model,
-            type(e).__name__,
-            FALLBACK_MODEL,
-        )
-        resp = _call(
-            FALLBACK_MODEL,
-            lambda: client.messages.create(model=FALLBACK_MODEL, **kwargs),
-        )
-        _ledger_record(resp, FALLBACK_MODEL, _purpose)
-        return resp
-
-
 # ── Web research (DuckDuckGo, no API key required) ─────────────────────────
 # Adım 1: extracted to web_research.py. _ddg_search is not re-exported here —
 # it had zero consumers outside this module and its own new home; only
@@ -479,84 +221,18 @@ from web_research import web_research_strategies  # noqa: E402
 # Adım 4: the Claude Code CLI backend (_CLITextBlock/_CLIUsage/
 # _CLIResponse/_CLIError, _poll_until_deadline, _ClaudeCLIMessages,
 # _record_cli_side_models, _ClaudeCLIClient) extracted to llm_client.py,
-# re-exported below.
-
+# re-exported above.
 
 # Adım 6 (Faz 2): the OpenRouter response shims (_ORTextBlock/_ORUsage/
 # _ORResponse), _OpenRouterProcessError, _openrouter_usage_payload,
 # _openrouter_process_main, _stop_provider_process, _run_openrouter_killable,
-# _OpenRouterMessages, _OpenRouterClient extracted to openrouter_backend.py,
-# imported back below. _find_claude_cli (right below) stays -- it is
-# _build_client's helper, unrelated to OpenRouter.
-
-
-def _find_claude_cli() -> str | None:
-    override = os.environ.get("NAUTILUS_CLAUDE_CLI", "").strip()
-    if override:
-        return override if Path(override).exists() else None
-    return shutil.which("claude")
-
-
-# Adım 6 (Faz 2): _build_openrouter_client/_or_client/_or_client_lock/
-# _get_openrouter_client extracted to openrouter_backend.py, imported
-# back below.
-
-
-def _build_client() -> Anthropic | _ClaudeCLIClient | _OpenRouterClient:
-    """Backend selection (NAUTILUS_LLM_BACKEND env var):
-
-    - "api":        anthropic SDK — ANTHROPIC_API_KEY / ~/.nautilus_proxy_key required
-    - "claude-cli": Claude Code CLI (`claude -p`) — subscription (OAuth), no key needed
-    - "openrouter": OpenRouter (OpenAI-compatible API) — OPENROUTER_API_KEY required
-    - "auto" (default): API if a key exists, otherwise the claude CLI
-    """
-    backend = os.environ.get("NAUTILUS_LLM_BACKEND", "auto").strip().lower()
-
-    if backend == "openrouter":
-        return _build_openrouter_client()
-
-    # Hyperspace AI proxy takes priority; falls back to direct Anthropic.
-    # The proxy key must be set via ANTHROPIC_API_KEY env var or
-    # ~/.nautilus_proxy_key file — never hardcoded.
-    proxy_key = os.environ.get("ANTHROPIC_API_KEY", "")
-    if not proxy_key:
-        key_file = Path.home() / ".nautilus_proxy_key"
-        if key_file.exists():
-            proxy_key = key_file.read_text().strip()
-
-    if backend in ("api", "auto") and proxy_key:
-        proxy_url = os.environ.get("ANTHROPIC_BASE_URL", "http://localhost:6655")
-        logging.info("LLM backend: anthropic SDK (%s)", proxy_url)
-        return Anthropic(base_url=proxy_url, api_key=proxy_key)
-    if backend == "api":
-        raise RuntimeError(
-            "NAUTILUS_LLM_BACKEND=api but ANTHROPIC_API_KEY is not set. "
-            "Set it as an environment variable or write it to ~/.nautilus_proxy_key"
-        )
-
-    cli = _find_claude_cli()
-    if cli:
-        logging.info("LLM backend: claude CLI / subscription (%s)", cli)
-        return _ClaudeCLIClient(cli)
-    if backend == "claude-cli":
-        raise RuntimeError(
-            "NAUTILUS_LLM_BACKEND=claude-cli but the `claude` CLI was not found on PATH. "
-            "Install Claude Code and sign in (subscription), or set NAUTILUS_CLAUDE_CLI."
-        )
-    raise RuntimeError(
-        "No LLM access: ANTHROPIC_API_KEY is not set and the `claude` CLI was not found. "
-        "Either set an API key (env var or ~/.nautilus_proxy_key) or install Claude Code "
-        "and sign in with your subscription."
-    )
-
-
-def _get_client() -> Anthropic | _ClaudeCLIClient | _OpenRouterClient:
-    global _client
-    if _client is None:
-        with _client_lock:
-            if _client is None:
-                _client = _build_client()
-    return _client
+# _OpenRouterMessages, _OpenRouterClient, _build_openrouter_client,
+# _get_openrouter_client extracted to openrouter_backend.py, re-exported
+# above. Adım 9: _find_claude_cli -- once documented here as staying behind,
+# unlike its OpenRouter neighbors, because it was _build_client's helper --
+# moved too: the whole dispatch core (including _build_client, which calls
+# both _find_claude_cli and openrouter_backend.py's _build_openrouter_client)
+# now lives together in llm_dispatch.py; re-exported above.
 
 
 SYSTEM_PROMPT = f"""You are a quantitative trading research agent.
@@ -1560,20 +1236,9 @@ def _extract_json_object(text: str) -> str:
     return s[start:]  # unbalanced — let json.loads raise
 
 
-def _usage_dict(resp) -> dict:
-    """resp.usage → normalize token dict (M1583: counted on every LLM call)."""
-    u = getattr(resp, "usage", None)
-    usage = {
-        "input_tokens": getattr(u, "input_tokens", 0) or 0,
-        "output_tokens": getattr(u, "output_tokens", 0) or 0,
-        "cache_read_input_tokens": getattr(u, "cache_read_input_tokens", 0) or 0,
-        "cache_creation_input_tokens": getattr(u, "cache_creation_input_tokens", 0)
-        or 0,
-    }
-    cost = getattr(u, "cost_usd", None)
-    if cost is not None:
-        usage["cost_usd"] = float(cost)
-    return usage
+# Adım 9: _usage_dict extracted to llm_dispatch.py (pure function, pulled up
+# from this Domain C spot since llm_dispatch.py's own _create_message_once
+# needs it too), re-exported above; every call site below is unchanged.
 
 
 def _custom_block_system_prompt(role_hint: str) -> str:

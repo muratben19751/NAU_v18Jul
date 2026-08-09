@@ -21,15 +21,17 @@ def _no_real_ledger_writes(monkeypatch):
     """agent.py decomposition Adım 0: several classes below drive the REAL
     agent._create_message/_create_message_once/propose_custom_block without
     stubbing the ledger — unlike every other test file exercising this path
-    (which monkeypatches agent._ledger_record), so every successful fake-client
-    call here wrote a real row into the developer's actual
-    ~/.cache/nautilus_web_app/token_usage.jsonl. Likely source of the
-    previously-unexplained "8 synthetic ledger rows" (see
+    (which monkeypatches this fixture's own token_ledger.record patch, not the
+    function itself), so every successful fake-client call here wrote a real
+    row into the developer's actual ~/.cache/nautilus_web_app/token_usage.jsonl.
+    Likely source of the previously-unexplained "8 synthetic ledger rows" (see
     nautilus_wiki/wiki/synthesis/llm_maliyet_kaldiraclari.md).
 
-    Patched on token_ledger.record, not agent._ledger_record: TestLLMCreditFallback
-    reloads the agent module mid-test (importlib.reload), which would silently
-    undo a patch on agent._ledger_record itself but leaves token_ledger untouched.
+    Patched on token_ledger.record, not `_ledger_record` itself: TestLLMCreditFallback
+    reloads the agent (and, since Adım 9 moved _create_message/
+    _create_message_once/_ledger_record there, llm_dispatch) module mid-test
+    (importlib.reload), which would silently undo a patch placed on either
+    module's own copy of the name but leaves token_ledger untouched.
     """
     monkeypatch.setattr("token_ledger.record", lambda *a, **k: None)
 
@@ -734,6 +736,7 @@ class TestLLMCreditFallback:
 
         import agent
         import llm_client
+        import llm_dispatch
 
         # These tests assert the CODE DEFAULTS (claude-fable-5 / opus fallback).
         # A NAUTILUS_LLM_MODEL/…_FALLBACK_MODEL env override (e.g. from
@@ -748,10 +751,19 @@ class TestLLMCreditFallback:
             # now live in llm_client.py. Reloading only agent no longer resets
             # them (agent's `import llm_client` just re-binds the name to the
             # SAME already-loaded module) — reload llm_client first so its
-            # module-level `_active_model = None` re-executes, then reload
-            # agent so its `from llm_client import ...` re-exports pick up
-            # the fresh functions/state.
+            # module-level `_active_model = None` re-executes. Adım 9:
+            # _create_message/_create_message_once (which read FALLBACK_MODEL/
+            # current_model as THEIR OWN bare module globals, copied into
+            # llm_dispatch.py's namespace at its own original import time) now
+            # live in llm_dispatch.py, so it must also be reloaded here --
+            # BEFORE agent -- to re-pull those names fresh from the
+            # just-reloaded llm_client; otherwise llm_dispatch would keep
+            # stale copies (e.g. of FALLBACK_MODEL) even though llm_client and
+            # agent both show the fresh value. Then reload agent so its
+            # `from llm_client import ...`/`from llm_dispatch import ...`
+            # re-exports pick up the fresh functions/state.
             importlib.reload(llm_client)
+            importlib.reload(llm_dispatch)
             return importlib.reload(agent)  # reset _active_model
         finally:
             for k, v in saved.items():

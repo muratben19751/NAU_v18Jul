@@ -477,14 +477,17 @@ def test_unavailable_model_refuses_the_run_instead_of_degrading(monkeypatch):
     (Claude unavailable)" kompozisyonlarıyla normal bir tur gibi ilerliyordu —
     kullanıcının seçtiği model hiç kullanılmadan.
     """
-    import agent
+    import llm_dispatch
 
     client, got, done = _client_and_capture(monkeypatch)
 
     def _boom():
         raise RuntimeError("OpenRouter backend requires the `openai` package.")
 
-    monkeypatch.setattr(agent, "_get_openrouter_client", _boom)
+    # model_unavailable_reason (llm_dispatch.py, Adım 9) reads
+    # _get_openrouter_client as its own bare module global -- patching
+    # agent's re-exported copy would not reach it.
+    monkeypatch.setattr(llm_dispatch, "_get_openrouter_client", _boom)
     r = client.post(
         "/agent/run", data={"model": "or:moonshotai/kimi-k3", "n_iterations": 2}
     )
@@ -493,7 +496,7 @@ def test_unavailable_model_refuses_the_run_instead_of_degrading(monkeypatch):
     assert not done.wait(0.5), "koşu başlatılmamalıydı"
 
     # İstemci kurulabiliyorsa aynı seçim normal akar (ağa çıkılmaz).
-    monkeypatch.setattr(agent, "_get_openrouter_client", lambda: object())
+    monkeypatch.setattr(llm_dispatch, "_get_openrouter_client", lambda: object())
     r = client.post(
         "/agent/run", data={"model": "or:moonshotai/kimi-k3", "n_iterations": 2}
     )
@@ -504,11 +507,15 @@ def test_unavailable_model_refuses_the_run_instead_of_degrading(monkeypatch):
 
 def test_model_unavailable_reason_only_gates_openrouter(monkeypatch):
     import agent
+    import llm_dispatch
 
     def _boom():
         raise RuntimeError("nope")
 
-    monkeypatch.setattr(agent, "_get_openrouter_client", _boom)
+    # model_unavailable_reason (llm_dispatch.py, Adım 9) reads
+    # _get_openrouter_client as its own bare module global -- patching
+    # agent's re-exported copy would not reach it.
+    monkeypatch.setattr(llm_dispatch, "_get_openrouter_client", _boom)
     # Claude yolu uygulamanın varsayılanı — burada yoklanmaz.
     assert agent.model_unavailable_reason("") == ""
     assert agent.model_unavailable_reason(None) == ""
@@ -682,10 +689,16 @@ def test_truncated_response_retries_once_with_a_bigger_cap(monkeypatch):
     rastgele kompozisyon üretip fazları ✓ kapatıyordu.
     """
     import agent
+    import llm_dispatch
 
     seen: list[int] = []
-    monkeypatch.setattr(agent, "_ledger_record", lambda *a, **k: None)
-    monkeypatch.setattr(agent, "current_model", lambda: "claude-fable-5")
+    # _create_message/_create_message_once (llm_dispatch.py, Adım 9) read
+    # _ledger_record/current_model as their own bare module globals --
+    # patching agent's copies would not reach them. _ledger_record itself
+    # is never re-exported (discipline: patch token_ledger.record instead,
+    # so a real ledger write is prevented regardless of caller module).
+    monkeypatch.setattr("token_ledger.record", lambda *a, **k: None)
+    monkeypatch.setattr(llm_dispatch, "current_model", lambda: "claude-fable-5")
     client = _fake_client(["max_tokens", "end_turn"], seen)
 
     resp = agent._create_message(client, "composed", max_tokens=900, messages=[])
@@ -702,10 +715,11 @@ def test_truncation_surviving_the_retry_raises_its_own_type(monkeypatch):
     söyler. Çağıranın fallback'i yine devreye girer, ama sebebi okunur kalır.
     """
     import agent
+    import llm_dispatch
 
     seen: list[int] = []
-    monkeypatch.setattr(agent, "_ledger_record", lambda *a, **k: None)
-    monkeypatch.setattr(agent, "current_model", lambda: "claude-fable-5")
+    monkeypatch.setattr("token_ledger.record", lambda *a, **k: None)
+    monkeypatch.setattr(llm_dispatch, "current_model", lambda: "claude-fable-5")
     client = _fake_client(["max_tokens"], seen)
 
     with pytest.raises(agent.TruncatedResponse):
@@ -729,11 +743,15 @@ def test_learned_ceiling_survives_a_concurrent_smaller_write(monkeypatch):
     import time
 
     import agent
+    import llm_dispatch
 
     key = ("claude-fable-5", "composed")
-    monkeypatch.setattr(agent, "_LEARNED_MAX_TOKENS", {})
-    monkeypatch.setattr(agent, "_ledger_record", lambda *a, **k: None)
-    monkeypatch.setattr(agent, "current_model", lambda: "claude-fable-5")
+    # _create_message (llm_dispatch.py, Adım 9) reads _LEARNED_MAX_TOKENS/
+    # _ledger_record/current_model as its own bare module globals --
+    # patching agent's copies would not reach them.
+    monkeypatch.setattr(llm_dispatch, "_LEARNED_MAX_TOKENS", {})
+    monkeypatch.setattr("token_ledger.record", lambda *a, **k: None)
+    monkeypatch.setattr(llm_dispatch, "current_model", lambda: "claude-fable-5")
 
     barrier = threading.Barrier(2)
     results: dict[str, object] = {}
@@ -774,7 +792,7 @@ def test_learned_ceiling_survives_a_concurrent_smaller_write(monkeypatch):
     bigger_a = 1000 * agent._TRUNCATION_RETRY_SCALE
     bigger_b = 200 * agent._TRUNCATION_RETRY_SCALE
     assert bigger_b < bigger_a, "test setup must produce a genuinely smaller loser"
-    assert agent._LEARNED_MAX_TOKENS[key] == bigger_a, (
+    assert llm_dispatch._LEARNED_MAX_TOKENS[key] == bigger_a, (
         "a concurrent smaller write clobbered the larger learned ceiling"
     )
 

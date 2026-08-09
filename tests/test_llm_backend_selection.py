@@ -9,11 +9,16 @@ test. These tests call the real functions and mock only the genuine I/O
 boundaries (env vars, `Path.home`, `shutil.which`) -- no production code
 changes.
 
-`agent._client` is a module-level singleton `_get_client()` caches into;
-an autouse fixture resets it before and after every test in this file so
-one test's build never leaks into the next (the exact class of bug this
-session's own thread-local/BLOCK_CATALOG findings warn about -- see
-[[thread_local_testte_sonraki_testi_kirletir]]).
+`llm_dispatch._client` is a module-level singleton `_get_client()` caches
+into (agent.py decomposition Adım 9: the dispatch core, including `_client`,
+moved to llm_dispatch.py -- `agent._get_client`/`agent._build_client`/
+`agent._find_claude_cli` stay usable via re-export, but the singleton itself
+and the internal names `_build_client`/`_get_client` read as bare globals now
+live in llm_dispatch.py's own namespace, so this fixture and the monkeypatch
+targets below point there directly); an autouse fixture resets it before and
+after every test in this file so one test's build never leaks into the next
+(the exact class of bug this session's own thread-local/BLOCK_CATALOG
+findings warn about -- see [[thread_local_testte_sonraki_testi_kirletir]]).
 
 Wiki References
 ---------------
@@ -29,13 +34,14 @@ import pytest
 from anthropic import Anthropic
 
 import agent
+import llm_dispatch
 
 
 @pytest.fixture(autouse=True)
 def _reset_client_singleton():
-    agent._client = None
+    llm_dispatch._client = None
     yield
-    agent._client = None
+    llm_dispatch._client = None
 
 
 class TestFindClaudeCli:
@@ -65,7 +71,10 @@ class TestBuildClient:
     def test_backend_openrouter_delegates_to_build_openrouter_client(self, monkeypatch):
         monkeypatch.setenv("NAUTILUS_LLM_BACKEND", "openrouter")
         sentinel = object()
-        monkeypatch.setattr(agent, "_build_openrouter_client", lambda: sentinel)
+        # _build_client (llm_dispatch.py, Adım 9) reads _build_openrouter_client
+        # as its own bare module global -- patching agent's re-exported copy
+        # would not reach it.
+        monkeypatch.setattr(llm_dispatch, "_build_openrouter_client", lambda: sentinel)
 
         assert agent._build_client() is sentinel
 
@@ -113,7 +122,10 @@ class TestBuildClient:
         monkeypatch.setenv("NAUTILUS_LLM_BACKEND", "auto")
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
-        monkeypatch.setattr(agent, "_find_claude_cli", lambda: "/fake/claude")
+        # _build_client (llm_dispatch.py, Adım 9) reads _find_claude_cli as its
+        # own bare module global -- patching agent's re-exported copy would
+        # not reach it.
+        monkeypatch.setattr(llm_dispatch, "_find_claude_cli", lambda: "/fake/claude")
 
         client = agent._build_client()
 
@@ -121,7 +133,7 @@ class TestBuildClient:
 
     def test_backend_claude_cli_without_the_cli_found_raises(self, monkeypatch):
         monkeypatch.setenv("NAUTILUS_LLM_BACKEND", "claude-cli")
-        monkeypatch.setattr(agent, "_find_claude_cli", lambda: None)
+        monkeypatch.setattr(llm_dispatch, "_find_claude_cli", lambda: None)
 
         with pytest.raises(RuntimeError, match="claude-cli"):
             agent._build_client()
@@ -132,7 +144,7 @@ class TestBuildClient:
         monkeypatch.setenv("NAUTILUS_LLM_BACKEND", "auto")
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
-        monkeypatch.setattr(agent, "_find_claude_cli", lambda: None)
+        monkeypatch.setattr(llm_dispatch, "_find_claude_cli", lambda: None)
 
         with pytest.raises(RuntimeError, match="No LLM access"):
             agent._build_client()
@@ -146,7 +158,10 @@ class TestGetClient:
             calls.append(1)
             return object()
 
-        monkeypatch.setattr(agent, "_build_client", _fake_build)
+        # _get_client (llm_dispatch.py, Adım 9) reads _build_client as its own
+        # bare module global -- patching agent's re-exported copy would not
+        # reach it.
+        monkeypatch.setattr(llm_dispatch, "_build_client", _fake_build)
 
         first = agent._get_client()
         second = agent._get_client()
@@ -156,16 +171,15 @@ class TestGetClient:
 
 
 class TestLedgerRecord:
-    """`agent._ledger_record` (Adım 8 characterization -- zero direct tests
-    before this; every caller monkeypatches it wholesale to avoid a real
-    ledger write, so its own logic -- the resp.model-or-called-model
-    attribution, the best-effort exception swallow -- has never actually run
-    in a test).
+    """`llm_dispatch._ledger_record` (Adım 8 characterization; Adım 9 moved the
+    function itself from agent.py to llm_dispatch.py -- NOT re-exported back
+    into agent.py, so these calls target llm_dispatch directly; see
+    llm_dispatch.py's own docstring for why).
 
     Patches ``token_ledger.record`` via the STRING form, never
-    ``agent._ledger_record`` directly -- the documented-safe pattern from
-    test_regression_anchors.py's ``_no_real_ledger_writes`` autouse fixture,
-    so a real row is never written to the developer's actual
+    ``llm_dispatch._ledger_record`` directly -- the documented-safe pattern
+    from test_regression_anchors.py's ``_no_real_ledger_writes`` autouse
+    fixture, so a real row is never written to the developer's actual
     ~/.cache/nautilus_web_app/token_usage.jsonl.
     """
 
@@ -179,7 +193,7 @@ class TestLedgerRecord:
         )
         resp = SimpleNamespace(model="claude-opus-4-8", usage=SimpleNamespace())
 
-        agent._ledger_record(resp, "claude-fable-5", "composed")
+        llm_dispatch._ledger_record(resp, "claude-fable-5", "composed")
 
         assert captured["model"] == "claude-opus-4-8"
         assert captured["purpose"] == "composed"
@@ -197,7 +211,7 @@ class TestLedgerRecord:
         # `usage`, `stop_reason`).
         resp = SimpleNamespace(usage=SimpleNamespace())
 
-        agent._ledger_record(resp, "claude-fable-5", "composed")
+        llm_dispatch._ledger_record(resp, "claude-fable-5", "composed")
 
         assert captured["model"] == "claude-fable-5"
 
@@ -208,7 +222,9 @@ class TestLedgerRecord:
         monkeypatch.setattr("token_ledger.record", _raise)
         resp = SimpleNamespace(model="claude-opus-4-8", usage=SimpleNamespace())
 
-        agent._ledger_record(resp, "claude-fable-5", "composed")  # must not raise
+        llm_dispatch._ledger_record(
+            resp, "claude-fable-5", "composed"
+        )  # must not raise
 
     def test_is_credit_exhausted_recognizes_the_insufficient_credit_signal(self):
         assert agent._is_credit_exhausted(
