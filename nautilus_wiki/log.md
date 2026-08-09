@@ -2,6 +2,25 @@
 
 Append-only. Her ingest, query veya lint operasyonu bir satır bırakır.
 
+## 2026-08-09 (3) — E2E CI adımı: continue-on-error yerine retry (kod → wiki)
+
+- **rapor** — DeepR'ın kalan listesindeki 2. YÜKSEK madde: tek gerçek E2E
+  testi (`test_backtest_run_progress_result_e2e.py`) CI'da
+  `continue-on-error: true` — gerçek bir regresyon olsa bile PR yine merge
+  edilebiliyordu. Bu ayar 2026-08-08'de bilinçli eklenmişti (canlı Bybit ağ
+  hatası pipeline'ı bloklamasın diye); DeepR aynı ödünleşimi ikinci kez
+  sorun olarak işaretledi.
+- **karar** — CI/CD pipeline değişikliği olduğu için (kod değişikliğinden
+  farklı blast radius) kullanıcıya 3 seçenek soruldu; "retry (3x) +
+  continue-on-error kaldır" seçildi.
+- **fix** — `.github/workflows/ci.yml`: adım artık PowerShell döngüsüyle en
+  fazla 3 kez deniyor, biri geçerse yeşil, üçü de düşerse adım gerçekten
+  başarısız olup PR'ı bloklar. Yeni bağımlılık yok (düz `pwsh` döngüsü,
+  üçüncü parti retry action değil). Mantık gerçek CI koşumu olmadan
+  PowerShell tool'uyla simüle edilip doğrulandı.
+- **wiki** — `synthesis/nau_deepr_ucuncu_tur_2026_08_09.md`'ye madde 2
+  eklendi, `summary` tazelendi. Backlinks + index + lint yenilendi.
+
 ## 2026-08-09 (2) — DeepR üçüncü tur: kalan bulgular, sırayla (kod → wiki)
 
 - **rapor** — Kullanıcı kalan 34 bulgunun tam listesini istedi, sonra "devam"

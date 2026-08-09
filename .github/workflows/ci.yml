@@ -41,9 +41,22 @@ jobs:
       # the default run above (`addopts = -m "not e2e"`, pyproject.toml) since
       # it hits real Bybit network and takes ~2 min — but that meant it never
       # ran ANYWHERE, so a break in the chain (run_id parsing, the HTMX poll
-      # fragment, verdict-badge rendering) went undetected. `continue-on-error`
-      # so a Bybit network hiccup never blocks the pipeline; a real regression
-      # still shows up as a red step here instead of nowhere at all.
-      - name: Pytest (e2e — live Bybit, non-blocking)
-        continue-on-error: true
-        run: uv run pytest -q -m e2e tests
+      # fragment, verdict-badge rendering) went undetected.
+      #
+      # DeepR 2026-08-09 [YÜKSEK] follow-up: the original fix used
+      # `continue-on-error: true` so a Bybit network hiccup could never block
+      # the pipeline — but that also meant a REAL regression only turned the
+      # step red without ever blocking the PR, i.e. the same silent-merge risk
+      # the fix was meant to close. Retrying absorbs a transient network blip
+      # (passes on attempt 2/3) while a reproducible failure (a real
+      # regression) still fails all 3 attempts and blocks the PR for real.
+      - name: Pytest (e2e — live Bybit, retried for network flakiness)
+        shell: pwsh
+        run: |
+          $attempts = 3
+          for ($i = 1; $i -le $attempts; $i++) {
+            uv run pytest -q -m e2e tests
+            if ($LASTEXITCODE -eq 0) { exit 0 }
+            Write-Host "e2e attempt $i/$attempts failed (exit $LASTEXITCODE)"
+          }
+          exit $LASTEXITCODE

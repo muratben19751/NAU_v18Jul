@@ -1,7 +1,7 @@
 ---
 title: nautilus_web_app DeepR Üçüncü Tur (2026-08-09, NAU app'e odaklı)
 type: synthesis
-summary: Üçüncü DeepR koşusu (164 ajan, 37 bulgu) — ilk deneme nautilus_wiki/ alt-dizinine kapsam-sızdı, envanterden isim çıkarılınca düzeldi; en kritik 3 bulgu + delete_custom_batch test boşluğu tamamlandı, kalanlar üzerinde sırayla devam ediliyor.
+summary: Üçüncü DeepR koşusu (164 ajan, 37 bulgu) — ilk deneme nautilus_wiki/ alt-dizinine kapsam-sızdı, envanterden isim çıkarılınca düzeldi; 5/6 YÜKSEK bulgu tamamlandı (composer, AUTO E2E, repair script, delete_custom_batch testi, CI e2e retry), kalanlar sırayla devam ediyor.
 key_concepts:
   - crash_only_design
 sources:
@@ -85,8 +85,23 @@ sorunu. Rapor (`deepr_report_2026-08-09_0040.md`) tam listeyi tutuyor.
    `save_custom_batch`'in var olan rollback testi aynı anda kırıldı (ikisi
    aynı ortak transaction mekanizmasını paylaşıyor) — düzeltme geri
    alınınca ikisi de yeşile döndü.
+2. **Tek gerçek E2E testi CI'da `continue-on-error: true` [YÜKSEK, tamamlandı].**
+   Bu ayar 2026-08-08 DeepR'da bilinçli eklenmişti (canlı Bybit ağ hatası
+   pipeline'ı bloklamasın diye) ama aynı taşı iki kez kırıyordu: gerçek bir
+   regresyon da yalnız kırmızı GÖRÜNÜYOR, PR'ı bloklamıyor. Kullanıcıya 3
+   seçenek sunuldu (retry+kaldır / yalnız kaldır / olduğu gibi bırak);
+   **"retry (3x) + continue-on-error kaldır"** seçildi. `.github/workflows/ci.yml`:
+   adım artık PowerShell döngüsüyle en fazla 3 kez deniyor, biri geçerse
+   yeşil (geçici ağ sorunu emilir), üçü de düşerse (gerçekten tekrarlanan
+   hata = muhtemelen gerçek regresyon) adım GERÇEKTEN başarısız olup PR'ı
+   bloklar. Yeni bağımlılık eklenmedi (üçüncü parti retry action yerine düz
+   `pwsh` döngüsü). Mantık PowerShell tool'uyla ayrı ayrı simüle edilip
+   doğrulandı (hep-başarısız → 3 deneme + red; 3.'de başarı → erken çıkış +
+   yeşil) — gerçek bir CI koşumu tetiklenmeden.
 
-Kalan 2 YÜKSEK + tüm ORTA/DÜŞÜK/BİLGİ bulgular henüz ele alınmadı.
+Kalan 1 YÜKSEK (route modüllerinin birbirinin private state'ine erişimi —
+en riskli/en geniş kapsamlı, bilinçli olarak sona bırakıldı) + tüm
+ORTA/DÜŞÜK/BİLGİ bulgular henüz ele alınmadı.
 
 <!-- BACKLINKS:BEGIN -->
 ## Referenced by
