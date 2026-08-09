@@ -1044,7 +1044,8 @@ def _base_ccy(symbol: str, default: str = "BTC") -> str:
     """Extract the base currency from the ticker suffix (BTCUSDT→BTC, ETHUSDC→ETH).
 
     The crude ``symbol[:-4]``/``symbol[:3]`` mislabeled USDC (5 letters) and 4+
-    letter bases; same logic as the suffix-stripping in _instrument_meta.
+    letter bases. Also used by _instrument_meta's bybit branch below (DeepR
+    2026-08-09 [DÜŞÜK]: that branch used to hand-roll the same loop).
     """
     s = symbol.upper()
     for suffix in ("USDT", "USDC", "USD"):
@@ -1081,11 +1082,15 @@ def _instrument_meta(kind: str, **kw) -> dict:
         symbol = kw["symbol"]
         category = kw.get("category", "linear")
         # Infer base currency from the ticker suffix (e.g. ETHUSDT → base=ETH).
-        base_guess = "BTC"
-        for suffix in ("USDT", "USDC", "USD"):
-            if symbol.endswith(suffix):
-                base_guess = symbol[: -len(suffix)] or "BTC"
-                break
+        # DeepR 2026-08-09 [DÜŞÜK]: this used to hand-roll the same
+        # suffix-stripping loop _base_ccy already does one function above —
+        # _base_ccy's own docstring already called out the duplication.
+        # Only observable difference for a symbol matching none of
+        # USDT/USDC/USD: the old inline version silently fell back to the
+        # hardcoded "BTC", _base_ccy falls back to the ticker's first 3
+        # characters — moot in practice, every real Bybit spot/linear/inverse
+        # symbol in this app's universe is USDT- or USD-quoted.
+        base_guess = _base_ccy(symbol)
         inst = _make_bybit_instrument(symbol=symbol, base=base_guess, category=category)
         meta = _common(inst)
         meta.update(
