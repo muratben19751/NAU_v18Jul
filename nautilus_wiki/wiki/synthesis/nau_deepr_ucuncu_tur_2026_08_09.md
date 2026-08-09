@@ -1,7 +1,7 @@
 ---
 title: nautilus_web_app DeepR Üçüncü Tur (2026-08-09, NAU app'e odaklı)
 type: synthesis
-summary: Üçüncü DeepR koşusu (164 ajan, 37 bulgu) — ilk deneme nautilus_wiki/ alt-dizinine kapsam-sızdı, envanterden isim çıkarılınca düzeldi; 5/6 YÜKSEK bulgu tamamlandı (composer, AUTO E2E, repair script, delete_custom_batch testi, CI e2e retry), kalanlar sırayla devam ediyor.
+summary: Üçüncü DeepR koşusu (164 ajan, 37 bulgu) — ilk deneme nautilus_wiki/ alt-dizinine kapsam-sızdı, envanterden isim çıkarılınca düzeldi; 6/6 YÜKSEK bulgu tamamlandı (composer, AUTO E2E, repair script, delete_custom_batch testi, CI e2e retry, route-modülü private-state erişimi), 31 ORTA/DÜŞÜK/BİLGİ henüz ele alınmadı.
 key_concepts:
   - crash_only_design
 sources:
@@ -99,9 +99,35 @@ sorunu. Rapor (`deepr_report_2026-08-09_0040.md`) tam listeyi tutuyor.
    doğrulandı (hep-başarısız → 3 deneme + red; 3.'de başarı → erken çıkış +
    yeşil) — gerçek bir CI koşumu tetiklenmeden.
 
-Kalan 1 YÜKSEK (route modüllerinin birbirinin private state'ine erişimi —
-en riskli/en geniş kapsamlı, bilinçli olarak sona bırakıldı) + tüm
-ORTA/DÜŞÜK/BİLGİ bulgular henüz ele alınmadı.
+3. **Route modülleri birbirinin private (`_`) state'ine erişiyordu [YÜKSEK, tamamlandı].**
+   En riskli/en geniş kapsamlı olduğu için bilinçli olarak sona bırakıldı.
+   `studio.py` tek başına `backtest.py`'den 4, `strategy.py`'den 2 fonksiyonu
+   `_`-önekli isimleriyle içe aktarıyordu (public eşdeğerleri yoktu — hepsi
+   alt çizgisiz yapıldı: `session_drafts`, bare `drafts` DEĞİL, çünkü birkaç
+   çağrı noktası zaten `drafts` adında yerel değişken kullanıyor, aynı isimli
+   fonksiyonu gölgeleyip `UnboundLocalError` verirdi). Daha riskli olan:
+   `studio.py` `agent_backtest.py`'nin ham `_AGENT_LOCK`/`_AGENT_PROGRESS`'ini
+   import edip elle tarıyordu — bu kilidin 2026-07-14 tarihli belgelenmiş bir
+   deadlock geçmişi var (`tests/test_lock_nesting.py`). Çözüm: yeni
+   `newest_active_run_id()` — hem `studio.py`'nin taramasını HEM
+   `agent_backtest.py`'nin `page()`'indeki AYNI taramanın birebir kopyasını
+   tek fonksiyona indirdi; `studio.py` artık kilide hiç dokunmuyor. Mutasyon
+   testiyle doğrulandı. `SESSION_LOG_DIR` (3. alt-bulgu, `_`-öneksiz ama aynı
+   "yanlış sahiplik" kokusu) `web/shared.py`'ye taşındı — `sessions.py` ve
+   `tearsheet.py` artık `agent_backtest.py`'ye değil oraya bakıyor.
+
+   **Süreç notu:** önce `GET /studio` için hiç olmayan bir characterization
+   testi yazıldı (`tests/test_studio_page.py`) — refactor'dan ÖNCE, güvenlik
+   ağı olarak. Tam suite iki kez koşuldu: ilk koşum yeni testlerin KENDİ
+   bir kusurunu yakaladı (`_AGENT_PROGRESS` process-global paylaşılan durum;
+   iki test boş başladığını varsaymıştı, ki suite'in geri kalanı çalıştıktan
+   sonra bu doğru değil) — snapshot/clear/restore fixture'ıyla düzeltildi,
+   simüle edilmiş kirlenmeye karşı doğrulandı. İkinci koşum: 1170 geçti, 0
+   kaldı.
+
+Kullanıcının bu geçişte seçtiği 6/6 YÜKSEK bulgu tamamlandı. Kalan 31
+ORTA/DÜŞÜK/BİLGİ bulgu henüz ele alınmadı — rapor
+(`deepr_report_2026-08-09_0040.md`) tam listeyi tutuyor.
 
 <!-- BACKLINKS:BEGIN -->
 ## Referenced by

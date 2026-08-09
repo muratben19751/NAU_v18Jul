@@ -2,6 +2,36 @@
 
 Append-only. Her ingest, query veya lint operasyonu bir satır bırakır.
 
+## 2026-08-09 (4) — Route modülleri private-state erişimi kapandı; DeepR üçüncü turun 6/6 YÜKSEK'i tamam (kod → wiki, wiki-sync skill)
+
+- **rapor** — Bağlam kullanımı otomatik wiki-sync eşiğini aştı; bu geçiş
+  önce yarım kalan kodu bitirip (kritik 3'ün sonuncusu) tutarlı bir noktaya
+  getirdi, sonra wiki-sync skill'i tetiklendi.
+- **fix (kod)** — `studio.py`'nin `backtest.py`/`strategy.py`'den 6
+  `_`-önekli fonksiyon içe aktarması alt çizgisiz yapıldı (`session_drafts`
+  — bare `drafts` değil, yerel değişken gölgelemesi riski yüzünden).
+  `agent_backtest.py`'de yeni `newest_active_run_id()`: `studio.py`'nin VE
+  bu modülün kendi `page()`'inin aynı ham `_AGENT_LOCK` taramasını tek
+  fonksiyona indirdi — `studio.py` artık kilide hiç dokunmuyor
+  (2026-07-14 deadlock geçmişi olan bir kilit). `SESSION_LOG_DIR`
+  `web/shared.py`'ye taşındı, tek sahip oldu.
+- **test-önce disiplin** — Refactor'dan ÖNCE `tests/test_studio_page.py`
+  yazıldı (`GET /studio` daha önce hiç test edilmiyordu). Tam suite iki kez
+  koşuldu: ilk koşum yeni testlerin kendi kusurunu yakaladı
+  (`_AGENT_PROGRESS` process-global paylaşılan durum, iki test yanlışlıkla
+  boş başladığını varsaymıştı) — snapshot/clear/restore fixture'ıyla
+  düzeltildi. İkinci koşum: 1170 geçti, 0 kaldı. Lock-touching kısım
+  mutasyon testiyle de doğrulandı.
+- **sonuç** — DeepR üçüncü turun kullanıcının seçtiği 6/6 YÜKSEK bulgusu
+  tamamlandı (composer, AUTO E2E, repair script, delete_custom_batch
+  testi, CI e2e retry, route-modülü private-state erişimi). 31
+  ORTA/DÜŞÜK/BİLGİ henüz ele alınmadı.
+- **wiki** — `synthesis/nau_deepr_ucuncu_tur_2026_08_09.md`'ye madde 3 +
+  süreç notu eklendi, `summary` "6/6" olarak güncellendi.
+  `webapp_module_map.md` `agent_backtest.py` satırına `newest_active_run_id`
+  notu eklendi. Backlinks + index + lint yenilendi (0 broken_links/
+  orphans/stale/stubs).
+
 ## 2026-08-09 (3) — E2E CI adımı: continue-on-error yerine retry (kod → wiki)
 
 - **rapor** — DeepR'ın kalan listesindeki 2. YÜKSEK madde: tek gerçek E2E
