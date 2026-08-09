@@ -2,6 +2,39 @@
 
 Append-only. Her ingest, query veya lint operasyonu bir satır bırakır.
 
+## 2026-08-09 (9) — agent.py decomposition Faz 3 kapandı: dispatch çekirdeği → llm_dispatch.py
+
+- **commit** — Adım 8 (`ee9aacc`, test-önce: `_ledger_record`'un 4 karakterizasyon
+  testi + `test_llm_observer_sees_each_actual_provider_response`'un gerçek
+  deftere yazma hatasının düzeltilmesi) + Adım 9 (`8c5c5d9`, taşımanın kendisi)
+  — `agent.py` 2824→~2470 satıra indi, yeni `llm_dispatch.py` (443 satır)
+  dispatch çekirdeğinin (istemci kurulumu/seçimi, kredi-tükenme fallback'i,
+  `TruncatedResponse`+öğrenilen-tavan retry, `_create_message`/
+  `_create_message_once`) tek evi oldu. `openrouter_backend.py`'nin (Adım 6)
+  kanıtlanmış deseniyle birebir aynı şekil: `_client`/`_client_lock` ve
+  `_ledger_record` KASITLI re-export edilmedi.
+- **doğrulama** — bir Workflow (test-önce ajanı → taşıma ajanı → 4 paralel
+  çekişmeli doğrulama ajanı) implementasyonu yaptı; ana oturum kendi başına
+  BAĞIMSIZ tekrar doğruladı: `_create_message_once`'un eski/yeni gövdesi
+  programatik olarak byte-for-byte identik bulundu, 7 isim için identity-check
+  (`agent.X is llm_dispatch.X`) True, monkeypatch-kayması taraması (11 aday
+  isim) temiz, tam suite 2 kez bağımsız koşuldu (1414 geçti, 1 skip, 0 fail —
+  ikisi de aynı sayı). Workflow'un flagledigi yeni bir gevşek test
+  (`test_fallback_proposal_carries_a_machine_readable_degraded_marker`, ~%25
+  flake) hem taşıma-sonrası hem `git stash` ile geri alınmış taşıma-öncesi
+  durumda AYNI oranda başarısız bulundu — taşımadan bağımsız, önceden var olan
+  bir sorun (unseeded `random`, Domain C'nin `_fallback_composed`'ında),
+  düzeltilmedi.
+- **commit-bölme tekniği** — `test_llm_backend_selection.py` her iki adımda da
+  değişti (Adım 8 yeni `TestLedgerRecord` sınıfını ekledi, Adım 9 onu da dahil
+  tüm dosyayı `llm_dispatch`'e repoint etti); iki temiz commit için ara durumu
+  (Adım 8 bitmiş, Adım 9 başlamamış) `git stash` ile agent.py/llm_dispatch.py/
+  diğer 2 test dosyasını geçici olarak HEAD'e döndürüp o ara durumun kendi
+  başına yeşil olduğu doğrulanarak commit edildi, sonra stash geri alınıp
+  Adım 9 commit'lendi.
+- **wiki** — `webapp_module_map.md`'nin `agent.py` satırı (Faz 3 tamamlandı,
+  satır sayısı ~2470) + yeni `llm_dispatch.py` satırı eklendi.
+
 ## 2026-08-09 (8) — wiki-sync (bağlam eşiği %53) — bir bayat referans bulundu, düzeltildi
 
 - **rapor** — otomatik wiki-sync eşiği tetiklendi; son commit (8e32105,
