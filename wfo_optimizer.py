@@ -43,24 +43,11 @@ runner (BacktestNode) or NAU comparison, use ``sharpe_nautilus`` /
 from __future__ import annotations
 
 import math
-import os
 
 import numpy as np
 
-
-def _env_int(name: str, default: int) -> int:
-    try:
-        return int(os.environ.get(name, "") or default)
-    except ValueError:
-        return default
-
-
-def _env_float(name: str, default: float) -> float:
-    try:
-        return float(os.environ.get(name, "") or default)
-    except ValueError:
-        return default
-
+from app_constants import env_float as _env_float
+from app_constants import env_int as _env_int
 
 # ── GA / fold budget (env-overridable module constants) ─────────────────────
 # Cost per window = WFO_POP_SIZE × GEN × WF_FOLDS backtests (see module

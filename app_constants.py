@@ -8,6 +8,10 @@
   benchmark/excess-return formula, shared so backtest_robustness.py,
   parallel_exec.py, and web/routes/agent_backtest.py can't independently
   re-derive it into three (or four) silently-drifting copies.
+- ``env_float``/``env_int``: env-override parsing (DeepR 2026-08-09 [ORTA]),
+  character-for-character identical in backtest_robustness.py,
+  parallel_exec.py, and wfo_optimizer.py before this — a bugfix to one would
+  silently not reach the other two.
 """
 
 from __future__ import annotations
@@ -17,6 +21,21 @@ import os
 import subprocess
 
 STARTING_CASH = 10_000.0
+
+
+def env_float(name: str, default: float) -> float:
+    try:
+        return float(os.environ.get(name, "") or default)
+    except ValueError:
+        return default
+
+
+def env_int(name: str, default: int) -> int:
+    try:
+        return int(os.environ.get(name, "") or default)
+    except ValueError:
+        return default
+
 
 # On Windows, when a CONSOLE application (claude CLI, bash/gunzip/awk) is launched,
 # a terminal window opens and closes on every call — even if the server runs

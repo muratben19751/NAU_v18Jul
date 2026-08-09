@@ -33,6 +33,8 @@ from __future__ import annotations
 import os
 import tempfile
 
+from app_constants import env_float as _env_float
+
 DEFAULT_WORKER_CLAMP = (1, 28)
 
 # Worker-process globals, populated once by _worker_init.
@@ -88,13 +90,6 @@ def get_worker_count() -> int:
         pass
 
     return max(lo, min(hi, count))
-
-
-def _env_float(name: str, default: float) -> float:
-    try:
-        return float(os.environ.get(name, "") or default)
-    except ValueError:
-        return default
 
 
 def make_snapshot(bars_df) -> str:

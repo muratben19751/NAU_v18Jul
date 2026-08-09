@@ -11,19 +11,12 @@ See: [[backtesting_guide]], [[backtest_node]]
 from __future__ import annotations
 
 import hashlib
-import os
 from datetime import UTC, timedelta
 
 import numpy as np
 import pandas as pd
 
-
-def _env_float(name: str, default: float) -> float:
-    try:
-        return float(os.environ.get(name, "") or default)
-    except ValueError:
-        return default
-
+from app_constants import env_float as _env_float
 
 # Embargo (purge) gap, in days (M28), placed between train and test (and between
 # folds in wfo_optimizer): prevents an open position at the end of train /
