@@ -4778,6 +4778,13 @@ def _terminal_message(run_id: str) -> str:
     died (typical cause: the server was restarted) — the run is not 'completed'.
     """
     generic = "The run completed or timed out."
+    # DeepR 2026-08-09 [ORTA]: run_id reaches here straight from the
+    # /agent/progress/{run_id} path parameter, unvalidated — a path-traversal
+    # run_id turned this into a file-existence oracle for arbitrary paths
+    # (the message differs by whether SESSION_LOG_DIR/{run_id}.jsonl exists).
+    # Same format sessions.py's routes already enforce for the same concept.
+    if not all(c in "0123456789abcdef" for c in run_id) or len(run_id) != 8:
+        return generic
     try:
         log_path = SESSION_LOG_DIR / f"{run_id}.jsonl"
         if not log_path.exists():

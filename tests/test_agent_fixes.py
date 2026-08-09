@@ -203,7 +203,7 @@ class TestTerminalMessage:
         import web.routes.agent_backtest as ab
 
         monkeypatch.setattr(ab, "SESSION_LOG_DIR", tmp_path)
-        assert "completed or timed out" in ab._terminal_message("none1")
+        assert "completed or timed out" in ab._terminal_message("deadbeef")
 
     def test_session_end_means_completed(self, tmp_path, monkeypatch):
         import json as _json
@@ -211,14 +211,14 @@ class TestTerminalMessage:
         import web.routes.agent_backtest as ab
 
         monkeypatch.setattr(ab, "SESSION_LOG_DIR", tmp_path)
-        log = tmp_path / "r1.jsonl"
+        log = tmp_path / "aaaa1111.jsonl"
         log.write_text(
             _json.dumps({"event": "session_start"})
             + "\n"
             + _json.dumps({"event": "session_end", "outcome": "winner"})
             + "\n"
         )
-        msg = ab._terminal_message("r1")
+        msg = ab._terminal_message("aaaa1111")
         assert "completed" in msg and "cut off" not in msg
 
     def test_truncated_log_means_interrupted(self, tmp_path, monkeypatch):
@@ -227,15 +227,64 @@ class TestTerminalMessage:
         import web.routes.agent_backtest as ab
 
         monkeypatch.setattr(ab, "SESSION_LOG_DIR", tmp_path)
-        log = tmp_path / "r2.jsonl"
+        log = tmp_path / "bbbb2222.jsonl"
         log.write_text(
             _json.dumps({"event": "session_start"})
             + "\n"
             + _json.dumps({"event": "step", "msg": "Generating custom block…"})
             + "\n"
         )
-        msg = ab._terminal_message("r2")
+        msg = ab._terminal_message("bbbb2222")
         assert "cut off" in msg and "restart" in msg
+
+    # DeepR 2026-08-09 [ORTA]: run_id reaches _terminal_message unvalidated
+    # from the /agent/progress/{run_id} path parameter — a path-traversal
+    # run_id turned this into a file-existence oracle for arbitrary paths.
+    # sessions.py's routes already enforce this exact 8-char-hex format for
+    # the same concept (run_id).
+
+    def test_path_traversal_run_id_never_touches_the_filesystem(
+        self, tmp_path, monkeypatch
+    ):
+        """A rejected run_id must never even ask whether a path exists — the
+        leak is the existence CHECK itself (an oracle for arbitrary paths),
+        not just what it would have returned. Proven by counting
+        Path.exists() calls, rather than relying on the coincidence that the
+        traversal target also happens to be absent on this machine (an
+        AssertionError raised from the mock would just be swallowed by
+        _terminal_message's own `except Exception`, silently defeating a
+        raise-based check)."""
+        from pathlib import Path
+
+        import web.routes.agent_backtest as ab
+
+        monkeypatch.setattr(ab, "SESSION_LOG_DIR", tmp_path)
+        calls = {"n": 0}
+        real_exists = Path.exists
+
+        def _counting_exists(self):
+            calls["n"] += 1
+            return real_exists(self)
+
+        monkeypatch.setattr(Path, "exists", _counting_exists)
+
+        msg = ab._terminal_message("../../../../etc/passwd")
+
+        assert "completed or timed out" in msg
+        assert calls["n"] == 0, "a rejected run_id still probed the filesystem"
+
+    def test_wrong_length_run_id_is_rejected(self, tmp_path, monkeypatch):
+        import web.routes.agent_backtest as ab
+
+        monkeypatch.setattr(ab, "SESSION_LOG_DIR", tmp_path)
+        assert "completed or timed out" in ab._terminal_message("abc")
+        assert "completed or timed out" in ab._terminal_message("a" * 9)
+
+    def test_non_hex_run_id_is_rejected(self, tmp_path, monkeypatch):
+        import web.routes.agent_backtest as ab
+
+        monkeypatch.setattr(ab, "SESSION_LOG_DIR", tmp_path)
+        assert "completed or timed out" in ab._terminal_message("ZZZZZZZZ")
 
 
 class TestScoreJunkFilter:
