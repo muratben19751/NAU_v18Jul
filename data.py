@@ -272,20 +272,31 @@ def _latest_available_file() -> Path | None:
     return files[0] if files else None
 
 
+# DeepR 2026-08-09 [DÜŞÜK]: discover_index_tickers() and _index_rows_uncached()
+# each parsed TICKER_REGISTRY independently. Shared here so there's one read
+# path; a corrupt/empty registry is non-fatal in both callers (matches
+# discover_index_tickers()'s pre-existing "fall through and rescan" handling).
+def _read_ticker_registry() -> list[str] | None:
+    """Return the cached ticker list, or None if missing/corrupt/empty."""
+    if not TICKER_REGISTRY.exists():
+        return None
+    try:
+        reg = json.loads(TICKER_REGISTRY.read_text())
+    except Exception:
+        return None
+    return reg.get("tickers") or None
+
+
 def discover_index_tickers(force: bool = False) -> list[str]:
     """Return sorted list of unique tickers seen in the newest daily file.
 
     Caches to `TICKER_REGISTRY` as JSON. First run scans a ~2 GB gzip via awk
     (streamed) and takes minutes; subsequent calls are instant.
     """
-    if TICKER_REGISTRY.exists() and not force:
-        try:
-            data = json.loads(TICKER_REGISTRY.read_text())
-            tickers = data.get("tickers") or []
-            if tickers:
-                return tickers
-        except Exception:
-            pass
+    if not force:
+        cached = _read_ticker_registry()
+        if cached is not None:
+            return cached
 
     src = _latest_available_file()
     if src is None:
@@ -1276,12 +1287,9 @@ def _invalidate_index_rows_cache() -> None:
 
 
 def _index_rows_uncached() -> list[dict]:
-    """List every US-index ticker. If _tickers.json is missing, return an
-    empty list; the UI shows a Discover call-to-action in that case."""
-    if not TICKER_REGISTRY.exists():
-        return []
-    reg = json.loads(TICKER_REGISTRY.read_text())
-    tickers: list[str] = reg.get("tickers", [])
+    """List every US-index ticker. If _tickers.json is missing (or corrupt),
+    return an empty list; the UI shows a Discover call-to-action in that case."""
+    tickers: list[str] = _read_ticker_registry() or []
 
     rows: list[dict] = []
     for ticker in tickers:
