@@ -108,7 +108,6 @@ _GOLDEN_SET = frozenset(
         "_lb_wave_trend_cross",
         "_load_custom_blocks",
         "_load_module_from_path",
-        "_nau_win",
         "_onstart_atr_stop",
         "_onstart_bollinger_break",
         "_onstart_ema_cross",
