@@ -43,6 +43,29 @@ def stub_catalog(monkeypatch):
     return spec
 
 
+# ── DeepR 2026-08-09 [ORTA] · server-side commission_pct clamp ──────────────
+
+
+def test_clamp_commission_pct_leaves_the_unset_sentinel_alone():
+    assert bt._clamp_commission_pct(-1.0) == -1.0
+
+
+def test_clamp_commission_pct_caps_an_astronomical_value():
+    assert bt._clamp_commission_pct(999_999.0) == 5.0
+
+
+def test_clamp_commission_pct_leaves_any_negative_value_alone():
+    """Matches the >= 0 sentinel test at the actual consumption site
+    (_worker's _comm_bps line): ANY negative value means "unset, use
+    engine defaults" there, not just the -1 Form default — clamping this
+    to 0 would silently turn "unset" into an explicit zero commission."""
+    assert bt._clamp_commission_pct(-0.5) == -0.5
+
+
+def test_clamp_commission_pct_leaves_an_in_range_value_alone():
+    assert bt._clamp_commission_pct(0.055) == 0.055
+
+
 # ── Bug 4 · date-range validation ────────────────────────────────────────────
 
 

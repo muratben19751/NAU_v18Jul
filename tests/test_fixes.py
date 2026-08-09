@@ -330,3 +330,46 @@ class TestComposedStrategySpecValidate:
             ],
         )
         assert spec.validate() is None
+
+    def _entry_only(self, **kwargs):
+        from composer import ComposedStrategySpec, SignalBlock
+
+        return ComposedStrategySpec(
+            id="x",
+            name="x",
+            description="",
+            blocks=[
+                SignalBlock(
+                    type="ma_cross", role="entry", params={"fast": 5, "slow": 10}
+                )
+            ],
+            **kwargs,
+        )
+
+    # DeepR 2026-08-09 [ORTA]: atr_period<=0 used to reach Nautilus's
+    # AverageTrueRange(period) unvalidated, raising only once a live
+    # backtest actually needed it. Required only when ATR is actually
+    # consulted (sl_type/tp_type == "atr", or ATR-target sizing) — a
+    # percent-SL spec with atr_period=0 is unrelated and must stay valid.
+    def test_non_positive_atr_period_is_invalid_when_sl_type_is_atr(self):
+        err = self._entry_only(sl_type="atr", atr_period=0).validate()
+        assert err is not None
+        assert "atr_period" in err
+
+    def test_non_positive_atr_period_is_invalid_when_tp_type_is_atr(self):
+        err = self._entry_only(tp_type="atr", atr_period=-1).validate()
+        assert err is not None
+        assert "atr_period" in err
+
+    def test_non_positive_atr_period_is_invalid_for_atr_target_sizing(self):
+        err = self._entry_only(trade_size_mode="atr_target", atr_period=0).validate()
+        assert err is not None
+        assert "atr_period" in err
+
+    def test_non_positive_atr_period_is_fine_when_atr_is_not_used(self):
+        err = self._entry_only(sl_type="percent", atr_period=0).validate()
+        assert err is None
+
+    def test_positive_atr_period_is_valid_when_sl_type_is_atr(self):
+        err = self._entry_only(sl_type="atr", atr_period=14).validate()
+        assert err is None

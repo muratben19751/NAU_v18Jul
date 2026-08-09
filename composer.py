@@ -1453,6 +1453,19 @@ class ComposedStrategySpec:
                 return "sl_value must be > 0 when bracket is enabled."
             if self.tp_type != "off" and self.tp_value <= 0:
                 return "tp_value must be > 0 when TP is not off."
+        # DeepR 2026-08-09 [ORTA]: the HTML input's min is browser-side only;
+        # a direct POST could pass 0/negative and reach Nautilus's own
+        # AverageTrueRange(period) with an invalid value, which raises AFTER
+        # the sandbox has already spent a full backtest run. Only required
+        # when ATR is actually consulted — mirrors ComposedStrategy.on_start's
+        # own needs_atr condition (sl_type/tp_type == "atr" or ATR-target sizing).
+        needs_atr = (
+            self.sl_type == "atr"
+            or self.tp_type == "atr"
+            or self.trade_size_mode == "atr_target"
+        )
+        if needs_atr and self.atr_period <= 0:
+            return "atr_period must be > 0 when ATR-based SL/TP/sizing is used."
         if self.trade_size_mode == "percent_equity":
             try:
                 pct = float(self.trade_size_percent)

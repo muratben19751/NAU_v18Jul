@@ -249,6 +249,18 @@ def _date_error_response(msg: str) -> HTMLResponse:
     return resp
 
 
+def _clamp_commission_pct(commission_pct: float) -> float:
+    """The HTML input's min=0/max=5 is browser-side only (DeepR 2026-08-09
+    [ORTA]) — a direct POST could pass an astronomical value and silently
+    produce a "valid" result. robustness.py clamps its own numeric form
+    fields the same way. Mirrors the ``commission_pct >= 0`` sentinel test
+    already used where this value is consumed: ANY negative value (not just
+    the -1 Form default) means "unset, use engine defaults" there, so every
+    negative value is already implicitly floored by that check — only the
+    missing upper bound needs enforcing here."""
+    return commission_pct if commission_pct < 0 else min(5.0, commission_pct)
+
+
 # Plan-preview FIFO/TTL cache keyed on (desc_lower, allow_short_bool). Avoids
 # repeated propose_condition_breakdown LLM calls during iterative editing.
 # Eviction is FIFO by insertion ts (not LRU — hits do not refresh ts).
@@ -591,6 +603,8 @@ async def run(
     )
     if date_err:
         return _date_error_response(date_err)
+
+    commission_pct = _clamp_commission_pct(commission_pct)
 
     # Session id captured HERE (request-time) — the worker thread has no request,
     # so it writes the result into THIS session's slot.
