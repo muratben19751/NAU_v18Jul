@@ -1235,19 +1235,53 @@ def _bybit_rows_uncached() -> list[dict]:
     return rows
 
 
+# DeepR 2026-08-09 [ORTA]: same shape as _bybit_rows' TTL cache above —
+# every /data GET rebuilt every ticker's parquet-footer stats +
+# nautilus_catalog_bar_state from scratch, `limit`/`query` only narrowed
+# the FINAL list, not the I/O. Cache the full, unfiltered build; apply
+# limit/query to the cached rows on every call instead of to the ticker
+# list before building them.
+_INDEX_ROWS_TTL_S = 30.0
+_index_rows_cache: tuple[float, list[dict]] | None = None
+_index_rows_lock = threading.Lock()
+
+
 def _index_rows(limit: int | None = None, query: str | None = None) -> list[dict]:
-    """List US-index tickers. If _tickers.json is missing, return an empty list;
-    the UI shows a Discover call-to-action in that case.
-    """
+    """List US-index tickers, optionally filtered. See _index_rows_uncached
+    for the (TTL-cached) I/O; this applies limit/query to the cached rows."""
+    global _index_rows_cache
+    with _index_rows_lock:
+        cached = _index_rows_cache
+        if cached is not None and time.monotonic() - cached[0] < _INDEX_ROWS_TTL_S:
+            rows = cached[1]
+        else:
+            rows = None
+    if rows is None:
+        rows = _index_rows_uncached()
+        with _index_rows_lock:
+            _index_rows_cache = (time.monotonic(), rows)
+
+    if query:
+        q = query.lower()
+        rows = [r for r in rows if q in r["key"].lower()]
+    if limit:
+        rows = rows[:limit]
+    return rows
+
+
+def _invalidate_index_rows_cache() -> None:
+    global _index_rows_cache
+    with _index_rows_lock:
+        _index_rows_cache = None
+
+
+def _index_rows_uncached() -> list[dict]:
+    """List every US-index ticker. If _tickers.json is missing, return an
+    empty list; the UI shows a Discover call-to-action in that case."""
     if not TICKER_REGISTRY.exists():
         return []
     reg = json.loads(TICKER_REGISTRY.read_text())
     tickers: list[str] = reg.get("tickers", [])
-    if query:
-        q = query.lower()
-        tickers = [t for t in tickers if q in t.lower()]
-    if limit:
-        tickers = tickers[:limit]
 
     rows: list[dict] = []
     for ticker in tickers:
@@ -2243,6 +2277,8 @@ def refresh_row(source: str, **kw) -> dict:
         load_index_bars(
             ticker, start=start_date, end=end_date, granularity=granularity, force=True
         )
+        # The TTL cache above must not hand back the pre-refresh row here.
+        _invalidate_index_rows_cache()
         # Return the row for this specific ticker.
         for row in _index_rows(query=ticker, limit=1):
             if row["key"] == ticker:
