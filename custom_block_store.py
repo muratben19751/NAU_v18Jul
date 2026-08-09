@@ -398,9 +398,16 @@ def save_custom(name: str, meta: dict, code: str, prompt: str = "") -> Path:
     # not specified on write, Windows uses the locale (cp1254) → LLM code
     # containing non-ASCII (→, …, typographic quotes) blows up with
     # UnicodeEncodeError or the block can never be imported. Pin UTF-8.
-    with _registry_guard():
+    #
+    # DeepR 2026-08-09 [DÜŞÜK]: this used to write the file then separately
+    # read+write the registry with no rollback — a failure between the two
+    # (disk full, permission error) left the file on disk with no matching
+    # registry entry (new block) or a code/metadata mismatch (overwrite),
+    # exactly what _registry_transaction() exists to prevent for the batch
+    # sibling below. One-block case now goes through the same transaction.
+    with _registry_guard(), _registry_transaction() as (reg, old_files):
+        old_files[name] = path.read_text(encoding="utf-8") if path.exists() else None
         path.write_text(code, encoding="utf-8")
-        reg = _read_registry()
         reg[name] = {
             "meta": meta,
             "module_file": path.name,

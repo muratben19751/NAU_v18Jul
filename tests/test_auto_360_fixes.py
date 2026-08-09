@@ -352,6 +352,54 @@ def test_custom_batch_validator_failure_rolls_back_registry(monkeypatch, tmp_pat
     assert not (tmp_path / "new_entry.py").exists()
 
 
+def test_save_custom_registry_write_failure_rolls_back_a_new_file(
+    monkeypatch, tmp_path
+):
+    """DeepR 2026-08-09 [DÜŞÜK]: save_custom (single-block) used to write the
+    .py file, then separately read+write the registry with no rollback --
+    unlike its save_custom_batch sibling above. A failure between the two
+    left an orphan file with no registry entry."""
+    import custom_block_store as store
+
+    monkeypatch.setattr(store, "STORE_DIR", tmp_path)
+    monkeypatch.setattr(store, "REGISTRY_FILE", tmp_path / "registry.json")
+
+    def _boom(reg):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(store, "_write_registry", _boom)
+
+    with pytest.raises(OSError, match="disk full"):
+        store.save_custom("orphan_candidate", {}, "x = 1\n")
+
+    assert not (tmp_path / "orphan_candidate.py").exists(), (
+        "file was left on disk with no matching registry entry"
+    )
+    assert store.get_custom("orphan_candidate") is None
+
+
+def test_save_custom_registry_write_failure_restores_the_previous_code(
+    monkeypatch, tmp_path
+):
+    """Same failure, but overwriting an EXISTING block -- the file must come
+    back to its pre-overwrite content, not stay half-updated."""
+    import custom_block_store as store
+
+    monkeypatch.setattr(store, "STORE_DIR", tmp_path)
+    monkeypatch.setattr(store, "REGISTRY_FILE", tmp_path / "registry.json")
+    store.save_custom("existing", {"role": "entry"}, "x = 1\n")
+
+    def _boom(reg):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(store, "_write_registry", _boom)
+
+    with pytest.raises(OSError, match="disk full"):
+        store.save_custom("existing", {"role": "entry"}, "x = 2\n")
+
+    assert (tmp_path / "existing.py").read_text(encoding="utf-8") == "x = 1\n"
+
+
 def test_generate_custom_spec_registers_before_validation(monkeypatch, tmp_path):
     import agent
     import composer
