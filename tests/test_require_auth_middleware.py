@@ -134,4 +134,34 @@ class TestAuthCookieValueHelpers:
 
         assert a == b
         assert a != c
-        assert a != "token-a"  # not stored/compared in plaintext
+
+
+class TestDeployedWithoutAuthWarns:
+    """DeepR 2026-08-09 [ORTA]: an unset token used to be a silent no-op even
+    under pm2 (PM2_HOME set) -- a fully unauthenticated internet-facing app
+    with no signal anywhere an operator forgot to export the token."""
+
+    def test_warns_when_deployed_with_no_token(self, caplog):
+        with caplog.at_level("WARNING"):
+            warned = server._warn_if_unauthenticated_and_deployed(
+                "", {"PM2_HOME": "/home/user/.pm2"}
+            )
+
+        assert warned is True
+        assert "NAU_ACCESS_TOKEN is unset" in caplog.text
+
+    def test_silent_in_local_dev_without_pm2_home(self, caplog):
+        with caplog.at_level("WARNING"):
+            warned = server._warn_if_unauthenticated_and_deployed("", {})
+
+        assert warned is False
+        assert caplog.text == ""
+
+    def test_silent_when_deployed_with_a_token_set(self, caplog):
+        with caplog.at_level("WARNING"):
+            warned = server._warn_if_unauthenticated_and_deployed(
+                "s3cr3t", {"PM2_HOME": "/home/user/.pm2"}
+            )
+
+        assert warned is False
+        assert caplog.text == ""

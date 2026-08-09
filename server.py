@@ -85,6 +85,28 @@ _ACCESS_TOKEN = _os.environ.get("NAU_ACCESS_TOKEN", "").strip()
 _AUTH_COOKIE = "nau_auth"
 
 
+def _warn_if_unauthenticated_and_deployed(token: str, env: dict) -> bool:
+    """DeepR 2026-08-09 [ORTA]: an unset token was a SILENT no-op even when
+    the app is actually deployed (serve.py under pm2, tunnelled to the
+    internet per its own docstring) — an operator who forgot to export the
+    token got a fully unauthenticated internet-facing app with no signal
+    anywhere. PM2_HOME is the same "are we deployed, not just a local
+    dev/test run" marker sandbox.py already uses to decide pythonw spawning;
+    local dev (PM2_HOME unset) stays silent, matching the module comment
+    above. Returns whether it warned (for tests)."""
+    if token or not env.get("PM2_HOME"):
+        return False
+    _log.warning(
+        "NAU_ACCESS_TOKEN is unset while running under pm2 (PM2_HOME is set) "
+        "— this usually means the app is tunnelled to the internet with NO "
+        "authentication. Set NAU_ACCESS_TOKEN to enable the login gate."
+    )
+    return True
+
+
+_warn_if_unauthenticated_and_deployed(_ACCESS_TOKEN, _os.environ)
+
+
 def _auth_cookie_value(token: str) -> str:
     return _hashlib.sha256(token.encode("utf-8")).hexdigest()
 
