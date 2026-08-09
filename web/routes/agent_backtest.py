@@ -24,7 +24,8 @@ neden 1 hisseye sabitlemeyip `percent_equity`'ye geçiriyor, komisyon eşiği,
 `_MIN_TRADES` kapısının NAU_ev paritesi ve `_score`'daki çifte ceza),
 [[nau_performans_denetimi]] (`_thin_curves` — oturum loguna yazılan equity
 eğrilerinin indirgenmesi; ham hâli olay başına 3,5 MB yazıyordu),
-[[webapp_module_map]], [[backtesting_guide]], [[strategy_and_actor]]
+[[webapp_module_map]], [[backtesting_guide]], [[strategy_and_actor]],
+[[nau_deepr_ucuncu_tur_2026_08_09]]
 
 `_robustness_passed`'in fail-closed `excess_return_fraction`/`max_dd_p95`
 kuralları (a6ddb5a, 2026-08-07) ile `tests/test_regression_anchors_high.py`
@@ -43,6 +44,15 @@ fonksiyonlara bölünüyor: `_market_for`/`_iv_for`/`_recipe`, `_WorkerState`
 3 katmanlı exception hiyerarşisi) ve Faz 0'ın veri/holdout yükleyicisi
 (`_load_tf`/`_load_tf_uncached` — planın en riskli adımı) bilinçli olarak bu
 turda ertelendi. Bkz. [[nau_deepr_ikinci_tur_2026_08_08]].
+
+2026-08-09 DeepR turu dosyayı yine (5000+ satır) çok büyük diye işaretledi
+([DÜŞÜK]) — A0-A9 sonrası hâlâ büyük çünkü ~40 modül-seviyesi yardımcı
+BİLİNÇLİ OLARAK aynı dosyada tutuluyor (`tests/test_lock_nesting.py`'nin AST
+taraması bu dosyayı hedefliyor; ayrı bir alt-pakete taşımak o regresyon
+testini kör bırakır — planın "Adım 12: YAPILMAYACAK" kararı). Kalan riskli
+adımlar (Faz 2 lookahead-generation bloğu, Faz 0 veri/holdout yükleyicisi)
+hâlâ kasıtlı olarak ayrı, dikkatli bir oturuma bırakılmış durumda — bu turda
+tekrar denenmedi.
 """
 
 from __future__ import annotations
