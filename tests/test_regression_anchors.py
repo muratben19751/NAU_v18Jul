@@ -16,6 +16,24 @@ from types import SimpleNamespace
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _no_real_ledger_writes(monkeypatch):
+    """agent.py decomposition Adım 0: several classes below drive the REAL
+    agent._create_message/_create_message_once/propose_custom_block without
+    stubbing the ledger — unlike every other test file exercising this path
+    (which monkeypatches agent._ledger_record), so every successful fake-client
+    call here wrote a real row into the developer's actual
+    ~/.cache/nautilus_web_app/token_usage.jsonl. Likely source of the
+    previously-unexplained "8 synthetic ledger rows" (see
+    nautilus_wiki/wiki/synthesis/llm_maliyet_kaldiraclari.md).
+
+    Patched on token_ledger.record, not agent._ledger_record: TestLLMCreditFallback
+    reloads the agent module mid-test (importlib.reload), which would silently
+    undo a patch on agent._ledger_record itself but leaves token_ledger untouched.
+    """
+    monkeypatch.setattr("token_ledger.record", lambda *a, **k: None)
+
+
 # ---------------------------------------------------------------------------
 # #1 (critical) — codegate AST whitelist rejection matrix
 # The security boundary for ALL in-process LLM/user code execution. Every escape
