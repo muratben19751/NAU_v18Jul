@@ -158,6 +158,15 @@ geri kalanı tek satır.
   testiyle doğrulandı); yarım borsa günleri artık `--expected-minutes` ile açıkça destekleniyor (sabit
   390 varsayımı gerçek kısmi-veri hatalarını yakalama işlevini korumak için gevşetilmedi, yalnız
   operatör bilinçli override edebiliyor).
+- ✅ `download_grouped_daily.py` (untracked — kullanıcının kendi scripti): eksik "T"/"t" alanı artık
+  kardeşi (geçersiz TİP) ile aynı şekilde reddediliyor, sessizce epoch-0/"" yazılmıyor.
+- ✅ `loop_runner.py` `_try_log` + `strategy_studio.py` başlangıç reconciliation'ı — ikisi de kardeş kod
+  yollarının (backtest.py `run()`, aynı dosyanın kendi log.debug'ı) zaten sahip olduğu "sessizce yutma
+  yerine logla" düzeltmesini almamıştı; ikisi de artık `log.warning(..., exc_info=True)`.
+- ✅ `backtest.py` Index tarih çözümlemesi — `except (ValueError, Exception)` fiilen `except Exception`
+  idi; bozuk cache okuması "tarih formatı yanlış" diye yanlış etiketlenip hiç loglanmıyordu.
+  `_resolve_index_date_range()` olarak çıkarıldı (doğrudan test edilebilir olsun diye), yalnız
+  ValueError'ı yakalıyor; dış handler artık logluyor da.
 
 <!-- BACKLINKS:BEGIN -->
 ## Referenced by
