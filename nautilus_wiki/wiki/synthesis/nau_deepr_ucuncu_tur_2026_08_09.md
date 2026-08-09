@@ -147,6 +147,17 @@ geri kalanı tek satır.
   `sandbox.py`'nin tek-yol subprocess mimarisine geçtikten sonra hiç güncellenmemiş. Akış bölümü
   düzeltildi; [[backtest_node]] (Nautilus'un kendi BacktestNode API'si, hâlâ geçerli genel doküman)
   "webapp'te ölçüldü" notlarına "bu entegrasyon kaldırıldı" açıklaması eklendi.
+- ✅ `indicators.py` vs `chart_indicators.py` SMA/EMA/RSI — **bulgu yeniden doğrulanınca kısmen
+  geçersiz çıktı**: chart_indicators.py'nin üçü de zaten O(n) (running sum / incremental EMA / Wilder
+  recurrence), iddia edilen performans farkı yok. Kalan kopya kasıtlı: chart tarafı zaman eksenine
+  hizalı None-dolgulu aynı-uzunlukta dizi ister, indicators.py backtest sinyali için yalnız hesaplanan
+  değerleri. Kod değişmedi, açıklayıcı yorum eklendi.
+- ✅ `repair_massive_intraday.py` (untracked, commit dışı — kullanıcının kendi scripti) 3 madde birden:
+  `_fixed()` artık NaN/inf/overflow'u satır numarasıyla reddediyor; `.bak` her onarımda tazeleniyor
+  (eskiden yalnız ilkinde alınıyordu — "son onarımı geri al" aslında hepsini geri alıyordu, mutasyon
+  testiyle doğrulandı); yarım borsa günleri artık `--expected-minutes` ile açıkça destekleniyor (sabit
+  390 varsayımı gerçek kısmi-veri hatalarını yakalama işlevini korumak için gevşetilmedi, yalnız
+  operatör bilinçli override edebiliyor).
 
 <!-- BACKLINKS:BEGIN -->
 ## Referenced by
