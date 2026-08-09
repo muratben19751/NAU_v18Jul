@@ -2,6 +2,33 @@
 
 Append-only. Her ingest, query veya lint operasyonu bir satır bırakır.
 
+## 2026-08-09 (6) — DeepR üçüncü tur kapandı: 37/37 bulgu karara bağlandı
+
+- **rapor** — (5)'te başlayan "hepsini yap" geçişinin devamı: kalan 18 ORTA
+  (#99-116), 10 DÜŞÜK (#117-126), 1 BİLGİ (#127) tek tek aynı disiplinle
+  (fix → test → davranışsal olanlarda mutasyon testi → ruff → commit →
+  periyodik push) tamamlandı.
+- **iki bulgu ayrı iş gerektirmedi** — rapordaki 19. ORTA
+  (`repair_massive_intraday.py` sıfır test kapsamı) YÜKSEK #3'ün (TF-only
+  fix) test dosyası + sonraki ORTA düzeltmeleriyle turun sonunda zaten
+  fiilen karşılanmış bulundu; 2. BİLGİ ("ruff tüm proje genelinde temiz")
+  zaten saf olumlu doğrulamaydı, düzeltilecek bir şey yoktu. İkisi de
+  doğrulandı, ayrı commit gerekmedi.
+- **bilinçli non-fix kararları (2)** — `agent_backtest.py` boyutu: DeepR
+  #47 planı (2026-08-08) bu turdan önce büyük ölçüde tamamlanmış (~40
+  yardımcı çıkarılmış, 53 test yeşil) bulundu, dosya BİLİNÇLİ büyük
+  kalıyor (`test_lock_nesting.py`'nin AST hedefi); kod değişmedi, docstring
+  güncellendi. Composer'ın "💬 AI ile düzenle" butonları: Türkçe bir
+  LLM-chat özelliğinin giriş noktası, yalnız butonu İngilizce'ye çevirmek
+  özelliği DAHA tutarsız yapardı — dokunulmadı, `catalog_list.html`'in
+  ilgisiz 3 stray tooltip'i çevrildi.
+- **untracked script'ler** — `repair_massive_intraday.py` (+ testi) ve
+  `download_grouped_daily.py` (+ testi) kullanıcının kendi scriptleri;
+  diskte düzeltildi + test edildi, hiçbiri commit edilmedi (proje
+  başından beri süregelen kapsam kararı).
+- **wiki** — `nau_deepr_ucuncu_tur_2026_08_09.md` frontmatter özeti ve
+  ilerleme listesi 37/37 tamamlanmış hâle güncellendi.
+
 ## 2026-08-09 (5) — Kullanıcı "hepsini yap" dedi: kalan 31 ORTA/DÜŞÜK/BİLGİ, sırayla (kod → wiki)
 
 - **rapor** — 6/6 YÜKSEK bulgu kapandıktan sonra kullanıcı ORTA listesini

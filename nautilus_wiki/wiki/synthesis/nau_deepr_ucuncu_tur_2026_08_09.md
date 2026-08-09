@@ -1,7 +1,7 @@
 ---
 title: nautilus_web_app DeepR Üçüncü Tur (2026-08-09, NAU app'e odaklı)
 type: synthesis
-summary: Üçüncü DeepR koşusu (164 ajan, 37 bulgu) — ilk deneme nautilus_wiki/ alt-dizinine kapsam-sızdı, envanterden isim çıkarılınca düzeldi. 6/6 YÜKSEK tamamlandı; kullanıcı "hepsini yap" dedi, kalan 31 ORTA/DÜŞÜK/BİLGİ sırayla kapanıyor (bkz. ilerleme listesi).
+summary: Üçüncü DeepR koşusu (164 ajan, 37 bulgu) — ilk deneme nautilus_wiki/ alt-dizinine kapsam-sızdı, envanterden isim çıkarılınca düzeldi. 37/37 bulgu karara bağlandı (kullanıcı "hepsini yap" dedi); 35'i düzeltme/test aldı, 2'si aksiyon gerektirmedi (bkz. ilerleme listesi).
 key_concepts:
   - crash_only_design
 sources:
@@ -127,7 +127,7 @@ sorunu. Rapor (`deepr_report_2026-08-09_0040.md`) tam listeyi tutuyor.
 
 Kullanıcının bu geçişte seçtiği 6/6 YÜKSEK bulgu tamamlandı. Kullanıcı sonra
 kalan 34'ün tam listesini, ardından ORTA listesini istedi, sonra **"hepsini
-yap"** dedi — kalan 31 ORTA/DÜŞÜK/BİLGİ de sırayla ele alınıyor. Rapor
+yap"** dedi — kalan 31 ORTA/DÜŞÜK/BİLGİ de sırayla ele alındı. Rapor
 (`deepr_report_2026-08-09_0040.md`) tam listeyi tutuyor; her madde ayrı
 commit, aşağıda yalnız gerçek bir sürprizi/kararı olanlar detaylandırılıyor,
 geri kalanı tek satır.
@@ -167,6 +167,77 @@ geri kalanı tek satır.
   idi; bozuk cache okuması "tarih formatı yanlış" diye yanlış etiketlenip hiç loglanmıyordu.
   `_resolve_index_date_range()` olarak çıkarıldı (doğrudan test edilebilir olsun diye), yalnız
   ValueError'ı yakalıyor; dış handler artık logluyor da.
+- ✅ `data.py` dosya kilidi/atomic-write yardımcıları (`_cache_lock`, `_atomic_to_parquet`,
+  `_atomic_write_json`) sıfır doğrudan testten 14 teste çıktı — M121 stale-lock regresyonu
+  (eşik eskiden 60s bekleme-zaman aşımıyla AYNIYDI, uzun backfill kilidini kırıyordu) artık
+  doğrudan kilitleniyor: `os.utime` ile 65s-eski kilit simüle edilip KIRILMADIĞI, eşik geçici
+  olarak 1800s→60s'ye düşürülünce aynı tarihsel hatanın gerçekten tekrarladığı kanıtlandı.
+- ✅ `_bybit_gap_frames` (önbellek ortasındaki delikleri hedefli dolduran fonksiyon) 7 yeni
+  testle kapsandı — mevcut testler yalnız baştan/sondan genişletmeyi kapsıyordu. Test yazımı
+  sırasında kendi hatamı yakaladım: boş `pd.DatetimeIndex([])` tz bilgisini kaybediyor, tz-aware
+  `Timestamp` ile karşılaştırılınca `TypeError`; test helper'ına `tz=` eklenerek düzeltildi
+  (üretim kodu değil, yalnız test fixture'ı).
+
+**18/19 ORTA'ya ayrı görev numarası verildi — 19.su (`repair_massive_intraday.py` sıfır test
+kapsamı, Birim Testleri bölümü) ayrı bir iş GEREKTİRMEDİ:** aynı script'in YÜKSEK #3 (TF-only
+fix) çalışması sırasında zaten oluşturulan `tests/test_repair_massive_intraday.py`, sonraki
+`.bak`/half-day/`_fixed()`-doğrulama/`StopIteration` düzeltmeleriyle 18 teste çıkmış durumda —
+bulgu bu turun SONUNDA fiilen zaten karşılanmış hâlde bulundu, doğrulandı, ayrı commit
+gerekmedi.
+
+## 10 DÜŞÜK + 1 BİLGİ (turun kapanışı)
+
+- ✅ Ticker registry JSON çift `json.loads()` — `discover_index_tickers()` ve
+  `_index_rows_uncached()` artık paylaşılan `_read_ticker_registry()` üzerinden okuyor; yan
+  etki: bozuk registry artık `_index_rows_uncached()` için de non-fatal (eskiden
+  `JSONDecodeError` sızardı). `/backtest/tickers`'ın limitsiz `<option>` listesi BİLİNÇLİ
+  dokunulmadı — native HTML5 `<datalist>` client-side substring-autocomplete için tüm listeye
+  ihtiyaç duyuyor.
+- ✅ `composer.py` kalan 3 `print()` → `logging.getLogger(__name__).warning(...)` (kardeş dal
+  zaten logluyordu, tutarsızlık giderildi).
+- ✅ `/login` rate-limit artık Cloudflare'in `CF-Connecting-IP` başlığını tercih ediyor —
+  tünel arkasında `request.client.host` HER ZAMAN tünelin kendi local peer'ıydı, "IP-bazlı"
+  limit fiilen TEK global limitti (gerçek saldırgan IP'sinden bağımsız). Mutasyon testiyle
+  doğrulandı.
+- ✅ `agent_backtest.py` boyutu — **yeniden doğrulanınca büyük ölçüde zaten ele alınmış çıktı**:
+  [[nau_deepr_ikinci_tur_2026_08_08]]'in #47 planı (A0-A9) bu turdan ÖNCE tamamlanmış (~40
+  modül-seviyesi yardımcı çıkarılmış, her biri test edilmiş — 53 test hâlâ yeşil). Dosya
+  BİLİNÇLİ olarak büyük kalıyor (`test_lock_nesting.py`'nin AST taraması bu dosyayı hedefliyor;
+  alt-pakete bölmek o regresyon testini kör bırakırdı). Kalan riskli adımlar (Faz 2
+  lookahead-generation, Faz 0 veri/holdout yükleyici) kasıtlı olarak ayrı dikkatli oturuma
+  ertelenmiş durumda kalıyor. Kod değişmedi, docstring güncellendi.
+- ✅ Composer sayfası dil tutarsızlığı — `catalog_list.html`'in 3 buton tooltip'i (▶/✎/⎘)
+  Türkçe'ydi, panelin geri kalanı (tablo başlıkları, diğer butonlar) İngilizce; İngilizce'ye
+  çevrildi. **BİLİNÇLİ dokunulmadı**: "💬 AI ile düzenle" butonları — bunlar Türkçe bir LLM-chat
+  düzenleme özelliğinin giriş noktası (empty-state mesajı, ilk chat balonu, modele giden prompt
+  hepsi Türkçe, `web/routes/strategy.py`); yalnız butonu çevirmek özelliği DAHA tutarsız
+  yapardı, daha tutarlı değil.
+- ✅ Katalogda parquet yoksa `StopIteration` opak çökme (`repair_massive_intraday.py`, untracked)
+  — yeni `_find_parquet()` artık "bu ticker/timeframe hiç ingest edildi mi?" diyen açık bir
+  `FileNotFoundError` fırlatıyor.
+- ✅ `custom_block_store.save_custom` artık kardeşi `save_custom_batch`'in `_registry_transaction()`
+  rollback'ini kullanıyor — dosya yazılıp registry yazımı arada başarısız olursa (disk dolu vb.)
+  artık sahipsiz dosya/kod-metadata uyumsuzluğu kalmıyor, tam rollback.
+- ✅ `delete_custom()`'ın bellek-unregister hatası artık kardeşi `delete_custom_batch` gibi
+  `log.exception` ile loglanıyor (eskiden sessizce yutuluyordu).
+- ✅ `chart_indicators.py` sıfır testten 34 teste çıktı — tüm saf fonksiyonlar +
+  `indicators_for_spec`'in her blok dalı. İki ince davranış testle kilitlendi:
+  `ema_cross`/`macd_cross` aynı fingerprint namespace'ini paylaşıyor (aynı periyottaki ikinci
+  blok yeni çizgi çizmiyor), aynı periyottaki entry+exit `rsi_threshold` çifti tek pane
+  paylaşıyor.
+- ✅ `_base_ccy` sıfır testten (tek kullanım yeri `monkeypatch` ile tamamen stub'lanmıştı) 8
+  teste çıktı; `_instrument_meta`'nın bybit dalındaki aynı süfiks-çözme döngüsü artık
+  `_base_ccy`'yi çağırıyor (kopya kod gitti).
+- ✅ `chart_indicators._series`'in `zip()`'i artık `strict=True` — times/vals uzunluk uyuşmazlığı
+  (hep aynı DataFrame'den geldiği için asla olmaz) artık sessizce kırpmak yerine `ValueError`
+  fırlatıyor; `chart.py` çağrıyı zaten geniş bir except-and-degrade ile sarmalıyor.
+- ⏭️ Kalan tek BİLGİ ("ruff (E,F,I,W,UP) tüm proje genelinde temiz") aksiyon gerektirmiyordu —
+  saf olumlu doğrulama, düzeltilecek bir şey yok.
+
+**Sonuç: 37/37 bulgu karara bağlandı** (6 YÜKSEK + 19 ORTA + 10 DÜŞÜK + 2 BİLGİ — "En Kritik 3"
+özet bölümündeki 3 tekrar hariç ham rapor sayısı). `repair_massive_intraday.py` +
+`download_grouped_daily.py` (ve ikisinin testleri) kullanıcının kendi scriptleri — bilinçli
+olarak commit dışı kaldı, yalnız diskte düzeltildi + test edildi.
 
 <!-- BACKLINKS:BEGIN -->
 ## Referenced by
