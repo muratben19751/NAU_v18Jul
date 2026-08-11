@@ -168,6 +168,56 @@ results = node.run()  # BacktestResult(stats_general, stats_pnls, stats_returns)
 - Databento `.dbn.zst` yükleyicisi entegrasyonu (tutorial 404 nedeniyle kaynak `.py`'den okunmalı).
 - Order book / L2 / L3 verisi ve `write_order_book_deltas()` yolu test edilmedi.
 
+## Bybit pandas cache: okuma kilitsiz, yazma kilitli (2026-08-11)
+
+DeepR entegrasyon turu [YÜKSEK]: `data.load_bybit_bars` KOŞULSUZ olarak
+exclusive bir dosya kilidine (`_cache_lock`) giriyordu — cache tamamen yetse,
+ağa hiç çıkılmayacak olsa bile. Kilit ağ I/O'sunu da kapsıyor ve uzun bir
+backfill'de (3 yıllık 1m) ~10 dakika tutuluyordu; beklemenin tavanı ise 120
+saniyeydi. Sonuç: bir indirme sürerken aynı (kategori, sembol, aralık) serisini
+yalnızca OKUMAK isteyen herkes — `/data` sayfası, backtest, `loop_runner`'ın
+iterasyon başı refresh'i, `parallel_exec` işçileri — önce bir thread'i 120 sn
+bekletiyor, sonra `TimeoutError` alıyordu.
+
+Düzeltmenin dayanağı zaten mevcuttu: yazma `_atomic_to_parquet` →
+`os.replace` ile atomik, yani okuyan ya eski ya yeni dosyanın TAMAMINI görür.
+Öyleyse okumanın kilide ihtiyacı yok. Yeni akış:
+
+1. `_read_bybit_cache` ile kilitsiz oku.
+2. `_bybit_cache_covers` (baş + kuyruk + `_bybit_pending_gaps`) "bu istek
+   cache'ten karşılanır" diyorsa dön — ne kilit ne ağ.
+3. Aksi hâlde kilidi al, kilit ALTINDA tazeden oku (beklerken öbür yazar
+   getirmiş olabilir → boşuna indirme yok) ve `_extend_bybit_cache` ile
+   getir-birleştir-atomik yaz.
+
+Bekleme tavanı gerçek tutma süresinin üstüne çekildi (`_CACHE_LOCK_TIMEOUT_S =
+900 s`) ama "terk edilmiş kilit" eşiğinin (`stale_after = 1800 s`) altında
+kaldı — M121'in dersi (canlı kilit kırılmasın) bozulmadan. Windows'a özgü iki
+ayrıntı: `os.replace` hedef dosya açıkken `PermissionError` verdiği için kısa
+yeniden deneme eklendi (`_replace_with_retry`), ve okuma tarafındaki geçici
+paylaşım ihlali "cache bozuk" sayılıp yılların geçmişini yeniden indirmesin diye
+aynı şekilde yeniden deneniyor. Testler:
+`tests/test_data_cache_read_lock.py` (eşzamanlı okuma+yazma senaryoları dâhil).
+
+### Aynı desen index ve external yollarına da uygulandı (2026-08-11)
+
+`load_index_bars` (oku → tara → concat → yaz) ve `load_external_bars` (oku →
+decode → yaz) tam bir oku-değiştir-yaz dizisi yapıyor ama **hiç kilit
+almıyordu**. `_atomic_to_parquet`'in atomikliği yarım dosyayı engeller, KAYIP
+GÜNCELLEMEYİ engellemez: iki eşzamanlı `/data/refresh/index` (ya da
+`/backtest/sweep`) birbirinin taradığı günleri kaybettiriyordu. `load_external_bars`
+gerçekten eşzamanlı çağrılıyor — studio `NautilusBacktestAdapter.load_bars`
+loader'ı bilinçli olarak kilit DIŞINDA çağırır, `web/routes/lab.py` ve
+`web/routes/agent_backtest.py` kendi thread'lerinden çağırır.
+
+Her ikisi de artık bybit yolundaki AYNI duruşu izliyor (üçüncü bir kilit stili
+yok): okuma kilitsiz, iş gerekiyorsa `_cache_lock` alınır ve kilit ALTINDA disk
+tazeden okunur; pahalı iş (tarama/decode) kilidin içinde kalır ki bekleyen
+ikinci çağıran aynı işi ikinci kez yapmasın. Ek olarak `_atomic_to_parquet`'in
+geçici dosya adı artık `_tmp_sibling` ile süreç+thread'e özgü — eski ad yalnız
+PID taşıdığı için aynı süreçteki iki thread için AYNIYDI. Testler:
+`tests/test_cache_rmw_locking.py`.
+
 <!-- BACKLINKS:BEGIN -->
 ## Referenced by
 
@@ -178,6 +228,7 @@ results = node.run()  # BacktestResult(stats_general, stats_pnls, stats_returns)
 - [[event_sourcing]]
 - [[getting_started_roadmap]]
 - [[option_greeks_pipeline]]
+- [[us_equity_katalog_veri_butunlugu]]
 - [[value_types]]
 - [[webapp_module_map]]
 <!-- BACKLINKS:END -->

@@ -149,6 +149,30 @@ kalemi hâline gelmişti (~301 KB/olay: `equity_curve` + `equity_dates` ham).
 `_thin_pair` ikisini **aynı indekslerle** 400 noktaya indiriyor — ayrı ayrı
 seyreltmek değer/tarih hizasını sessizce bozardı.
 
+## Para doğruluğu: iki sessiz çarpıtma (2026-08-11)
+
+**Komisyon kalem bazlı sıfırlanıyordu.** `backtest._metrics`'in dıştaki komisyon
+handler'ı loglanır hâle getirilmişti, ama içteki ikisi hâlâ sessizdi (liste
+yolunda `except: pass`, skaler yolda `except: return 0.0`) — ve iç handler
+hatayı yuttuğu için dıştaki LOGLAYAN handler hiç tetiklenmiyordu. Beş komisyon
+kaleminin ikisi ayrıştırılamayınca toplam sessizce eksik çıkıyor, **net P&L
+olduğundan iyi görünüyordu**; kapı kalibrasyonunun tamamı net/brüt tutarlılığı
+üzerine kurulu olduğu için bu doğrudan karar bozan bir hatadır. Ayrıştırılamayan
+kalem artık 0 sayılmıyor: sayılıyor (`commission_unparsed`), toplam alt sınır
+olarak işaretleniyor (`commission_total_is_partial`) ve uyarı loglanıyor.
+Gerçekten "komisyon yok" demek olan değerler (None/NaN/boş dize/boş liste) hata
+sayılmaz — aksi hâlde bayrak her temiz koşuda yanar ve hiçbir şey anlatmazdı.
+
+**WFO güven sönümlemesi negatifte ters çalışıyordu.** `wfo_optimizer.objective_value`
+skoru `val *= n/(n+20)` ile sönümlüyordu; çarpan 0<k<1 olduğu için NEGATİF
+skorlarda etki tersine dönüyor, değeri sıfıra yaklaştırarak İYİLEŞTİRİYORDU. İki
+aday da fold başına sharpe=-1.0 üretse 5 işlemli aday -0.20, 200 işlemli aday
+-0.909 alıyor ve GA turnuvası yüksek skoru seçtiği için **az işlemli kaybeden
+kazanıyordu** — düşen piyasa dilimlerinde ve erken jenerasyonlarda tipik durum.
+Duruş `web/routes/agent_backtest.py::_score`'daki ikiziyle birleştirildi: pozitif
+skor `× k`, negatif skor `÷ k`. Az örneklem her iki yönde de "emin değiliz"
+demektir, "daha az kötü" değil.
+
 ## Kalan açık uç
 
 Round-robin ile `n_iterations == len(intervals)` seçilirse her strateji **tek**
@@ -162,4 +186,5 @@ sayısının katı seçmek gerekir.
 
 - [[auto_360_canli_review_iyilestirmeleri]]
 - [[auto_arama_ekonomisi]]
+- [[nau_deepr_dorduncu_tur_2026_08_11]]
 <!-- BACKLINKS:END -->

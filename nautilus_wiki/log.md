@@ -1171,3 +1171,204 @@ custom-block entegrasyonuyla (ComposedStrategy örnek-durumuna çalışma-anınd
 erişen özel risk sınıfı) birlikte, tamamen ayrı bir oturuma bırakıldı.
 Faz 2'nin planı (`~/.claude/plans/seninle-deepr-skillini-g-zden-abundant-hellman.md`)
 bu kararla güncellendi.
+
+## 2026-08-11 — Onarım yolunda UTC/ET gün sınırı kayması [KRİTİK]
+
+DeepR bulgusu: `repair_massive_intraday._replace_day` silinecek günü naif
+`[D 00:00 UTC, D+1 00:00 UTC)` penceresiyle seçiyordu. Right-label sözleşmesi
+yüzünden bir seansın 1-DAY barı `D+1 00:00 New York` (DST'ye göre 04:00/05:00
+UTC) ile damgalanır, yani D'nin UTC gününün DIŞINDADIR: pencere D'nin barını
+ıskalayıp bir ÖNCEKİ seansınkini siliyor, üstüne yenisini ekleyerek onarılan
+günü İKİZLİYORDU. Gün içi TF'ler tesadüfen doğruydu (09:31–16:00 NY her iki
+DST rejiminde de aynı UTC gününe düşer), bu yüzden kusur yalnız 1-DAY'de
+görünüyordu.
+
+Düzeltme `ingest_equities.session_label_bounds_ns` olarak eklendi (pencere =
+kovanın kendisi: solda açık `D 00:00 NY`, sağda kapalı `D+1 00:00 NY`) ve
+onarım aracı onu import ediyor — damgalama sözleşmesinin ikinci bir kopyası
+tutulmadı; bugün düzeltilen 4-HOUR/`resample_tf` hatası da tam bu sınıftandı.
+
+`us_equity_katalog_veri_butunlugu` sayfasına 6. kusur olarak işlendi. Gerçek
+katalog taraması (16 ticker, salt-okunur): ikizlenmiş seans yok, tek günlük
+delik yok, `.bak` yok — hata sahada hiç tetiklenmemiş.
+
+
+## 2026-08-11 — DeepR dördüncü tur: üç test boşluğu + tekrar-üretilebilirlik
+
+Dört YÜKSEK bulgu kapatıldı; üçü "kod doğru ama hiçbir test onu tutmuyor",
+biri "ortam hiçbir yerde sabitlenmemiş".
+
+**1. Klasik blok evaluator'ları (`block_library_classic.py`).** Sekiz
+evaluator tüm test ağacında yalnız golden-name frozenset'inde geçiyordu:
+davranışları değil, erişilebilir OLMALARI test ediliyordu. 74 test eklendi
+(`tests/test_block_library_classic_evaluators.py`). Üç sözleşme pinlendi:
+kenar tetikleme (`prev = _prev_state.get(idx, diff)` → ilk barda asla
+ateşlenmez), warmup (`None`, durum bile yazılmaz) ve stateful `_eval_atr_stop`
+— trailing tepe/dip taşınması, flat olunca SIFIRLANMA (yeni pozisyon eski
+tepeyi miras almaz), yön (`hi - atr*mult`; yükselen fiyat uzun pozisyonu
+stop'lamaz) ve blok-indeksi başına ayrı anahtar. Ek olarak
+`BLOCK_REGISTRY[...]["eval"] is <fonksiyon>` assert'i, testlerin ölü bir
+kopyayı değil üretimde koşan kodu koruduğunu garantiliyor.
+
+**2. `composer_spec.py` boyutlandırma dalları + `build_spec` clamp'leri.**
+Gerçek para büyüklüğünü belirleyen kod; test edilen tek kısım isim/entry-blok/
+atr_period idi. 95 test eklendi (`tests/test_composer_spec_sizing_and_clamps.py`):
+`percent_equity` (sonluluk, alt sınır, %100 dahil üst sınır, castlanamayan
+girdi), `atr_target`, `fixed_usdt`, `vol_target`'ın üç kapısı, bracket SL/TP
+dalları — her biri hem RED hem de SINIR DEĞERDE KABUL yönüyle. Ayrıca dalların
+MODA BAĞLI olduğu (formda kalmış eski bir yüzde, ilgisiz bir fixed_usdt
+stratejisini kaydedilemez yapmamalı) ve `vol_target`'ın trade_size_mode
+whitelist'inde KALDIĞI çivilendi — `build_spec`'in varlık sebebi tam olarak
+eski strategy.py clamp'inin vol_target'ı sessizce "fixed"e düşürmesiydi.
+`_as_bool` (işaretlenmemiş checkbox → `use_bracket=True` riski) da kapsandı.
+
+**3. `wfo_optimizer` GA çekirdeği.** `ga_plan` / `ga_initial_population` /
+`_tournament_idx` / `ga_next_population` docstring'leri bir DETERMİNİZM
+sözleşmesi yazıyordu ama hiçbir test onu tutmuyordu. 50 test eklendi
+(`tests/test_wfo_ga_core.py`): aynı tohum → birebir aynı popülasyon/nesil
+(ve FARKLI tohum → farklı sonuç, yoksa "determinizm" sabit çıktıyla da
+sağlanır), eşitlikte düşük indeks kuralı (sıralı-paralel parite bunun üstünde
+duruyor), `ga_plan`'ın yarım-yukarı yuvarlaması (11→1, 12→2, 20/8→3), dejenere
+uzaylar (boş uzay → `(1,1)` ve boş bireyler; `lo == hi`; `pop_size <= 1`
+sonsuz döngüye girmez), mutasyon clamp'i ve elit skorun nesiller boyunca
+düşmemesi.
+
+**4. Bağımlılık kilidi.** `[build-system]` yoktu (kurulum setuptools'un eski
+yoluna düşüyordu), `uv.lock` yoktu ve `nautilus_trader` dışında her sürüm
+tabanı serbestti; CI `uv sync` ile her koşumda yeniden çözüyordu — workflow'un
+kendi yorumu sorunu zaten itiraf ediyordu. Eklendi: PEP 517 backend
+(`setuptools`, `py-modules = []` — depo kütüphane değil uygulama), 98 paketlik
+`uv.lock` ve CI'da `uv sync --locked`. Kilit KURULU ortamdan üretildi: ilk
+`uv lock` her şeyi en yeni sürüme çözünce (pandas 3.0.5, pyarrow 25.0.1,
+starlette 1.6.0 …) geçici bir `constraint-dependencies` iskelesiyle çözüm
+çalışan ortama sabitlendi, sonra iskele kaldırıldı ve `uv lock --check` ile
+sürümlerin sabit kaldığı doğrulandı — kilitteki 98 paketin tamamı geliştirme
+makinesindeki sürümlerle birebir. Böylece CI ile yerel makine aynı
+pandas/numpy'ı koşuyor; `regression_baseline.json`'ın dayandığı sayısal
+tekrar-üretilebilirlik ilk kez gerçekten sabitlenmiş oldu.
+`tests/test_dependency_lock.py` (8 test) kilidin beyan edilen her bağımlılığı
+kapsadığını ve CI'nın `--locked` ile kurduğunu bekçiliyor.
+
+Bu turda eklenen: 235 test (74 + 95 + 50 + 8 + 8). Süit tamamen yeşil;
+`ruff check .` ve `ruff format --check .` temiz.
+
+## 2026-08-11 — DeepR: iki YÜKSEK performans bulgusu kapatıldı
+
+**1. H4 — NAU-parite blokları bar başına 260-pencereyi sıfırdan hesaplıyordu.**
+İki turdur "parite kısıtı yüzünden ertelendi" duruyordu; artımlı state
+NAU_WINDOW=260'ı kırar. Bu kez pencere aynen bırakıldı ve aynı iş daha az
+yorumlayıcı adımıyla yapıldı: `indicators.calc_adx` tek geçişe indi (dört ara
+liste + bar başına 246 tek-kullanımlık sözlük gitti), `calc_stoch_rsi`'nin
+14'lük dilim min/max taraması tembel-yeniden-taramaya döndü,
+`calc_wave_trend`'in yedi geçişi beşe indi, `_tail3` aynı boyda kopya
+üretmiyor. `block_library_nau._nau_cached` bar başına tek hesap garantisi
+veriyor (entry+exit aynı bloğu paylaşırsa ikinci tarama yok). Ölçüm:
+calc_adx 117→80 µs, calc_stoch_rsi 131→83 µs, calc_wave_trend 70→59 µs;
+40.000 barlık uçtan uca adx 4,88→3,39 s, entry+exit ikilisinde 9,68→3,29 s.
+Parite `tests/test_indicators_hotpath_parity.py` ile kanıtlandı: dosya
+optimizasyon öncesi sürümün birebir kopyasını taşıyor ve 641 kayan pencerenin
+her birinde `==` (tolerans YOK) eşitlik arıyor. Python 3.12'nin `sum()`
+Neumaier toplaması yüzünden Wilder tohumları elle biriktirilmedi — bu tek
+detay parite ile hız arasındaki sınırı çiziyor.
+
+**2. `_validate_external_data` event loop'u kilitliyordu.** `async def run(...)`
+gövdesinden doğrudan çağrılıyor, her interval için tam parquet serisini
+okuyordu; POST /agent/run boyunca açık her sekmedeki HTMX poll'u donuyordu.
+`asyncio.to_thread` ile sarıldı ve tarih daraltması `load_external_bars`'ın
+içine itildi (`< X` → `<= X − 1 ns` birebir eşdeğer dönüşümüyle).
+
+Bu turda eklenen: 52 test (34 + 11 + 7). Ayrıntı: [[nau_performans_denetimi]].
+
+
+## 2026-08-11 — DeepR: dört YÜKSEK "sistem biliyor ama söylemiyor" bulgusu kapatıldı
+
+Ortak desen: bilgi ÜRETİLİYOR ama hiçbir kanala verilmiyor. Dördü de aynı
+duruşla kapatıldı — bilgiyi log'a, ekrana ve kalıcı kayda taşı; "0 sonuç" ile
+"hata" birbirinden ayrılsın.
+
+1. **Manuel robustness suite'inin `full_error` alanı hiç okunmuyordu**
+   (`web/routes/robustness.py`, `sandbox.py`). `_manual_suite_child` bu anahtarı
+   sözleşmesinin parçası olarak döndürüyor, projede okuyan tek satır yoktu:
+   Monte Carlo için koşulan tam backtest çöktüğünde kullanıcı dolu WFO/IS-OOS
+   tabloları görüp koşuyu başarılı sanıyor, hata hem ekrandan hem log'dan
+   kayboluyordu. Artık sandbox "0 işlem" (`failed=False`) ile "backtest çöktü"
+   (`failed=True`) için AYRI sonuçlar üretiyor; route hatayı loglayıp adım
+   listesine ve sonuca taşıyor; `robustness_result.html` kırmızı bir "kısmen
+   bozulmuş koşu" bandı + işaretli Monte Carlo sekmesi gösteriyor;
+   `web/shared.log_robustness` `full_error`/`monte_carlo.failed` alanlarını
+   kalıcı kayda yazıyor (rapor ekranla aynı hikâyeyi anlatsın).
+
+2. **`load_catalog` bozuk kayıtları sessizce düşürüyordu** (`composer.py`).
+   `n_broken` sayılıyor ama loglanmıyor, çağırana bildirilmiyor, UI'a
+   taşınmıyordu — hemen üstteki custom-block registry hatası düzgün uyarı
+   basarken. Artık kayıtların kendisi toplanıyor (indeks, id, ad, gerçek hata),
+   `logging.warning` ile basılıyor ve
+   `<katalog dizini>/quarantine/strategy_catalog.broken-records.<ts>.json`
+   dosyasına HAM JSON'uyla yazılıyor (kayıt silinmez — `append_to_catalog`
+   load→append→save olduğu için bir sonraki kaydetme onu diskten düşürebilir;
+   karantina geri dönüşü mümkün kılar). Özet `composer.last_catalog_load_issues()`
+   ile açılıyor ve `server.py`'deki `catalog_issues` Jinja global'i üzerinden
+   `catalog_list.html`'in üç include noktasının hepsinde sarı bir bant oluyor.
+   (mtime,size) anahtarı ~18 sıcak çağrı yolunda tekrar-yazmayı engelliyor.
+
+3. **Cent altı semboller 0.00'a yuvarlanıyordu** (`backtest.py` + `sandbox.py` +
+   `parallel_exec.py` + `data.py`). Ayrıntı ve genel kural:
+   [[index_backtest_via_equity_proxy]] "Kardeş Trap: `price_precision`".
+
+4. **Kritik E2E testi hiçbir yerde koşmuyordu**
+   (`tests/test_backtest_run_progress_result_e2e.py`, `.github/workflows/ci.yml`).
+   `spec_id` fixture'ı repo DIŞINDAKİ `~/.cache` kataloğuna bağlıydı ve boşsa
+   skip ediyordu; temiz bir runner'da test 0 iş yapıp yeşil dönüyor, CI'ın
+   3-denemeli retry'ı bunu başarı sayıyordu. Katalog bağımlılığı kaldırıldı
+   (fixture kendi `tmp_path` kataloğunu tohumluyor) ve aynı zincirin AĞSIZ
+   ikizi eklendi: `TestBacktestChainOffline` gerçek route/worker/sandbox/Nautilus
+   motorunu sentetik barlarla sürüyor, varsayılan koşumda ve CI'da çalışıyor
+   (~18 s). Canlı Bybit testi silinmedi/zayıflatılmadı. Aynı desendeki ikinci
+   sessiz skip — `tests/test_sandbox.py::TestExternalRecipe` — de ortamdan
+   kurtarıldı: test artık kendi sahte QQQ.NASDAQ dış kataloğunu kuruyor.
+   Skip'ler artık sessiz değil: `pyproject.toml` `addopts`'a `-ra` eklendi,
+   CI `--junitxml` + iş özetine skip tablosu yazıyor ve e2e adımı "exit 0 ama
+   hiç test geçmedi" durumunu hata sayıyor.
+
+Eklenen test: **39** — 8 robustness (`test_robustness_full_error_surfaced.py`),
+9 katalog (`test_catalog_broken_records_visible.py`), 20 hassasiyet
+(`test_subcent_price_precision.py`), 1 ağsız zincir
+(`test_backtest_run_progress_result_e2e.py::TestBacktestChainOffline`) ve 1
+katalog-yazıcı ipucu (`test_fixes.py`); ayrıca `TestExternalRecipe` artık her
+makinede koşuyor. Süit: **1874 passed, 1 skipped** (skip = kasıtlı canlı-LLM
+smoke testi), `ruff check .` + `ruff format --check .` temiz.
+
+## 2026-08-11 — DeepR: üç YÜKSEK entegrasyon bulgusu kapatıldı
+
+Aynı günün DeepR koşusundan `integration` boyutunun üç YÜKSEK bulgusu.
+
+**1. LLM ucunun varsayılanı çalışmayan bir yerel proxy'ydi.**
+`llm_dispatch._build_client()` `ANTHROPIC_BASE_URL` yoksa `localhost:6655`'e
+gidiyordu; temiz bir kurulumda her çağrı ölü bir porta düşüp graceful
+fallback'i tetikliyor, koşu "Random … (Claude unavailable)" ile normal
+görünerek sürüyordu. Varsayılan resmi uç oldu, proxy açık tercih; ulaşılamayan
+proxy artık adıyla anılıyor (`LLMEndpointUnreachable`), ve `strategy_studio/
+ai.py` aynı değişkeni okuyor (aynı anahtar iki farklı uca gitmiyor). README
+hizalandı. Ayrıntı: [[model_secici_ve_gorunurluk]].
+
+**2. Bybit cache kilidi okuma yolunu da kilitliyordu.** `load_bybit_bars`
+koşulsuz exclusive kilit alıyor, kilit ~10 dk tutulurken bekleme tavanı 120 sn
+idi: bir indirme sürerken aynı seriyi okumak isteyen herkes bloke olup timeout
+yiyordu. Yazma zaten atomik olduğu için okuma yolu kilitten çıkarıldı; yazma
+yolu kilidi alıp kilit altında tazeden okuyor; bekleme 900 sn'ye çekildi (stale
+eşiğinin altında). Ayrıntı: [[parquet_data_catalog]].
+
+**3. Restart sonrası "running" kalan studio satırları uzlaştırılmıyordu.**
+`studio_runs`/`optimize_runs`/`ai_loops` sonsuza dek `running` kalıyor, footer
+ve optimizer paneli bitmeyecek bir koşuyu poll'luyor, AI loop kalıcı 422 ile
+kilitleniyordu. Deployment tarafının crash-only mantığı üç kardeş tabloya da
+uygulandı; durum `interrupted` (kesinti ≠ başarısızlık), neden satıra yazılıyor.
+Ayrıntı: [[strategy_studio]].
+
+Bu turda eklenen: 46 test (15 + 15 + 16). Tam suite yeşil.
+
+## 2026-08-11 — DeepR dördüncü tur senkronu
+- yeni: `wiki/synthesis/nau_deepr_dorduncu_tur_2026_08_11.md` (557 ajan; kapı
+  kalibrasyonu, katalog onarımı, motor hızlandırması, kritik güvenlik)
+- `index_backtest_via_equity_proxy` → `us_equity_katalog_veri_butunlugu` bağı
+  eklendi (öksüzdü)

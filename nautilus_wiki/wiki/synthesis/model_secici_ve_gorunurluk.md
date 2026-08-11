@@ -242,6 +242,29 @@ sessiz yola çıktı; üçüncüsü de çıkacak.
 > tipini kazandı ve yukarıdaki reçete (sayaç + `degraded` fazı + kokpit rozeti)
 > uygulandı: [[kesilme_ve_degrade_gorunurlugu]].
 
+## Uç (endpoint) varsayılanı: resmi API — proxy bir tercih (2026-08-11)
+
+DeepR entegrasyon turu [YÜKSEK]: `llm_dispatch._build_client()` içinde
+`ANTHROPIC_BASE_URL`'in varsayılanı sabit bir yerel proxy'ydi
+(`http://localhost:6655`, bir Hyperspace kurulumundan kalma). Yalnız
+`ANTHROPIC_API_KEY` veren temiz bir kurulumda — README'nin "doğrudan API"
+dediği durumda — her çağrı bu makinede koşmayan bir porta gidip
+`ConnectionError` ile düşüyordu. Hata "kredi tükendi" olmadığı için
+`_is_credit_exhausted` tetiklenmiyor, çağıranların graceful fallback'i devreye
+giriyor ve koşu "Random … (Claude unavailable)" kompozisyonlarıyla NORMAL
+görünerek sürüyordu — bu sayfanın konusu olan sessiz bozulmanın aynısı, ama
+model seçiminde değil ULAŞILABİLİRLİKTE.
+
+Üç parça düzeltildi: (1) varsayılan artık SDK'nın resmi ucu, proxy yalnız
+`ANTHROPIC_BASE_URL` açıkça verilince; (2) proxy ayarlıyken bir
+`APIConnectionError`, adıyla anılan bir hataya çevriliyor
+(`LLMEndpointUnreachable`: "LLM proxy yanıt vermiyor: `<url>`") — jenerik bir
+bağlantı hatası kullanıcıya bakacağı yeri göstermiyordu; (3)
+`strategy_studio/ai.py`'deki ikinci LLM entegrasyonu aynı değişkeni okuyor.
+Eskiden aynı `ANTHROPIC_API_KEY` iki farklı uca gidiyordu (biri yerel proxy,
+öbürü `api.anthropic.com`), yani bir proxy anahtarı üçüncü tarafa
+gönderilebiliyordu. Testler: `tests/test_llm_endpoint_default.py`.
+
 <!-- BACKLINKS:BEGIN -->
 ## Referenced by
 

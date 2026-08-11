@@ -62,6 +62,7 @@ qty = instrument.make_qty(150)          # size_increment grid'ine oturtur
 - [[data_engine]]
 - [[option_greeks_pipeline]]
 - [[synthetics]]
+- [[us_equity_katalog_veri_butunlugu]]
 - [[value_types]]
 - [[webapp_module_map]]
 <!-- BACKLINKS:END -->

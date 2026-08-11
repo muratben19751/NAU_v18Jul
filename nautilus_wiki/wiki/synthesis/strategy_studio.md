@@ -604,6 +604,33 @@ tekrar çalışıyor · stop → node yıkıldı, thread kalmadı, sahte `failed
 - Paper runner sandbox dolumlarını raporlamıyor: panel node'un durumunu
   gösteriyor, ürettiği işlemleri/PnL'i değil.
 
+## Crash-only uzlaştırma artık üç kardeş tabloyu da kapsıyor (2026-08-11)
+
+DeepR entegrasyon turu [YÜKSEK]: `deployments` için düşünülmüş crash-only
+mantığı (`reconcile_orphans` + "yeşil rozet yalan söyler" gerekçesi)
+`studio_runs`, `optimize_runs` ve `ai_loops`'a hiç uygulanmamıştı. Üç iş de
+Starlette `BackgroundTasks` ile uygulama SÜRECİNDE koşuyor: pm2 restart'ı ya da
+bir çökme satırı sonsuza dek `running` bırakıyordu. Görünen sonuçları: footer
+her 2 saniyede bir bitmeyecek bir koşuyu poll'luyor (her açık sekmeden),
+optimizer paneli aynı şekilde, ve `route_loop_start`'ın "a loop is already
+running" kontrolü o strateji için KALICI 422 veriyordu — DB elle düzeltilmeden
+AI loop bir daha başlatılamıyordu. Bir gün önce aynı sınıftan bir hata AUTO
+oturumlarında bulunmuştu (`sessions.py`, `session_end` yoksa sonsuz "▶
+Running").
+
+Çözüm deployment tarafının aynası: "canlı" olmanın kanıtı DB satırı değil,
+süreç-içi sahiplenmedir (`_ACTIVE_JOBS`; rotada `_claim_job`, görevin
+`finally`'sinde `_release_job`). `store.live_jobs()` üç tabloyu tarar,
+`store.interrupt_job()` sahipsiz satırı `interrupted`'a çevirir ve nedenini
+sütuna yazar (`error` / loop'ta `note`). **`failed` DEĞİL**: başarısızlık işin
+kendisi hakkında bir yargıdır, kesinti ise sonucunu asla öğrenemeyeceğimiz
+anlamına gelir; ikisini aynı kefeye koymak olmamış bir arıza raporlamaktır.
+Uzlaştırma açılışta değil İLK LİSTELEME isteğinde (veritabanı başına bir kez)
+koşar — böylece test süreci canlı `studio.db`'ye import anında yazmaz. UI iki
+yerde yeni bir dal kazandı (footer "Interrupted", optimizer "Last run
+interrupted"), poll'lar durur. Testler:
+`tests/studio/test_reconcile_studio_jobs.py`.
+
 <!-- BACKLINKS:BEGIN -->
 ## Referenced by
 

@@ -43,7 +43,7 @@ GIL kısıtı sandbox izolasyonunun *neden* var olduğunu açıklar — H3 bunu 
 | **H1** | LLM prompt-caching (`cache_control`) hiç yok (grep:0); 16.6K token her çağrıda yeniden işleniyor | `agent.py` `_create_message`, `web/routes/agent_backtest.py` | **S** ⭐ |
 | **H2** | `iterations` listesi sınırsız (RAM + O(n) poll her 2 sn) | `state.py` | M |
 | **H3** | Her guarded çağrıda subprocess spawn + ağır import (~1 sn) | `sandbox.py` | L |
-| **H4** | NAU indikatörleri her bar 260-pencereyi saf-Python sıfırdan (~83–160 µs/çağrı) | `composer.py` | L |
+| **H4** | NAU indikatörleri her bar 260-pencereyi saf-Python sıfırdan (~83–160 µs/çağrı) | `composer.py` → `block_library_nau.py` + `indicators.py` | L — **kısmen kapandı 2026-08-11**, aşağıya bak |
 
 **En pratik ilk iş — H1 (prompt-caching):** `agent.py`'de `system`'i content-block listesine
 çevirip son büyük sabit bloğu `{"type":"text","text":…,"cache_control":{"type":"ephemeral"}}`
@@ -84,7 +84,8 @@ performans-tarafı devamıdır: **hız için strateji doğruluğunu feda etme.**
 
 - `indicators.sma()` running-sum (bit-identical, tol 1e-9) + monotonik-deque min/max.
   **Running-sum kısmı uygulandı (2026-08-08, DeepR ikinci tur)** — O(n) artık;
-  deque min/max hâlâ açık.
+  kayan min/max **2026-08-11'de kapandı** ama deque ile DEĞİL (aşağıdaki H4
+  bölümüne bak: deque ölçüldü, tembel-yeniden-tarama daha hızlı çıktı).
 - `composer.py` `on_bar` FFI çağrılarını (`is_net_long`/`is_net_short`) sinyal-guard altına al.
 - `backtest.py` `_extract_trades` `itertuples`; `_metrics` tek `np.asarray`.
 - `wfo_optimizer.py` fold dilimlerini kandidat başına değil bir kez ön-hesapla.
@@ -94,6 +95,22 @@ performans-tarafı devamıdır: **hız için strateji doğruluğunu feda etme.**
   ayrıca `path`'i de anahtara katarak (composer'ın CATALOG_FILE önbelleğinde
   olmayan bir güvenlik payı) test fixture'larının `REGISTRY_FILE`'ı farklı
   `tmp_path`'lere yönlendirmesi eski içeriği sızdırmıyor.
+  **Düzeltme (2026-08-11, DeepR dördüncü tur [YÜKSEK]):** önbellek nesnesi
+  çağıranlara AYNEN veriliyordu; `_registry_transaction` / `delete_custom` /
+  `ensure_agent_role_metadata` onu yerinde değiştirdiği için (a) diske
+  YAZMADAN sonlanan bir read-modify-write dosyanın mtime/size'ını
+  değiştirmiyor, önbellek geçersizleşmiyor ve süreç ömrü boyunca diskle
+  çelişen bir registry görünümü servis ediliyordu — `composer.load_catalog`
+  bunu katalog budamasında girdi olarak kullandığı için sonuç sessiz strateji
+  kaybı; (b) `list_custom()` sözlüğü kilit DIŞINDA gezdiğinden eşzamanlı bir
+  yazıcı `dictionary changed size during iteration` üretebiliyordu. Artık
+  `_read_registry` her çağırana `_copy_registry()` ile DERİN kopya veriyor.
+  Maliyet ölçüldü: 357 kayıtlı gerçek registry'de `copy.deepcopy` 2.5 ms,
+  elle özyineleme 0.6 ms, diskten yeniden parse 0.95 ms + I/O — yani kopya
+  memoize'un kazancını yemiyor. `tests/test_custom_block_store_registry_isolation.py`
+  (8 test) sızıntının her iki yüzünü de çiviliyor; kopya devre dışı
+  bırakıldığında 8 testin 7'si kırmızıya dönüyor (kalan biri memoize'un hâlâ
+  çalıştığını, yani düzeltmenin önbelleği iptal etmediğini doğruluyor).
 - `token_ledger.summary()` **uygulandı (2026-08-08, DeepR ikinci tur)** — önceki
   ikisinden farklı desen: JSONL sadece append edildiği için tam mtime/size
   önbelleği yetmez (dosya her yazımda değişir); `_parsed_records()` yerine
@@ -163,6 +180,100 @@ getirilip eski yol zorlandı): **tüm alanlar birebir aynı**, dosya başına
 
 Algoritmik tarafın bulguları ayrı sayfada: [[auto_arama_ekonomisi]].
 
+## Dördüncü tur — 2026-08-11: H4 pariteyi BOZMADAN hızlandırıldı
+
+H4 iki tur boyunca "parite kısıtı yüzünden ertelendi" olarak duruyordu, çünkü
+akla gelen çözüm (artımlı/incremental gösterge state'i) NAU_WINDOW=260 sabit
+penceresini kırar. Bu tur farklı bir yol seçildi: **pencere aynen kalsın, aynı
+işi daha az yorumlayıcı adımıyla yap.** Hiçbir matematik ve hiçbir işlem SIRASI
+değişmedi; ölçülen kazanç tamamen ara liste / ara nesne / gereksiz tarama
+eliminasyonundan geliyor.
+
+Ne değişti (`indicators.py`):
+
+- **`calc_adx`** — dört ara liste (`tr`/`plus_dm`/`minus_dm` ~n, `dx_values`
+  ~n−period ≈ toplam 1000 float) ve bar başına **246 tek-kullanımlık
+  `{"pDI","mDI"}` sözlüğü** üreten `push_dx()` closure'ı kaldırıldı; tek geçiş.
+- **`calc_stoch_rsi`** — 233 adımın her birinde 14'lük dilim kopyalayıp
+  `min`+`max` taraması yapılıyordu. Artık ekstremum taşınıyor; yalnız
+  ekstremumu TUTAN eleman pencereden düşünce yeniden taranıyor (rastgele
+  veride ~1/14 adım).
+- **`calc_wave_trend`** — yedi geçişlik boru hattında (hlc3→ema→diff→ema→ci→
+  ema→sma) iki komşu çift kaynaştırıldı (`esa`+`diff`, `d`+`ci`).
+- **`_tail3`** — üç seri zaten aynı boydaysa (`_nau_win` yolunda her zaman öyle)
+  üç gereksiz kopya üretiyordu; artık orijinali döndürüyor.
+- **`sma`/`ema`/`calc_rsi_series`** — `append` ve `1−k` döngü dışına alındı.
+
+Ne değişti (`block_library_nau.py`): `_nau_cached` — **bar başına tek hesap.**
+Aynı mumda aynı (gösterge, parametre) penceresi ikinci kez isteniyorsa (aynı
+blok hem entry hem exit rolündeyse, ya da ateşleyen blok için
+`composer._build_reason` snapshot'ı da hesaplıyorsa) `calc_*` tekrar
+çalışmıyor. Bar kimliği `(len(closes), closes[-1])`: `on_bar` her mumda tampona
+ekleme/kırpma yaptığı için iki ARDIŞIK mumun anahtarı asla eşleşemez — bir
+önceki mumun değeri okunamaz, yani bu bir artımlı state DEĞİL.
+
+Ölçüm (bu kutu, CPython 3.12, 260 barlık pencere, min-of-3):
+
+| | önce | sonra | |
+|---|---|---|---|
+| `calc_adx` | 117 µs | **80 µs** | 1,46× |
+| `calc_stoch_rsi` | 131 µs | **83 µs** | 1,58× |
+| `calc_wave_trend` | 70 µs | **59 µs** | 1,20× |
+
+Uçtan uca 40.000 barlık `on_bar` döngüsü (DeepR'ın ölçtüğü senaryonun aynısı):
+
+| senaryo | önce | sonra | |
+|---|---|---|---|
+| `adx_threshold` tek blok | 4,88 s | **3,39 s** | 1,44× |
+| `stoch_rsi_cross` tek blok | 5,37 s | **3,44 s** | 1,56× |
+| `wave_trend_cross` tek blok | 3,83 s | **2,52 s** | 1,52× |
+| `adx` entry + `adx` exit | 9,68 s | **3,29 s** | **2,94×** |
+
+Parite kanıtı: `tests/test_indicators_hotpath_parity.py` (34 test). Dosya
+optimizasyon ÖNCESİ sürümlerin (git `43f3d83:indicators.py`) **birebir
+kopyasını** `_ref_*` olarak taşıyor ve rastgele üretilmiş serilerde **641 kayan
+260'lık pencerenin her biri için** (× 4 tohum) eski==yeni olduğunu `==` ile —
+tolerans YOK — doğruluyor; ayrıca period/param süpürmeleri, düz ve monotonik
+seriler (min==max, `avg_loss==0` kısa devreleri) ve hizasız seri boyları.
+
+> **Python 3.12 tuzağı (parite için kritik):** `sum()` float'larda artık
+> Neumaier toplaması yapıyor. Wilder tohumlarını (`sum(tr[:period])`,
+> `sum(dx_values[:period])`, `ema`'nın `sum(values[:period])`) elle `+=` ile
+> biriktirmek son ULP'de sapar ve eşik/kesişim bloklarında farklı sinyal
+> üretebilirdi. Yeni sürüm bu yüzden tohumları hâlâ küçük listeler üzerinde
+> `sum()` ile hesaplıyor.
+
+Reddedilen (ölçülüp elenen) alternatifler bu turda:
+
+- **Monotonik deque** kayan min/max: `period=14`'te Python seviyesindeki
+  while-döngüleri C seviyesindeki `min()`/`max()`'a karşı kaybediyor —
+  106 µs, tembel-yeniden-taramanın 83 µs'una karşı. Sayfanın "Güvenli hızlı
+  kazanımlar" bölümündeki deque önerisi bu ölçümle düzeltilmiştir.
+- **numpy'a taşımak**: n=260'ta liste→dizi dönüşümü (~5 µs × 3) vektörleşmeden
+  kazanılanı yiyor; ayrıca indirgemelerde (pairwise sum) parite riski var.
+- **Gerçek artımlı state**: NAU_WINDOW=260 paritesini bozar — H1940'ın
+  düzelttiği sıçramayı geri getirir. Yapılmadı.
+
+### Aynı tur — `_validate_external_data` event loop'u kilitliyordu
+
+`web/routes/agent_backtest.py`'de dış-katalog bütünlük kapısı `async def run(...)`
+gövdesinden **doğrudan** çağrılıyordu: her interval için parquet'ten tam seri
+okuma + pandas maskeleme + `external_data_gap_report`, multi-TF'te üç kez.
+POST /agent/run boyunca TÜM sunucu (açık her sekmedeki 1 sn'lik HTMX poll'ları
+dahil) donuyordu. Aynı dosyada doğru kalıp zaten vardı (`list_catalog`,
+`progress` → `asyncio.to_thread`); bu çağrı kalıptan kaçmıştı.
+
+Düzeltme: `await asyncio.to_thread(_validate_external_data, …)`. Ek olarak
+tarih aralığı daraltması **yükleyicinin içine** itildi —
+`load_external_bars(instrument_id, iv, start=…, end=…)` — böylece tam seri
+okunup sonradan iki pandas maskesiyle kırpılmıyor. Sınır dönüşümü birebir:
+eski KESİN `index < range_end + 1 gün` maskesi, yükleyicinin KAPSAYICI
+`index <= end` karşılaştırmasına `end = range_end + 1 gün − 1 ns` ile
+çevrildi (ns çözünürlüklü indekste aynı satır kümesi).
+`tests/test_agent_run_external_validation_offload.py` (11 test) hem
+"çalıştığı thread'de koşan event loop YOK" garantisini hem de sınır eşdeğerliğini
+çiviliyor.
+
 ## Metodoloji
 
 `Workflow` 4-fazlı: Recon → Scan (12 modül paralel) → Verify (her bulgu çekişmeli, REJECTED/
@@ -175,6 +286,7 @@ PLAUSIBLE/CONFIRMED) → Synthesize. Aynı çok-ajanlı çekişmeli desen [[weba
 <!-- BACKLINKS:BEGIN -->
 ## Referenced by
 
+- [[nau_deepr_dorduncu_tur_2026_08_11]]
 - [[nau_guvenlik_dayaniklilik_duzeltmeleri]]
 - [[nau_mimari_denetimi]]
 - [[webapp_module_map]]

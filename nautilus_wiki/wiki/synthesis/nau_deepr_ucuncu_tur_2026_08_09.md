@@ -264,6 +264,7 @@ olarak plan dışı.
 ## Referenced by
 
 - [[backtest_node]]
+- [[nau_deepr_dorduncu_tur_2026_08_11]]
 - [[nau_deepr_ikinci_tur_2026_08_08]]
 - [[webapp_module_map]]
 <!-- BACKLINKS:END -->

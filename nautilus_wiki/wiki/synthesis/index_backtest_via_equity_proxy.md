@@ -4,8 +4,8 @@ type: synthesis
 sources:
   - sources/03_strategies_docs.md
   - sources/04_backtesting_docs.md
-last_updated: 2026-07-13
-summary: Tradable olmayan IndexInstrument yerine Equity proxy ile endeks backtest'i kurma; size_precision=0 tuzağı, CASH venue ve tick→OHLCV resample deseni.
+last_updated: 2026-08-11
+summary: Tradable olmayan IndexInstrument yerine Equity proxy ile endeks backtest'i kurma; size_precision=0 ve cent-altı price_precision tuzakları, CASH venue ve tick→OHLCV resample deseni.
 key_concepts:
   - execution_engine
   - risk_engine
@@ -45,6 +45,38 @@ Equity(
 `Equity`'nin `size_precision` alanı **0**'dır (whole shares). Strategy `trade_size` olarak `0.1` verirse Nautilus quantity'i `Quantity(0)`'a yuvarlar → order silently reddedilir → backtest sıfır trade ile döner ve `pnl=0, n_trades=0` şeklinde başarılı görünür.
 
 **Kural**: Index yolunda `trade_size` mutlaka `>= 1` olmalı. Sunucu tarafında `< 1` gelen değerleri `1.0`'a clamp et ve rationale'e not düş; kullanıcı UI'da fark etsin.
+
+## Kardeş Trap: `price_precision` — cent altı semboller (2026-08-11)
+
+Aynı sınıftan ikinci bir tuzak, `size_precision=0` düzeltildikten sonra **fiyat**
+tarafında yaşamaya devam ediyordu. `backtest._BYBIT_SPECS` yalnız
+BTC/ETH/SOL/XRP içeriyor; listede olmayan HER sembol
+`_BYBIT_DEFAULT_SPEC = (2, 3, "0.01")` alıyordu ve `Price(0.000009, 2)` → `0.00`.
+PEPEUSDT / SHIBUSDT / FLOKIUSDT gibi cent altı bir sembolde tüm OHLC serisi
+sıfırlanıyor, `_compute_qty` `price <= 0` dalına düşüyor ve koşum **hata
+vermeden** anlamsız bir sonucu "geçerli" diye raporluyordu. Grafik tarafı bunu
+zaten biliyordu (`chart_indicators.py`: `round(v,4)` SHIB/PEPE çizgisini 0.0'a
+düzlüyordu) — motor tarafı bilmiyordu.
+
+Çözüm `size_precision=0` ile **aynı duruşta**, iki katman:
+
+1. **Türet** — `backtest.price_precision_for(price)` büyüklük sırasından
+   (5 anlamlı hane, `[2, 9]` aralığına kırpılmış) hassasiyeti hesaplar;
+   `price_scale_hint(df)` çerçevedeki **en küçük pozitif** fiyatı verir (ortalama
+   değil: sıfıra düşecek barlar tam onlar). `_make_bybit_instrument(...,
+   price_hint=...)` bunu yalnız `_BYBIT_SPECS`'te OLMAYAN semboller için
+   kullanır — sabitlenmiş semboller NAU `universe.yaml` kimliğini korur.
+   İpucu `sandbox._build_instrument_bar_type(recipe, bars_df)`,
+   `parallel_exec` ve `data.py`'nin iki katalog yazıcısından geçer.
+2. **Reddet** — `_bars_from_df` (katalog yazımı ve motor barları için TEK huni)
+   pozitif bir fiyatın dönüşüm sonrası 0'a düştüğünü görürse
+   `PricePrecisionError` atar. Gerçek bir fiyatı hiçliğe yuvarlamak
+   kullanıcının istediği bir sonuç değildir; uyarı değil hatadır.
+
+**Genel kural**: kullanıcının seçmediği bir hassasiyet gerçek bir sayıyı 0'a
+çeviriyorsa bu sessiz kalamaz. Precision varsayılanları "makul" değil,
+**enstrümanın gerçek ölçeğinden türetilmiş** olmalı; türetilemiyorsa koşum
+reddedilmeli.
 
 ## Venue Konfigürasyonu
 
@@ -91,10 +123,15 @@ Volume yerine tick-count kullanmak, tick-based likidite filtreleri için yeterin
 - [[backtesting_guide]]
 - [[execution_engine]]
 - [[order_flow_pipeline]]
+- [[us_equity_katalog_veri_butunlugu]] — bu proxy'nin beslendiği kataloğun
+  ölçülmüş veri kusurları ve ingest düzeltmeleri
+- [[nau_deepr_dorduncu_tur_2026_08_11]] — kapı kalibrasyonu, katalog onarımı,
+  motor hızlandırması
 
 <!-- BACKLINKS:BEGIN -->
 ## Referenced by
 
+- [[us_equity_katalog_veri_butunlugu]]
 - [[v1_to_v2_migration_lessons]]
 - [[webapp_module_map]]
 <!-- BACKLINKS:END -->

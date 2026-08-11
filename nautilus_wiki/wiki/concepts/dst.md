@@ -64,4 +64,5 @@ Sözleşme bilinçli olarak dardır:
 
 - [[bar_aggregation_and_type_syntax]]
 - [[event_sourcing]]
+- [[us_equity_katalog_veri_butunlugu]]
 <!-- BACKLINKS:END -->
