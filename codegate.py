@@ -312,7 +312,7 @@ MAX_POW_EXPONENT = 64
 MAX_SHIFT_AMOUNT = 64
 
 
-def _check_lshift(node: ast.BinOp) -> None:
+def _check_lshift(amount: ast.expr) -> None:
     """Reject `<<` unless the shift amount is a small literal.
 
     Same DoS class _check_pow guards against, but `_fold_literal`'s "bitwise
@@ -328,8 +328,11 @@ def _check_lshift(node: ast.BinOp) -> None:
     hazard `**` chaining is — each `<<` only adds a bounded number of bits —
     so unlike Pow this needs no companion fold-time check for chained
     literals, only this one guard per node.)
+
+    Takes the shift-amount EXPRESSION, not the node: `x << y` (BinOp.right) and
+    `x <<= y` (AugAssign.value) are the same operation in two spellings, and
+    ``_check_binary_cost`` feeds both here — see its comment.
     """
-    amount = node.right
     if isinstance(amount, ast.UnaryOp) and isinstance(amount.op, (ast.USub, ast.UAdd)):
         amount = amount.operand
     if not isinstance(amount, ast.Constant) or not isinstance(
@@ -346,7 +349,7 @@ def _check_lshift(node: ast.BinOp) -> None:
         )
 
 
-def _check_pow(node: ast.BinOp) -> None:
+def _check_pow(exp: ast.expr) -> None:
     """Reject `**` unless the exponent is a small literal.
 
     `9 ** 9 ** 9` passes every other rule here: Pow is an allowed node, the
@@ -360,8 +363,11 @@ def _check_pow(node: ast.BinOp) -> None:
 
     A variable exponent is refused for the same reason: `closes[0] ** x` is
     unbounded at validation time, and the value is attacker-chosen.
+
+    Takes the exponent EXPRESSION, not the node: `x ** y` (BinOp.right) and
+    `x **= y` (AugAssign.value) are the same operation in two spellings, and
+    ``_check_binary_cost`` feeds both here — see its comment.
     """
-    exp = node.right
     # -2 and similar arrive as UnaryOp(USub, Constant) rather than a Constant.
     if isinstance(exp, ast.UnaryOp) and isinstance(exp.op, (ast.USub, ast.UAdd)):
         exp = exp.operand
@@ -375,6 +381,39 @@ def _check_pow(node: ast.BinOp) -> None:
         raise GeneratedCodeError(
             f"`**` exponent {exp.value!r} exceeds the limit of {MAX_POW_EXPONENT}"
         )
+
+
+# Per-operator cost rules, keyed by the operator node — NOT by the statement
+# node that happens to carry it. Python spells the same binary operation two
+# ways: `x ** y` is a BinOp and `x **= y` is an AugAssign, and only the first
+# is a BinOp. Keying the checks on `type(node.op)` means both spellings (and
+# any third one a future grammar adds, as long as it exposes an `op`) walk
+# through the SAME rule instead of needing a second patch that someone will
+# forget — which is exactly what happened: `**`/`<<` were guarded on BinOp
+# only, so `x **= 999999` reached the exec'd namespace unchecked
+# (DeepR 2026-08-10 [KRİTİK]).
+_COST_CHECKS = {
+    ast.Pow: _check_pow,
+    ast.LShift: _check_lshift,
+}
+
+
+def _check_binary_cost(node: ast.AST) -> None:
+    """Apply the per-operator cost rules to any node that carries an operator.
+
+    Both spellings put the attacker-controlled operand on a different field —
+    ``BinOp.right`` vs ``AugAssign.value`` — so the field is normalised here and
+    the rule itself only ever sees the operand expression.
+    """
+    if isinstance(node, ast.BinOp):
+        op, operand = node.op, node.right
+    elif isinstance(node, ast.AugAssign):
+        op, operand = node.op, node.value
+    else:
+        return
+    check = _COST_CHECKS.get(type(op))
+    if check is not None:
+        check(operand)
 
 
 # Ceiling on any number a block can spell out with literals alone. The 268
@@ -486,10 +525,10 @@ def validate_generated_code(src: str) -> ast.Module:
     for node in ast.walk(tree):
         if not isinstance(node, _ALLOWED_NODES):
             raise GeneratedCodeError(f"disallowed node: {type(node).__name__}")
-        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Pow):
-            _check_pow(node)
-        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.LShift):
-            _check_lshift(node)
+        # `**`/`<<` cost rules: dispatched on the OPERATOR, so `x ** y` (BinOp)
+        # and `x **= y` (AugAssign) are judged by the same rule. See
+        # `_COST_CHECKS`.
+        _check_binary_cost(node)
         if isinstance(node, (ast.Constant, ast.UnaryOp, ast.BinOp)):
             _fold_literal(node)
         # Reject any `__dunder__` identifier — blocks the __class__/__globals__ escape.

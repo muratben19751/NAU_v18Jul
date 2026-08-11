@@ -147,7 +147,10 @@ def _worker_init(snapshot_path: str, recipe: dict) -> None:
     from sandbox import _build_instrument_bar_type
 
     _G["df"] = pd.read_parquet(snapshot_path)
-    _G["instrument"], _G["bar_type"] = _build_instrument_bar_type(recipe)
+    # The snapshot frame doubles as the price-scale hint: an unlisted sub-cent
+    # symbol must not get the 2-decimal Bybit default here either, or every
+    # worker would backtest an all-zero series (DeepR 2026-08-11 [YÜKSEK]).
+    _G["instrument"], _G["bar_type"] = _build_instrument_bar_type(recipe, _G["df"])
     _G["recipe"] = recipe
 
     # Register persisted custom blocks (composer loads them at import) so
@@ -230,7 +233,7 @@ def _run_unit(unit: dict) -> dict:
                     "n_trades": 0,
                     "n_bars": 0,
                 }
-            instrument, bar_type = _build_instrument_bar_type(recipe)
+            instrument, bar_type = _build_instrument_bar_type(recipe, df)
             bars = df
         else:
             instrument, bar_type = _G["instrument"], _G["bar_type"]

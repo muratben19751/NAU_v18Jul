@@ -76,19 +76,47 @@ class TestRecipeHelpers:
         assert str(bt).startswith("BTCUSDT.BYBIT_LINEAR-1-MINUTE")
 
 
-def _external_catalog_available() -> bool:
-    from data import _external_bar_dir
+@pytest.fixture
+def fake_external_catalog(tmp_path, monkeypatch):
+    """Repo-içi sahte dış katalog: QQQ.NASDAQ Equity + 1-DAY bar dizini.
 
-    try:
-        return _external_bar_dir("QQQ.NASDAQ", "1-DAY") is not None
-    except Exception:
-        return False
+    DeepR 2026-08-11 [YÜKSEK]: bu sınıf eskiden
+    `skipif(not _external_catalog_available())` ile korunuyordu; makinede
+    (ve temiz bir CI runner'ında) QQQ.NASDAQ dış kataloğu yoksa Equity
+    enstrüman kurulumu, `size_precision == 0` ve
+    `QQQ.NASDAQ-1-DAY-LAST-EXTERNAL` bar-type üretimi hiç sınanmıyordu — ve
+    skip sessiz olduğu için kimse fark etmiyordu. Ortam bağımlılığı burada
+    tamamen kaldırıldı: katalog testin kendisi tarafından kuruluyor, gerçek
+    NAU kataloğuna hiç dokunulmuyor.
+    """
+    from nautilus_trader.model import Currency, InstrumentId, Price, Quantity, Symbol
+    from nautilus_trader.model.instruments import Equity
+    from nautilus_trader.persistence.catalog import ParquetDataCatalog
+
+    import data
+
+    root = tmp_path / "external_catalog"
+    root.mkdir()
+    # Bar dizini yalnızca ADIYLA konuşuyor (`_external_bar_dir` isim ayrıştırır);
+    # parquet içeriği bu testlerin konusu değil.
+    (root / "data" / "bar" / "QQQ.NASDAQ-1-DAY-LAST-EXTERNAL").mkdir(parents=True)
+
+    inst = Equity(
+        instrument_id=InstrumentId.from_str("QQQ.NASDAQ"),
+        raw_symbol=Symbol("QQQ"),
+        currency=Currency.from_str("USD"),
+        price_precision=2,
+        price_increment=Price.from_str("0.01"),
+        lot_size=Quantity.from_str("1"),
+        ts_event=0,
+        ts_init=0,
+    )
+    ParquetDataCatalog(str(root)).write_data([inst])
+    monkeypatch.setattr(data, "EXTERNAL_CATALOGS", [root])
+    return root
 
 
-@pytest.mark.skipif(
-    not _external_catalog_available(),
-    reason="external catalog with QQQ.NASDAQ not configured on this machine",
-)
+@pytest.mark.usefixtures("fake_external_catalog")
 class TestExternalRecipe:
     def test_build_external_instrument_bar_type(self):
         inst, bt = sandbox._build_instrument_bar_type(

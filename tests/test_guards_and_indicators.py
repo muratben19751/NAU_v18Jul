@@ -84,6 +84,103 @@ INDICATORS = {
     "lows": [c - 0.5 for c in CLOSES],
 }
 
+# ── Depo fixture'ı ────────────────────────────────────────────────────────
+# Aşağıdaki üç test eskiden geliştiricinin GERÇEK
+# ~/.cache/nautilus_web_app/custom_blocks deposunu kullanıyordu (DeepR
+# 2026-08-11 [ORTA], test hijyeni): biri oraya `.py` + registry kaydı YAZIYOR,
+# ikisi de deponun İÇERİĞİNE göre farklı davranıyordu. Sonuç: temiz bir
+# makinede/CI'da `assert checked >= 1` skip değil FAIL veriyor, dolu bir
+# makinede ise her geliştiricide farklı sayıda ve tamamen keyfi (LLM üretimi)
+# kod exec ediliyordu — yani testler deterministik değildi ve gerçek veriyi
+# kirletiyordu. Depoyu tmp_path'e yönlendirip temsilci blokları repo içinde
+# sabitlemek testin NİYETİNİ korur ("gerçek blok şekilleri hâlâ çalışıyor mu")
+# ama sonucunu makineden bağımsız kılar. Aynı monkeypatch deseni üç kardeş
+# testte zaten var (test_ohlc_blocks.py:41, test_volume_blocks.py:159,
+# test_perf_equivalence.py:199).
+
+# statistics.stdev kullanan, depodaki gerçek "volatilite filtresi" bloklarının
+# temsilcisi.
+STATS_BLOCK = """\
+def max_lookback(params):
+    return 40
+
+def evaluate(state, block, closes, indicators, portfolio):
+    if len(closes) < 30:
+        return None
+    sd = statistics.stdev(closes[-30:])
+    if sd <= 0:
+        return None
+    return "long" if closes[-1] > closes[-30] else "short"
+"""
+
+# Kod-üretim tavanına (codegate `**`/`<<` denetimi) en çok yaklaşan gerçek
+# şekiller: 9999 sentinel, varyans terimi, stdev üssü, epsilon.
+SENTINEL_BLOCK = """\
+def max_lookback(params):
+    return 20
+
+def evaluate(state, block, closes, indicators, portfolio):
+    best = 9999.0
+    var = (closes[-1] - closes[-2]) ** 2
+    root = closes[-1] ** 0.5
+    eps = 1e-9 + root
+    if var < best and eps > 0:
+        return None
+    return None
+"""
+
+# {isim: (kaynak, meta)} — depoya tohumlanan temsilciler.
+_STORE_FIXTURE_BLOCKS = {
+    "fx_math_block": (MATH_BLOCK, {"label": "fx math", "params": {}}),
+    "fx_stats_block": (STATS_BLOCK, {"label": "fx stats", "params": {}}),
+    # math/statistics KULLANMAYAN blok: math testinin filtresinin hâlâ
+    # ayıkladığını kanıtlar (aksi hâlde `checked` sayısı sessizce şişerdi).
+    "fx_ind_block": (
+        IND_BLOCK,
+        {"label": "fx ind", "params": {"period": {"type": "int", "default": 14}}},
+    ),
+    "fx_sentinel_block": (SENTINEL_BLOCK, {"label": "fx sentinel", "params": {}}),
+}
+
+
+@pytest.fixture
+def isolated_store(tmp_path, monkeypatch):
+    """`custom_block_store`'un kökünü tmp_path'e yönlendirir ve döndürür.
+
+    Testler artık ne geliştiricinin deposunu okur ne de ona yazar.
+    """
+    import custom_block_store as cbs
+
+    store = tmp_path / "custom_blocks"
+    store.mkdir()
+    monkeypatch.setattr(cbs, "STORE_DIR", store)
+    monkeypatch.setattr(cbs, "REGISTRY_FILE", store / "registry.json")
+    return cbs
+
+
+@pytest.fixture
+def seeded_store(isolated_store):
+    """İzole depoyu temsilci bloklarla doldurur (bkz. `_STORE_FIXTURE_BLOCKS`)."""
+    for name, (src, meta) in _STORE_FIXTURE_BLOCKS.items():
+        isolated_store.save_custom(name, meta, src)
+    return isolated_store
+
+
+def test_store_fixture_never_points_at_the_real_cache(seeded_store, tmp_path):
+    """Çıpa: fixture'ın monkeypatch'i düşerse bu test kırmızıya döner.
+
+    Yoksa aşağıdaki testler sessizce yeniden geliştiricinin gerçek
+    `~/.cache/nautilus_web_app/custom_blocks` deposuna yazmaya başlar ve
+    kimse fark etmez — bu düzeltmenin ilk sebebi tam olarak buydu.
+    """
+    real = Path.home() / ".cache" / "nautilus_web_app" / "custom_blocks"
+    assert seeded_store.STORE_DIR != real
+    assert seeded_store.REGISTRY_FILE.parent != real
+    assert tmp_path in seeded_store.STORE_DIR.parents
+    # Tohumlama gerçekten tmp'ye düştü mü (boş depo üzerinde "geçti" demesin).
+    assert seeded_store.module_path("fx_math_block").exists()
+    assert len(seeded_store.list_custom()) == len(_STORE_FIXTURE_BLOCKS)
+
 
 class TestRuntimeInjection:
     """H8: the loader must do the same injection as the smoke environment."""
@@ -99,9 +196,15 @@ class TestRuntimeInjection:
         out = mod.evaluate({}, SimpleNamespace(params={}), CLOSES, INDICATORS, None)
         assert out in (None, "long", "short", "exit")
 
-    def test_existing_catalog_math_blocks_no_nameerror(self):
-        """Real catalog blocks using math/statistics must now run."""
-        import custom_block_store as cbs
+    def test_existing_catalog_math_blocks_no_nameerror(self, seeded_store):
+        """Depodaki math/statistics kullanan bloklar NameError atmadan çalışmalı.
+
+        Depo izole + tohumlu (bkz. `seeded_store`): eskiden geliştiricinin
+        gerçek deposunu geziyordu, yani testin ne doğruladığı makineye göre
+        değişiyordu. Sayı artık kesin: dört temsilciden math/statistics
+        kullanan İKİSİ koşar, `ind.` kullanan biri filtreyle elenir.
+        """
+        cbs = seeded_store
         from composer import _load_module_from_path
 
         checked = 0
@@ -125,7 +228,9 @@ class TestRuntimeInjection:
             )
             assert out in (None, "long", "short", "exit"), name
             checked += 1
-        assert checked >= 1, "no math-using catalog block found"
+        # Kesin sayı: filtre bozulup `ind.` bloğunu da içeri alırsa ya da
+        # tohumlama sessizce boş kalırsa test kırmızıya döner.
+        assert checked == 2, f"beklenen 2 math/statistics bloğu, bulunan {checked}"
 
 
 class TestLoopBudget:
@@ -262,6 +367,85 @@ class TestCostGate:
     @pytest.mark.parametrize(
         "body",
         [
+            # DeepR 2026-08-10 [KRİTİK]: `**`/`<<` maliyet denetimi YALNIZCA
+            # ast.BinOp düğümünde çalışıyordu. `x **= y` ise ast.AugAssign —
+            # BinOp DEĞİL — yani aynı işlemin ikinci sözdizimi hiçbir kuraldan
+            # geçmiyordu. Döngü düğümü olmadığı için loop-budget hiç tick
+            # atmıyor, smoke'un join(timeout=2.0)'ı GIL'i tutan tek bytecode'u
+            # kesemiyor: blok önizleme yolu (web/routes/strategy.py:246, :893)
+            # web-server sürecinin İÇİNDE exec ettiği için tek satır tüm
+            # uygulamayı dondurabiliyordu.
+            "    x = 2\n    x **= 999999\n",  # sabit üs, tavanın üstünde
+            "    x = 2\n    x **= 65\n",  # sabit üs, tavanın 1 üstünde
+            "    x = 2\n    x **= len(closes)\n",  # değişken üs: sınırsız
+            "    x = 2\n    x **= 3 * 10 ** 5 + len(closes)\n",  # hesaplanmış üs
+        ],
+    )
+    def test_augassign_pow_bomb_rejected(self, body):
+        from codegate import GeneratedCodeError, validate_generated_code
+
+        with pytest.raises(GeneratedCodeError, match="exponent"):
+            validate_generated_code(self._src(body))
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            # `<<=` de aynı boşluktan geçiyordu; `1 << 999999` tek başına
+            # ~300k basamaklı sayı üretir (bkz. _check_lshift docstring'i).
+            "    x = 2\n    x <<= 999999\n",
+            "    x = 2\n    x <<= 65\n",
+            "    x = 2\n    x <<= len(closes)\n",
+            "    x = 2\n    x <<= 3 * 10 ** 5 + len(closes)\n",
+        ],
+    )
+    def test_augassign_lshift_bomb_rejected(self, body):
+        from codegate import GeneratedCodeError, validate_generated_code
+
+        with pytest.raises(GeneratedCodeError, match="shift amount"):
+            validate_generated_code(self._src(body))
+
+    @pytest.mark.parametrize(
+        "expr_body,aug_body",
+        [
+            ("    x = 2\n    x = x ** 65\n", "    x = 2\n    x **= 65\n"),
+            ("    x = 2\n    x = x << 65\n", "    x = 2\n    x <<= 65\n"),
+            (
+                "    x = 2\n    x = x ** len(closes)\n",
+                "    x = 2\n    x **= len(closes)\n",
+            ),
+            (
+                "    x = 2\n    x = x << len(closes)\n",
+                "    x = 2\n    x <<= len(closes)\n",
+            ),
+            # Gerçek blok şekilleri: iki sözdizimi de KABUL almalı — kural
+            # sıkılaşırken meşru kod kaybolmasın.
+            ("    x = 2\n    x = x ** 2\n", "    x = 2\n    x **= 2\n"),
+            ("    x = 2\n    x = x << 4\n", "    x = 2\n    x <<= 4\n"),
+        ],
+    )
+    def test_binop_and_augassign_get_the_same_verdict(self, expr_body, aug_body):
+        """Aynı işlem, iki sözdizimi, tek kural.
+
+        Denetimin düğüm tipine değil "operatör + sağ operand" ikilisine bağlı
+        olduğunun kanıtı: `a ** b` neyi reddediyorsa `a **= b` de aynısını,
+        neyi kabul ediyorsa yine aynısını yapmalı. Bu eşleştirme, ileride
+        birinin yalnız bir kolu yamamasına karşı kalıcı bir çıpa.
+        """
+        from codegate import GeneratedCodeError, validate_generated_code
+
+        def _verdict(body: str) -> str:
+            try:
+                validate_generated_code(self._src(body))
+                return "ok"
+            except GeneratedCodeError as e:
+                # Mesajın kendisi de eşleşmeli: aynı kuraldan, aynı gerekçeyle.
+                return f"rejected: {e}"
+
+        assert _verdict(expr_body) == _verdict(aug_body)
+
+    @pytest.mark.parametrize(
+        "body",
+        [
             "    x = (closes[-1] - closes[-2]) ** 2\n",  # variance term
             "    x = closes[-1] ** 0.5\n",  # stdev
             "    x = 1e-9 + closes[-1]\n",  # epsilon
@@ -288,10 +472,14 @@ class TestCostGate:
             validate_generated_code(src)
         assert time.perf_counter() - t0 < 1.0
 
-    def test_stored_blocks_all_survive_the_ceiling(self):
-        """The ceiling is calibrated against real code, not guessed: every block
-        on disk must still validate (they top out at a 9999 sentinel)."""
-        import custom_block_store as cbs
+    def test_stored_blocks_all_survive_the_ceiling(self, seeded_store):
+        """Tavan gerçek kod şekillerine göre kalibre: depodaki her blok geçmeli.
+
+        Temsilciler (9999 sentinel, varyans terimi, stdev üssü, epsilon) repo
+        içinde sabit; eskiden geliştiricinin deposundaki keyfi LLM üretimi kod
+        doğrulanıyordu, yani tavan kalibrasyonunu neyin koruduğu belirsizdi.
+        """
+        cbs = seeded_store
         from codegate import validate_generated_code
 
         checked = 0
@@ -303,7 +491,9 @@ class TestCostGate:
                 continue
             validate_generated_code(src)
             checked += 1
-        assert checked >= 1, "no stored custom block found"
+        assert checked == len(_STORE_FIXTURE_BLOCKS), (
+            f"tohumlanan {len(_STORE_FIXTURE_BLOCKS)} bloğun {checked} tanesi okundu"
+        )
 
 
 def _fake_strategy(closes, highs=None, lows=None):
@@ -413,7 +603,15 @@ class TestBollingerMode:
 class TestBlockIsolation:
     """L25: a custom block must not be able to mutate the spec's live params dict."""
 
-    def test_params_mutation_stays_in_copy(self, tmp_path):
+    def test_params_mutation_stays_in_copy(self, isolated_store):
+        """Bloğun `block.params.update(...)` yazısı spec'in canlı dict'ine sızmamalı.
+
+        Depo izole (bkz. `isolated_store`): bu test eskiden geliştiricinin
+        gerçek deposuna `t_isolation_x.py` + registry kaydı yazıyordu ve
+        temizliği `finally` içindeki `except Exception: pass`'e bağlıydı — test
+        ortada patlarsa dosya kalıcı oluyordu. `tmp_path`'i parametre olarak
+        alıp hiç kullanmaması zaten kazayı belli ediyordu.
+        """
         from composer import (
             BLOCK_REGISTRY,
             register_custom_from_disk,  # noqa: F401 (registration path)
@@ -426,7 +624,7 @@ class TestBlockIsolation:
             '    block.params.update({"period": 999})\n'
             "    return None\n"
         )
-        import custom_block_store as cbs
+        cbs = isolated_store
 
         name = "t_isolation_x"
         meta = {"label": "t", "params": {"period": {"type": "int", "default": 14}}}

@@ -17,9 +17,16 @@ own code is otherwise unchanged. `ComposedStrategy`/`ComposedStrategyConfig`
 themselves never move — see the decomposition plan's critical-decision
 section.
 
+H4 (DeepR 2026-08-11): bu 4 blok backtest'in baskın CPU maliyetiydi — her
+`on_bar`'da 260'lık pencere sıfırdan taranıyordu. `_nau_cached` bar başına TEK
+hesap garantisi veriyor (aynı mumda aynı pencere için tekrar çağrı yok); asıl
+hızlanma `indicators.py`'deki bit-parite korumalı yeniden yazımdan geliyor.
+NAU_WINDOW=260 sabit pencere semantiği DEĞİŞMEDİ — parite kanıtı
+`tests/test_indicators_hotpath_parity.py`.
+
 Wiki References
 ---------------
-See: [[webapp_module_map]].
+See: [[webapp_module_map]], [[nau_performans_denetimi]].
 """
 
 from __future__ import annotations
@@ -48,13 +55,58 @@ def _nau_win(series):
     return series[-NAU_WINDOW:] if len(series) > NAU_WINDOW else series
 
 
+def _nau_cached(strategy, closes, key, compute):
+    """Bar başına TEK hesap (H4, DeepR 2026-08-11).
+
+    Aynı mumda aynı (gösterge, parametre) penceresi birden fazla kez
+    isteniyorsa — aynı blok hem entry hem exit rolünde kullanıldığında, ya da
+    bir blok ateşleyip `composer._build_reason` snapshot'ı da hesapladığında —
+    260'lık pencere ikinci kez baştan taranmıyor.
+
+    Bu bir ARTIMLI (incremental) state DEĞİL: parite kısıtı (H1940 sabit
+    pencere) tamamen korunuyor. Önbellek yalnız *aynı mum içinde*, *aynı
+    girdiyle* yapılan tekrar çağrıyı eliyor; değer birebir aynı olmak zorunda.
+
+    Bar kimliği ``(len(closes), closes[-1])``: `ComposedStrategy.on_bar` her
+    mumda tampona bir eleman ekler (4×cap'te kırpar) — iki ARDIŞIK mumun
+    uzunluğu asla eşit olamaz, dolayısıyla bir önceki mumun değeri okunamaz.
+    Son kapanış ikinci emniyet: aynı uzunlukta farklı içerik gelirse (duck-type
+    edilmiş test stratejileri) anahtar yine değişir.
+    """
+    token = (len(closes), closes[-1] if closes else None)
+    cache = getattr(strategy, "_nau_calc_cache", None)
+    if cache is None or cache[0] != token:
+        cache = (token, {})
+        try:
+            strategy._nau_calc_cache = cache
+        except Exception:
+            # Öznitelik atanamayan bir duck-type geldiyse önbelleksiz devam et;
+            # doğruluk önbelleğe bağlı değil, yalnız hız.
+            return compute()
+    slot = cache[1]
+    if key in slot:
+        return slot[key]
+    value = compute()
+    slot[key] = value
+    return value
+
+
 def _eval_adx_threshold(strategy, idx, block, closes):
     import indicators as _ind
 
     period = int(block.params.get("period", 14))
     threshold = float(block.params.get("threshold", 25.0))
-    highs, lows = _nau_win(strategy._highs), _nau_win(strategy._lows)
-    res = _ind.calc_adx(highs, lows, _nau_win(closes), period)
+    res = _nau_cached(
+        strategy,
+        closes,
+        ("adx", period),
+        lambda: _ind.calc_adx(
+            _nau_win(strategy._highs),
+            _nau_win(strategy._lows),
+            _nau_win(closes),
+            period,
+        ),
+    )
     if res is None:
         return None
     adx = res.get("adx", 0.0)
@@ -69,8 +121,16 @@ def _snap_adx_threshold(strategy, idx, block, closes):
     import indicators as _ind
 
     period = int(block.params.get("period", 14))
-    res = _ind.calc_adx(
-        _nau_win(strategy._highs), _nau_win(strategy._lows), _nau_win(closes), period
+    res = _nau_cached(
+        strategy,
+        closes,
+        ("adx", period),
+        lambda: _ind.calc_adx(
+            _nau_win(strategy._highs),
+            _nau_win(strategy._lows),
+            _nau_win(closes),
+            period,
+        ),
     )
     if res is None:
         return None
@@ -92,7 +152,12 @@ def _eval_stoch_rsi_cross(strategy, idx, block, closes):
     st_p = int(block.params.get("stoch_period", 14))
     oversold = float(block.params.get("oversold", 20.0))
     overbought = float(block.params.get("overbought", 80.0))
-    res = _ind.calc_stoch_rsi(_nau_win(closes), rsi_p, st_p)
+    res = _nau_cached(
+        strategy,
+        closes,
+        ("stoch_rsi", rsi_p, st_p),
+        lambda: _ind.calc_stoch_rsi(_nau_win(closes), rsi_p, st_p),
+    )
     k, d = res.get("k", 50.0), res.get("d", 50.0)
     key = f"stochrsi_{idx}"
     # Warmup guard: calc_stoch_rsi returns a (50,50) sentinel (not None) until
@@ -121,10 +186,13 @@ def _eval_stoch_rsi_cross(strategy, idx, block, closes):
 def _snap_stoch_rsi_cross(strategy, idx, block, closes):
     import indicators as _ind
 
-    res = _ind.calc_stoch_rsi(
-        _nau_win(closes),
-        int(block.params.get("rsi_period", 14)),
-        int(block.params.get("stoch_period", 14)),
+    rsi_p = int(block.params.get("rsi_period", 14))
+    st_p = int(block.params.get("stoch_period", 14))
+    res = _nau_cached(
+        strategy,
+        closes,
+        ("stoch_rsi", rsi_p, st_p),
+        lambda: _ind.calc_stoch_rsi(_nau_win(closes), rsi_p, st_p),
     )
     return {"K": round(res.get("k", 50.0), 2), "D": round(res.get("d", 50.0), 2)}
 
@@ -140,8 +208,17 @@ def _eval_wave_trend_cross(strategy, idx, block, closes):
     av = int(block.params.get("avg_len", 21))
     os_lv = float(block.params.get("os_level", -30.0))
     ob_lv = float(block.params.get("ob_level", 30.0))
-    res = _ind.calc_wave_trend(
-        _nau_win(strategy._highs), _nau_win(strategy._lows), _nau_win(closes), ch, av
+    res = _nau_cached(
+        strategy,
+        closes,
+        ("wave_trend", ch, av),
+        lambda: _ind.calc_wave_trend(
+            _nau_win(strategy._highs),
+            _nau_win(strategy._lows),
+            _nau_win(closes),
+            ch,
+            av,
+        ),
     )
     if res is None:
         return None
@@ -166,12 +243,19 @@ def _eval_wave_trend_cross(strategy, idx, block, closes):
 def _snap_wave_trend_cross(strategy, idx, block, closes):
     import indicators as _ind
 
-    res = _ind.calc_wave_trend(
-        _nau_win(strategy._highs),
-        _nau_win(strategy._lows),
-        _nau_win(closes),
-        int(block.params.get("channel_len", 10)),
-        int(block.params.get("avg_len", 21)),
+    ch = int(block.params.get("channel_len", 10))
+    av = int(block.params.get("avg_len", 21))
+    res = _nau_cached(
+        strategy,
+        closes,
+        ("wave_trend", ch, av),
+        lambda: _ind.calc_wave_trend(
+            _nau_win(strategy._highs),
+            _nau_win(strategy._lows),
+            _nau_win(closes),
+            ch,
+            av,
+        ),
     )
     if res is None:
         return None

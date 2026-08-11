@@ -120,13 +120,21 @@ def _derive_base(symbol: str) -> str:
     return symbol[:-4] if symbol.upper().endswith("USDT") else symbol[:3]
 
 
-def _build_instrument_bar_type(recipe: dict):
+def _build_instrument_bar_type(recipe: dict, bars_df=None):
     """Rebuild the Nautilus instrument + bar_type from a string recipe.
 
     Recipe shapes (see ``run_backtest_guarded`` docstring):
       Bybit (default): {"symbol", "interval", "category"[, "base"]}
       External:        {"source": "external", "instrument_id", "granularity"}
       Index:           {"source": "index", "ticker", "granularity"}
+
+    ``bars_df`` is the frame the caller is about to backtest. It is optional
+    and used only on the Bybit path, to derive a price precision for symbols
+    missing from ``backtest._BYBIT_SPECS`` — without it a sub-cent coin
+    (PEPEUSDT, SHIBUSDT…) gets the 2-decimal default and every price becomes
+    0.00 (DeepR 2026-08-11 [YÜKSEK]). Every caller has the frame in hand, so
+    passing it costs nothing; omitting it keeps the old behaviour plus the
+    hard `_bars_from_df` guard.
     """
     if recipe.get("source") == "external":
         from backtest import _make_external_bar_type
@@ -147,13 +155,14 @@ def _build_instrument_bar_type(recipe: dict):
         bar_type = _make_index_bar_type(instrument.id, recipe["granularity"])
         return instrument, bar_type
 
-    from backtest import _make_bybit_bar_type, _make_bybit_instrument
+    from backtest import _make_bybit_bar_type, _make_bybit_instrument, price_scale_hint
 
     symbol = recipe["symbol"]
     instrument = _make_bybit_instrument(
         symbol=symbol,
         base=recipe.get("base") or _derive_base(symbol),
         category=recipe.get("category", "linear"),
+        price_hint=price_scale_hint(bars_df),
     )
     bar_type = _make_bybit_bar_type(instrument.id, recipe["interval"])
     return instrument, bar_type
@@ -203,7 +212,7 @@ def _child_entry(q, payload):
         spec, bars_df, recipe, iteration_id, rationale = payload
         from backtest import run_composed_backtest
 
-        instrument, bar_type = _build_instrument_bar_type(recipe)
+        instrument, bar_type = _build_instrument_bar_type(recipe, bars_df)
 
         def _progress(msg):
             try:
@@ -362,7 +371,7 @@ def _robustness_child(q, payload):
 
     try:
         spec, bars_df, recipe, trades, symbol, interval = payload
-        instrument, bar_type = _build_instrument_bar_type(recipe)
+        instrument, bar_type = _build_instrument_bar_type(recipe, bars_df)
         import web.routes.agent_backtest as ab
 
         ab._IPC_Q = q  # route _add_step → parent (as ('progress', msg))
@@ -459,7 +468,7 @@ def _manual_suite_child(q, payload):
 
     try:
         spec, bars_df, recipe, params = payload
-        instrument, bar_type = _build_instrument_bar_type(recipe)
+        instrument, bar_type = _build_instrument_bar_type(recipe, bars_df)
 
         def prog(msg):
             try:
@@ -518,8 +527,25 @@ def _manual_suite_child(q, payload):
             bar_type=bar_type,
             venue=instrument.id.venue,
         )
-        mc_result = {"error": "No trade data."}
-        if not full_result.error and full_result.trades:
+        # DeepR 2026-08-11 [YÜKSEK]: these two outcomes are NOT the same thing
+        # and must never render the same way. "0 trades" is a fact about the
+        # strategy; a crashed full backtest is a fact about the infrastructure,
+        # and reporting it as "no trade data" told the user their strategy was
+        # useless while the truth was that nothing ever ran. `failed` is the
+        # flag the UI branches on; `error` stays human-readable.
+        if full_result.error:
+            mc_result = {
+                "error": f"Full backtest failed: {full_result.error}",
+                "failed": True,
+            }
+            prog(f"⚠ Full backtest failed — Monte Carlo skipped: {full_result.error}")
+        elif not full_result.trades:
+            mc_result = {
+                "error": "The backtest produced no trades — Monte Carlo needs "
+                "at least one trade.",
+                "failed": False,
+            }
+        else:
             prog(
                 f"Monte Carlo · {params['n_sims']} simulations · "
                 f"{len(full_result.trades)} trade"
@@ -645,7 +671,7 @@ def run_backtest_guarded(
 
     # ── Fast path: builtin-only → in-process, no isolation overhead ──────────
     if not force_subprocess and not has_custom_block(spec):
-        instrument, bar_type = _build_instrument_bar_type(recipe)
+        instrument, bar_type = _build_instrument_bar_type(recipe, bars_df)
         return run_composed_backtest(
             spec,
             bars_df,
@@ -669,3 +695,384 @@ def run_backtest_guarded(
     if err is not None:
         return _error_result(iteration_id, rationale, err)
     return result
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Blok ÖNİZLEME / SMOKE — LLM+kullanıcı kodunun ikinci yürütme yüzeyi
+#
+# DeepR 2026-08-11 [ORTA]: bu modülün yukarıdaki her şeyi BACKTEST'i sarıyordu.
+# Oysa aynı kod bir de backtest'e hiç girmeden çalışıyordu — ve orası web
+# sunucusunun KENDİ süreciydi:
+#
+#   * `agent._test_execute_generated` (smoke): `t.join(timeout=2.0)` bir
+#     daemon thread'i ÖLDÜRMÜYOR. Kullanıcı "timed out" hatasını alıyor, kod
+#     arka planda bir çekirdeği yakmaya devam ediyor, tekrarlanan gönderimler
+#     üst üste birikiyordu. Bir thread'i preempt etmenin yolu YOK; tek çare
+#     süreç sınırı.
+#   * `web/routes/strategy._preview_signals`: hiç duvar saati yoktu ve
+#     `evaluate()` 150 kez ART ARDA çağrılıyordu — döngü bütçesi her çağrının
+#     başında sıfırlandığı için tek bir HTTP isteği teorik olarak 750 milyon
+#     adım koşabiliyordu, üstelik FastAPI'nin olay döngüsünde.
+#
+# NEDEN ALT SÜREÇ (ve neden "sert bir duvar saati" tek başına yetmezdi):
+# in-process bir duvar saati, GIL'i bırakmayan tek bir bytecode'u (`9**9**9`)
+# durduramaz — codegate'in kendi yorumu bunu zaten belgeliyor. Ölçülebilir tek
+# sınır öldürülebilir bir süreçtir ve o desen bu dosyada ZATEN var, test
+# edilmiş hâlde (`_run_in_child` + `TestKillMachinery`). İkinci bir mekanizma
+# icat etmek yerine mevcut olanı yeniden kullanıyoruz.
+#
+# MALİYET: çocuklar bilerek HAFİF. Önizleme çocuğu yalnız `codegate` (~9 ms) +
+# `indicators` (~1 ms) import eder — pandas'ı DEĞİL: parquet okuma ve grafik
+# şekillendirme ebeveynde kalır, çocuğa yalnız fiyat listeleri geçer. Spawn
+# dahil ~0.3 sn, ve önizleme zaten 15-20 sn'lik bir LLM turunun ardından gelir.
+#
+# KAPSAM DIŞI (bilerek): `composer._load_module_from_path`. O yol bir MODÜL
+# NESNESİ üretmek zorunda ve nesne bu süreçte yaşamak zorunda — alt sürece
+# taşınamaz, çünkü taşınan şey geri getirilemez. Oradaki kod ayrıca kayıt
+# anında bu çocuklardan geçmiş, diske yazılmış ve yüklemede yeniden AST
+# doğrulamasından geçen koddur; kalan risk kabul edilip belgelenmiştir
+# (bkz. composer._load_module_from_path docstring'i).
+# ═══════════════════════════════════════════════════════════════════════════
+
+# Önizleme/smoke bir İNSANI bekletiyor: backtest'in 180 sn'si burada anlamsız.
+# 10 sn, gerçek bir bloğun 150 barlık sürüşünden kat kat uzun; aşan her şey
+# fiilen bir kaçak döngüdür.
+USER_CODE_TIMEOUT_S = float(_os.environ.get("NAU_USER_CODE_TIMEOUT_S", "10"))
+# Bellek tavanı: duvar saati bir `while True`'yu yakalar ama tek satırlık bir
+# `x = [0] * 10**9` deadline'dan ÖNCE makineyi şişirir. Alt süreçte bu sınırı
+# sert koymak güvenli — patlayan çocuk, sunucu değil.
+#
+# Tavan SÜREÇ TOPLAMINA uygulanır (POSIX'te RLIMIT_AS, Windows'ta Job Object
+# ProcessMemoryLimit), kullanıcı koduna ayrılan EK bütçeye değil. Çocuk smoke
+# yolunda `agent` zincirini (pandas + nautilus_trader) import ettiği için taban
+# tüketim tek başına yüzlerce MB: ilk konan 512 MB'lık tavan altında import
+# tamamlanamıyor, süreç `RuntimeError: can't start new thread` ile ölüyor ve
+# hata kullanıcının bloğuna atfediliyordu ("bellek tavanı aşılmış olabilir")
+# — oysa blok hiç çalışmamıştı. Ölçüldü (2026-08-11): 512 MB çöküyor, 1024 MB
+# geçiyor; varsayılan emniyet payıyla 2048. Koruma değerini yitirmiyor —
+# kaçak bir ayırma (`[0] * 10**9` ≈ 8 GB) bu tavanı yine anında aşar.
+USER_CODE_MEMORY_MB = int(_os.environ.get("NAU_USER_CODE_MEMORY_MB", "2048"))
+
+
+def _install_memory_ceiling(mem_mb: int) -> None:
+    """Bu SÜRECE sert bir bellek tavanı koy. Sessizce başarısız olabilir.
+
+    POSIX'te ``RLIMIT_AS`` doğrudan işi görür: ayırma anında ``MemoryError``
+    olur, yani hata kullanıcıya normal bir istisna olarak döner.
+
+    Windows'ta rlimit yok; karşılığı bir Job Object'in ``ProcessMemoryLimit``
+    alanı. Win8+ bir süreç birden çok job'a ait olabildiği için pm2 altında
+    zaten bir job'da olmak sorun değil. Kurulum başarısız olursa (eski
+    Windows, kısıtlı token) sessizce vazgeçiyoruz — duvar saati hâlâ ayakta ve
+    önizlemenin bir ctypes ayrıntısı yüzünden çalışmaması kabul edilemez.
+    """
+    if not mem_mb or mem_mb <= 0:
+        return
+    limit = int(mem_mb) * 1024 * 1024
+    if _os.name != "nt":
+        try:
+            import resource
+
+            resource.setrlimit(resource.RLIMIT_AS, (limit, limit))
+        except Exception:
+            pass
+        return
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class _IO_COUNTERS(ctypes.Structure):
+            _fields_ = [
+                (n, ctypes.c_ulonglong)
+                for n in (
+                    "ReadOperationCount",
+                    "WriteOperationCount",
+                    "OtherOperationCount",
+                    "ReadTransferCount",
+                    "WriteTransferCount",
+                    "OtherTransferCount",
+                )
+            ]
+
+        class _BASIC_LIMIT(ctypes.Structure):
+            _fields_ = [
+                ("PerProcessUserTimeLimit", ctypes.c_longlong),
+                ("PerJobUserTimeLimit", ctypes.c_longlong),
+                ("LimitFlags", wintypes.DWORD),
+                ("MinimumWorkingSetSize", ctypes.c_size_t),
+                ("MaximumWorkingSetSize", ctypes.c_size_t),
+                ("ActiveProcessLimit", wintypes.DWORD),
+                ("Affinity", ctypes.c_size_t),
+                ("PriorityClass", wintypes.DWORD),
+                ("SchedulingClass", wintypes.DWORD),
+            ]
+
+        class _EXTENDED_LIMIT(ctypes.Structure):
+            _fields_ = [
+                ("BasicLimitInformation", _BASIC_LIMIT),
+                ("IoInfo", _IO_COUNTERS),
+                ("ProcessMemoryLimit", ctypes.c_size_t),
+                ("JobMemoryLimit", ctypes.c_size_t),
+                ("PeakProcessMemoryUsed", ctypes.c_size_t),
+                ("PeakJobMemoryUsed", ctypes.c_size_t),
+            ]
+
+        job_object_limit_process_memory = 0x00000100
+        job_object_extended_limit_information = 9
+
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        # restype'ları AÇIKÇA vermek ZORUNLU: ctypes'ın varsayılanı `c_int`,
+        # yani 64-bit bir HANDLE 32 bite kırpılır. Kırpılmış handle ile
+        # SetInformationJobObject sessizce başarısız olur ve sınır hiç
+        # kurulmaz — ölçüldü: 256 MB tavanın ardından 800 MB rahatça ayrıldı.
+        k32.CreateJobObjectW.restype = wintypes.HANDLE
+        k32.CreateJobObjectW.argtypes = [wintypes.LPVOID, wintypes.LPCWSTR]
+        k32.GetCurrentProcess.restype = wintypes.HANDLE
+        k32.GetCurrentProcess.argtypes = []
+        k32.SetInformationJobObject.restype = wintypes.BOOL
+        k32.SetInformationJobObject.argtypes = [
+            wintypes.HANDLE,
+            ctypes.c_int,
+            wintypes.LPVOID,
+            wintypes.DWORD,
+        ]
+        k32.AssignProcessToJobObject.restype = wintypes.BOOL
+        k32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+
+        job = k32.CreateJobObjectW(None, None)
+        if not job:
+            return
+        info = _EXTENDED_LIMIT()
+        info.BasicLimitInformation.LimitFlags = job_object_limit_process_memory
+        info.ProcessMemoryLimit = limit
+        if not k32.SetInformationJobObject(
+            job,
+            job_object_extended_limit_information,
+            ctypes.byref(info),
+            ctypes.sizeof(info),
+        ):
+            return
+        k32.AssignProcessToJobObject(job, k32.GetCurrentProcess())
+        # `job` handle'ı bilerek AÇIK bırakılıyor: kapatılırsa job yok olur ve
+        # sınır düşer. Süreç bittiğinde işletim sistemi ikisini de toplar.
+    except Exception:
+        pass
+
+
+def _block_smoke_child(q, payload):  # pragma: no cover - runs in the child
+    """Çocuk hedefi: üretilen bloğun smoke testini KOŞ, sonucu bildir."""
+    _child_stdio_guard()
+    # SIRA ÖNEMLİ: ağır import ÖNCE, tavan SONRA. Tavanın amacı KULLANICI
+    # KODUNU sınırlamak, kendi altyapımızı değil — `agent` zinciri pandas ve
+    # nautilus_trader'ı çekiyor ve 512 MB'lık tavan altında import bile
+    # tamamlanamıyordu: çocuk `exitcode=1` ile ölüyor, hata da kullanıcının
+    # bloğuna atfediliyordu ("bellek tavanı aşılmış olabilir"), oysa blok hiç
+    # çalışmamıştı. Tavanı import'tan sonra kurmak ikisini ayırır.
+    try:
+        from agent import _test_execute_generated_inproc
+    except Exception as e:  # altyapı hatası — kullanıcı koduna atfetme
+        q.put(("error", f"sandbox import failed: {type(e).__name__}: {e}"))
+        return
+    _install_memory_ceiling(payload.get("mem_mb", 0))
+    try:
+        _test_execute_generated_inproc(
+            payload["src"],
+            meta=payload.get("meta"),
+            require_max_lookback=payload.get("require_max_lookback", False),
+            role_hint=payload.get("role_hint", "entry"),
+        )
+    except Exception as e:
+        q.put(("error", f"{type(e).__name__}: {e}"))
+        return
+    q.put(("result", True))
+
+
+def _block_preview_child(q, payload):  # pragma: no cover - runs in the child
+    """Çocuk hedefi: ``evaluate()``'i N bar boyunca sür, sinyalleri döndür.
+
+    Ebeveyn parquet'i okuyup fiyat listelerini burada veriyor; çocuk pandas'a
+    hiç dokunmuyor. Dönen sözlük çağıranın (``_preview_signals``) grafik
+    sözleşmesindeki üç alanı taşır: ``signals``, ``eval_error``,
+    ``eval_error_bars`` (+ ``evaluate`` hiç tanımlanmadıysa ``no_evaluate``).
+    """
+    _child_stdio_guard()
+    _install_memory_ceiling(payload.get("mem_mb", 0))
+    try:
+        import math as _math
+        import statistics as _stats
+
+        import indicators as _ind_mod
+        from codegate import (
+            compile_with_loop_budget,
+            safe_builtins,
+            safe_module_proxy,
+            validate_generated_code,
+        )
+
+        code = payload["code"]
+        closes = payload["closes"]
+        highs = payload["highs"]
+        lows = payload["lows"]
+        volumes = payload["volumes"]
+
+        validate_generated_code(code)  # dunder/import/loop gates
+        allowed: dict = {
+            # Same builtins the smoke and the on-disk loader use. Rebuilding
+            # this dict from _ALLOWED_BUILTINS alone once left out RuntimeError,
+            # which the injected loop-budget guard raises: a `while True` block
+            # died with `NameError: RuntimeError is not defined` and the
+            # preview's blanket except turned it into an empty chart that reads
+            # as "works" instead of "loop budget exceeded".
+            "__builtins__": safe_builtins(),
+            # Read-only proxies: even inside the child one block must not be
+            # able to rewrite `ind.calc_rsi` for whatever runs after it.
+            "math": safe_module_proxy(_math, "math"),
+            "statistics": safe_module_proxy(_stats, "statistics"),
+            "ind": safe_module_proxy(_ind_mod, "ind"),
+        }
+        ns: dict = {}
+        exec(compile_with_loop_budget(code, "<preview>"), allowed, ns)
+        for k, v in ns.items():
+            if callable(v) and not k.startswith("_"):
+                allowed[k] = v
+        # M1084: budget preamble names land in ns; functions look them up in globals.
+        for _bk in ("__budget", "__budget_tick"):
+            if _bk in ns:
+                allowed[_bk] = ns[_bk]
+        ev = ns.get("evaluate")
+        if ev is None:
+            q.put(("result", {"no_evaluate": True}))
+            return
+
+        class _Block:
+            def __init__(self, params, role):
+                self.params = params
+                self.role = role
+                self.type = "custom"
+
+        class _Port:
+            def is_net_long(self, *a):
+                return False
+
+            def is_net_short(self, *a):
+                return False
+
+            def is_flat(self, *a):
+                return True
+
+        meta = payload.get("meta") or {}
+        default_params = {
+            k: v.get("default") for k, v in (meta.get("params") or {}).items()
+        }
+        block = _Block(default_params, payload.get("role_hint", "entry"))
+        port, state = _Port(), {}
+        start_i = payload["start_i"]
+        signals = []
+        eval_error = None
+        eval_error_bars = 0
+        for i in range(start_i, len(closes)):
+            # M527: provide highs/lows/volumes to indicators like the runtime does.
+            ind_dict = {
+                "highs": highs[: i + 1],
+                "lows": lows[: i + 1],
+                "volumes": volumes[: i + 1],
+            }
+            try:
+                sig = ev(state, block, closes[: i + 1], ind_dict, port)
+            except Exception as exc:
+                # Çökme "sinyal yok" DEĞİLDİR: ilk istisnayı sakla, kaç barda
+                # patladığını say. Grafik yine çizilir (fiyat serisi geçerli),
+                # ama arayüz bunun bir hata olduğunu söyler.
+                sig = None
+                eval_error_bars += 1
+                if eval_error is None:
+                    eval_error = f"{type(exc).__name__}: {exc}"
+            signals.append({"i": i - start_i, "sig": sig})
+        q.put(
+            (
+                "result",
+                {
+                    "signals": signals,
+                    "eval_error": eval_error,
+                    "eval_error_bars": eval_error_bars,
+                },
+            )
+        )
+    except Exception as e:
+        q.put(("error", f"{type(e).__name__}: {e}"))
+
+
+def _user_code_error(err: str, timeout_s: float, mem_mb: int) -> str:
+    """Çocuktan gelen ham hatayı kullanıcının anlayacağı bir cümleye çevir.
+
+    "aşımda net hata ver" gereği: `sandbox: timed out after 10s, terminated`
+    bir operatöre neyi düzelteceğini söylemez; sınırı ve olası sebebi söylemek
+    gerekir. Bellek tavanına takılan çocuk normal bir çıkışla değil öldürülerek
+    bittiği için ebeveyne "crashed" görünür — o ihtimali de uydurmadan, adıyla
+    anıyoruz.
+    """
+    if "timed out" in err:
+        return (
+            f"kod {timeout_s:g}s duvar saati sınırını aştı ve durduruldu "
+            "(sonsuz döngü ya da aşırı ağır hesap?)"
+        )
+    if "crashed" in err:
+        return (
+            f"kod alt süreci çökertti — {mem_mb} MB bellek tavanı aşılmış "
+            f"olabilir ({err})"
+        )
+    return err
+
+
+def run_block_smoke_guarded(
+    src: str,
+    meta: dict | None = None,
+    *,
+    require_max_lookback: bool = False,
+    role_hint: str = "entry",
+    timeout_s: float = USER_CODE_TIMEOUT_S,
+    mem_mb: int = USER_CODE_MEMORY_MB,
+) -> str | None:
+    """Smoke'u öldürülebilir bir çocukta koş. Hata metni ya da ``None``."""
+    payload = {
+        "src": src,
+        "meta": meta,
+        "require_max_lookback": require_max_lookback,
+        "role_hint": role_hint,
+        "mem_mb": mem_mb,
+    }
+    result, err = _run_in_child(_block_smoke_child, payload, None, timeout_s)
+    if err is not None:
+        return _user_code_error(err, timeout_s, mem_mb)
+    return None if result else "smoke: child returned no result"
+
+
+def run_block_preview_guarded(
+    code: str,
+    meta: dict | None,
+    role_hint: str,
+    *,
+    closes: list,
+    highs: list,
+    lows: list,
+    volumes: list,
+    start_i: int,
+    timeout_s: float = USER_CODE_TIMEOUT_S,
+    mem_mb: int = USER_CODE_MEMORY_MB,
+) -> tuple[dict | None, str | None]:
+    """Önizleme sürüşünü öldürülebilir bir çocukta koş → ``(sonuç, hata)``."""
+    payload = {
+        "code": code,
+        "meta": meta,
+        "role_hint": role_hint,
+        "closes": closes,
+        "highs": highs,
+        "lows": lows,
+        "volumes": volumes,
+        "start_i": start_i,
+        "mem_mb": mem_mb,
+    }
+    result, err = _run_in_child(_block_preview_child, payload, None, timeout_s)
+    if err is not None:
+        return None, _user_code_error(err, timeout_s, mem_mb)
+    return result, None

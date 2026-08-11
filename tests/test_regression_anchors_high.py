@@ -306,6 +306,23 @@ class TestMsScoreFactor:
 # futures are collected (not dropped), the timed-out unit becomes an in-band 'unit timeout',
 # the pool is rebuilt and accepts the next batch.
 # ===========================================================================
+# Zamanlama bütçeleri (2026-08-11). Eski değerler (timeout 2,0 s / stall 3,5 s /
+# slow 7,0 s) yüklü bir makinede 5 koşumun 2'sinde düşüyordu ve hata M300 dalını
+# değil ÖLÇÜM PENCERESİNİ suçluyordu: `f1` gerçek yükü yerine timeout payload'ı
+# (metrics=None) döndürüyordu, yani hızlı unit 2 saniyelik bütçe dolmadan
+# BAŞLAYAMAMIŞTI. Testin kendi yorumu bu riski zaten anlatıyor; warmup tek
+# başına yetmedi çünkü submit sonrası ilk yield'in gecikmesi de bütçeden yiyor.
+#
+# Oranlar korunuyor — anlam bunlara bağlı:
+#   stall > timeout   → kalan hızlı future'lar "done ama yield edilmemiş" olur
+#                       (M300 dalının test ettiği tam durum)
+#   slow  > timeout    → yavaş unit gerçekten in-band 'unit timeout' alır
+# Bedeli birkaç saniye; karşılığı CI'da kırmızı yanıp sönmeyen bir çapa.
+_TIMEOUT_S = 6.0
+_STALL_S = 9.0
+_SLOW_S = 25.0
+
+
 class TestRunUnitsTimeout:
     def test_timeout_collects_done_and_rebuilds_pool(self, pool, monkeypatch):  # noqa: F811
         # `probe_run_unit` pickles by reference, so every spawn worker imports
@@ -334,16 +351,16 @@ class TestRunUnitsTimeout:
         # future is yielded, progress_cb sleeps here while the remaining fast
         # futures fall into "done but not yielded" state → M300 branch.
         def _stall_cb(done, total, key):
-            time.sleep(3.5)
+            time.sleep(_STALL_S)
 
         units = [
-            {"key": "slow", "_probe_sleep": 7.0},  # exceeds the timeout
+            {"key": "slow", "_probe_sleep": _SLOW_S},  # exceeds the timeout
             {"key": "f1"},
             {"key": "f2"},
             {"key": "f3"},
             {"key": "f4"},
         ]
-        out = pool.run_units(units, progress_cb=_stall_cb, timeout_s=2.0)
+        out = pool.run_units(units, progress_cb=_stall_cb, timeout_s=_TIMEOUT_S)
 
         # (1) no completed key was dropped
         assert set(out) == {"slow", "f1", "f2", "f3", "f4"}

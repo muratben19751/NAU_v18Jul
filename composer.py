@@ -17,6 +17,13 @@ See: [[strategy_and_actor]], [[order_flow_pipeline]], [[nau_deepr_toplu_sertlest
 
 Blocks emit signals; the composer wires them into a Nautilus `Strategy`. Order submission enters exactly into [[order_flow_pipeline]] (`submit_order` → OrderEmulator/ExecutionAlgorithms/RiskEngine/Adapter).
 
+`load_catalog` skips records it cannot parse — but it no longer does so
+silently (2026-08-11 DeepR finding): every skipped record is logged with its
+real exception, copied (raw JSON, never deleted) into
+`<catalog dir>/quarantine/`, and summarised through
+`last_catalog_load_issues()` for the `catalog_issues` Jinja global that the
+strategy-list banner reads. Same stance as `custom_block_store._read_registry`.
+
 `_current_equity`'s constant (`STARTING_CASH`) fallback used to be silent and
 uncached (2026-08-08 DeepR finding); it now logs once and caches into
 `_equity_mode="constant"` so the rest of the run short-circuits past both
@@ -359,6 +366,28 @@ def _load_module_from_path(name: str, path: Path):
     corrupted on disk; without this check ``exec_module`` would run arbitrary
     code with full privileges at every server startup. ``codegate`` imports only
     ``ast`` so this stays cheap and pulls in no heavy deps.
+
+    BU YOL BİLEREK ALT SÜREÇTE DEĞİL (DeepR 2026-08-11 [ORTA]). Aynı turda
+    önizleme ve smoke ``sandbox``'ın öldürülebilir çocuğuna taşındı; burası
+    taşınamaz, çünkü bu fonksiyonun ÜRÜNÜ canlı bir modül nesnesidir ve o nesne
+    ``BLOCK_REGISTRY`` üzerinden bu süreçte çağrılacaktır — bir alt sürece
+    gönderilen şey geri getirilemez. Kalan riski kabul etmeyi mümkün kılan üç
+    şey var ve üçü de burada yazılı olmalı ki bir gün biri "burada da timeout
+    yok" diye yeniden keşfetmesin:
+
+      1. Buradaki kaynak, kaydedilirken zaten smoke çocuğundan geçmiştir
+         (``agent._test_execute_generated`` → alt süreç, duvar saati + bellek
+         tavanı). Yani "hiç çalıştırılmamış kod" değil.
+      2. Yukarıdaki ``validate_generated_code`` her yüklemede yeniden koşar,
+         yani diskte elle değiştirilmiş bir dosya AST kapısına takılır.
+      3. Çalıştırma ``compile_with_loop_budget`` altındadır: modül gövdesindeki
+         döngüler de 5M adım bütçesine tabidir.
+
+    Kapanmayan boşluk: modül gövdesindeki DÖNGÜSÜZ ağır iş (ya da bir bellek
+    patlaması) hâlâ sınırsızdır. Bunu in-process bir duvar saatiyle "çözmek"
+    tiyatro olurdu — bir thread'i preempt edemezsiniz (bkz. sandbox.py'deki
+    gerekçe). Gerçek çözüm blokları veri olarak yorumlamaktır, süreç sınırı
+    değil; o ayrı bir iş.
     """
     import importlib.util
     import math as _math
@@ -642,6 +671,157 @@ def _read_catalog_raw() -> list | None:
     return raw
 
 
+def has_catalog_entries() -> bool:
+    """Katalogda kayıt var mı — spec'leri parse ETMEDEN.
+
+    `loop_status` fragment'i 2 saniyede bir yenileniyor ve yalnız bu boolean'a
+    ihtiyacı var; her yoklamada tüm kataloğu `ComposedStrategySpec`'lere
+    dönüştürmek boşa iş olurdu. `_read_catalog_raw` zaten (mtime, size) ile
+    memoize, yani dosya değişmedikçe maliyet tek `stat()`.
+    """
+    raw = _read_catalog_raw()
+    return bool(raw)
+
+
+# ── Bozuk katalog kayıtları: sayılıyordu, hiçbir yere yazılmıyordu ──────────
+# DeepR 2026-08-11 [YÜKSEK]: `n_broken` yalnızca yeniden-yazma korumasında
+# kullanılıyordu; ne log ne UI. Kullanıcı 30 stratejiden 28'ini görüyor ve
+# sebebini öğrenebileceği tek bir iz bile yoktu — oysa hemen üstteki
+# custom-block registry hatası düzgün `logging.warning` basıyor. Aynı asimetri
+# `custom_block_store._read_registry`'de de vardı ve orada karantina + log ile
+# çözülmüştü; burada da aynı deseni izliyoruz (kayıt SİLİNMEZ, bir kenara
+# yazılır ve sayısı arayüze taşınır).
+#
+# `(mtime_ns, size)` anahtarı `_CATALOG_RAW_CACHE` ile aynı: load_catalog ~18
+# sıcak yolda çağrılıyor, aynı bozuk dosya için her çağrıda yeni bir karantina
+# dosyası yazmak (ve aynı uyarıyı basmak) gürültüden başka bir şey olmazdı.
+# Anahtar değişince (kullanıcı dosyayı düzeltti) kayıt kendiliğinden düşer.
+_CATALOG_ISSUES: tuple[int, int, dict] | None = None
+
+
+def _quarantine_broken_records(broken: list[dict]) -> str | None:
+    """Bozuk kayıtları `<katalog dizini>/quarantine/` altına gerekçesiyle yaz.
+
+    Karantina, operatörün elle kurtarabilmesi için var olan bir dizin
+    (`strategy_catalog.before-auto360-quarantine...json` gibi izler orada
+    duruyor). Yazma başarısız olursa katalog okuması ASLA düşmez — karantina
+    bir kolaylık, veri yolu değil; kayıt zaten `catalog.json`'da duruyor.
+    """
+    try:
+        from datetime import UTC, datetime
+
+        qdir = CATALOG_FILE.parent / "quarantine"
+        qdir.mkdir(parents=True, exist_ok=True)
+        ts = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
+        path = qdir / f"{CATALOG_FILE.stem}.broken-records.{ts}.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "quarantined_at": datetime.now(UTC).isoformat(),
+                    "source": str(CATALOG_FILE),
+                    "reason": "ComposedStrategySpec.from_dict / validate raised; "
+                    "these records are SKIPPED at load time but NOT deleted from "
+                    "the source catalog.",
+                    "n_broken": len(broken),
+                    "records": broken,
+                },
+                indent=2,
+                ensure_ascii=False,
+                default=str,
+            ),
+            encoding="utf-8",
+        )
+        return str(path)
+    except Exception as e:  # pragma: no cover - defensive
+        logging.getLogger(__name__).warning(
+            "could not write the broken-record quarantine file: %s", e
+        )
+        return None
+
+
+def _record_catalog_issues(broken: list[dict], n_total: int) -> None:
+    """Bozuk kayıtları logla + karantinaya al + `last_catalog_load_issues`'a yaz."""
+    global _CATALOG_ISSUES
+    try:
+        st = CATALOG_FILE.stat()
+        key = (st.st_mtime_ns, st.st_size)
+    except OSError:
+        key = (0, 0)
+    if not broken:
+        # Dosya değişip düzeldiyse eski uyarı ekranda kalmasın.
+        if _CATALOG_ISSUES is not None and _CATALOG_ISSUES[:2] != key:
+            _CATALOG_ISSUES = None
+        return
+    if _CATALOG_ISSUES is not None and _CATALOG_ISSUES[:2] == key:
+        return  # aynı dosya durumu — zaten loglandı/karantinaya alındı
+    log = logging.getLogger(__name__)
+    log.warning(
+        "strategy catalog: %d of %d record(s) could not be loaded and were "
+        "SKIPPED (they are still in %s, nothing was deleted)",
+        len(broken),
+        n_total,
+        CATALOG_FILE,
+    )
+    for b in broken[:10]:  # ilk 10 tanesi log'da yeter; tamamı karantina dosyasında
+        log.warning(
+            "  catalog record #%s (id=%s, name=%s): %s",
+            b.get("index"),
+            b.get("id") or "?",
+            b.get("name") or "?",
+            b.get("error"),
+        )
+    path = _quarantine_broken_records(broken)
+    if path:
+        log.warning("  broken records quarantined to %s", path)
+    _CATALOG_ISSUES = (
+        key[0],
+        key[1],
+        {
+            "n_broken": len(broken),
+            "n_total": n_total,
+            "quarantine_path": path,
+            "catalog_path": str(CATALOG_FILE),
+            # Aynı hata tipinden yüzlerce olabilir; arayüz kısa bir özet ister.
+            "reasons": sorted({b["error"] for b in broken})[:5],
+        },
+    )
+
+
+def last_catalog_load_issues() -> dict | None:
+    """Son `load_catalog()`'ın sessizce düşürdüğü kayıtların özeti (yoksa None).
+
+    Arayüz bunu bir Jinja global'i üzerinden okur (`server.py`), böylece
+    kataloğu render eden her yüzey — Studio Compose sekmesi, kayıt sonrası
+    OOB tazeleme, tekil `/strategy` listesi — aynı bandı tek bir yerden alır.
+    Katalog dosyası o zamandan beri değiştiyse özet BAYAT sayılır ve None
+    döner: düzeltilmiş bir dosyanın üzerinde eski uyarıyı göstermek, sorunu
+    hiç göstermemek kadar yanıltıcı olurdu.
+    """
+    issues = _CATALOG_ISSUES
+    if issues is None:
+        return None
+    try:
+        st = CATALOG_FILE.stat()
+    except OSError:
+        return None
+    if (st.st_mtime_ns, st.st_size) != issues[:2]:
+        return None
+    return dict(issues[2])
+
+
+def _broken_record_entry(index: int, d, exc: Exception) -> dict:
+    """Karantina/log satırı — ham kaydı da taşır (silinmesin, kurtarılabilsin)."""
+    ident = d.get("id") if isinstance(d, dict) else None
+    name = d.get("name") if isinstance(d, dict) else None
+    return {
+        "index": index,
+        "id": ident,
+        "name": name,
+        "error": f"{type(exc).__name__}: {exc}",
+        "record": d,
+    }
+
+
 def load_catalog() -> list[ComposedStrategySpec]:
     raw = _read_catalog_raw()
     if raw is None:
@@ -666,24 +846,38 @@ def load_catalog() -> list[ComposedStrategySpec]:
     # exception-raising custom validate) could turn the whole catalog into [], then
     # via an RMW-save delete 30 strategies. Skip the broken one, keep the rest.
     catalog: list[ComposedStrategySpec] = []
-    n_broken = 0
-    for d in raw:
+    # DeepR 2026-08-11 [YÜKSEK]: sayaç yerine kayıtların KENDİSİ toplanıyor —
+    # "kaç tane" bir uyarı için yeterli değil, kullanıcı "hangisi ve neden"
+    # sorusunu soruyor. Bkz. `_record_catalog_issues`.
+    broken: list[dict] = []
+    for i, d in enumerate(raw):
         try:
             catalog.append(ComposedStrategySpec.from_dict(d))
-        except Exception:
-            n_broken += 1
+        except Exception as e:
+            broken.append(_broken_record_entry(i, d, e))
     if custom_names is None:
+        _record_catalog_issues(broken, len(raw))
         return catalog  # registry unreadable → no pruning, no rewrite
     filtered = []
-    for spec in catalog:
+    for idx, spec in enumerate(catalog):
         try:
             if _catalog_is_valid(spec, custom_names):
                 filtered.append(spec)
-        except Exception:
-            n_broken += 1  # the validate hook blew up — drop the spec but count it
+        except Exception as e:
+            # the validate hook blew up — drop the spec but count/report it
+            broken.append(
+                {
+                    "index": idx,
+                    "id": getattr(spec, "id", None),
+                    "name": getattr(spec, "name", None),
+                    "error": f"{type(e).__name__}: {e}",
+                    "record": "<validate hook raised; spec parsed fine>",
+                }
+            )
+    _record_catalog_issues(broken, len(raw))
     # Only rewrite under lock when VALID records were filtered out (NO broken
     # parse) — saving while a broken record exists would permanently delete them.
-    if len(filtered) != len(catalog) and n_broken == 0:
+    if len(filtered) != len(catalog) and not broken:
         with _CATALOG_LOCK:
             save_catalog(filtered)
     return filtered

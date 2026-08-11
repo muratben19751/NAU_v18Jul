@@ -25,6 +25,11 @@ Block codes are imported at run time; each block is a single function (`evaluate
 `_read_registry()` is memoized by `(path, mtime, size)` (2026-08-08 DeepR
 finding) — the same shape as `composer._read_catalog_raw`'s catalog.json
 cache; see [[nau_performans_denetimi]].
+
+Memoize edilen sözlük PAYLAŞILMAZ: `_read_registry()` her çağırana kendi derin
+kopyasını verir (2026-08-11 DeepR [YÜKSEK]). Aksi halde diske yazmadan sonlanan
+bir read-modify-write cache'i kirletir ve süreç ömrü boyunca diskle çelişen bir
+registry görünümü servis edilirdi.
 """
 
 from __future__ import annotations
@@ -177,6 +182,43 @@ def _registry_guard():
 _REGISTRY_CACHE: tuple[Path, int, int, dict[str, dict[str, Any]]] | None = None
 
 
+def _copy_registry(data: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """Derin kopya — registry ağacı saf JSON olduğu için özyinelemeli kopya yeter.
+
+    Neden gerekli (DeepR 2026-08-11 [YÜKSEK]): memoize edilen sözlük TÜM
+    çağıranlar tarafından paylaşılıyordu ve `_registry_transaction` /
+    `delete_custom` onu YERİNDE değiştiriyordu. Bunun iki somut sonucu vardı:
+      1. Diske yazmadan sonlanan bir işlem (ör. `_write_registry`'de I/O hatası)
+         dosyanın mtime/size'ını değiştirmediği için cache'i geçersizleştirmiyor,
+         süreç ömrü boyunca diskte OLMAYAN bir kaydı (ya da var olan bir kaydın
+         yokluğunu) servis ediyordu. `composer.load_catalog` bu görünümü katalog
+         budamasında girdi olarak kullandığı için sonuç strateji kaybı.
+      2. `list_custom()` sözlüğü kilit DIŞINDA geziyordu; eşzamanlı bir yazıcı
+         aynı nesneyi değiştirdiğinde `RuntimeError: dictionary changed size
+         during iteration`.
+    Kopya döndürmek her iki sızıntıyı da kaynağında kapatır: cache'teki nesne
+    artık hiçbir çağırana verilmez.
+
+    `copy.deepcopy` yerine elle özyineleme: aynı sonucu ~4x ucuza veriyor
+    (357 kayıtlı gerçek registry'de 2.5 ms → 0.6 ms) ve bu fonksiyon
+    `list_custom`/`load_catalog` üzerinden istek başına onlarca kez çağrılıyor —
+    yine de diskten yeniden okuyup parse etmekten (memoize'un varlık sebebi)
+    ucuz kalıyor.
+    """
+    return _copy_json(data)
+
+
+def _copy_json(node: Any) -> Any:
+    """`_copy_registry`'nin özyinelemeli iç adımı (kapsayıcıları yeniden kurar,
+    yaprakları -- str/int/float/bool/None -- olduğu gibi bırakır: JSON
+    yaprakları zaten değişmezdir)."""
+    if type(node) is dict:
+        return {k: _copy_json(v) for k, v in node.items()}
+    if type(node) is list:
+        return [_copy_json(v) for v in node]
+    return node
+
+
 def _read_registry() -> dict[str, dict[str, Any]]:
     """Return the registry mapping or raise ``RegistryUnavailable``.
 
@@ -185,6 +227,10 @@ def _read_registry() -> dict[str, dict[str, Any]]:
     then raised — the previous behaviour quarantined on *any* exception, so a
     single Windows sharing violation during a concurrent save renamed the whole
     registry away and every custom block registration was lost.
+
+    Dönen sözlük HER ZAMAN çağırana özel bir kopyadır (bkz. `_copy_registry`):
+    çağıranlar (ör. `_registry_transaction`) onu yerinde değiştirebilir, bu
+    memoize edilen görünümü kirletmez.
     """
     global _REGISTRY_CACHE
     if not REGISTRY_FILE.exists():
@@ -205,7 +251,7 @@ def _read_registry() -> dict[str, dict[str, Any]]:
             cached is not None
             and (REGISTRY_FILE, st.st_mtime_ns, st.st_size) == cached[:3]
         ):
-            return cached[3]
+            return _copy_registry(cached[3])
     last_err: Exception | None = None
     for attempt in range(_READ_RETRIES):
         try:
@@ -221,7 +267,11 @@ def _read_registry() -> dict[str, dict[str, Any]]:
             if not isinstance(data, dict):
                 raise ValueError("registry.json is not a dict")
             if st is not None:
+                # Cache'e giren nesne bundan sonra kimseye verilmez; çağıran
+                # kendi kopyasını alır (yukarıdaki cache-hit dalıyla aynı
+                # sözleşme — ilk okuma da paylaşılmış nesne döndürmemeli).
                 _REGISTRY_CACHE = (REGISTRY_FILE, st.st_mtime_ns, st.st_size, data)
+                return _copy_registry(data)
             return data
         except (ValueError, TypeError) as e:
             # Preserve bad content for recovery, but never start empty:
@@ -342,6 +392,10 @@ def list_custom(include_ephemeral: bool = True) -> list[dict[str, Any]]:
     """
     # Locked like the writers: an unlocked read could observe the registry mid
     # read-modify-write on another thread (agent worker vs. /studio page load).
+    # Aşağıdaki döngü kilit DIŞINDA dönüyor; bu ancak `_read_registry`'nin
+    # çağırana özel bir kopya döndürmesi sayesinde güvenli — paylaşılan nesne
+    # dönseydi eşzamanlı bir yazıcının `reg[name]=`/`del reg[name]` işlemi
+    # burada "dictionary changed size during iteration" ile patlardı.
     with _STORE_LOCK:
         reg = _read_registry()
     out = []

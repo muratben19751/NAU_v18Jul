@@ -54,31 +54,41 @@ def calc_rsi(closes: list[float], period: int = 14) -> float:
 
 
 def calc_rsi_series(closes: list[float], period: int = 14) -> list[float]:
+    """H4 (DeepR 2026-08-11): hot loop, çünkü ``calc_stoch_rsi`` bunu her barda
+    260'lık pencerede baştan çağırıyor. Aritmetik BİREBİR korundu (parite
+    zorunluluğu); yalnız yorumlayıcı yükü azaltıldı: ``closes[i-1]`` yerine
+    ``prev`` taşınıyor, ``result.append`` ve ``period - 1`` döngü dışına alındı.
+    Wilder güncellemesinin bölme sırası aynı — sonuç bit-bit aynı."""
     if period <= 0:
         raise ValueError("period must be positive")
-    if len(closes) < period + 1:
+    n = len(closes)
+    if n < period + 1:
         return []
-    result: list[float] = []
     avg_gain = 0.0
     avg_loss = 0.0
+    prev = closes[0]
     for i in range(1, period + 1):
-        diff = closes[i] - closes[i - 1]
+        cur = closes[i]
+        diff = cur - prev
+        prev = cur
         if diff > 0:
             avg_gain += diff
         else:
             avg_loss -= diff
     avg_gain /= period
     avg_loss /= period
-    result.append(
+    result: list[float] = [
         100.0 if avg_loss == 0 else 100.0 - 100.0 / (1.0 + avg_gain / avg_loss)
-    )
-    for i in range(period + 1, len(closes)):
-        diff = closes[i] - closes[i - 1]
-        avg_gain = (avg_gain * (period - 1) + (diff if diff > 0 else 0.0)) / period
-        avg_loss = (avg_loss * (period - 1) + (-diff if diff < 0 else 0.0)) / period
-        result.append(
-            100.0 if avg_loss == 0 else 100.0 - 100.0 / (1.0 + avg_gain / avg_loss)
-        )
+    ]
+    append = result.append
+    pm1 = period - 1
+    for i in range(period + 1, n):
+        cur = closes[i]
+        diff = cur - prev
+        prev = cur
+        avg_gain = (avg_gain * pm1 + (diff if diff > 0 else 0.0)) / period
+        avg_loss = (avg_loss * pm1 + (-diff if diff < 0 else 0.0)) / period
+        append(100.0 if avg_loss == 0 else 100.0 - 100.0 / (1.0 + avg_gain / avg_loss))
     return result
 
 
@@ -88,27 +98,33 @@ def sma(values: list[float], period: int) -> list[float]:
     does the O(n) equivalent). Adding the new value and dropping the one that
     fell out of the window is the same arithmetic in a different order — a
     handful of ULPs of drift on long series, not a behavior change."""
-    if len(values) < period:
+    n = len(values)
+    if n < period:
         return []
-    result: list[float] = []
     window_sum = sum(values[:period])
-    result.append(window_sum / period)
-    for i in range(period, len(values)):
+    result: list[float] = [window_sum / period]
+    append = result.append  # attribute lookup döngü dışına (H4 hot path)
+    for i in range(period, n):
         window_sum += values[i] - values[i - period]
-        result.append(window_sum / period)
+        append(window_sum / period)
     return result
 
 
 def ema(values: list[float], period: int) -> list[float]:
-    if len(values) < period:
+    n = len(values)
+    if n < period:
         return []
     k = 2.0 / (period + 1)
-    result: list[float] = []
+    # ``1 - k`` her adımda yeniden hesaplanıyordu; sabit bir double, bir kez
+    # hesaplamak sonucu bit-bit aynı bırakır (H4 hot path — calc_wave_trend
+    # bar başına üç kez ema çağırıyor).
+    one_minus_k = 1 - k
     prev = sum(values[:period]) / period
-    result.append(prev)
-    for i in range(period, len(values)):
-        prev = values[i] * k + prev * (1 - k)
-        result.append(prev)
+    result: list[float] = [prev]
+    append = result.append
+    for i in range(period, n):
+        prev = values[i] * k + prev * one_minus_k
+        append(prev)
     return result
 
 
@@ -122,15 +138,45 @@ def calc_stoch_rsi(
     if len(closes) < rsi_period + stoch_period + 1:
         return {"k": 50.0, "d": 50.0}
     rsi_values = calc_rsi_series(closes, rsi_period)
-    if len(rsi_values) < stoch_period:
+    m = len(rsi_values)
+    if m < stoch_period:
         return {"k": 50.0, "d": 50.0}
-    stoch_k: list[float] = []
-    for i in range(stoch_period - 1, len(rsi_values)):
-        window = rsi_values[i - stoch_period + 1 : i + 1]
-        mn = min(window)
-        mx = max(window)
+    # H4 (DeepR 2026-08-11): eskiden her adımda ``rsi_values[i-13:i+1]`` dilimi
+    # kopyalanıp min+max baştan taranıyordu — 260'lık pencerede 233 dilim × 2
+    # tarama. Şimdi kayan pencere ekstremumu TAŞINIYOR: yeni değer mevcut
+    # min/max'ı geçerse O(1) güncellenir, yalnız ekstremumu TUTAN eleman
+    # pencereden düştüğünde yeniden taranır (rastgele veride ~1/stoch_period
+    # adımda bir). Döndürülen mn/mx aynı float DEĞERLERİ olduğu için — min/max
+    # eşitlikte hangi indeksi seçerse seçsin değer aynı — çıktı bit-bit aynı.
+    head = rsi_values[0:stoch_period]
+    mn = min(head)
+    mx = max(head)
+    mn_i = head.index(mn)
+    mx_i = head.index(mx)
+    v = rsi_values[stoch_period - 1]
+    rng = mx - mn
+    stoch_k: list[float] = [50.0 if rng == 0 else ((v - mn) / rng) * 100.0]
+    append = stoch_k.append
+    left = 1  # pencerenin sol kenarı (dahil)
+    for i in range(stoch_period, m):
+        v = rsi_values[i]
+        if v <= mn:
+            mn = v
+            mn_i = i
+        elif mn_i < left:  # eski minimum pencereden düştü → yeniden tara
+            window = rsi_values[left : i + 1]
+            mn = min(window)
+            mn_i = left + window.index(mn)
+        if v >= mx:
+            mx = v
+            mx_i = i
+        elif mx_i < left:
+            window = rsi_values[left : i + 1]
+            mx = max(window)
+            mx_i = left + window.index(mx)
         rng = mx - mn
-        stoch_k.append(50.0 if rng == 0 else ((rsi_values[i] - mn) / rng) * 100.0)
+        append(50.0 if rng == 0 else ((v - mn) / rng) * 100.0)
+        left += 1
     k_smoothed = sma(stoch_k, k_period)
     d_smoothed = sma(k_smoothed, d_period)
     return {
@@ -142,9 +188,22 @@ def calc_stoch_rsi(
 def _tail3(
     highs: list[float], lows: list[float], closes: list[float]
 ) -> tuple[list[float], list[float], list[float], int]:
-    """Align three series to a common (shortest) length from the tail."""
-    n = min(len(highs), len(lows), len(closes))
-    return highs[-n:], lows[-n:], closes[-n:], n
+    """Align three series to a common (shortest) length from the tail.
+
+    H4: üç seri zaten aynı boydaysa (``_nau_win`` yolunda HER ZAMAN öyle)
+    ``x[-n:]`` üç gereksiz liste kopyası üretiyordu. Aynı boyda orijinal liste
+    döner — çağıranların hiçbiri bu listeleri DEĞİŞTİRMİYOR, yalnız okuyor.
+    """
+    ln_h, ln_l, ln_c = len(highs), len(lows), len(closes)
+    n = ln_h if ln_h < ln_l else ln_l
+    if ln_c < n:
+        n = ln_c
+    return (
+        highs if ln_h == n else highs[-n:],
+        lows if ln_l == n else lows[-n:],
+        closes if ln_c == n else closes[-n:],
+        n,
+    )
 
 
 def calc_atr(
@@ -173,47 +232,107 @@ def calc_adx(
     h, l, c, n = _tail3(highs, lows, closes)  # noqa: E741
     if n < period * 2 + 1:
         return None
-    tr: list[float] = []
-    plus_dm: list[float] = []
-    minus_dm: list[float] = []
-    for i in range(1, n):
-        tr.append(max(h[i] - l[i], abs(h[i] - c[i - 1]), abs(l[i] - c[i - 1])))
-        up_move = h[i] - h[i - 1]
-        down_move = l[i - 1] - l[i]
-        plus_dm.append(up_move if (up_move > down_move and up_move > 0) else 0.0)
-        minus_dm.append(down_move if (down_move > up_move and down_move > 0) else 0.0)
+    # H4 (DeepR 2026-08-11): eskiden bar başına dört ara liste (tr/plus_dm/
+    # minus_dm ~n, dx_values ~n-period) ve HER adımda bir `push_dx()` closure
+    # çağrısı + tek kullanımlık {"pDI","mDI"} sözlüğü üretiliyordu — 260'lık
+    # pencerede ~1000 float + 246 sözlük, hepsi tek bir son değer için.
+    # Artık tek geçiş: tr/±DM anında hesaplanır, DX akışta tüketilir.
+    #
+    # PARİTE: aritmetik sıra birebir korundu. Wilder tohumları hâlâ ``sum()``
+    # ile — Python 3.12 ``sum()`` float'larda Neumaier toplaması yapıyor, elle
+    # ``+=`` biriktirmek son ULP'de sapabilirdi; bu yüzden ilk ``period``
+    # eleman küçük listelerde toplanıp ``sum()``'a veriliyor.
+    seed_tr: list[float] = []
+    seed_plus: list[float] = []
+    seed_minus: list[float] = []
+    ap_tr, ap_plus, ap_minus = seed_tr.append, seed_plus.append, seed_minus.append
+    prev_h, prev_l, prev_c = h[0], l[0], c[0]
+    for i in range(1, period + 1):
+        cur_h, cur_l = h[i], l[i]
+        ap_tr(max(cur_h - cur_l, abs(cur_h - prev_c), abs(cur_l - prev_c)))
+        up_move = cur_h - prev_h
+        down_move = prev_l - cur_l
+        ap_plus(up_move if (up_move > down_move and up_move > 0) else 0.0)
+        ap_minus(down_move if (down_move > up_move and down_move > 0) else 0.0)
+        prev_h, prev_l, prev_c = cur_h, cur_l, c[i]
 
-    sm_tr = sum(tr[:period])
-    sm_plus = sum(plus_dm[:period])
-    sm_minus = sum(minus_dm[:period])
+    sm_tr = sum(seed_tr)
+    sm_plus = sum(seed_plus)
+    sm_minus = sum(seed_minus)
 
-    dx_values: list[float] = []
+    if sm_tr > 0:
+        p_di = (sm_plus / sm_tr) * 100
+        m_di = (sm_minus / sm_tr) * 100
+    else:
+        p_di = m_di = 0.0
+    total = p_di + m_di
+    dx = (abs(p_di - m_di) / total) * 100 if total > 0 else 0.0
 
-    def push_dx():
-        p_di = (sm_plus / sm_tr) * 100 if sm_tr > 0 else 0.0
-        m_di = (sm_minus / sm_tr) * 100 if sm_tr > 0 else 0.0
+    pm1 = period - 1
+    # Wilder ADX tohumu: ilk `period` DX değeri (yine ``sum()`` ile).
+    dx_seed: list[float] = [dx]
+    ap_dx = dx_seed.append
+    i = period + 1
+    seed_stop = i + pm1 if i + pm1 < n else n
+    while i < seed_stop:
+        cur_h, cur_l = h[i], l[i]
+        tr = max(cur_h - cur_l, abs(cur_h - prev_c), abs(cur_l - prev_c))
+        up_move = cur_h - prev_h
+        down_move = prev_l - cur_l
+        prev_h, prev_l, prev_c = cur_h, cur_l, c[i]
+        sm_tr = sm_tr - sm_tr / period + tr
+        sm_plus = (
+            sm_plus
+            - sm_plus / period
+            + (up_move if (up_move > down_move and up_move > 0) else 0.0)
+        )
+        sm_minus = (
+            sm_minus
+            - sm_minus / period
+            + (down_move if (down_move > up_move and down_move > 0) else 0.0)
+        )
+        if sm_tr > 0:
+            p_di = (sm_plus / sm_tr) * 100
+            m_di = (sm_minus / sm_tr) * 100
+        else:
+            p_di = m_di = 0.0
         total = p_di + m_di
-        dx_values.append((abs(p_di - m_di) / total) * 100 if total > 0 else 0.0)
-        return {"pDI": p_di, "mDI": m_di}
+        dx = (abs(p_di - m_di) / total) * 100 if total > 0 else 0.0
+        ap_dx(dx)
+        i += 1
 
-    last = push_dx()
-    for i in range(period, len(tr)):
-        sm_tr = sm_tr - sm_tr / period + tr[i]
-        sm_plus = sm_plus - sm_plus / period + plus_dm[i]
-        sm_minus = sm_minus - sm_minus / period + minus_dm[i]
-        last = push_dx()
+    if len(dx_seed) < period:
+        return {"adx": dx, "plusDI": p_di, "minusDI": m_di}
 
-    if len(dx_values) < period:
-        return {
-            "adx": dx_values[-1] if dx_values else 0.0,
-            "plusDI": last["pDI"],
-            "minusDI": last["mDI"],
-        }
-
-    adx = sum(dx_values[:period]) / period
-    for i in range(period, len(dx_values)):
-        adx = (adx * (period - 1) + dx_values[i]) / period
-    return {"adx": adx, "plusDI": last["pDI"], "minusDI": last["mDI"]}
+    adx = sum(dx_seed) / period
+    while i < n:
+        cur_h, cur_l = h[i], l[i]
+        tr = max(cur_h - cur_l, abs(cur_h - prev_c), abs(cur_l - prev_c))
+        up_move = cur_h - prev_h
+        down_move = prev_l - cur_l
+        prev_h, prev_l, prev_c = cur_h, cur_l, c[i]
+        sm_tr = sm_tr - sm_tr / period + tr
+        sm_plus = (
+            sm_plus
+            - sm_plus / period
+            + (up_move if (up_move > down_move and up_move > 0) else 0.0)
+        )
+        sm_minus = (
+            sm_minus
+            - sm_minus / period
+            + (down_move if (down_move > up_move and down_move > 0) else 0.0)
+        )
+        if sm_tr > 0:
+            p_di = (sm_plus / sm_tr) * 100
+            m_di = (sm_minus / sm_tr) * 100
+        else:
+            p_di = m_di = 0.0
+        total = p_di + m_di
+        adx = (
+            adx * pm1 + ((abs(p_di - m_di) / total) * 100 if total > 0 else 0.0)
+        ) / period
+        i += 1
+    return {"adx": adx, "plusDI": p_di, "minusDI": m_di}
 
 
 def calc_volume_change(volumes: list[float], lookback: int = 20) -> float:
@@ -428,23 +547,43 @@ def calc_wave_trend(
     h, l, c, n = _tail3(highs, lows, closes)  # noqa: E741
     if n < channel_len + avg_len + signal_len + 10:
         return None
-    hlc3 = [(h[i] + l[i] + c[i]) / 3 for i in range(n)]
-    esa = ema(hlc3, channel_len)
-    if not esa:
+    # H4 (DeepR 2026-08-11): boru hattı yedi ayrı geçişti (hlc3 → ema → diff →
+    # ema → ci → ema → sma); iki komşu geçiş kaynaştırıldı. `esa` üretilirken
+    # `diff` aynı döngüde, `d` üretilirken `ci` aynı döngüde doluyor. Aritmetik
+    # ve sıra birebir aynı: ema tohumu hâlâ ``sum(values[:period])/period``,
+    # yineleme hâlâ ``x*k + prev*(1-k)`` — yalnız ara liste taramaları ve
+    # indeks aritmetiği ortadan kalktı.
+    hlc3 = [(a + b + d_) / 3 for a, b, d_ in zip(h, l, c, strict=True)]
+    if n < channel_len:
         return None
-    esa_offset = len(hlc3) - len(esa)
-    diff = [abs(hlc3[i + esa_offset] - esa[i]) for i in range(len(esa))]
-    d = ema(diff, channel_len)
-    if not d:
+    k = 2.0 / (channel_len + 1)
+    one_minus_k = 1 - k
+    # esa = ema(hlc3, channel_len)  +  diff = |hlc3 - esa|  (tek geçiş)
+    esa_v = sum(hlc3[:channel_len]) / channel_len
+    esa: list[float] = [esa_v]
+    diff: list[float] = [abs(hlc3[channel_len - 1] - esa_v)]
+    ap_esa, ap_diff = esa.append, diff.append
+    for i in range(channel_len, n):
+        x = hlc3[i]
+        esa_v = x * k + esa_v * one_minus_k
+        ap_esa(esa_v)
+        ap_diff(abs(x - esa_v))
+    esa_offset = n - len(esa)  # == channel_len - 1
+    n_diff = len(diff)
+    if n_diff < channel_len:
         return None
-    d_offset = len(diff) - len(d)
-    ci: list[float] = []
-    for i in range(len(d)):
-        esa_idx = i + d_offset
-        hlc_idx = esa_idx + esa_offset
-        d_val = d[i]
-        ci.append(
-            (hlc3[hlc_idx] - esa[esa_idx]) / (0.015 * d_val) if d_val > 1e-10 else 0.0
+    # d = ema(diff, channel_len)  +  ci  (tek geçiş)
+    d_val = sum(diff[:channel_len]) / channel_len
+    d_offset = channel_len - 1
+    base = d_offset + esa_offset
+    ci: list[float] = [
+        (hlc3[base] - esa[d_offset]) / (0.015 * d_val) if d_val > 1e-10 else 0.0
+    ]
+    ap_ci = ci.append
+    for i in range(channel_len, n_diff):
+        d_val = diff[i] * k + d_val * one_minus_k
+        ap_ci(
+            (hlc3[i + esa_offset] - esa[i]) / (0.015 * d_val) if d_val > 1e-10 else 0.0
         )
     wt1_arr = ema(ci, avg_len)
     if len(wt1_arr) < signal_len:
