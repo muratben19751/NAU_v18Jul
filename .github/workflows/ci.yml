@@ -19,10 +19,21 @@ jobs:
       - name: Install Python 3.12
         run: uv python install 3.12
 
-      # `uv sync` resolves from pyproject.toml (and uv.lock if committed). Add
-      # `--frozen` once uv.lock is committed to enforce the lockfile.
-      - name: Sync dependencies
-        run: uv sync --extra dev
+      # DeepR 2026-08-11 [YÜKSEK]: plain `uv sync` RE-RESOLVED dependencies on
+      # every run and recorded nothing, so a single upstream release could turn
+      # main red without a line of code changing — and yesterday's green commit
+      # could not be reproduced today. Worse for a backtest lab: Sharpe/drawdown
+      # reproducibility (regression_baseline.json) depends on the pandas/numpy
+      # version, and that version was pinned nowhere.
+      #
+      # `--locked` installs EXACTLY what uv.lock says AND fails if the lockfile
+      # has drifted from pyproject.toml — so adding a dependency without
+      # re-running `uv lock` is caught here, loudly, instead of silently
+      # resolving to whatever is newest. (`--frozen` would also skip
+      # re-resolution but accepts a stale lock; the two flags are mutually
+      # exclusive and `--locked` is the strict one.)
+      - name: Sync dependencies (from the committed lockfile)
+        run: uv sync --locked --extra dev
 
       - name: Ruff lint
         run: uv run ruff check .
@@ -33,15 +44,27 @@ jobs:
       - name: Compile all
         run: uv run python -m compileall -q backtest.py backtest_robustness.py wfo_optimizer.py composer.py data.py agent.py server.py constants.py web tests
 
+      # `-ra` (also in pyproject's addopts) prints the REASON for every skip.
+      # DeepR 2026-08-11 [YÜKSEK]: a skipped test used to be a bare number in
+      # the summary line, so an environment-dependent skip of a critical path
+      # was indistinguishable from a genuinely green suite. `--junitxml` feeds
+      # the "Skipped tests" step below, which writes the same information into
+      # the GitHub job summary — visible without opening the log.
       - name: Pytest
-        run: uv run pytest -q tests
+        run: uv run pytest -q -ra --junitxml=pytest-report.xml tests
 
-      # DeepR 2026-08-08 [YÜKSEK]: the one real end-to-end chain test
-      # (POST /backtest/run → progress poll → result render) is excluded from
-      # the default run above (`addopts = -m "not e2e"`, pyproject.toml) since
-      # it hits real Bybit network and takes ~2 min — but that meant it never
-      # ran ANYWHERE, so a break in the chain (run_id parsing, the HTMX poll
-      # fragment, verdict-badge rendering) went undetected.
+      # The full POST /backtest/run → progress poll → result render chain now
+      # runs in the step above too: TestBacktestChainOffline drives the real
+      # route/worker/sandbox/Nautilus engine with a synthetic bar frame, so a
+      # break in the chain fails CI even without network. The step below is
+      # the LIVE-data twin of the same chain.
+      #
+      # DeepR 2026-08-08 [YÜKSEK]: the one real end-to-end chain test is
+      # excluded from the default run above (`addopts = -m "not e2e"`,
+      # pyproject.toml) since it hits real Bybit network and takes ~2 min —
+      # but that meant it never ran ANYWHERE, so a break in the chain (run_id
+      # parsing, the HTMX poll fragment, verdict-badge rendering) went
+      # undetected.
       #
       # DeepR 2026-08-09 [YÜKSEK] follow-up: the original fix used
       # `continue-on-error: true` so a Bybit network hiccup could never block
@@ -50,13 +73,58 @@ jobs:
       # the fix was meant to close. Retrying absorbs a transient network blip
       # (passes on attempt 2/3) while a reproducible failure (a real
       # regression) still fails all 3 attempts and blocks the PR for real.
+      #
+      # DeepR 2026-08-11 [YÜKSEK] follow-up: the retry loop also accepted a run
+      # that COLLECTED NOTHING (the spec_id fixture skipped when the runner had
+      # no ~/.cache catalog) as success — "green because it never ran". The
+      # fixture now seeds its own tmp catalog, and the "N passed" check below
+      # turns an exit-0-but-nothing-ran run into a hard error instead of a
+      # silent pass.
       - name: Pytest (e2e — live Bybit, retried for network flakiness)
         shell: pwsh
         run: |
           $attempts = 3
           for ($i = 1; $i -le $attempts; $i++) {
-            uv run pytest -q -m e2e tests
-            if ($LASTEXITCODE -eq 0) { exit 0 }
+            $out = uv run pytest -m e2e -ra --tb=short tests 2>&1 | Out-String
+            Write-Host $out
+            if ($LASTEXITCODE -eq 0) {
+              if ($out -match '(\d+) passed') {
+                Write-Host "e2e: $($Matches[1]) test(s) actually passed."
+                exit 0
+              }
+              Write-Host "::error::e2e step exited 0 but NO test passed - the live chain was never exercised."
+              exit 1
+            }
             Write-Host "e2e attempt $i/$attempts failed (exit $LASTEXITCODE)"
           }
           exit $LASTEXITCODE
+
+      # Skipped tests are a finding, not noise: surface them in the job summary
+      # so "which critical path went untested on this runner" is answerable
+      # without scrolling the log (DeepR 2026-08-11 [YÜKSEK]).
+      - name: Report skipped tests
+        if: always()
+        shell: pwsh
+        run: |
+          if (-not (Test-Path pytest-report.xml)) {
+            Write-Host "no pytest-report.xml - the pytest step did not produce one"
+            exit 0
+          }
+          [xml]$r = Get-Content pytest-report.xml
+          $suite = $r.testsuites.testsuite
+          $n = [int]$suite.skipped
+          $lines = @("## Pytest skips: $n")
+          if ($n -gt 0) {
+            $lines += ""
+            $lines += "| Test | Reason |"
+            $lines += "| --- | --- |"
+            foreach ($tc in $suite.testcase) {
+              if ($tc.skipped) {
+                $why = ($tc.skipped.message -replace '\|', '/' -replace '\r?\n', ' ')
+                $lines += "| ``$($tc.classname).$($tc.name)`` | $why |"
+              }
+            }
+            Write-Host "::warning::$n test(s) were SKIPPED - see the job summary for reasons."
+          }
+          $lines | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          $lines | ForEach-Object { Write-Host $_ }

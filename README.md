@@ -23,7 +23,7 @@ python3.12 -m venv .venv && source .venv/bin/activate && pip install -e ".[dev]"
 `agent.py` LLM backend'ini `NAUTILUS_LLM_BACKEND` env var'ı ile seçer (`auto` | `api` | `claude-cli`, varsayılan `auto`):
 
 1. **Claude aboneliği (API key gerekmez):** Makinede [Claude Code](https://claude.com/claude-code) kuruluysa ve abonelikle giriş yapıldıysa (`claude` komutu PATH'te), LLM çağrıları `claude -p` headless modu üzerinden aboneliğinden yapılır. `auto` modda `ANTHROPIC_API_KEY` yoksa otomatik bu yol seçilir. CLI farklı bir yoldaysa `NAUTILUS_CLAUDE_CLI` ile tam yolu ver.
-2. **API key:** `ANTHROPIC_API_KEY` env var'ı (veya `~/.nautilus_proxy_key` dosyası) ayarlıysa anthropic SDK ile doğrudan (ya da `ANTHROPIC_BASE_URL` proxy'si üzerinden) çağrı yapılır.
+2. **API key:** `ANTHROPIC_API_KEY` env var'ı (veya `~/.nautilus_proxy_key` dosyası) ayarlıysa anthropic SDK ile **doğrudan resmi API'ye** (`https://api.anthropic.com`) çağrı yapılır. Araya bir proxy/gateway koymak istersen `ANTHROPIC_BASE_URL`'i AÇIKÇA ayarla; ayarlıysa hem `agent.py` hem Strategy Studio'nun AI katmanı aynı uca konuşur, ve o uç yanıt vermezse hata jenerik bir bağlantı hatası değil "LLM proxy yanıt vermiyor: `<url>`" der.
 
 İkisi de yoksa agent LLM adımları fallback'e (rastgele öneri) düşer.
 
@@ -32,6 +32,7 @@ python3.12 -m venv .venv && source .venv/bin/activate && pip install -e ".[dev]"
 | Değişken | Varsayılan | Ne yapar |
 |---|---|---|
 | `ANTHROPIC_API_KEY` | — | LLM için API anahtarı (yoksa `claude-cli` aboneliği denenir) |
+| `ANTHROPIC_BASE_URL` | resmi API | Anthropic ucu — yalnız açıkça ayarlanınca proxy/gateway kullanılır (agent.py + Studio AI aynı ucu okur) |
 | `NAUTILUS_LLM_BACKEND` | `auto` | `auto` \| `api` \| `claude-cli` — LLM backend seçimi |
 | `NAUTILUS_CLAUDE_CLI` | `claude` | Claude Code CLI tam yolu (PATH'te değilse) |
 | `NAUTILUS_PARALLEL` | `1` | `0` = robustness/WFO süreç havuzunu kapat (sıralı yol) |

@@ -1,3 +1,19 @@
+# Bir build backend'i ADI GEÇMEZSE pip/uv, setuptools'un eski (legacy) yoluna
+# düşer: hangi setuptools sürümüyle, hangi otomatik-keşif kurallarıyla
+# kurulduğu makineye göre değişir. PEP 517 backend'ini burada sabitlemek
+# kurulumu makineden bağımsız hâle getirir (DeepR 2026-08-11 [YÜKSEK]).
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+# Bu depo bir KÜTÜPHANE değil, bir uygulama: modüller kök dizinden
+# (`python server.py`, `pytest tests`) çalıştırılır, site-packages'a
+# kopyalanmaz. py-modules'ı boş bırakmak setuptools'un düz yerleşimde
+# "Multiple top-level modules discovered" ile durmasını engeller; proje
+# kurulumu yalnızca BAĞIMLILIKLARI getirir.
+[tool.setuptools]
+py-modules = []
+
 [project]
 name = "nautilus-web-app"
 version = "0.1.0"
@@ -52,6 +68,12 @@ extend-exclude = [
     # Scratch/debug scripts (manual browser-driven E2E probes, one-off fix
     # scripts) — not linted, not part of the app.
     "debug",
+    # pytest çalışma dizini: içindeki .py'ler LLM'in ÜRETTİĞİ blok kodlarıdır
+    # (agnt_e_*/agnt_x_*), testler koştukça yeniden yazılırlar. Ürün kodu
+    # olmadıkları için biçimlendirilmeleri anlamsız; dahil bırakmak `ruff
+    # format --check .`'i (CI'nın koştuğu komut) test koşumundan sonra
+    # kimsenin yapmadığı bir değişiklik yüzünden kırıyordu.
+    "work",
 ]
 
 [tool.ruff.lint]
@@ -68,7 +90,13 @@ testpaths = ["tests"]
 # e2e: canlı ağ çağrısı yapan (örn. Bybit'ten gerçek bar indiren), dakikalar
 # sürebilen testler — varsayılan koşumdan hariç, açıkça `-m e2e` ile çalıştırılır.
 markers = ["e2e: hits a live external API and can take minutes; run explicitly with -m e2e"]
-addopts = "-m \"not e2e\""
+# `-ra`: DeepR 2026-08-11 [YÜKSEK] — atlanan testler SESSİZ olmasın. Ortama
+# bağlı skip'ler (dış katalog yoksa test_sandbox.TestExternalRecipe gibi)
+# özet satırında yalnız bir sayı olarak görünüyordu; gerekçesi hiçbir yere
+# basılmadığı için "1 skipped" kimsenin bakmadığı bir rakamdı. `-ra` her
+# skip/xfail'in SEBEBİNİ dosya:satır ile birlikte kısa özete yazar, yani
+# "hangi kritik akış bu makinede/CI'da sınanmadı" sorusu tek bakışta cevaplanır.
+addopts = "-m \"not e2e\" -ra"
 # Üçüncü-parti deprecation gürültüsünü sustur (ikisi de bizim kodumuzda değil,
 # `grep utcnow` → 0; yükseltme dışında düzeltilemez) — gerçek sinyal görünür kalsın.
 #   - Timestamp.utcnow: nautilus_trader 1.230 engine.run() içinden
@@ -80,6 +108,18 @@ filterwarnings = [
     "ignore:.*Using `httpx`.*:DeprecationWarning",
 ]
 
-# Abstract dependency floors live in [project]; uv.lock (run `uv lock`) pins the
-# exact resolved versions for reproducible installs. Install with:
-#   uv sync --extra dev      (or)   pip install -e ".[dev]"
+# Bağımlılık kilidi (DeepR 2026-08-11 [YÜKSEK])
+# ---------------------------------------------
+# Soyut alt sınırlar [project]'te durur; TAM sürümler `uv.lock`'ta — ve uv.lock
+# artık depoya işlenmiştir. Kilit, bu süitin YEŞİL olduğu kurulu ortamdan
+# üretildi (98 paketin tamamı geliştirme makinesindeki sürümlerle birebir), yani
+# CI ile yerel makine aynı pandas/numpy/pyarrow'u koşar — bir backtest
+# laboratuvarında Sharpe/drawdown tekrar-üretilebilirliği (regression_baseline.json)
+# doğrudan buna bağlı.
+#
+#   Kurulum : uv sync --locked --extra dev     (CI aynı komutu koşar)
+#             pip install -e ".[dev]"          (kilidi OKUMAZ; yalnız yerel kolaylık)
+#   Yükseltme: uv lock --upgrade-package <ad>  → uv.lock'u da commit'le
+#
+# `uv sync --locked` kilit pyproject'ten SAPMIŞSA hata verir: yeni bir bağımlılık
+# `uv lock` koşulmadan eklenirse CI sessizce en yenisini çözmek yerine kırılır.

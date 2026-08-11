@@ -6,6 +6,11 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 
+# PEP 517 build çıktıları (pyproject'e [build-system] eklendi — `uv build` /
+# `pip install -e .` bunları üretir). uv.lock BUNLARIN AKSİNE versiyonlanır.
+build/
+dist/
+
 # Virtualenv
 .venv/
 venv/
