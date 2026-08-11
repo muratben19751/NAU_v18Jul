@@ -53,7 +53,7 @@ import threading
 import time
 from pathlib import Path
 
-from anthropic import Anthropic
+from anthropic import Anthropic, APIConnectionError
 
 import llm_client  # module-qualified _model_lock/_active_model mutation below
 from llm_client import (
@@ -62,6 +62,7 @@ from llm_client import (
     _admit_llm_request,
     _check_llm_cancelled,
     _ClaudeCLIClient,
+    _llm_request_token_bound,
     _observe_llm,
     _output_cap_telemetry,
     current_model,
@@ -75,6 +76,47 @@ from openrouter_backend import (
 
 _client: Anthropic | _ClaudeCLIClient | _OpenRouterClient | None = None
 _client_lock = threading.Lock()
+
+# Anthropic SDK'nın kendi varsayılan ucu. Yalnız log/hata metinlerinde adı
+# geçsin diye burada: istemciye base_url=None verilir, uç seçimi SDK'nındır.
+ANTHROPIC_OFFICIAL_BASE_URL = "https://api.anthropic.com"
+
+
+def _configured_base_url() -> str:
+    """AÇIKÇA ayarlanmış Anthropic ucu (proxy) — yoksa "" (resmi API).
+
+    DeepR 2026-08-11 [YÜKSEK]: burada eskiden sabit bir varsayılan vardı
+    (`http://localhost:6655`, bir Hyperspace proxy'si). Sonuç: yalnız
+    ANTHROPIC_API_KEY veren TEMİZ bir kurulumda — README'nin "doğrudan API"
+    dediği durumda — her çağrı bu makinede koşmayan bir porta gidiyor,
+    bağlantı hatasıyla düşüyor, `_is_credit_exhausted` tetiklenmediği için
+    çağıranların graceful fallback'i devreye giriyor ve koşu "Random …
+    (Claude unavailable)" kompozisyonlarıyla NORMAL görünerek sürüyordu.
+    Varsayılan artık resmi uç; proxy bir tercihtir, kader değil.
+    """
+    return os.environ.get("ANTHROPIC_BASE_URL", "").strip()
+
+
+class LLMEndpointUnreachable(RuntimeError):
+    """Ayarlanmış özel uç (proxy) yanıt vermiyor — jenerik bağlantı hatası değil.
+
+    `APIConnectionError` tek başına "internet yok mu, proxy mi ölü, DNS mi
+    bozuk" ayrımını yapmaz; ANTHROPIC_BASE_URL ayarlıyken bu ayrımın cevabı
+    neredeyse her zaman "proxy ölü" olur ve kullanıcının yapacağı iş bellidir
+    (proxy'yi kaldır ya da başlat). Hata metni bunu söylesin diye ayrı tip.
+    """
+
+
+def _endpoint_error(exc: Exception) -> Exception:
+    """Bağlantı hatasını, özel uç ayarlıysa, adıyla anılan bir hataya çevir."""
+    base = _configured_base_url()
+    if not base or not isinstance(exc, APIConnectionError):
+        return exc
+    return LLMEndpointUnreachable(
+        f"LLM proxy yanıt vermiyor: {base} (ANTHROPIC_BASE_URL). "
+        "Proxy'yi başlat ya da bu değişkeni kaldır — kaldırılınca çağrılar "
+        f"resmi uca ({ANTHROPIC_OFFICIAL_BASE_URL}) gider."
+    )
 
 
 def model_unavailable_reason(model: str | None) -> str:
@@ -146,6 +188,49 @@ def _ledger_record(resp, called_model: str, purpose: str) -> None:
         token_ledger.record(actual, getattr(resp, "usage", None), purpose)
     except Exception:
         pass
+
+
+def _ledger_record_usage(usage: dict, model: str, purpose: str) -> None:
+    """`_ledger_record`'ın yanıtsız hâli — elde bir usage sözlüğü varken.
+
+    Yanıt nesnesi olmayan (timeout) çağrıların tahmini girdisi buradan geçer;
+    `purpose` etiketi çağıran tarafından ``:error-est`` ile işaretlenir.
+    """
+    try:
+        import token_ledger
+
+        token_ledger.record(model, usage, purpose)
+    except Exception:
+        pass
+
+
+# Bir başarısız çağrının promptu sağlayıcıya GİTTİ. OpenRouter'da ölçüldü:
+# istemci tarafında deadline dolunca child process öldürülüyor ama üretim
+# sunucu tarafında sürüyor ve faturalanıyor. Bunu 0 saymak bütçe tavanını
+# köreltiyordu — denetlenen koşuda 52 çağrının 13'ü böyle bitti ve ~94k girdi
+# token'ı hiç sayılmadı, 250.000'lik tavan fiilen %7,5 aşıldı.
+#
+# `_llm_request_token_bound`'un `input_token_bound`'u UTF-8 BYTE sayısıdır:
+# admission için doğru (üst sınır), ama harcamayı raporlamak için ~4 kat
+# abartır. Harcama tahmininde bu bölen kullanılır. Tahmin asla gerçek
+# faturayla karıştırılmaz — kayda `estimated: True` düşer.
+_BYTES_PER_TOKEN_EST = 4
+
+
+def _estimated_error_usage(kwargs: dict, model: str, purpose: str) -> dict | None:
+    """Yanıtsız kalan bir çağrının TAHMİNİ girdi kullanımı (yoksa None)."""
+    # İçeriksiz istekte geriye yalnız çerçeveleme payı kalır; onu "harcanmış
+    # token" diye yazmak defteri gürültüyle doldurur.
+    if not (kwargs.get("system") or kwargs.get("messages")):
+        return None
+    try:
+        bound = _llm_request_token_bound(kwargs, model=model, purpose=purpose)
+        est_in = int(bound.get("input_token_bound") or 0) // _BYTES_PER_TOKEN_EST
+    except Exception:
+        return None
+    if est_in <= 0:
+        return None
+    return {"input_tokens": est_in, "output_tokens": 0, "estimated": True}
 
 
 class TruncatedResponse(RuntimeError):
@@ -301,15 +386,37 @@ def _create_message_once(client, _purpose: str = "", **kwargs):
         try:
             response = fn()
         except Exception as exc:
+            cancelled = isinstance(exc, LLMCallCancelled)
+            # STOP'ta tahmin yazmıyoruz: iptal çağrı sınırında da yakalanabilir,
+            # yani prompt hiç gitmemiş olabilir. Timeout/hata yolunda ise gitti.
+            est_usage = (
+                None
+                if cancelled
+                else _estimated_error_usage(kwargs, called_model, _purpose or "llm")
+            )
             _observe_llm(
                 model=called_model,
                 purpose=_purpose or "llm",
-                usage=None,
+                usage=est_usage,
                 duration_s=round(time.monotonic() - started, 3),
                 max_tokens=requested_max_tokens,
-                status="cancelled" if isinstance(exc, LLMCallCancelled) else "error",
+                status="cancelled" if cancelled else "error",
                 error=f"{type(exc).__name__}: {exc}"[:500],
             )
+            if est_usage is not None:
+                # Deftere de geçsin, ama amaç etiketiyle AYRIŞSIN: gerçek
+                # faturayı tahminle karıştırmak defterin değerini bitirirdi.
+                _ledger_record_usage(
+                    est_usage, called_model, f"{_purpose or 'llm'}:error-est"
+                )
+            # Ayarlı bir proxy'ye ulaşılamıyorsa hata bunu SÖYLESİN. Çağıranların
+            # çoğu istisnayı `type(e).__name__` ile raporluyor; "APIConnectionError"
+            # kullanıcının bakacağı yeri göstermezken "proxy yanıt vermiyor: <url>"
+            # gösterir. Kredi tükenmesi bu daldan geçmez (bağlantı hatası hiçbir
+            # zaman billing_error değildir), yani fallback mantığı bozulmaz.
+            translated = _endpoint_error(exc)
+            if translated is not exc:
+                raise translated from exc
             raise
         usage = _usage_dict(response)
         _observe_llm(
@@ -375,25 +482,31 @@ def _build_client() -> Anthropic | _ClaudeCLIClient | _OpenRouterClient:
     - "claude-cli": Claude Code CLI (`claude -p`) — subscription (OAuth), no key needed
     - "openrouter": OpenRouter (OpenAI-compatible API) — OPENROUTER_API_KEY required
     - "auto" (default): API if a key exists, otherwise the claude CLI
+
+    Uç (endpoint) varsayılanı RESMİ API'dir; yerel/kurumsal bir proxy yalnız
+    ``ANTHROPIC_BASE_URL`` AÇIKÇA verilince devreye girer (`_configured_base_url`).
     """
     backend = os.environ.get("NAUTILUS_LLM_BACKEND", "auto").strip().lower()
 
     if backend == "openrouter":
         return _build_openrouter_client()
 
-    # Hyperspace AI proxy takes priority; falls back to direct Anthropic.
-    # The proxy key must be set via ANTHROPIC_API_KEY env var or
-    # ~/.nautilus_proxy_key file — never hardcoded.
-    proxy_key = os.environ.get("ANTHROPIC_API_KEY", "")
-    if not proxy_key:
+    # The API key must be set via ANTHROPIC_API_KEY env var or the
+    # ~/.nautilus_proxy_key file (adı tarihsel: dosya bir proxy anahtarı için
+    # açılmıştı, bugün doğrudan API anahtarını da taşıyor) — never hardcoded.
+    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if not api_key:
         key_file = Path.home() / ".nautilus_proxy_key"
         if key_file.exists():
-            proxy_key = key_file.read_text().strip()
+            api_key = key_file.read_text().strip()
 
-    if backend in ("api", "auto") and proxy_key:
-        proxy_url = os.environ.get("ANTHROPIC_BASE_URL", "http://localhost:6655")
-        logging.info("LLM backend: anthropic SDK (%s)", proxy_url)
-        return Anthropic(base_url=proxy_url, api_key=proxy_key)
+    if backend in ("api", "auto") and api_key:
+        base_url = _configured_base_url()
+        logging.info(
+            "LLM backend: anthropic SDK (%s)", base_url or ANTHROPIC_OFFICIAL_BASE_URL
+        )
+        # base_url=None → SDK'nın kendi varsayılanı (resmi api.anthropic.com).
+        return Anthropic(base_url=base_url or None, api_key=api_key)
     if backend == "api":
         raise RuntimeError(
             "NAUTILUS_LLM_BACKEND=api but ANTHROPIC_API_KEY is not set. "

@@ -56,6 +56,70 @@ def benchmark_and_excess(
     return benchmark, float(pnl_pct) - benchmark
 
 
+# Buy&hold'un iki bacaklı işlem maliyeti (giriş + çıkış), hesap yüzdesi olarak.
+# Sıfır değil çünkü "aynı maliyet tabanı" iddiası ancak iki taraf da maliyet
+# ödediğinde doğrudur; küçük ama dürüst. IBKR Pro sabit tarifesinde $10k'lık tek
+# bir alım-satım çifti ~2 × $1 minimum = %0,02.
+BENCHMARK_ROUND_TRIP_COST_FRACTION = env_float("NAU_BENCHMARK_RT_COST", 0.0002)
+
+# Fiyat serisi temettü ayarlı DEĞİLSE buy&hold getirisi eksik hesaplanır: QQQ'da
+# ~%0,55/yıl, 23 yılda bileşik olarak ~%13. Varsayılan 0 — bilinmeyen bir veriyi
+# uydurmak, eksik saymaktan daha kötü. Enstrüman biliniyorsa operatör ayarlar.
+BENCHMARK_DIVIDEND_YIELD_ANNUAL = env_float("NAU_BENCHMARK_DIV_YIELD", 0.0)
+
+_SECONDS_PER_YEAR = 365.25 * 24 * 3600
+
+
+def annualized_return(total_return: float, years: float) -> float | None:
+    """Kümülatif getiriyi CAGR'a çevir. Hesaplanamıyorsa None.
+
+    Kapı eşiğinin veri penceresinden BAĞIMSIZ olması bu dönüşüme bağlı:
+    kümülatif fark 23 yıllık bir seride %2093, 1 yıllıkta %20 çıkar ve aynı
+    eşik iki koşuda bambaşka bir sertlik demeye başlar (ölçüm 2026-08-10:
+    12 adayın 12'si kümülatif kapıda elendi, 9'u kârlı olmasına rağmen).
+    """
+    if not math.isfinite(total_return) or not math.isfinite(years) or years <= 0:
+        return None
+    growth = 1.0 + total_return
+    if growth <= 0:
+        # Toplam kayıp: CAGR tanımsız (negatif tabanın kesirli kuvveti).
+        return -1.0
+    return growth ** (1.0 / years) - 1.0
+
+
+def window_years(bars) -> float | None:
+    """Bar penceresinin takvim uzunluğu (yıl). İndeks zaman damgalı değilse None."""
+    try:
+        idx = bars.index
+        span = (idx[-1] - idx[0]).total_seconds()
+    except (AttributeError, TypeError, IndexError):
+        return None
+    if not math.isfinite(span) or span <= 0:
+        return None
+    return span / _SECONDS_PER_YEAR
+
+
+def max_drawdown_fraction(closes) -> float | None:
+    """Buy&hold'un maksimum düşüşü (negatif kesir; -0.53 = %53 düşüş).
+
+    Risk-ayarlı karşılaştırmanın benchmark bacağı: stratejinin Calmar'ını
+    "buy&hold ne kadar acı çektirdi" ile aynı ölçekte karşılaştırabilmek için.
+    """
+    peak = None
+    worst = 0.0
+    for value in closes:
+        try:
+            v = float(value)
+        except (TypeError, ValueError):
+            continue
+        if not math.isfinite(v) or v <= 0:
+            continue
+        peak = v if peak is None or v > peak else peak
+        if peak:
+            worst = min(worst, v / peak - 1.0)
+    return worst if peak is not None else None
+
+
 def stamp_buy_hold_benchmark(
     metrics: dict | None, bars, *, label: str | None = None
 ) -> None:
@@ -92,3 +156,53 @@ def stamp_buy_hold_benchmark(
     metrics["strategy_return_cost_basis"] = "net_simulated_costs"
     if label is not None:
         metrics["benchmark"] = label
+    _stamp_annualized_comparison(metrics, bars, benchmark, float(pnl_pct))
+
+
+def _stamp_annualized_comparison(
+    metrics: dict, bars, benchmark_gross: float, pnl_pct: float
+) -> None:
+    """Pencere-bağımsız, aynı maliyet tabanlı karşılaştırma alanlarını ekle.
+
+    Kümülatif fark (`excess_return_fraction`) geriye uyumluluk için duruyor ama
+    KARAR ölçütü olamaz: büyüklüğü tamamen veri penceresinin uzunluğuna bağlı ve
+    iki bacağı farklı maliyet tabanında (brüt benchmark, net strateji). Buradaki
+    alanlar o iki kusuru da kapatır — yıllıklandırılmış ve iki taraf da net.
+
+    Temettü: fiyat serisi temettü ayarlı değilse buy&hold gerçekte daha yüksek
+    getirir; varsayılan 0 ile bu FARK GÖRMEZDEN GELİNMEZ, sadece sayılmaz —
+    `benchmark_dividend_yield_annual` alanı kaydedildiği için okuyan kişi
+    karşılaştırmanın hangi varsayımla yapıldığını bilir.
+    """
+    years = window_years(bars)
+    if years is None:
+        return
+    div = BENCHMARK_DIVIDEND_YIELD_ANNUAL
+    bench_cagr = annualized_return(
+        benchmark_gross - BENCHMARK_ROUND_TRIP_COST_FRACTION, years
+    )
+    strat_cagr = annualized_return(pnl_pct, years)
+    if bench_cagr is None or strat_cagr is None:
+        return
+    bench_cagr += div
+    metrics["window_years"] = years
+    metrics["benchmark_cagr"] = bench_cagr
+    metrics["strategy_cagr"] = strat_cagr
+    metrics["annualized_alpha"] = strat_cagr - bench_cagr
+    metrics["benchmark_dividend_yield_annual"] = div
+    metrics["benchmark_net_cost_basis"] = "round_trip_cost_and_optional_dividends"
+    try:
+        bench_dd = max_drawdown_fraction(bars["close"])
+    except (KeyError, TypeError):
+        bench_dd = None
+    if bench_dd is None:
+        return
+    metrics["benchmark_max_dd"] = bench_dd
+    metrics["benchmark_calmar"] = bench_cagr / max(abs(bench_dd), 0.01)
+    strat_dd = metrics.get("max_dd")
+    try:
+        strat_dd = float(strat_dd)
+    except (TypeError, ValueError):
+        return
+    if math.isfinite(strat_dd):
+        metrics["strategy_calmar"] = strat_cagr / max(abs(strat_dd), 0.01)

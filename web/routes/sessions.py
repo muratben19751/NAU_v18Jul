@@ -20,6 +20,7 @@ import json
 import logging
 import os
 import re
+import threading
 from collections import deque
 from datetime import datetime
 from pathlib import Path
@@ -52,6 +53,10 @@ _STRUCTURAL_EVENTS = frozenset(
         "custom_block_generated",
         "holdout_result",
         "custom_block_error",
+        # Bozulma olayı yapısal: uzun oturumlarda `steps` deque'i taşınca
+        # eleniyordu, yani koşu ne kadar uzunsa fallback kanıtı o kadar kesin
+        # kayboluyordu — tam da en çok gerektiği yerde.
+        "degraded",
     }
 )
 
@@ -365,6 +370,116 @@ def _read_events_head_tail(
     except OSError:
         pass
     return events, n_heavy_skipped
+
+
+# ── Detay sayfasının olay önbelleği ───────────────────────────────────────
+# DeepR 2026-08-11 [ORTA]: liste sayfasının özetleri `_SUMMARY_CACHE` ile
+# (mtime_ns, size) anahtarlı önbellekleniyordu ama DETAY yolunda hiçbir
+# önbellek yoktu — sayfa her yenilendiğinde tam maliyet yeniden ödeniyor,
+# üstelik `to_thread` havuzundan bir iş parçacığı o süre boyunca tutuluyordu.
+# Ölçüldü (sıcak sayfa önbelleğiyle; soğuk diskte kat kat fazla):
+#   • 267 MB `6a6ab8e4.jsonl` → head/tail yolu 702 ms
+#   •  47 MB `c1de959a.jsonl` → tam okuma  466 ms
+# Kapanmış oturum dosyaları hiç değişmez, yani (mtime_ns, size) bu iş için
+# birebir — `_SUMMARY_CACHE` ile aynı anahtar, aynı sözleşme.
+#
+# GEÇERSİZLEŞME SÖZLEŞMESİ:
+#   • Anahtar (mtime_ns, size). AKTİF (büyüyen) oturumun dosyası her yazımda
+#     değişir → o oturum hiçbir zaman bayat gösterilmez, her istekte yeniden
+#     okunur. Kapanmış oturumlar bir kez okunur.
+#   • Bayatlama penceresi YOK; dosya değişmediği sürece taze sayılır.
+#   • Girdiler paylaşılan `events` listesini döndürür. Detay rotası bu
+#     sözlükleri yalnız FİKİRSİZ (idempotent) alanlarla damgalar
+#     (`score` yalnız None ise -inf, `ev_i` = değişmeyen sıra numarası), o
+#     yüzden paylaşım güvenli — yeni bir mutasyon eklenirse burası kopyalamalı.
+#
+# RAM SINIRI ŞART: aynı denetimin 4. bulgusu (reports._PARSE_CACHE) tam olarak
+# "sınırsız parse önbelleği" idi. Ölçülen yükler: 267 MB head/tail → 30 MB
+# heap, 47 MB tam okuma → 143,7 MB heap (ikisi de kaynak baytın ≈3 katı).
+# Bu yüzden bütçe KAYNAK BAYT üzerinden tutuluyor: tam-okuma yolunda dosya
+# boyu, head/tail yolunda ölçüme dayalı sabit bir yük. Bütçeye sığmayan bir
+# oturum SESSİZCE bozulmaz — önbelleğe alınmaz ve nedeni loglanır (sayfa
+# doğru çalışmaya devam eder, sadece her yenilemede maliyeti öder).
+_DETAIL_CACHE: dict[str, tuple[tuple, tuple, int]] = {}
+_DETAIL_CACHE_LOCK = threading.Lock()
+_DETAIL_CACHE_MAX_ENTRIES = _env_int(
+    "NAUTILUS_SESSION_DETAIL_CACHE_MAX_ENTRIES", 8, lo=0, hi=64
+)
+_DETAIL_CACHE_MAX_SOURCE_BYTES = _env_int(
+    "NAUTILUS_SESSION_DETAIL_CACHE_MAX_BYTES", 24 * 1024 * 1024, lo=0
+)
+# head/tail yolu yapısal olarak sınırlı (2 MB baş + 2 MB son + yalnız hafif
+# gövdeli orta olaylar); korpustaki EN BÜYÜK dosya (267 MB) için ölçülen
+# 30 MB heap'e karşılık gelen kaynak-bayt karşılığı ~10 MB — 12 MB temkinli.
+_DETAIL_TRUNCATED_COST_BYTES = 12 * 1024 * 1024
+
+
+def _detail_events(run_id: str, truncated: bool) -> tuple[list[dict], int, bool]:
+    """(events, n_heavy_skipped, steps_truncated) — (mtime_ns, size) önbellekli."""
+    path = SESSION_LOG_DIR / f"{run_id}.jsonl"
+    try:
+        st = path.stat()
+        key: tuple | None = (st.st_mtime_ns, st.st_size)
+        size = st.st_size
+    except OSError:
+        key, size = None, 0
+
+    if key is not None:
+        with _DETAIL_CACHE_LOCK:
+            hit = _DETAIL_CACHE.get(run_id)
+            if hit is not None and hit[0] == key:
+                return hit[1]
+
+    if truncated:
+        events, n_heavy_skipped = _read_events_head_tail(run_id)
+        payload = (events, n_heavy_skipped, False)
+        cost = _DETAIL_TRUNCATED_COST_BYTES
+    else:
+        events, steps_truncated = _read_events(run_id, 20_000)
+        payload = (events, 0, steps_truncated)
+        cost = size
+
+    if key is not None:
+        _detail_cache_store(run_id, key, payload, cost)
+    return payload
+
+
+def _detail_cache_store(run_id: str, key: tuple, payload: tuple, cost: int) -> None:
+    """Store under the byte budget, evicting oldest-first and saying so."""
+    if _DETAIL_CACHE_MAX_ENTRIES <= 0 or _DETAIL_CACHE_MAX_SOURCE_BYTES <= 0:
+        return
+    with _DETAIL_CACHE_LOCK:
+        _DETAIL_CACHE.pop(run_id, None)
+        if cost > _DETAIL_CACHE_MAX_SOURCE_BYTES:
+            logging.warning(
+                "session detail cache SKIPPED for %s: %.1f MB source > %.1f MB "
+                "budget — every refresh of this session re-reads the log "
+                "(raise NAUTILUS_SESSION_DETAIL_CACHE_MAX_BYTES to cache it)",
+                run_id,
+                cost / 1_048_576,
+                _DETAIL_CACHE_MAX_SOURCE_BYTES / 1_048_576,
+            )
+            return
+        total = sum(e[2] for e in _DETAIL_CACHE.values()) + cost
+        while _DETAIL_CACHE and (
+            total > _DETAIL_CACHE_MAX_SOURCE_BYTES
+            or len(_DETAIL_CACHE) >= _DETAIL_CACHE_MAX_ENTRIES
+        ):
+            oldest, dropped = next(iter(_DETAIL_CACHE.items()))
+            del _DETAIL_CACHE[oldest]
+            total -= dropped[2]
+            logging.info(
+                "session detail cache evicted %s (%.1f MB) to make room for %s",
+                oldest,
+                dropped[2] / 1_048_576,
+                run_id,
+            )
+        _DETAIL_CACHE[run_id] = (key, payload, cost)
+
+
+def _invalidate_detail_cache() -> None:
+    with _DETAIL_CACHE_LOCK:
+        _DETAIL_CACHE.clear()
 
 
 def _tail_scan_for_events(
@@ -743,14 +858,11 @@ async def session_detail(request: Request, run_id: str):
         _SESSION_DETAIL_FULL_SCAN_MAX_BYTES
         and path.stat().st_size > _SESSION_DETAIL_FULL_SCAN_MAX_BYTES
     )
-    n_heavy_skipped = 0
-    if detail_truncated:
-        events, n_heavy_skipped = await asyncio.to_thread(
-            _read_events_head_tail, run_id
-        )
-        steps_truncated = False
-    else:
-        events, steps_truncated = await asyncio.to_thread(_read_events, run_id, 20_000)
+    # DeepR 2026-08-11 [ORTA]: her yenilemede tam maliyeti ödemek yerine
+    # (mtime_ns, size) anahtarlı önbellek — bkz. _detail_events.
+    events, n_heavy_skipped, steps_truncated = await asyncio.to_thread(
+        _detail_events, run_id, detail_truncated
+    )
 
     # Group by event type — group steps by round
     # (M13: filters use .get — a line without 'event' was already dropped by the parse guard)

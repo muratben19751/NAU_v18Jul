@@ -638,52 +638,79 @@ def _validate_strategy_options(raw: dict) -> dict:
     return opts
 
 
-def _validate_composed(data: dict) -> dict:
-    """Clamp params to catalog ranges and drop invalid blocks; raise on hopeless."""
+def _coerce_block(b) -> dict | None:
+    """Tek bir blok önerisini katalog sözleşmesine indirger; uymuyorsa ``None``.
+
+    ``_validate_composed`` ile ``_coerce_catalog_blocks``'un ORTAK çekirdeği.
+    İkisi de aynı int/float clamp'lerini, aynı options whitelist'ini, aynı
+    cross-family (``slow > fast``) düzeltmesini ve aynı ``atr_stop → exit``
+    zorlamasını kopya kod olarak taşıyordu; kopyalardan yalnız biri test
+    altındaydı (DeepR 2026-08-11 [ORTA]).
+
+    Kopyalar bir yerde GERÇEKTEN ıraksamıştı: ``_coerce_catalog_blocks``
+    declared-role denetimini hiç yapmıyordu, yani meta'sında ``role: "exit"``
+    yazan bir custom block sohbetle taslak düzenleme yolundan ``role="entry"``
+    ile spec'e girebiliyordu. Çalışma anında ``composer.register_custom_from_disk``
+    bunu fail-closed edip her barda ``None`` döndürüyor — yani blok sessizce hiç
+    sinyal üretmiyordu. Tek kaynağa indirmek bu ıraksamayı kapatır: rol çelişen
+    blok artık iki yolda da DÜŞÜRÜLÜR.
+
+    ``None`` dönen durumlar: dict olmayan öğe, katalog dışı tip, entry/exit
+    dışı rol, meta'nın ilan ettiği rolle çelişen rol.
+    """
     from composer import BLOCK_CATALOG
 
+    if not isinstance(b, dict):
+        return None
+    btype = b.get("type")
+    role = b.get("role")
+    if btype not in BLOCK_CATALOG:
+        return None
+    if role not in ("entry", "exit"):
+        return None
+    meta = BLOCK_CATALOG[btype]
+    declared_role = meta.get("role")
+    if declared_role in ("entry", "exit") and role != declared_role:
+        # Do not silently coerce a custom block into the opposite role.
+        # Dropping it lets the existing missing-entry/missing-exit logic
+        # reject or repair the proposal without changing signal semantics.
+        return None
+    params = {}
+    for pname, pspec in meta["params"].items():
+        raw = (b.get("params") or {}).get(pname, pspec["default"])
+        try:
+            if pspec["type"] == "int":
+                v = int(raw)
+                v = max(pspec["min"], min(pspec["max"], v))
+            elif pspec["type"] == "float":
+                v = float(raw)
+                v = max(pspec["min"], min(pspec["max"], v))
+            else:
+                v = raw if raw in pspec["options"] else pspec["default"]
+        except (TypeError, ValueError):
+            v = pspec["default"]
+        params[pname] = v
+    # Enforce cross fast<slow for cross-family blocks.
+    if btype in ("ma_cross", "ema_cross", "macd_cross") and params.get(
+        "slow", 0
+    ) <= params.get("fast", 0):
+        params["fast"], params["slow"] = 10, max(params.get("slow", 30), 30)
+    # atr_stop is exit-only.
+    if btype == "atr_stop" and role != "exit":
+        role = "exit"
+    return {"type": btype, "role": role, "params": params}
+
+
+def _validate_composed(data: dict) -> dict:
+    """Clamp params to catalog ranges and drop invalid blocks; raise on hopeless."""
     if not isinstance(data, dict) or "blocks" not in data:
         raise ValueError("missing 'blocks'")
 
     clean_blocks = []
     for b in data["blocks"]:
-        btype = b.get("type")
-        role = b.get("role")
-        if btype not in BLOCK_CATALOG:
-            continue
-        if role not in ("entry", "exit"):
-            continue
-        meta = BLOCK_CATALOG[btype]
-        declared_role = meta.get("role")
-        if declared_role in ("entry", "exit") and role != declared_role:
-            # Do not silently coerce a custom block into the opposite role.
-            # Dropping it lets the existing missing-entry/missing-exit logic
-            # reject or repair the proposal without changing signal semantics.
-            continue
-        params = {}
-        for pname, pspec in meta["params"].items():
-            raw = (b.get("params") or {}).get(pname, pspec["default"])
-            try:
-                if pspec["type"] == "int":
-                    v = int(raw)
-                    v = max(pspec["min"], min(pspec["max"], v))
-                elif pspec["type"] == "float":
-                    v = float(raw)
-                    v = max(pspec["min"], min(pspec["max"], v))
-                else:
-                    v = raw if raw in pspec["options"] else pspec["default"]
-            except (TypeError, ValueError):
-                v = pspec["default"]
-            params[pname] = v
-        # Enforce cross fast<slow for cross-family blocks.
-        if btype in ("ma_cross", "ema_cross", "macd_cross") and params.get(
-            "slow", 0
-        ) <= params.get("fast", 0):
-            params["fast"], params["slow"] = 10, max(params.get("slow", 30), 30)
-        # atr_stop is exit-only.
-        if btype == "atr_stop" and role != "exit":
-            role = "exit"
-        clean_blocks.append({"type": btype, "role": role, "params": params})
+        coerced = _coerce_block(b)
+        if coerced is not None:
+            clean_blocks.append(coerced)
 
     if not clean_blocks or not any(b["role"] == "entry" for b in clean_blocks):
         raise ValueError("proposal missing entry block after cleanup")
@@ -919,9 +946,51 @@ def _test_execute_generated(
     require_max_lookback: bool = False,
     role_hint: str = "entry",
 ) -> None:
+    """Smoke — ÖLDÜRÜLEBİLİR bir alt süreçte. Hata → ``GeneratedCodeError``.
+
+    DeepR 2026-08-11 [ORTA]: bu fonksiyonun gövdesi (artık
+    ``_test_execute_generated_inproc``) web sunucusunun kendi sürecinde
+    exec ediyordu ve tek zaman koruması bir ``t.join(timeout=2.0)``'dı.
+    O join hiçbir şeyi ÖLDÜRMEZ: süre dolunca kullanıcı "timed out" hatası
+    alıyor, daemon thread arka planda çalışmaya devam ediyor ve tekrarlanan
+    gönderimlerle sunucu OOM'a taşınabiliyordu. codegate'in kendi yorumu
+    bunu belgeliyor bile: `9**9**9` gibi GIL'i bırakmayan tek bir bytecode'da
+    join provably geri dönmez. Bir thread preempt edilemez — süreç edilebilir.
+    Ayrıntılı gerekçe ve maliyet ölçümü: ``sandbox.run_block_smoke_guarded``.
+
+    Sözleşme değişmedi: aynı imza, aynı istisna türü, aynı mesajlar. Sadece
+    kod artık bu sürecin dışında koşuyor ve aşımda gerçekten ölüyor.
+    """
+    from sandbox import run_block_smoke_guarded
+
+    err = run_block_smoke_guarded(
+        src,
+        meta,
+        require_max_lookback=require_max_lookback,
+        role_hint=role_hint,
+    )
+    if err is None:
+        return
+    # Çocuk her istisnayı "Tür: mesaj" olarak düzleştiriyor; zaten bizim olan
+    # bir GeneratedCodeError'da o öneki geri sök ki mesaj aynen korunsun
+    # (çağıranlar ve testler metne göre eşleşiyor).
+    prefix = "GeneratedCodeError: "
+    raise GeneratedCodeError(err[len(prefix) :] if err.startswith(prefix) else err)
+
+
+def _test_execute_generated_inproc(
+    src: str,
+    meta: dict | None = None,
+    require_max_lookback: bool = False,
+    role_hint: str = "entry",
+) -> None:
     """Compile + execute the module in an isolated namespace, then invoke
     evaluate() once with harmless inputs to catch runtime errors (NameError,
     KeyError on missing param, etc.). Raises GeneratedCodeError on failure.
+
+    ÜRETİMDE DOĞRUDAN ÇAĞIRMAYIN — bu, ``sandbox._block_smoke_child``'ın alt
+    süreçte koştuğu gövdedir; adı bilerek ``_inproc``. Doğrudan çağırmak
+    2026-08-11 öncesindeki "sunucu sürecinde, öldürülemez" davranışa döner.
 
     `meta` — if provided, `block.params` is pre-populated with declared defaults
     so the smoke call matches real runtime shape.
@@ -2090,41 +2159,16 @@ Listeyi değiştirmediysen bu bloğu HİÇ ekleme.
 def _coerce_catalog_blocks(raw_blocks: list) -> list[dict]:
     """Katalog-dışı tipleri düşür, paramları katalog aralığına clamp'le.
 
-    _validate_composed'daki (agent.py:725) coercion mantığıyla aynı; ancak
+    Blok başına indirgeme ``_coerce_block`` ile TEK kaynaktan gelir (eskiden
+    kopya koddu, bkz. o fonksiyonun docstring'i). Buradaki tek fark çevresi:
     entry/exit ZORUNLULUĞU ve fallback-exit EKLEMEZ — draft düzenlemede liste
     yarı-tamamlanmış olabilir. Dönen her öğe {type, role, params}.
     """
-    from composer import BLOCK_CATALOG
-
     out: list[dict] = []
     for b in raw_blocks or []:
-        if not isinstance(b, dict):
-            continue
-        btype = b.get("type")
-        role = b.get("role")
-        if btype not in BLOCK_CATALOG or role not in ("entry", "exit"):
-            continue
-        meta = BLOCK_CATALOG[btype]
-        params: dict = {}
-        for pname, pspec in meta["params"].items():
-            raw = (b.get("params") or {}).get(pname, pspec["default"])
-            try:
-                if pspec["type"] == "int":
-                    params[pname] = max(pspec["min"], min(pspec["max"], int(raw)))
-                elif pspec["type"] == "float":
-                    params[pname] = max(pspec["min"], min(pspec["max"], float(raw)))
-                else:
-                    params[pname] = raw if raw in pspec["options"] else pspec["default"]
-            except (TypeError, ValueError):
-                params[pname] = pspec["default"]
-        # cross-family: slow>fast; atr_stop exit-only (mirror _validate_composed).
-        if btype in ("ma_cross", "ema_cross", "macd_cross") and params.get(
-            "slow", 0
-        ) <= params.get("fast", 0):
-            params["fast"], params["slow"] = 10, max(params.get("slow", 30), 30)
-        if btype == "atr_stop":
-            role = "exit"
-        out.append({"type": btype, "role": role, "params": params})
+        coerced = _coerce_block(b)
+        if coerced is not None:
+            out.append(coerced)
     return out
 
 

@@ -13,6 +13,8 @@ import pytest
 
 from agent import (
     _clamp,
+    _coerce_block,
+    _coerce_catalog_blocks,
     _extract_json_object,
     _is_rate_limited,
     _repair_exit_return_literals,
@@ -267,3 +269,154 @@ class TestValidateComposed:
         }
         out = _validate_composed(data)
         assert out["blocks"][0]["params"]["cross"] == "below"  # catalog default
+
+
+class TestCoercionIsSingleSourced:
+    """`_validate_composed` ile `_coerce_catalog_blocks` ARTIK aynı çekirdekten.
+
+    DeepR 2026-08-11 [ORTA]: `_coerce_catalog_blocks` kendi docstring'inde
+    "_validate_composed'daki coercion mantığıyla aynı" diyordu — aynı clamp'ler,
+    aynı options whitelist'i, aynı cross-family düzeltmesi, aynı atr_stop→exit
+    zorlaması — ama KOPYAYDI ve testlerde hiç geçmiyordu (`_validate_composed`
+    9 kez geçerken 0 referans). Kopyalar bir yerde gerçekten ıraksamıştı:
+    `_coerce_catalog_blocks` declared-role denetimini yapmıyordu.
+
+    Şimdi ikisi de `_coerce_block`'u çağırıyor. Bu sınıf hem ortak çekirdeği
+    hem de İKİ yolun aynı verdiği verdiği eşleşmeyi pinler; biri yeniden
+    kopyalanırsa parite testleri kırmızıya döner.
+    """
+
+    _CASES = [
+        # (etiket, blok)
+        (
+            "aralık üstü int",
+            {"type": "rsi_threshold", "role": "entry", "params": {"period": 9999}},
+        ),
+        (
+            "aralık altı int",
+            {"type": "rsi_threshold", "role": "entry", "params": {"period": -5}},
+        ),
+        (
+            "geçersiz enum",
+            {"type": "rsi_threshold", "role": "entry", "params": {"cross": "sideways"}},
+        ),
+        (
+            "sayı olmayan",
+            {"type": "rsi_threshold", "role": "entry", "params": {"period": "abc"}},
+        ),
+        (
+            "None param",
+            {"type": "rsi_threshold", "role": "entry", "params": {"period": None}},
+        ),
+        (
+            "float clamp",
+            {"type": "atr_stop", "role": "exit", "params": {"mult": 999.0}},
+        ),
+        (
+            "cross slow<=fast",
+            {"type": "ma_cross", "role": "entry", "params": {"fast": 50, "slow": 10}},
+        ),
+        (
+            "cross eşit",
+            {"type": "ema_cross", "role": "entry", "params": {"fast": 20, "slow": 20}},
+        ),
+        ("atr_stop entry rolü", {"type": "atr_stop", "role": "entry", "params": {}}),
+        ("param yok", {"type": "momentum", "role": "entry"}),
+    ]
+
+    @pytest.mark.parametrize("label,block", _CASES, ids=[c[0] for c in _CASES])
+    def test_both_paths_produce_the_same_block(self, label, block):
+        """Aynı girdi → iki yolda birebir aynı {type, role, params}."""
+        via_coerce = _coerce_catalog_blocks([dict(block)])
+        # _validate_composed entry bloğu şart koşuyor; exit-rollü vakalar için
+        # yanına bir entry ekleyip sonra kendi bloğumuzu geri buluyoruz. Dolgu
+        # tipi hiçbir vakada kullanılmıyor, yoksa filtre iki satır çekerdi.
+        data = {"blocks": [dict(block), {"type": "volume_spike", "role": "entry"}]}
+        via_validate = [
+            b for b in _validate_composed(data)["blocks"] if b["type"] == block["type"]
+        ]
+        assert via_coerce == via_validate, label
+
+    def test_out_of_range_params_are_clamped_on_the_chat_edit_path(self):
+        """Sohbetle taslak düzenleme yolu da katalog aralığına kırpmalı.
+
+        Bu yol testsizdi: LLM'den gelen aralık dışı bir parametre kırpılmadan
+        spec'e girebilirdi.
+        """
+        out = _coerce_catalog_blocks(
+            [{"type": "rsi_threshold", "role": "entry", "params": {"period": 9999}}]
+        )
+        assert out[0]["params"]["period"] == 50
+
+    def test_cross_family_slow_is_pushed_above_fast(self):
+        out = _coerce_catalog_blocks(
+            [{"type": "ma_cross", "role": "entry", "params": {"fast": 50, "slow": 10}}]
+        )
+        assert out[0]["params"]["fast"] == 10
+        assert out[0]["params"]["slow"] >= 30
+        assert out[0]["params"]["slow"] > out[0]["params"]["fast"]
+
+    def test_atr_stop_is_forced_to_exit(self):
+        out = _coerce_catalog_blocks([{"type": "atr_stop", "role": "entry"}])
+        assert out[0]["role"] == "exit"
+
+    @pytest.mark.parametrize(
+        "bad",
+        [
+            {"type": "not_a_real_block", "role": "entry"},
+            {"type": "rsi_threshold", "role": "sideways"},
+            {"type": "rsi_threshold"},  # rol yok
+            "not a dict",
+            None,
+        ],
+    )
+    def test_unusable_entries_are_dropped_not_crashed(self, bad):
+        """Katalog dışı / şekilsiz öğeler DÜŞER; hiçbiri istisna atmaz.
+
+        `_validate_composed` eskiden dict olmayan bir öğede AttributeError
+        atıyordu (LLM çıktısı bunu üretebilir); ortak çekirdek onu da düşürür.
+        """
+        assert _coerce_catalog_blocks([bad]) == []
+        assert _coerce_block(bad) is None
+        with pytest.raises(ValueError, match="missing entry block"):
+            _validate_composed({"blocks": [bad]})
+
+    def test_declared_role_conflict_is_dropped_on_both_paths(self, monkeypatch):
+        """Meta'sı "exit" diyen bir custom block entry rolüyle GEÇMEZ.
+
+        Iraksamanın ta kendisi buydu: `_coerce_catalog_blocks` bu bloğu
+        `role="entry"` ile geçiriyordu. Çalışma anında
+        `composer.register_custom_from_disk`'in fail-closed sarmalayıcısı onu
+        her barda `None`'a çeviriyor — yani blok sessizce hiç sinyal üretmiyor.
+        Doğru davranış (ve `_validate_composed`'ın yaptığı) düşürmek.
+        """
+        import composer
+
+        fake = dict(composer.BLOCK_CATALOG)
+        fake["cust_exit_only"] = {
+            "label": "Custom Exit",
+            "role": "exit",
+            "params": {},
+        }
+        monkeypatch.setattr(composer, "BLOCK_CATALOG", fake)
+
+        blk = {"type": "cust_exit_only", "role": "entry", "params": {}}
+        assert _coerce_catalog_blocks([blk]) == []
+        with pytest.raises(ValueError, match="missing entry block"):
+            _validate_composed({"blocks": [blk]})
+        # Doğru rolle verildiğinde iki yol da kabul eder.
+        ok = {"type": "cust_exit_only", "role": "exit", "params": {}}
+        assert _coerce_catalog_blocks([ok])[0]["role"] == "exit"
+
+    def test_chat_edit_path_adds_no_fallback_exit(self):
+        """Tek fark çevrede: taslak yolu entry/exit ZORUNLULUĞU dayatmaz.
+
+        `_validate_composed` yalnız-entry bir öneriye otomatik exit ekler;
+        `_coerce_catalog_blocks` yarı-tamamlanmış listeyi olduğu gibi bırakır.
+        """
+        blocks = [{"type": "rsi_threshold", "role": "entry", "params": {}}]
+        assert len(_coerce_catalog_blocks(blocks)) == 1
+        assert len(_validate_composed({"blocks": blocks})["blocks"]) == 2
+        # Boş liste de hata değil (draft henüz boş olabilir).
+        assert _coerce_catalog_blocks([]) == []
+        assert _coerce_catalog_blocks(None) == []

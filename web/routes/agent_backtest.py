@@ -23,7 +23,10 @@ indirgemesi `_compact_wfo_windows` + `_is_progress_noise`),
 neden 1 hisseye sabitlemeyip `percent_equity`'ye geçiriyor, komisyon eşiği,
 `_MIN_TRADES` kapısının NAU_ev paritesi ve `_score`'daki çifte ceza),
 [[nau_performans_denetimi]] (`_thin_curves` — oturum loguna yazılan equity
-eğrilerinin indirgenmesi; ham hâli olay başına 3,5 MB yazıyordu),
+eğrilerinin indirgenmesi; ham hâli olay başına 3,5 MB yazıyordu; ayrıca
+2026-08-11: `_validate_external_data` artık `asyncio.to_thread` altında —
+koroutin gövdesinde tam parquet okuduğu için POST /agent/run tüm sunucunun
+HTMX poll'larını donduruyordu; tarih daraltması da yükleyiciye itildi),
 [[webapp_module_map]], [[backtesting_guide]], [[strategy_and_actor]],
 [[nau_deepr_ucuncu_tur_2026_08_09]]
 
@@ -87,6 +90,7 @@ router = APIRouter(prefix="/agent")
 from web.shared import (
     SESSION_LOG_DIR,  # noqa: E402
     ProgressStore,  # noqa: E402
+    error_html,  # noqa: E402
 )
 from web.shared import chart_url as _chart_url  # noqa: E402
 from web.shared import log_backtest as _log_backtest  # noqa: E402
@@ -440,6 +444,26 @@ def _session_log(run_id: str, event: str, **kwargs) -> None:
             if run_id not in _SESSION_LOG_LOCKS:
                 _SESSION_LOG_LOCKS[run_id] = threading.Lock()
             lock = _SESSION_LOG_LOCKS[run_id]
+        if event == "session_end":
+            # Bozulma sayacı KALICI kayda hiç geçmiyordu: kokpit kapandığı an
+            # buharlaşıyor ve ertesi gün Sessions'a bakan kişi rastgele
+            # kompozisyonları normal aday sanıyordu. Tek yer burası — 12 ayrı
+            # session_end çağrısına elle eklemek biri unutulunca sessizce
+            # eksik kalırdı.
+            #
+            # Kilitsiz okuma bilinçli: `_session_log` bazı çağrı yerlerinde
+            # `_AGENT_LOCK` altındayken çağrılıyor ve o kilit reentrant değil —
+            # burada yeniden almak kilitlenme riski olurdu. Sayaç int (okuması
+            # atomik), liste kopyasında en kötü ihtimalle bir eleman yarışır;
+            # denetim kaydı için kabul edilebilir, kilitlenme değil.
+            _dstate = _AGENT_PROGRESS.get(run_id)
+            if _dstate is not None:
+                kwargs.setdefault(
+                    "fallback_count", int(_dstate.get("fallback_count", 0) or 0)
+                )
+                kwargs.setdefault(
+                    "fallback_reasons", list(_dstate.get("fallback_reasons") or [])
+                )
         record = {
             "ts": datetime.now(UTC).isoformat(),
             "event": event,
@@ -1241,7 +1265,9 @@ def _score(result) -> float:
 
         calmar = clamp(pnl_pct / max(|max_dd|, 0.01), -10, 10)
         base   = 0.7 × calmar + 0.3 × clamp(sharpe_per_trade, -10, 10)
-        score  = base × n_trades / (n_trades + 20)      ← confidence multiplier
+        k      = n_trades / (n_trades + 20)             ← confidence
+        score  = base × k   (base ≥ 0)
+        score  = base ÷ k   (base < 0)                  ← SİMETRİK (2026-08-11)
 
     NAU parity: the sharpe term is PER-TRADE sharpe ((mean/std)×√n, NAU
     backtest.py:89) — NOT the annualized 252-day Sharpe. NAU's fold_quality
@@ -1308,7 +1334,15 @@ def _score(result) -> float:
     base = 0.7 * calmar + 0.3 * max(-10.0, min(10.0, sharpe))
     # Confidence multiplier: continuously reduces the score of low-trade results
     # (n=20 → ×0.5, n=180 → ×0.9); replaces the old stepwise 0.1 bonus.
-    score = base * (n_trades / (n_trades + 20))
+    #
+    # SİMETRİ (2026-08-11): çarpanı negatif `base`'e de uygulamak, az işlemli
+    # KÖTÜ bir adayın cezasını azaltıyordu — yani düşük örneklem, iyi tarafta
+    # cezalanırken kötü tarafta ödüllendiriliyordu. Ölçüm (koşu d5f7fd06):
+    # sıralamada #1 = 27 işlem/+244 USD, #2 = 135 işlem/+17.562 USD/Sharpe 0,44.
+    # Negatif tarafta BÖLMEK aynı belirsizliği aynı yönde ifade eder: az
+    # örneklem her iki yönde de "emin değiliz" demektir, "daha az kötü" değil.
+    confidence = n_trades / (n_trades + 20)
+    score = base * confidence if base >= 0 else base / max(confidence, 1e-9)
     # Documented exception: overtrading log penalty (see docstring).
     if n_trades > 2000:
         score += -0.3 * math.log10(n_trades / 2000)
@@ -1316,19 +1350,136 @@ def _score(result) -> float:
 
 
 def _pre_robustness_eligible(result) -> bool:
-    """Cheap fail-closed alpha gate before the expensive robustness suite."""
+    """Cheap fail-closed alpha gate before the expensive robustness suite.
+
+    Tek kaynak `_ineligibility_reason`: kapı ile onun teşhis kırılımı ayrı
+    yazılsaydı sessizce ıraksarlardı ve faz satırı kapının reddettiğinden
+    başka bir gerekçe gösterirdi.
+    """
+    return _ineligibility_reason(result) is None
+
+
+def _ineligibility_reason(result) -> str | None:
+    """Bu aday alfa kapısında NEDEN elendi — geçtiyse None.
+
+    `_pre_robustness_eligible`'ın bool'u karar için yeter, teşhis için yetmez:
+    "koşamadı" ile "koştu ama eşiği geçemedi" tamamen farklı iki dünyadır ve
+    faz satırı ikisini "all iterations failed" diye tek torbaya koyuyordu.
+    """
     if result is None or result.error or not result.metrics:
-        return False
+        return "crashed"
     m = result.metrics
     if int(m.get("n_trades") or 0) < _MIN_TRADES:
-        return False
-    excess = _excess_return(m)
-    values = (m.get("pnl"), excess, m.get("sharpe_per_trade"))
+        return "too_few_trades"
     try:
-        pnl, excess, sharpe = (float(v) for v in values)
+        pnl = float(m.get("pnl"))
+        sharpe = float(m.get("sharpe_per_trade"))
     except (TypeError, ValueError):
-        return False
-    return all(math.isfinite(v) and v > 0 for v in (pnl, excess, sharpe))
+        return "no_metrics"
+    if not math.isfinite(pnl) or pnl <= 0:
+        return "negative_pnl"
+    if not math.isfinite(sharpe) or sharpe <= 0:
+        return "negative_sharpe"
+    # `excess` ARTIK zorunlu değil: yıllıklandırılmış alfa varsa karar ondan
+    # verilir ve kümülatif alan hiç okunmayabilir. Eskiden burada float()
+    # ediliyordu, yani alanı olmayan bir kayıt alfa bacağına HİÇ ulaşmadan
+    # "no_metrics" ile eleniyordu.
+    return _benchmark_rejection(m, _excess_return(m))
+
+
+def _benchmark_rejection(m: dict, legacy_excess: float | None) -> str | None:
+    """Benchmark bacağı: yıllık alfa + risk-ayarlı üstünlük (yoksa eski kural).
+
+    Eski kural KÜMÜLATİF farktı ve bu bir araştırma kararı değil, veri
+    penceresinin yan etkisiydi: QQQC'nin 23 yıllık serisinde buy&hold %2093
+    yaptığı için eşik fiilen aşılamaz oldu. Ölçüm (koşu 44cb54e2, 2026-08-10):
+    12 adayın 9'u kârlı, en iyisi Sharpe 0,79 / +196.880 USD — ve HİÇBİRİ
+    geçemedi. Aynı arama 1 yıllık bir katalogda kolayca kazanan bulurdu; yani
+    kapı stratejiyi değil, veri derinliğini ölçüyordu.
+
+    Yerine iki koşul:
+
+    * ``annualized_alpha > 0`` — yıllıklandırılmış, iki taraf da net (buy&hold
+      gidiş-dönüş maliyeti düşülür, biliniyorsa temettü eklenir). Pencere
+      uzunluğundan bağımsız.
+    * risk-ayarlı üstünlük — stratejinin Calmar'ı buy&hold'unkini geçmeli.
+      Getiriyi tek başına aşmak yetmez: aynı getiriyi yarı düşüşle üretmek de
+      bir üstünlüktür, iki katı düşüşle üretmek değildir.
+
+    Yıllıklandırma alanları yoksa (zaman damgasız pencere, eski kayıt) eski
+    kümülatif kurala düşülür — sessizce kapıyı AÇMAK, kapatmaktan kötüdür.
+    """
+    alpha = m.get("annualized_alpha")
+    if alpha is None:
+        try:
+            excess = float(legacy_excess)
+        except (TypeError, ValueError):
+            # Ne yıllık alfa ne kümülatif fark var: benchmark bacağı hiç
+            # ölçülmemiş. Kapı fail-closed — ölçülmemiş bir üstünlük yoktur.
+            return "no_benchmark"
+        if not math.isfinite(excess) or excess <= 0:
+            return "below_benchmark"
+        return None
+    try:
+        alpha = float(alpha)
+    except (TypeError, ValueError):
+        return "no_metrics"
+    if not math.isfinite(alpha) or alpha <= 0:
+        return "negative_alpha"
+    strat_calmar, bench_calmar = m.get("strategy_calmar"), m.get("benchmark_calmar")
+    if strat_calmar is None or bench_calmar is None:
+        # Alfa pozitif ama risk bacağı ölçülemedi: kapıyı alfa ile geçir,
+        # uydurulmuş bir risk karşılaştırmasıyla değil.
+        return None
+    try:
+        strat_calmar, bench_calmar = float(strat_calmar), float(bench_calmar)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(strat_calmar) or strat_calmar <= bench_calmar:
+        return "worse_risk_adjusted"
+    return None
+
+
+# Teşhis satırında kullanılan insan-okur karşılıklar (sıra = raporlama sırası).
+_INELIGIBILITY_LABELS = (
+    ("crashed", "crashed"),
+    ("no_metrics", "no metrics"),
+    ("too_few_trades", f"<{_MIN_TRADES} trades"),
+    ("negative_pnl", "PnL ≤ 0"),
+    ("negative_sharpe", "Sharpe ≤ 0"),
+    ("negative_alpha", "no annualized alpha"),
+    ("worse_risk_adjusted", "worse Calmar than buy&hold"),
+    ("below_benchmark", "below buy&hold (legacy cumulative)"),
+    ("no_benchmark", "benchmark not measured"),
+)
+
+
+def _no_eligible_phase_label(results: list[tuple]) -> str:
+    """Kazanansız turun faz satırı — GERÇEK gerekçeyle.
+
+    Eski metin her turda "⚠ No eligible result — all iterations failed" diyordu;
+    oysa ölçülen koşuda 8 backtest'in 8'i de BAŞARIYLA koştu (en iyisi
+    PnL +22.656, Sharpe 0.56) ve eleme tamamen alfa kapısında oldu. Kullanıcı
+    bu yüzden altyapı arızası sanıp modeli/veriyi kurcalıyordu; oysa ayar
+    edilecek şey eşikti. Kırılım, hangisi olduğunu tek bakışta söyler.
+    """
+    counts: dict[str, int] = {}
+    for entry in results:
+        reason = _ineligibility_reason(entry[1])
+        if reason:
+            counts[reason] = counts.get(reason, 0) + 1
+    total = len(results)
+    ran = total - counts.get("crashed", 0) - counts.get("no_metrics", 0)
+    parts = [
+        f"{counts[key]} {label}"
+        for key, label in _INELIGIBILITY_LABELS
+        if counts.get(key)
+    ]
+    breakdown = ", ".join(parts) or "no results"
+    return (
+        f"⚠ 0/{total} candidates passed the alpha gate "
+        f"({ran} ran successfully) — {breakdown}"
+    )
 
 
 def _stamp_buy_hold_benchmark(result, bars_df) -> None:
@@ -2193,6 +2344,14 @@ def _propose_next_strategy(
     except (LLMCallCancelled, AgentBudgetReached):
         raise
     except Exception as e:
+        # "Önceki strateji ile devam" SESSİZ bir bozulmaydı: `_mark_degraded`
+        # çağrılmadığı için fallback sayacına girmiyordu ve aynı spec ikinci kez
+        # backtest edilip sıralamada iki slot işgal ediyordu (denetim ölçümü:
+        # 24 backtest / 22 benzersiz spec_id, ikisi bu yoldan). Bozulmuş üretim
+        # kazanan havuzuna giremez — spec'i degraded olarak işaretle ki
+        # tekrarlanan aday bir "kazanan" olarak ilan edilemesin.
+        _mark_degraded(run_id, type(e).__name__, "strategy proposal (reused previous)")
+        wstate.degraded_spec_ids.add(spec.id)
         _add_step(
             run_id,
             f"  ⚠ Could not get proposal: {e} — continuing with previous strategy",
@@ -2410,6 +2569,52 @@ EXTERNAL_PEER_BASKET = [
     "AAPL.NASDAQ",
     "MSFT.NASDAQ",
 ]
+
+
+def _bare_ticker(instrument_id: str) -> str:
+    """ "QQQ.NASDAQ" → "QQQ" (manifest anahtarları venue taşımaz).
+
+    YALNIZ son nokta atılır: 'BRK.A.NASDAQ' → 'BRK.A'. İlk noktadan bölmek
+    data.py'de bir kez yapıldı ve noktalı sembollerin manifest kaydını
+    kaybettirdi (M1260) — aynı hatayı ikinci kez yazmayalım.
+    """
+    return (instrument_id or "").rsplit(".", 1)[0].strip().upper()
+
+
+def _peer_exclusions(instrument_id: str) -> set[str]:
+    """Multi-symbol testinden dışlanacak bare ticker'lar.
+
+    Düz `p != symbol` karşılaştırması DİKİLMİŞ serileri tanımıyordu: QQQC,
+    `stitch:QQQ+QQQQ` ile üretilmiş sürekli bir seridir, dolayısıyla bir QQQC
+    koşusunda peer olarak QQQ seçmek "başka bir enstrümanda da çalışıyor mu"
+    sorusunu sormuyor — aynı veriyi ikinci kez soruyor. Genelleşebilirlik testi
+    diye görünen şey, testin kendisinin tekrarıydı (DeepR 2026-08-10).
+
+    Dışlama iki yönlü: dikilmiş seri bileşenlerini dışlar, bileşen de kendisini
+    içeren dikişi dışlar (QQQ koşusunda QQQC peer olamaz).
+    """
+    from data import external_manifest
+
+    me = _bare_ticker(instrument_id)
+    out = {me}
+    try:
+        manifest = external_manifest() or {}
+    except Exception:
+        return out
+
+    def _components(entry: dict) -> set[str]:
+        src = str((entry or {}).get("source") or "")
+        if not src.startswith("stitch:"):
+            return set()
+        return {
+            p.strip().upper() for p in src[len("stitch:") :].split("+") if p.strip()
+        }
+
+    out |= _components(manifest.get(me) or {})
+    for ticker, entry in manifest.items():
+        if me in _components(entry):
+            out.add(str(ticker).strip().upper())
+    return out
 
 
 # Hisse senedi koşularında hesabın ne kadarı tek pozisyona girsin (yüzde).
@@ -2984,10 +3189,14 @@ def _run_full_robustness(
             # First filter peers that HAVE data at this granularity, THEN clip to
             # 3 (scoring is already tolerant). The reverse order used to never try
             # the 4th/5th peer if the first 3 peers had no data.
+            # Dışlama dikiş-farkındalıklı: QQQC = stitch:QQQ+QQQQ olduğu için
+            # düz `p != symbol` QQQ'yu peer sanıyordu (bkz. _peer_exclusions).
+            excluded = _peer_exclusions(symbol)
             other_symbols = [
                 p
                 for p in EXTERNAL_PEER_BASKET
-                if p != symbol and _external_bar_dir(p, interval) is not None
+                if _bare_ticker(p) not in excluded
+                and _external_bar_dir(p, interval) is not None
             ][:3]
             # 365 calendar days ≈ 252 equity bars — too few for the _MIN_TRADES threshold; use 730.
             ms_days = 730
@@ -3558,7 +3767,7 @@ def _agent_worker(
 
             if not eligible:
                 _tl_end(run_id, f"rank-r{run_number}", status="warn")
-                _done_phase(run_id, 3, "⚠ No eligible result — all iterations failed")
+                _done_phase(run_id, 3, _no_eligible_phase_label(results))
                 wstate.completed_rounds = run_number
                 _cleanup_generated(run_id, wstate)
                 if not continuous_mode:
@@ -4040,6 +4249,7 @@ def _generate_custom_spec(
     from agent import (
         TerminalLLMError,
         _propose_agent_strategy_idea,
+        _raise_if_llm_control_abort,
         propose_custom_block,
     )
     from composer import (
@@ -4262,6 +4472,17 @@ def _generate_custom_spec(
         # twice — Exception already covers GeneratedCodeError. The name is kept
         # in the message so a code-generation failure stays distinguishable from
         # an infrastructure one in the log.
+        #
+        # STOP bir bozulma DEĞİL: `LLMCallCancelled` bu demette olmadığı için
+        # geniş `except` onu yutuyor ve iptal "builtin'e düşüldü" uyarısına
+        # iniyordu — kullanıcı Stop'a bastıktan sonra koşu bir tam backtest
+        # turu daha harcıyordu. `agent.py` aynı durumda bu yardımcıyı çağırıyor.
+        _raise_if_llm_control_abort(e)
+        # Bu yol sayaca hiç girmiyordu: ölçülen koşuda 6 kez tetiklendi ve
+        # `fallback_count` 5'te kaldı (gerçek bozulma 13). Sayılmayan bozulma
+        # koşuyu başarı gibi gösterir — üretilen blok modelin özgün fikri değil,
+        # katalogdan hazır bir bloktur.
+        _mark_degraded(run_id, type(e).__name__, "custom block generation")
         _add_step(
             run_id,
             f"  ⚠ Could not generate custom block ({type(e).__name__}): {e} "
@@ -4405,34 +4626,54 @@ def _validate_external_data(
         )
         if _known_unadjusted:
             if not _allow_unadjusted:
-                return HTMLResponse(
-                    "<div class='empty-state'>⚠ AUTO refused known-unadjusted "
-                    f"equity data for {instrument_id} ({_iv}). Use an adjusted "
-                    "catalog; split/dividend jumps can create false edge. "
-                    "Research-only override requires AGENT_ALLOW_UNADJUSTED=1 "
-                    "and AGENT_RESEARCH_MODE=1.</div>",
-                    status_code=400,
+                return error_html(
+                    "⚠ AUTO refused known-unadjusted equity data for {iid} ({iv}). "
+                    "Use an adjusted catalog; split/dividend jumps can create "
+                    "false edge. Research-only override requires "
+                    "AGENT_ALLOW_UNADJUSTED=1 and AGENT_RESEARCH_MODE=1.",
+                    400,
+                    iid=instrument_id,
+                    iv=_iv,
                 )
             research_only = True
         try:
-            _validation_df = load_external_bars(instrument_id, _iv)
-            if range_start:
-                _validation_df = _validation_df[
-                    _validation_df.index
-                    >= pd.Timestamp(range_start, tz=_validation_df.index.tz)
-                ]
-            if range_end:
-                _validation_df = _validation_df[
-                    _validation_df.index
-                    < pd.Timestamp(range_end, tz=_validation_df.index.tz)
-                    + pd.Timedelta(days=1)
-                ]
+            # Aralık daraltması ARTIK yükleyicinin içinde: eskiden tüm seri
+            # okunup SONRADAN iki pandas maskesiyle kırpılıyordu, yani 1-DAKİKA
+            # bir seride milyonlarca satırlık iki tam kare kopyası boşuna
+            # üretiliyordu. `load_external_bars` start/end'i kendi içinde
+            # uyguluyor (aynı UTC indeksi, aynı karşılaştırma).
+            #
+            # `end` neden "+1 gün − 1 ns": eski maske ŞU KESİN eşitsizlikti
+            # `index < range_end + 1 gün`; yükleyici ise KAPSAYICI `index <= end`
+            # uyguluyor. Nautilus/pandas indeksi nanosaniye çözünürlüklü olduğu
+            # için `< X` ile `<= X - 1ns` birebir aynı kümeyi seçer.
+            # Yan etki (kasıtlı): data.py'nin günlük "split şüphesi" uyarısı
+            # artık tüm tarihi değil KOŞUNUN KULLANACAĞI pencereyi tarıyor.
+            # Sert kapı olan `_external_adjusted_flag` yukarıda ayrıca ve tam
+            # seri üzerinde kontrol ediliyor, o zayıflamıyor.
+            _start_ts = pd.Timestamp(range_start, tz="UTC") if range_start else None
+            _end_ts = (
+                pd.Timestamp(range_end, tz="UTC")
+                + pd.Timedelta(days=1)
+                - pd.Timedelta(nanoseconds=1)
+                if range_end
+                else None
+            )
+            _validation_df = load_external_bars(
+                instrument_id, _iv, start=_start_ts, end=_end_ts
+            )
             _gap = external_data_gap_report(_validation_df, granularity=_iv)
         except Exception as _gap_exc:
-            return HTMLResponse(
-                "<div class='empty-state'>⚠ AUTO could not validate external "
-                f"data integrity for {instrument_id} ({_iv}): {_gap_exc}</div>",
-                status_code=400,
+            # `instrument_id` bir Form alanı ve bu dal, YÜKLEYİCİ PATLADIĞINDA
+            # çalışıyor — yani var olmayan (dolayısıyla tamamen serbest) bir id
+            # buraya düşer. `_gap_exc` metni de aynı id'yi taşıyor.
+            return error_html(
+                "⚠ AUTO could not validate external data integrity for "
+                "{iid} ({iv}): {exc}",
+                400,
+                iid=instrument_id,
+                iv=_iv,
+                exc=_gap_exc,
             )
         if _gap:
             _fingerprint = (
@@ -4482,11 +4723,11 @@ def _validate_external_data(
                     f"a {_gap['days']}-day gap for {instrument_id} ({_iv}), "
                     f"{_gap['from']} → {_gap['to']}"
                 )
-            return HTMLResponse(
-                "<div class='empty-state'>⚠ AUTO refused external data with "
-                f"{_gap_text}. Repair/backfill the catalog "
-                "before autonomous research.</div>",
-                status_code=400,
+            return error_html(
+                "⚠ AUTO refused external data with {gap}. Repair/backfill the "
+                "catalog before autonomous research.",
+                400,
+                gap=_gap_text,
             )
     return _ExternalDataDecision(
         intervals, trend_interval, research_only, auto_continuous_start, data_truncation
@@ -4535,10 +4776,11 @@ async def run(
             try:
                 datetime.strptime(_v, "%Y-%m-%d")
             except ValueError:
-                return HTMLResponse(
-                    f"<div class='empty-state'>invalid date: {_v}</div>",
-                    status_code=400,
-                )
+                # En keskin sink buydu: `_v` serbest bir Form değeri, dal tam
+                # olarak "tarih ayrıştırılamadı"da çalışıyor VE studio.html
+                # /agent/run'ın 4xx gövdesini bilerek DOM'a basıyor
+                # (`shouldSwap = true`, `allowScriptTags` açık).
+                return error_html("invalid date: {v}", 400, v=_v)
     if range_start and range_end and range_start > range_end:
         return HTMLResponse(
             "<div class='empty-state'>Start date is after end date.</div>",
@@ -4554,10 +4796,15 @@ async def run(
 
     _why = model_unavailable_reason(model)
     if _why:
-        return HTMLResponse(
-            f"<div class='empty-state'>⚠ {model_label(model)} kullanılamıyor — "
-            f"koşu başlatılmadı.<br><small>{_why}</small></div>",
-            status_code=400,
+        # `model_label` bilinmeyen bir id'yi `OR · <girdi>` diye AYNEN geri
+        # veriyor — yani Form değeri buradan yansıyor. `<small>` etiketi
+        # şablonun kendi HTML'i, `{why}` ise veri: safe_html tam olarak bu
+        # ayrımı koruyor.
+        return error_html(
+            "⚠ {label} kullanılamıyor — koşu başlatılmadı.<br><small>{why}</small>",
+            400,
+            label=model_label(model),
+            why=_why,
         )
 
     n_iterations = max(2, min(15, n_iterations))
@@ -4611,7 +4858,15 @@ async def run(
     auto_continuous_start: str | None = None
     data_truncation: dict | None = None
     if is_external:
-        decision = _validate_external_data(
+        # `_validate_external_data` her interval için parquet'ten tam seri
+        # okuyup pandas ile tarıyor (multi-TF'te üç kez) — koroutin gövdesinde
+        # çalışırken POST /agent/run saniyelerce event loop'u tutuyordu ve açık
+        # HER sekmedeki 1 saniyelik HTMX poll'u bu süre boyunca donuyordu.
+        # Bu dosyadaki diğer ağır işlerle aynı kalıp: iş parçacığına taşı.
+        import asyncio
+
+        decision = await asyncio.to_thread(
+            _validate_external_data,
             instrument_id,
             chosen,
             is_multi_tf,
