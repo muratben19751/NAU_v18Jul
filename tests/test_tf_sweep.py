@@ -57,14 +57,27 @@ def wired(monkeypatch):
 
     monkeypatch.setattr(data, "load_bybit_bars", _bars)
     monkeypatch.setattr(data, "_base_ccy", lambda s: "BTC")
+    # Tarih alanları boşken sweep yalnızca önbelleğin ilk/son bar zamanını
+    # sorar; bunu parquet footer'ından okur (DeepR 2026-08-11 [ORTA] — eskiden
+    # tüm dosyayı pd.read_parquet ile belleğe alıyordu).
     monkeypatch.setattr(
-        pd,
-        "read_parquet",
-        lambda p: pd.DataFrame(
-            {"close": [1.0] * 100},
-            index=pd.date_range("2024-01-01", periods=100, freq="1h", tz="UTC"),
-        ),
+        data,
+        "_read_parquet_stats",
+        lambda p: {
+            "rows": 100,
+            "first": "2024-01-01T00:00:00",
+            "last": "2024-01-05T03:00:00",
+            "size_bytes": 4096,
+        },
     )
+    full_reads: list[object] = []
+    _real_read_parquet = pd.read_parquet
+
+    def _tracking_read_parquet(p, *a, **kw):
+        full_reads.append(p)
+        return _real_read_parquet(p, *a, **kw)
+
+    monkeypatch.setattr(pd, "read_parquet", _tracking_read_parquet)
 
     metrics = {
         "15": {
@@ -92,7 +105,7 @@ def wired(monkeypatch):
         return SimpleNamespace(error=None, metrics=metrics[recipe["interval"]])
 
     monkeypatch.setattr(sandbox, "run_backtest_guarded", _guarded)
-    return {"made": made}
+    return {"made": made, "full_reads": full_reads}
 
 
 def _client():
@@ -163,3 +176,87 @@ class TestTFSweep:
             data={"spec_id": "unknown", "intervals": ["15", "60"]},
         )
         assert r.status_code == 404
+
+
+class TestSweepReadsOnlyTheParquetFooter:
+    """DeepR 2026-08-11 [ORTA]: tarih alanları boşken sweep, aynı parquet'i
+    interval başına İKİ kez tam okuyordu — bir kez sadece ilk/son bar tarihini
+    öğrenmek için (`pd.read_parquet`), hemen ardından `load_*_bars` içinde
+    gerçek veri için. 8 timeframe'lik bir sweep bunları paralel koşturuyor,
+    yani 1m BTCUSDT (1,1 M satır) için yüzlerce MB boşa decode ediliyordu.
+    Gereken bilgi ~4 KB'lık parquet footer'ında zaten var.
+    """
+
+    def test_bybit_dateless_sweep_never_full_reads_the_cache(self, wired):
+        c = _client()
+        r = c.post(
+            "/backtest/sweep",
+            data={
+                "spec_id": "sw1",
+                "symbol": "BTCUSDT",
+                "category": "linear",
+                "intervals": ["15", "240"],
+            },
+        )
+        assert r.status_code == 200
+        sid = re.search(r"sweep/progress/([0-9a-f]+)", r.text).group(1)
+        _poll(c, sid)
+
+        assert sorted(wired["made"]) == ["15", "240"]
+        assert wired["full_reads"] == [], (
+            "sweep still full-reads the parquet just to learn the date range"
+        )
+
+    def test_index_dateless_sweep_never_full_reads_the_cache(self, wired, monkeypatch):
+        import data
+        import sandbox
+
+        idx = pd.date_range("2024-01-01", periods=100, freq="1h", tz="UTC")
+        monkeypatch.setattr(
+            data,
+            "load_index_bars",
+            lambda t, s, e, g: pd.DataFrame(
+                {c: [1.0] * 100 for c in ("open", "high", "low", "close", "volume")},
+                index=idx,
+            ),
+        )
+        # Cache dosyası "var" görünsün; içeriği hiç okunmamalı.
+        monkeypatch.setattr(data, "_ticker_to_filename", lambda t: t)
+        monkeypatch.setattr(
+            data, "INDEX_CACHE_DIR", _AlwaysExistingDir(), raising=False
+        )
+
+        # Index tarafında recipe anahtarı 'granularity' (bybit'te 'interval').
+        made = wired["made"]
+
+        def _guarded_index(spec, bars, recipe, **kw):
+            made.append(recipe["granularity"])
+            return SimpleNamespace(
+                error=None, metrics={"pnl_pct": 0.1, "n_trades": 3, "win_rate": 0.5}
+            )
+
+        monkeypatch.setattr(sandbox, "run_backtest_guarded", _guarded_index)
+
+        c = _client()
+        r = c.post(
+            "/backtest/sweep",
+            data={
+                "spec_id": "sw1",
+                "instrument_kind": "Index",
+                "ticker": "SPY",
+                "granularity_csv": "15m,60m",
+            },
+        )
+        assert r.status_code == 200
+        sid = re.search(r"sweep/progress/([0-9a-f]+)", r.text).group(1)
+        _poll(c, sid)
+
+        assert sorted(wired["made"]) == ["15m", "60m"]
+        assert wired["full_reads"] == []
+
+
+class _AlwaysExistingDir:
+    """INDEX_CACHE_DIR yerine geçen minik sahte: `/` ile var olan bir yol üretir."""
+
+    def __truediv__(self, other):
+        return SimpleNamespace(exists=lambda: True)

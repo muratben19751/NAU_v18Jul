@@ -9,6 +9,7 @@ are skipped; and record() never raises into the caller.
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -416,3 +417,186 @@ def test_tokens_badge_endpoint(tmp_path, monkeypatch):
     # all-time Σ line must reflect the ledger.
     assert "Σ" in r.text
     assert TestClient(app).get("/tokens/table").status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# Artımlı FOLD önbelleği (DeepR 2026-08-11 [ORTA])
+#
+# Eski hâl: _parsed_records TÜM kayıtları bir listede tutuyordu ve summary()
+# her çağrıda o listenin tamamını baştan katlıyordu. /tokens/badge yoklama
+# başına İKİ summary() çağırıyor (oturum + tüm-zaman), yani 60 sn'de bir iki
+# tam O(n) geçiş; kayıt listesi de hiç kırpılmadığı için RAM kayıt sayısıyla
+# doğrusal büyüyordu. Artık kayıt listesi tutulmuyor: (path, since) başına
+# yalnız model toplamları saklanıyor ve her çağrı sadece EKLENEN baytları
+# katlıyor.
+# ---------------------------------------------------------------------------
+
+
+def _ledger_line(model="claude-fable-5", i=1, ts="2026-08-11T00:00:00+00:00"):
+    return json.dumps(
+        {
+            "ts": ts,
+            "model": model,
+            "purpose": "t",
+            "input": i,
+            "output": 0,
+            "cache_read": 0,
+            "cache_write": 0,
+        }
+    )
+
+
+def _write_lines(path, n, i=1):
+    path.write_text(
+        "".join(_ledger_line(i=i) + "\n" for _ in range(n)), encoding="utf-8"
+    )
+
+
+class TestFoldCache:
+    @pytest.fixture(autouse=True)
+    def _clear(self):
+        token_ledger._PARSE_CACHE.clear()
+        yield
+        token_ledger._PARSE_CACHE.clear()
+
+    def test_hit_no_parsed_records_are_retained_in_ram(self, tmp_path):
+        """ISABET: durum yalnız model toplamlarını tutar — kayıt listesi yok.
+
+        Bulgunun RAM yarısı: ledger her LLM çağrısında bir satır büyüyor ve
+        eski önbellek her satırın parse edilmiş dict'ini süresiz tutuyordu.
+        """
+        ledger = tmp_path / "token_usage.jsonl"
+        _write_lines(ledger, 500)
+
+        assert token_ledger.summary(ledger)["total"]["calls"] == 500
+
+        (state,) = token_ledger._PARSE_CACHE.values()
+        assert set(state["models"]) == {"claude-fable-5"}
+        assert not any(isinstance(v, list) for v in state.values())
+
+    def test_hit_second_poll_neither_reads_nor_refolds(self, tmp_path, monkeypatch):
+        """ISABET: dosya değişmediyse ne okuma ne yeniden katlama yapılır."""
+        ledger = tmp_path / "token_usage.jsonl"
+        _write_lines(ledger, 1, i=7)
+        token_ledger.summary(ledger)  # önbelleği doldur
+
+        folds = {"n": 0}
+        real_fold = token_ledger._fold_record
+
+        def _counting_fold(state, rec, since):
+            folds["n"] += 1
+            return real_fold(state, rec, since)
+
+        opens = {"n": 0}
+        real_open = open
+
+        def _counting_open(*a, **k):
+            opens["n"] += 1
+            return real_open(*a, **k)
+
+        monkeypatch.setattr(token_ledger, "_fold_record", _counting_fold)
+        monkeypatch.setattr(token_ledger, "open", _counting_open, raising=False)
+
+        s1 = token_ledger.summary(ledger)
+        s2 = token_ledger.summary(ledger)
+
+        assert opens["n"] == 0, "değişmemiş ledger yeniden okundu"
+        assert folds["n"] == 0, "değişmemiş ledger yeniden katlandı (O(n) tekrar)"
+        assert s1["total"]["input"] == s2["total"]["input"] == 7
+
+    def test_miss_only_the_appended_record_is_folded(self, tmp_path, monkeypatch):
+        """ISKA: append sonrası SADECE yeni satır katlanır, dosya baştan değil."""
+        ledger = tmp_path / "token_usage.jsonl"
+        _write_lines(ledger, 50)
+        token_ledger.summary(ledger)
+
+        folded: list[dict] = []
+        real_fold = token_ledger._fold_record
+
+        def _recording_fold(state, rec, since):
+            folded.append(rec)
+            return real_fold(state, rec, since)
+
+        monkeypatch.setattr(token_ledger, "_fold_record", _recording_fold)
+        with open(ledger, "a", encoding="utf-8") as f:
+            f.write(_ledger_line(i=9) + "\n")
+        s = token_ledger.summary(ledger)
+
+        assert len(folded) == 1, "tüm dosya yeniden katlandı"
+        assert s["total"]["calls"] == 51
+        assert s["total"]["input"] == 50 + 9
+
+    def test_invalidation_a_shrunk_ledger_is_refolded_from_zero(self, tmp_path):
+        """GEÇERSİZLEŞME: rotasyon/truncate → durum sıfırlanır, baştan sayılır.
+
+        Offset tabanlı artımlı okuma dosyanın yalnızca BÜYÜDÜĞÜNÜ varsayar;
+        küçülme fark edilmezse eski toplamlar yeni dosyanınkilerle toplanıp
+        kalıcı bir çift-sayıma dönüşür.
+        """
+        ledger = tmp_path / "token_usage.jsonl"
+        _write_lines(ledger, 20)
+        assert token_ledger.summary(ledger)["total"]["calls"] == 20
+
+        _write_lines(ledger, 1, i=3)  # rotasyon/truncate
+        s = token_ledger.summary(ledger)
+
+        assert s["total"]["calls"] == 1, "küçülen ledger eskisinin üstüne toplanmış"
+        assert s["total"]["input"] == 3
+
+    def test_since_and_all_time_keys_stay_independent(self, tmp_path):
+        """/tokens/badge'in iki çağrısı iki ayrı anahtar; ikisi de doğru kalmalı."""
+        ledger = tmp_path / "token_usage.jsonl"
+        ledger.write_text(
+            _ledger_line(i=1, ts="2026-07-01T00:00:00+00:00")
+            + "\n"
+            + _ledger_line(i=2, ts="2026-08-01T00:00:00+00:00")
+            + "\n",
+            encoding="utf-8",
+        )
+        since = "2026-07-15T00:00:00+00:00"
+
+        for _ in range(2):  # rozet iki kez yoklandı
+            ses = token_ledger.summary(ledger, since=since)
+            allt = token_ledger.summary(ledger)
+            assert ses["total"]["calls"] == 1 and ses["total"]["input"] == 2
+            assert allt["total"]["calls"] == 2 and allt["total"]["input"] == 3
+
+        with open(ledger, "a", encoding="utf-8") as f:
+            f.write(_ledger_line(i=4, ts="2026-08-02T00:00:00+00:00") + "\n")
+
+        assert token_ledger.summary(ledger, since=since)["total"]["input"] == 6
+        assert token_ledger.summary(ledger)["total"]["input"] == 7
+
+    def test_summary_never_mutates_the_cached_accumulator(self, tmp_path):
+        """Bitirme adımı (fiyatlama + özel anahtar silme) akümülatörü bozmamalı."""
+        ledger = tmp_path / "token_usage.jsonl"
+        _write_lines(ledger, 1, i=1000)
+
+        first = token_ledger.summary(ledger)
+        second = token_ledger.summary(ledger)
+
+        assert first["total"]["calls"] == second["total"]["calls"] == 1
+        assert first["models"]["claude-fable-5"]["cost_usd"] == pytest.approx(
+            second["models"]["claude-fable-5"]["cost_usd"]
+        )
+        (state,) = token_ledger._PARSE_CACHE.values()
+        assert "_unpriced_missing_calls" in state["grand"], (
+            "akümülatörün özel anahtarları summary() tarafından silinmiş"
+        )
+
+    def test_key_cap_evicts_the_oldest_and_says_so_in_the_log(self, tmp_path, caplog):
+        """SINIR: anahtar tavanına çarpınca tahliye SESSİZ olmamalı."""
+        ledger = tmp_path / "token_usage.jsonl"
+        _write_lines(ledger, 1)
+
+        with caplog.at_level(logging.WARNING, logger="token_ledger"):
+            for n in range(token_ledger._PARSE_CACHE_MAX_KEYS + 1):
+                token_ledger.summary(
+                    ledger, since=f"2020-01-{n + 1:02d}T00:00:00+00:00"
+                )
+
+        assert len(token_ledger._PARSE_CACHE) == token_ledger._PARSE_CACHE_MAX_KEYS
+        assert any("fold cache full" in r.message for r in caplog.records)
+        # Tahliye doğruluğu bozmaz — düşen anahtar bir sonraki çağrıda baştan katlanır.
+        again = token_ledger.summary(ledger, since="2020-01-01T00:00:00+00:00")
+        assert again["total"]["calls"] == 1

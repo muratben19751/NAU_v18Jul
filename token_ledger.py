@@ -7,8 +7,9 @@ See: [[webapp_module_map]] (bu modülün rolü + `_create_message` ledger-hook'u
 bozamaz — restart'ta veri kaybolmasın diye diske yazılır),
 [[llm_maliyet_kaldiraclari]] (bu defterden çıkarılan maliyet denetimi: kalem
 kırılımı, model kıyası, çağrı-sınıfı başına cache oranı), [[nau_performans_denetimi]]
-(`_parsed_records` — `/tokens/badge`'in 60sn'de bir tetiklediği tam-dosya
-yeniden okuma/parse maliyeti, 2026-08-08).
+(`/tokens/badge`'in 60sn'de bir tetiklediği maliyet: 2026-08-08'de tam-dosya
+yeniden OKUMA, 2026-08-11'de tam-liste yeniden KATLAMA — bugün `_folded`
+artımlı akümülatörü ikisini de kaldırdı).
 
 Every LLM call in the app funnels through ``agent._create_message`` (and the four
 narrative/summary helpers that were routed through it). Each successful call
@@ -186,50 +187,152 @@ def record(model: str, usage, purpose: str = "") -> None:
         logging.getLogger(__name__).warning("token_ledger.record failed", exc_info=True)
 
 
-# Perf (DeepR 2026-08-08 [ORTA]): incremental JSONL parse cache. `summary()`
-# used to re-read + re-parse the WHOLE ledger from scratch every call — and
-# `/tokens/badge` (polled every 60s per open tab, plus on every page load)
-# called it TWICE (once `since=SERVER_STARTED_AT`, once all-time), so every
-# poll paid for two full-file scans of a file that only ever grows via
-# record()'s append. Cached per path as (bytes_consumed, parsed records);
-# each call only reads bytes appended since the last call. Only consumed up
-# to the last confirmed '\n' — a line still being written concurrently (see
-# record()'s comment on torn lines) is left unconsumed for the NEXT call
-# instead of being permanently skipped once its offset is passed.
-_PARSE_CACHE: dict[Path, tuple[int, list[dict]]] = {}
+# Perf (DeepR 2026-08-08 [ORTA] → 2026-08-11 [ORTA]): incremental FOLD cache.
+#
+# İlk tur dosya okumasını artımlı hale getirdi ama PARSE EDİLMİŞ KAYIT
+# LİSTESİNİ tutuyordu; `summary()` her çağrıda o listenin TAMAMINI yeniden
+# katlıyordu. `/tokens/badge` (base.html, `every 60s` + her sayfa yükünde)
+# summary'yi İKİ kez çağırıyor (`since=SERVER_STARTED_AT` + tüm-zaman), yani
+# yoklama başına iki tam O(n) geçiş. Liste de hiç kırpılmıyordu: ledger her
+# LLM çağrısında bir satır büyüyor, AUTO oturumları binlerce çağrı üretiyor.
+#
+# Artık kayıt listesi HİÇ tutulmuyor. Durum (path, since) çiftine göre
+# tutuluyor ve yalnız MODEL BAŞINA toplamları taşıyor (~5 sözlük), yani RAM
+# kayıt sayısından bağımsız. Her çağrı sadece kendi offset'inden sonra EKLENEN
+# baytları okuyup akümülatöre katlıyor → yoklama maliyeti O(yeni bayt).
+#
+# GEÇERSİZLEŞME SÖZLEŞMESİ:
+#   • Bayatlama yok: her çağrı `stat()` ile dosya boyuna bakar, büyümüşse
+#     yeni baytları okur. Ledger yalnızca `record()`'un append'iyle büyür.
+#   • Dosya KÜÇÜLDÜYSE (rotasyon/silme/truncate) o anahtarın durumu sıfırlanır
+#     ve dosya baştan katlanır — sessizce eksik saymaktansa yeniden say.
+#   • Son onaylı '\n'e kadar tüketilir; yazılmakta olan yarım satır bir
+#     SONRAKİ çağrıya bırakılır (bkz. record()'un torn-line notu).
+#   • Anahtar sayısı `_PARSE_CACHE_MAX_KEYS` ile sınırlı. Gerçekte iki anahtar
+#     var (None + SERVER_STARTED_AT); sınıra çarpmak beklenmedik bir durumdur,
+#     bu yüzden tahliye SESSİZ DEĞİL, warning ile loglanır. Tahliye edilen
+#     anahtar bir sonraki çağrıda dosyayı baştan katlar (doğru, sadece yavaş).
+_PARSE_CACHE: dict[tuple[str, str | None], dict] = {}
 _PARSE_CACHE_LOCK = threading.Lock()
+_PARSE_CACHE_MAX_KEYS = 8
 
 
-def _parsed_records(p: Path) -> list[dict]:
+def _new_counters() -> dict:
+    """Bir modelin (ya da genel toplamın) sıfırlanmış sayaç sözlüğü."""
+    return {
+        "calls": 0,
+        **{f: 0 for f in _FIELDS},
+        "total": 0,
+        "provider_cost_usd": 0.0,
+        "provider_cost_calls": 0,
+        "_estimated_missing_cost_usd": 0.0,
+        "_unpriced_missing_calls": 0,
+    }
+
+
+def _new_fold() -> dict:
+    return {
+        "offset": 0,
+        "models": {},
+        "grand": _new_counters(),
+        "first_ts": None,
+        "last_ts": None,
+    }
+
+
+def _fold_record(state: dict, rec: dict, since: str | None) -> None:
+    """Tek bir ledger satırını akümülatöre ekle (eski summary döngüsünün gövdesi)."""
+    if since and (rec.get("ts") or "") < since:
+        return
+    model = rec.get("model") or "unknown"
+    m = state["models"].setdefault(model, _new_counters())
+    grand = state["grand"]
+    m["calls"] += 1
+    grand["calls"] += 1
+    for fld in _FIELDS:
+        v = int(rec.get(fld) or 0)
+        m[fld] += v
+        m["total"] += v
+        grand[fld] += v
+        grand["total"] += v
+    # TTL split rides along for pricing only — it is a breakdown of
+    # cache_write, so it must NOT be added into "total" again.
+    for fld in ("cache_write_5m", "cache_write_1h"):
+        v = int(rec.get(fld) or 0)
+        if v:
+            m[fld] = m.get(fld, 0) + v
+    reported = rec.get("provider_cost_usd")
+    try:
+        reported = float(reported) if reported is not None else None
+    except (TypeError, ValueError):
+        reported = None
+    if reported is not None and math.isfinite(reported) and reported >= 0:
+        m["provider_cost_usd"] += reported
+        m["provider_cost_calls"] += 1
+        grand["provider_cost_usd"] += reported
+        grand["provider_cost_calls"] += 1
+    else:
+        line_counts = {
+            fld: int(rec.get(fld) or 0)
+            for fld in (*_FIELDS, "cache_write_5m", "cache_write_1h")
+        }
+        estimate = cost_usd(line_counts, model)
+        if estimate is None:
+            m["_unpriced_missing_calls"] += 1
+            grand["_unpriced_missing_calls"] += 1
+        else:
+            m["_estimated_missing_cost_usd"] += estimate
+            grand["_estimated_missing_cost_usd"] += estimate
+    ts = rec.get("ts")
+    if ts:
+        if state["first_ts"] is None or ts < state["first_ts"]:
+            state["first_ts"] = ts
+        if state["last_ts"] is None or ts > state["last_ts"]:
+            state["last_ts"] = ts
+
+
+def _folded(p: Path, since: str | None) -> dict:
+    """(p, since) için artımlı katlama durumu — yalnız yeni baytları okur."""
+    key = (str(p), since)
     with _PARSE_CACHE_LOCK:
-        offset, records = _PARSE_CACHE.get(p, (0, []))
+        state = _PARSE_CACHE.get(key)
+        if state is None:
+            if len(_PARSE_CACHE) >= _PARSE_CACHE_MAX_KEYS:
+                oldest = next(iter(_PARSE_CACHE))
+                _PARSE_CACHE.pop(oldest, None)
+                logging.getLogger(__name__).warning(
+                    "token_ledger fold cache full (%d keys) — evicted %r; the next "
+                    "summary() for it re-folds the whole ledger",
+                    _PARSE_CACHE_MAX_KEYS,
+                    oldest,
+                )
+            state = _new_fold()
+            _PARSE_CACHE[key] = state
         try:
             size = p.stat().st_size
         except OSError:
-            return records
-        if size < offset:
-            # Ledger shrank (rotated/replaced/truncated) — nothing here yet
-            # deletes/rotates it, but starting over beats silently under-
-            # counting or crashing on a negative-length read.
-            offset, records = 0, []
-        if size > offset:
+            return state
+        if size < state["offset"]:
+            state = _new_fold()
+            _PARSE_CACHE[key] = state
+        if size > state["offset"]:
             with open(p, "rb") as f:
-                f.seek(offset)
+                f.seek(state["offset"])
                 chunk = f.read()
             last_nl = chunk.rfind(b"\n")
             if last_nl != -1:
                 usable = chunk[: last_nl + 1]
-                offset += len(usable)
+                state["offset"] += len(usable)
                 for ln in usable.decode("utf-8", errors="ignore").splitlines():
                     ln = ln.strip()
                     if not ln:
                         continue
                     try:
-                        records.append(json.loads(ln))
+                        rec = json.loads(ln)
                     except Exception:
                         continue  # malformed line — permanently skipped, as before
-        _PARSE_CACHE[p] = (offset, records)
-        return records
+                    _fold_record(state, rec, since)
+        return state
 
 
 def summary(path: Path | None = None, *, since: str | None = None) -> dict:
@@ -261,15 +364,7 @@ def summary(path: Path | None = None, *, since: str | None = None) -> dict:
     """
     p = path or LEDGER_PATH
     models: dict[str, dict] = {}
-    grand = {
-        "calls": 0,
-        **{f: 0 for f in _FIELDS},
-        "total": 0,
-        "provider_cost_usd": 0.0,
-        "provider_cost_calls": 0,
-        "_estimated_missing_cost_usd": 0.0,
-        "_unpriced_missing_calls": 0,
-    }
+    grand = _new_counters()
     first_ts = last_ts = None
     if not p.exists():
         return {
@@ -279,64 +374,14 @@ def summary(path: Path | None = None, *, since: str | None = None) -> dict:
             "last_ts": None,
         }
     try:
-        for rec in _parsed_records(p):
-            if since and (rec.get("ts") or "") < since:
-                continue
-            model = rec.get("model") or "unknown"
-            m = models.setdefault(
-                model,
-                {
-                    "calls": 0,
-                    **{fld: 0 for fld in _FIELDS},
-                    "total": 0,
-                    "provider_cost_usd": 0.0,
-                    "provider_cost_calls": 0,
-                    "_estimated_missing_cost_usd": 0.0,
-                    "_unpriced_missing_calls": 0,
-                },
-            )
-            m["calls"] += 1
-            grand["calls"] += 1
-            for fld in _FIELDS:
-                v = int(rec.get(fld) or 0)
-                m[fld] += v
-                m["total"] += v
-                grand[fld] += v
-                grand["total"] += v
-            # TTL split rides along for pricing only — it is a breakdown of
-            # cache_write, so it must NOT be added into "total" again.
-            for fld in ("cache_write_5m", "cache_write_1h"):
-                v = int(rec.get(fld) or 0)
-                if v:
-                    m[fld] = m.get(fld, 0) + v
-            reported = rec.get("provider_cost_usd")
-            try:
-                reported = float(reported) if reported is not None else None
-            except (TypeError, ValueError):
-                reported = None
-            if reported is not None and math.isfinite(reported) and reported >= 0:
-                m["provider_cost_usd"] += reported
-                m["provider_cost_calls"] += 1
-                grand["provider_cost_usd"] += reported
-                grand["provider_cost_calls"] += 1
-            else:
-                line_counts = {
-                    fld: int(rec.get(fld) or 0)
-                    for fld in (*_FIELDS, "cache_write_5m", "cache_write_1h")
-                }
-                estimate = cost_usd(line_counts, model)
-                if estimate is None:
-                    m["_unpriced_missing_calls"] += 1
-                    grand["_unpriced_missing_calls"] += 1
-                else:
-                    m["_estimated_missing_cost_usd"] += estimate
-                    grand["_estimated_missing_cost_usd"] += estimate
-            ts = rec.get("ts")
-            if ts:
-                if first_ts is None or ts < first_ts:
-                    first_ts = ts
-                if last_ts is None or ts > last_ts:
-                    last_ts = ts
+        # Katlama akümülatörü ÖNBELLEKTE yaşıyor; aşağıdaki bitirme adımı
+        # (fiyatlama + özel anahtarların silinmesi) sözlükleri mutasyona
+        # uğrattığı için kopya üzerinde çalışılır — yoksa bir sonraki çağrı
+        # bozulmuş bir akümülatör bulurdu.
+        state = _folded(p, since)
+        models = {name: dict(counters) for name, counters in state["models"].items()}
+        grand = dict(state["grand"])
+        first_ts, last_ts = state["first_ts"], state["last_ts"]
     except Exception:
         logging.getLogger(__name__).warning(
             "token_ledger.summary read failed", exc_info=True

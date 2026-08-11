@@ -38,6 +38,17 @@ Metric warning (M35)
 ``objective`` runs on the Engine path's BAR-FREQUENCY Sharpe; for the cross
 runner (BacktestNode) or NAU comparison, use ``sharpe_nautilus`` /
 ``sharpe_per_trade`` — the scales differ and are not directly comparable.
+
+Wiki References
+---------------
+Bkz: [[auto_arama_ekonomisi]], [[auto_kapi_ve_geri_bildirim]],
+[[backtesting_guide]], [[webapp_module_map]]
+
+Güven sönümlemesi SİMETRİKTİR (2026-08-11): pozitif skor ``× k``, negatif skor
+``÷ k`` (``k = n/(n+K)``). Koşulsuz çarpma negatif skorları sıfıra yaklaştırarak
+İYİLEŞTİRİYOR, yani az işlemli KAYBEDEN adayı GA turnuvasında kazandırıyordu.
+Aynı duruş ``web/routes/agent_backtest.py::_score``'da — iki taraf ıraksarsa
+WFO ve AUTO farklı kazanan seçer.
 """
 
 from __future__ import annotations
@@ -60,8 +71,9 @@ from app_constants import env_int as _env_int
 # require BOTH folds valid (see WF_MIN_VALID_FOLDS_FRAC note).
 WFO_POP_SIZE = max(1, _env_int("NAUTILUS_WFO_POP_SIZE", 4))
 WF_FOLDS = max(1, _env_int("NAUTILUS_WF_FOLDS", 3))
-# NAU confidence-damping constant: score *= n / (n + K). K=20 → ×0.2 at 5 trades,
-# ×0.5 at 20 trades, ×0.83 at 100 trades — scores inflated by few trades are suppressed.
+# NAU confidence-damping constant: k = n / (n + K). K=20 → 0.2 at 5 trades,
+# 0.5 at 20 trades, 0.83 at 100 trades. Pozitif skor `× k`, negatif skor `÷ k`
+# (bkz. `objective_value._damp`): az örneklem her iki yönde de cezalanır.
 WFO_TRADE_CONF_K = max(0, _env_int("NAUTILUS_WFO_TRADE_CONF_K", 20))
 
 # M236: NAU calmar guards. DD_FLOOR (fraction; NAU 1% = 0.01) prevents micro-drawdown
@@ -229,9 +241,9 @@ def objective_value(result, objective: str = "sharpe", min_trades: int = 5) -> f
     never win (hard threshold: ``n < min_trades`` → -inf, default 5).
 
     Candidates that PASS the threshold get NAU-style trade-count confidence
-    damping: ``val *= n / (n + WFO_TRADE_CONF_K)`` — scores inflated by few trades
-    (multiple-testing inflation) are suppressed, and the multiplier approaches 1
-    as n grows. The same damping is applied to values in the NaN-fallback chain.
+    damping with ``k = n / (n + WFO_TRADE_CONF_K)``: ``val × k`` when
+    ``val >= 0`` and ``val ÷ k`` when ``val < 0`` (see ``_damp``). The same
+    damping is applied to values in the NaN-fallback chain.
     """
     if result is None or getattr(result, "error", None):
         return float("-inf")
@@ -240,6 +252,24 @@ def objective_value(result, objective: str = "sharpe", min_trades: int = 5) -> f
     if n < min_trades:
         return float("-inf")
     conf = n / (n + WFO_TRADE_CONF_K) if (n + WFO_TRADE_CONF_K) > 0 else 1.0
+
+    def _damp(value: float) -> float:
+        """Güven sönümlemesi — SİMETRİK (DeepR 2026-08-11 [ORTA]).
+
+        Eskiden koşulsuz `value * conf` idi. 0<conf<1 olduğu için NEGATİF
+        skorlarda etki tersine dönüyordu: değeri sıfıra YAKLAŞTIRIYOR, yani
+        iyileştiriyordu. İki aday da fold başına sharpe=-1.0 üretse, 5 işlemli
+        aday -0.20, 200 işlemli aday -0.909 alıyor; GA turnuvası yüksek skoru
+        seçtiği için İSTATİSTİKSEL OLARAK ANLAMSIZ, KAYBEDEN aday kazanıyordu.
+        Düşen piyasa dilimlerinde ve erken jenerasyonlarda fold skorlarının
+        çoğu negatif olduğundan bu istisna değil, tipik durumdu.
+
+        Negatif tarafta BÖLMEK aynı belirsizliği aynı yönde ifade eder: az
+        örneklem her iki yönde de "emin değiliz" demektir, "daha az kötü"
+        değil. Duruş `web/routes/agent_backtest.py::_score` ile birebir aynı
+        (aynı hatanın ikizi orada düzeltildi) — ikinci bir varyant yok.
+        """
+        return value * conf if value >= 0 else value / max(conf, 1e-9)
 
     def _calmar() -> float | None:
         # M236: NAU DD_FLOOR (1%) + CALMAR_CAP (±10) guards — a fold with a
@@ -276,12 +306,12 @@ def objective_value(result, objective: str = "sharpe", min_trades: int = 5) -> f
         # CAPPED calmar (±10, same order of magnitude) — NOT an unbounded raw ratio.
         alt = m.get("sortino")
         if alt is not None and not _isnan(alt):
-            return float(alt) * conf
+            return _damp(float(alt))
         cal = _calmar()
         if cal is not None:
-            return cal * conf
+            return _damp(cal)
         return float("-inf")
-    return float(val) * conf
+    return _damp(float(val))
 
 
 # ---------------------------------------------------------------------------
