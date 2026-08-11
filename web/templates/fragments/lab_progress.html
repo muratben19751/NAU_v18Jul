@@ -28,6 +28,14 @@
         <div class="warning-strip">{{ error }}</div>
       {% endif %}
 
+      {# Koşu geçerli ama backtest_log.jsonl yazımı düştü: /reports'ta bu koşu
+         YOK. Yeşil bir tamamlanma bunu gizlememeli (DeepR 2026-08-11). #}
+      {% if state.audit_degraded %}
+        <div class="warning-strip">
+          ⚠ AUDIT DEGRADED — {{ state.audit_error or 'Backtest log could not be written; this run will not appear in /reports.' }}
+        </div>
+      {% endif %}
+
       {# Phase timeline #}
       <div class="lab-phases">
         {% for p in state.phases %}

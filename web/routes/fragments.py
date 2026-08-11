@@ -13,7 +13,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
 from state import get_state
-from web.viewmodels import best_card, iteration_row
+from web.viewmodels import best_card, iteration_row, loop_status_ctx
 
 router = APIRouter(prefix="/fragments")
 
@@ -54,7 +54,7 @@ async def loop_status(request: Request):
     return templates.TemplateResponse(
         request,
         "fragments/loop_status.html",
-        {"running": running, "status": status, "iter_count": len(state.iterations)},
+        loop_status_ctx(state, running, status),
     )
 
 

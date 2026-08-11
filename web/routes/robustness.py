@@ -2,10 +2,22 @@
 
 POST /robustness/run   → start daemon thread, return progress fragment
 GET  /robustness/progress/{run_id} → poll → return result.html when ready
+
+A suite can succeed PARTIALLY: WFO + IS/OOS may be real while the full
+backtest that feeds Monte Carlo crashed. That case carries `full_error` from
+``sandbox._manual_suite_child`` and must be reported as degraded — in the log,
+in the step list, in the result dict and on screen. Presenting it as "no trade
+data" told the user their strategy was useless when the truth was that the
+infrastructure had failed (2026-08-11 DeepR finding).
+
+Wiki References
+---------------
+See: [[crash_only_design]]
 """
 
 from __future__ import annotations
 
+import logging
 import threading
 import uuid
 from datetime import UTC, datetime
@@ -17,6 +29,7 @@ router = APIRouter(prefix="/robustness")
 
 from web.shared import (
     ProgressStore,  # noqa: E402
+    error_html,  # noqa: E402
     session_id,  # noqa: E402
 )
 from web.shared import log_robustness as _log_robustness  # noqa: E402
@@ -88,7 +101,11 @@ def _set_progress(run_id: str, **fields) -> None:
 @router.post("/run", response_class=HTMLResponse)
 async def run(
     request: Request,
-    spec_id: str = Form(...),
+    # Form("") — Form(...) DEĞİL: #spec-picker'ın varsayılan seçeneği boş
+    # gönderir ve FastAPI zorunlu bir Form alanında boş dizeyi "eksik" sayıp
+    # 422 JSON döner. O JSON kullanıcıya hiçbir şey anlatmaz; boş seçimi
+    # rotanın kendisi karşılasın ki ne yapılacağını yazan bir mesaj çıksın.
+    spec_id: str = Form(""),
     symbol: str = Form("BTCUSDT"),
     category: str = Form("linear"),
     interval: str = Form("1"),
@@ -130,8 +147,16 @@ async def run(
     catalog = load_catalog()
     spec = next((s for s in catalog if s.id == spec_id), None)
     if spec is None:
-        return HTMLResponse(
-            "<div class='empty-state'>Spec not found.</div>", status_code=404
+        # DeepR 2026-08-11 [ORTA]: bu 404 HX-Toast'suzdu ve htmx 4xx'i swap
+        # etmediği için ekranda HİÇBİR ŞEY olmuyordu. Formun spec_id'si
+        # #result panelinden JS ile doldurulur (btFillPanels); panel yoksa
+        # ya da spec silinmişse boş gider — kullanıcıya bunu söyle.
+        return error_html(
+            "No strategy selected for the reliability test: run a backtest "
+            "first, then press this button (or reload the page if the "
+            "strategy was deleted in another tab).",
+            404,
+            toast=True,
         )
 
     run_id = uuid.uuid4().hex[:8]
@@ -228,6 +253,31 @@ async def run(
                 _set_progress(run_id, error=suite["error"])
                 return
 
+            # DeepR 2026-08-11 [YÜKSEK]: `_manual_suite_child` has always
+            # returned `full_error` (the Monte Carlo full backtest's failure)
+            # as part of its documented contract, and NOBODY read it. The run
+            # still had WFO + IS/OOS tables, so the `suite["error"]` branch
+            # above didn't fire either, and the crash surfaced as a bland
+            # "no trade data" in the Monte Carlo tab. A degraded run must be
+            # reported as degraded — in the log, in the step list, and on
+            # screen (see robustness_result.html's Monte Carlo tab).
+            full_error = (suite.get("full_error") or "").strip()
+            if full_error:
+                logging.getLogger(__name__).warning(
+                    "robustness %s (%s %s/%s/%s): full backtest for Monte Carlo "
+                    "FAILED — %s",
+                    run_id,
+                    spec.name,
+                    symbol,
+                    category,
+                    interval,
+                    full_error,
+                )
+                _add_step(
+                    run_id,
+                    f"⚠ Monte Carlo skipped — the full backtest failed: {full_error}",
+                )
+
             result = {
                 "spec_name": spec.name,
                 "symbol": symbol,
@@ -240,13 +290,18 @@ async def run(
                 "wfo_summary": suite.get("wfo_summary") or {},
                 "split": suite.get("split") or {},
                 "mc": suite.get("mc") or {"error": "No Trade data."},
+                # Carried into the result so the template (and the persisted
+                # robustness log) can tell "0 trades" apart from "it crashed".
+                "full_error": full_error,
                 "train_months": train_months,
                 "test_months": test_months,
                 "n_sims": n_sims,
                 "n_optimize": n_optimize,
                 "objective": objective,
             }
-            _add_step(run_id, "Completed")
+            _add_step(
+                run_id, "Completed (partially degraded)" if full_error else "Completed"
+            )
             _log_robustness(spec.id, spec.name, result)
             _set_progress(run_id, result=result)
 

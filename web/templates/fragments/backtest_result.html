@@ -487,6 +487,14 @@
           </select>
         </div>
         <div class="text-muted" style="font-size:10px;padding:6px 16px 0;">click → show on chart · click again → clear</div>
+        {% if last.exit_reasons_error %}
+        {# Fills raporu alınamadı: Exit sütunu boş kalacak. Bunu söylemezsek
+           boşluk "strateji hiç SL/TP kullanmamış" diye okunuyor. #}
+        <div style="margin:6px 16px 0;padding:5px 8px;border-radius:4px;font-size:10px;
+                    background:rgba(251,191,36,0.12);color:#fbbf24;">
+          ⚠ Çıkış sebepleri bu koşu için alınamadı: {{ last.exit_reasons_error }}
+        </div>
+        {% endif %}
         <div style="overflow:auto;margin-top:6px;flex:1;">
         <table class="trade-table" id="trade-table">
           <thead>
@@ -524,6 +532,7 @@
                 {% elif k == 'signal' %}<span class="chip" style="background:var(--accent-soft);color:var(--accent);" title="{{ t.exit_reason }}">Signal</span>
                 {% elif k == 'flip' %}<span class="chip" style="background:rgba(255,207,64,0.18);color:var(--amber);" title="{{ t.exit_reason }}">Flip</span>
                 {% elif k == 'eob' %}<span class="chip" title="{{ t.exit_reason }}">Last</span>
+                {% elif last.exit_reasons_error %}<span class="text-muted" title="{{ last.exit_reasons_error }}">?</span>
                 {% else %}<span class="text-muted">—</span>{% endif %}
               </td>
             </tr>

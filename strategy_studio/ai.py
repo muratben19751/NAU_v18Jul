@@ -71,12 +71,14 @@ class HttpAnthropicClient:
     # enough: no cross-call memory needed.
     _DEFAULT_MODEL = "claude-sonnet-4-6"
     _DEFAULT_MAX_TOKENS = 4096
+    _DEFAULT_BASE_URL = "https://api.anthropic.com"
 
     def __init__(
         self,
         model: str | None = None,
         api_key: str | None = None,
         max_tokens: int | None = None,
+        base_url: str | None = None,
     ):
         self.model = model or os.environ.get(
             "NAUTILUS_STUDIO_LLM_MODEL", self._DEFAULT_MODEL
@@ -85,6 +87,17 @@ class HttpAnthropicClient:
         self.max_tokens = max_tokens or int(
             os.environ.get("NAUTILUS_STUDIO_LLM_MAX_TOKENS", self._DEFAULT_MAX_TOKENS)
         )
+        # DeepR 2026-08-11 [YÜKSEK]: uç, uygulamanın diğer LLM yolu
+        # (llm_dispatch._build_client) ile AYNI değişkenden okunur. Eskiden bu
+        # istemci ucu sabit resmi API'ydi, öbürü ise varsayılan olarak yerel bir
+        # proxy'ye gidiyordu: aynı ANTHROPIC_API_KEY iki farklı uca gönderiliyor,
+        # bir proxy anahtarı üçüncü tarafa gidebiliyordu. Tek kaynak: boşsa resmi
+        # uç, doluysa o proxy — iki entegrasyon da aynı yere konuşur.
+        self.base_url = (
+            base_url
+            or os.environ.get("ANTHROPIC_BASE_URL", "").strip()
+            or self._DEFAULT_BASE_URL
+        ).rstrip("/")
 
     # Retry only transient failures (429 / 5xx / timeout / connection) — a
     # single one of these used to kill the whole AUTO loop for this client
@@ -123,7 +136,7 @@ class HttpAnthropicClient:
         for attempt, planned_wait in enumerate((*self._RETRY_WAITS, None)):
             try:
                 r = httpx.post(
-                    "https://api.anthropic.com/v1/messages",
+                    f"{self.base_url}/v1/messages",
                     headers={
                         "x-api-key": self.api_key,
                         "anthropic-version": "2023-06-01",
@@ -153,7 +166,7 @@ class HttpAnthropicClient:
                 )
 
             if not transient or planned_wait is None:
-                raise last_exc
+                raise self._endpoint_error(last_exc)
             wait = planned_wait
             if isinstance(last_exc, httpx.HTTPStatusError):
                 retry_after = last_exc.response.headers.get("retry-after")
@@ -171,7 +184,29 @@ class HttpAnthropicClient:
                 len(self._RETRY_WAITS),
             )
             time.sleep(wait)
-        raise last_exc  # pragma: no cover - loop always returns or raises above
+        raise self._endpoint_error(  # pragma: no cover - loop always exits above
+            last_exc
+        )
+
+    def _endpoint_error(self, exc: Exception) -> Exception:
+        """Ulaşılamayan ÖZEL uç, adıyla anılsın — jenerik bağlantı hatası değil.
+
+        Resmi uçta bir `ConnectError` "internet yok" demektir ve kullanıcının
+        yapacağı bir şey yoktur; ANTHROPIC_BASE_URL ile bir proxy verilmişken
+        aynı hata neredeyse her zaman "o proxy koşmuyor" demektir ve yapılacak
+        iş bellidir. Panelde görünen metin bunu söylesin diye çevriliyor.
+        """
+        import httpx
+
+        if self.base_url == self._DEFAULT_BASE_URL or not isinstance(
+            exc, httpx.ConnectError
+        ):
+            return exc
+        return SuggestionFailure(
+            f"LLM proxy yanıt vermiyor: {self.base_url} (ANTHROPIC_BASE_URL). "
+            "Proxy'yi başlat ya da bu değişkeni kaldır — kaldırılınca çağrılar "
+            f"resmi uca ({self._DEFAULT_BASE_URL}) gider."
+        )
 
 
 class MockLLMClient:

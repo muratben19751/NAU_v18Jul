@@ -16,6 +16,7 @@ from fastapi.responses import HTMLResponse
 
 from loop_runner import run_loop
 from state import get_state
+from web.viewmodels import loop_status_ctx
 
 router = APIRouter(prefix="/loop")
 
@@ -48,7 +49,7 @@ async def start(request: Request, mode: str = Form("agent")):
     return templates.TemplateResponse(
         request,
         "fragments/loop_status.html",
-        {"running": running, "status": status, "iter_count": len(state.iterations)},
+        loop_status_ctx(state, running, status),
     )
 
 
@@ -64,5 +65,5 @@ async def stop(request: Request):
     return templates.TemplateResponse(
         request,
         "fragments/loop_status.html",
-        {"running": running, "status": status, "iter_count": len(state.iterations)},
+        loop_status_ctx(state, running, status),
     )

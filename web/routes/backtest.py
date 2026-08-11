@@ -31,6 +31,7 @@ from datetime import UTC, date, datetime
 
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse
+from markupsafe import Markup
 
 from composer import BLOCK_CATALOG, load_catalog
 from data import (
@@ -50,6 +51,8 @@ from web.shared import (  # noqa: E402
     BACKTEST_LOG,
     ChatStore,
     ProgressStore,
+    error_html,
+    safe_html,
     session_id,
 )
 from web.shared import chart_url as _chart_url  # noqa: E402
@@ -242,11 +245,32 @@ def _invalid_date_range(start: str, end: str) -> str | None:
     return None
 
 
+_SPEC_GONE_MSG = (
+    "That saved strategy is not in the catalog any more (deleted in another "
+    "tab?) - reload the page to refresh the list."
+)
+
+
+def _reject(msg: str, status_code: int = 400) -> HTMLResponse:
+    """Reddedilen bir submit → gövdesi AÇIKLAYAN + toast taşıyan bir yanıt.
+
+    DeepR 2026-08-11 [ORTA]: bu dosyadaki 4xx'lerin bir kısmı (kayıtlı spec
+    bulunamadı, tarif çok kısa/uzun, sweep'te tek TF) HX-Toast'suz çıplak
+    HTML'di. htmx 1.x 2xx dışı yanıtları DOM'a BASMAZ, yani o gövdeler ekrana
+    hiç ulaşmıyordu: kullanıcı butona basıyor ve hiçbir şey olmuyordu. Tek bir
+    yardımcıdan geçerek hepsi aynı iki kanalı kullanır — toast (anında) +
+    gövde (istemci tarafındaki `htmx:beforeSwap` kancası bunu #result'a
+    basar, bkz. fragments/backtest_scripts.html).
+
+    ``_busy_response`` bilerek buradan geçmez: 409'un gövdesi swap EDİLMEMELİ
+    (canlı bir koşunun ilerleme panelini silerdi) — ona yalnız toast düşer.
+    """
+    return error_html("{msg}", status_code, toast=True, msg=msg)
+
+
 def _date_error_response(msg: str) -> HTMLResponse:
-    """400 for an invalid date range — toast + non-swapping body."""
-    resp = HTMLResponse(f"<div class='empty-state'>{msg}</div>", status_code=400)
-    resp.headers["HX-Toast"] = f"err|{msg}"
-    return resp
+    """400 for an invalid date range — toast + explaining body."""
+    return _reject(msg)
 
 
 def _clamp_commission_pct(commission_pct: float) -> float:
@@ -562,11 +586,21 @@ async def tickers(request: Request):
         ts = await asyncio.to_thread(discover_index_tickers)
     except Exception as e:
         return HTMLResponse(
-            f"<option value=''>ticker discovery failed: {type(e).__name__}: {e}</option>"
+            safe_html(
+                "<option value=''>ticker discovery failed: {kind}: {e}</option>",
+                kind=type(e).__name__,
+                e=e,
+            )
         )
     if not ts:
         return HTMLResponse("<option value=''>no tickers found</option>")
-    return HTMLResponse("".join(f'<option value="{t}">{t}</option>' for t in ts))
+    # `t` diskteki dizin adı — istek verisi değil ama sabit de değil. İçinde
+    # bir `"` geçmesi value="…" özniteliğinden çıkmaya yeter; escape ederken
+    # markupsafe tırnağı da (`&#34;`) kaçırdığı için öznitelik bağlamı da
+    # kapanmış oluyor.
+    return HTMLResponse(
+        Markup("").join(safe_html('<option value="{t}">{t}</option>', t=t) for t in ts)
+    )
 
 
 @router.get("/external_instruments", response_class=HTMLResponse)
@@ -579,14 +613,21 @@ async def external_instruments(request: Request):
         rows = await asyncio.to_thread(list_external_instruments)
     except Exception as e:
         return HTMLResponse(
-            f"<option value=''>external catalog scan failed: {type(e).__name__}: {e}</option>"
+            safe_html(
+                "<option value=''>external catalog scan failed: {kind}: {e}</option>",
+                kind=type(e).__name__,
+                e=e,
+            )
         )
     if not rows:
         return HTMLResponse("<option value=''>no external instruments found</option>")
     return HTMLResponse(
-        "".join(
-            f'<option value="{r["instrument_id"]}" data-grans="{",".join(r["granularities"])}">'
-            f"{r['instrument_id']}</option>"
+        Markup("").join(
+            safe_html(
+                '<option value="{iid}" data-grans="{grans}">{iid}</option>',
+                iid=r["instrument_id"],
+                grans=",".join(r["granularities"]),
+            )
             for r in rows
         )
     )
@@ -595,7 +636,11 @@ async def external_instruments(request: Request):
 @router.post("/run", response_class=HTMLResponse)
 async def run(
     request: Request,
-    spec_id: str = Form(...),
+    # Form("") — Form(...) DEĞİL: #spec-picker'ın varsayılan seçeneği boş
+    # gönderir ve FastAPI zorunlu bir Form alanında boş dizeyi "eksik" sayıp
+    # 422 JSON döner. O JSON kullanıcıya hiçbir şey anlatmaz; boş seçimi
+    # rotanın kendisi karşılasın ki ne yapılacağını yazan bir mesaj çıksın.
+    spec_id: str = Form(""),
     instrument_kind: str = Form("Bybit"),
     symbol: str = Form("BTCUSDT"),
     category: str = Form("linear"),
@@ -617,12 +662,20 @@ async def run(
     """Return a progress panel immediately, run the backtest in a daemon thread."""
     from server import templates
 
+    # Boş spec_id, hatalı bir id DEĞİLDİR: #spec-picker'ın varsayılan seçeneği
+    # ("— new (describe below) —") tam olarak bunu gönderir. "Spec not found"
+    # demek, kullanıcının hiç yapmadığı bir seçim hakkında konuşmaktır — ne
+    # yapması gerektiğini söyle.
+    if not (spec_id or "").strip():
+        return _reject(
+            "Pick a saved strategy from the list first, or describe a new one "
+            "below and press Run Backtest.",
+            400,
+        )
     catalog = load_catalog()
     spec = next((s for s in catalog if s.id == spec_id), None)
     if spec is None:
-        return HTMLResponse(
-            "<div class='empty-state'>Spec not found.</div>", status_code=404
-        )
+        return _reject(_SPEC_GONE_MSG, 404)
 
     # Server-side date validation — an inverted range must never start a pipeline.
     date_err = (
@@ -1220,18 +1273,12 @@ async def describe(
 
     desc = (description or "").strip()
     if len(desc) < 10:
-        return HTMLResponse(
-            "<div class='empty-state'>Please describe the strategy in a bit more "
-            "detail (at least 10 characters) — Claude will write Python blocks "
-            "from this text.</div>",
-            status_code=400,
+        return _reject(
+            "Please describe the strategy in a bit more detail (at least 10 "
+            "characters): Claude writes the Python blocks from this text."
         )
     if len(desc) > _MAX_LLM_TEXT_LEN:
-        return HTMLResponse(
-            f"<div class='empty-state'>Description is too long (max "
-            f"{_MAX_LLM_TEXT_LEN} characters).</div>",
-            status_code=400,
-        )
+        return _reject(f"Description is too long (max {_MAX_LLM_TEXT_LEN} characters).")
 
     # Server-side date validation — same rule as /run (the generation would
     # otherwise burn LLM calls and then chain into a doomed backtest).
@@ -2069,6 +2116,10 @@ async def plan_preview(
 
         chart_data = await _asyncio.to_thread(_preview_signals, rows, _allow_short_bool)
     except Exception:
+        # Grafiği atlamak plan önizlemesini bloklamamalı, ama sessiz de olmamalı:
+        # kayıp önizleme "bu plan hiç sinyal üretmiyor" diye okunuyordu
+        # (DeepR 2026-08-11 [ORTA] — strategy._preview_signals ile aynı sınıf).
+        logging.warning("plan preview signal estimate failed", exc_info=True)
         chart_data = None
 
     return templates.TemplateResponse(
@@ -2334,7 +2385,11 @@ def _sweep_state_view(sweep_id: str) -> dict | None:
 @router.post("/sweep", response_class=HTMLResponse)
 async def sweep(
     request: Request,
-    spec_id: str = Form(...),
+    # Form("") — Form(...) DEĞİL: #spec-picker'ın varsayılan seçeneği boş
+    # gönderir ve FastAPI zorunlu bir Form alanında boş dizeyi "eksik" sayıp
+    # 422 JSON döner. O JSON kullanıcıya hiçbir şey anlatmaz; boş seçimi
+    # rotanın kendisi karşılasın ki ne yapılacağını yazan bir mesaj çıksın.
+    spec_id: str = Form(""),
     instrument_kind: str = Form("Bybit"),
     symbol: str = Form("BTCUSDT"),
     category: str = Form("linear"),
@@ -2357,9 +2412,7 @@ async def sweep(
     catalog = load_catalog()
     spec = next((s for s in catalog if s.id == spec_id), None)
     if spec is None:
-        return HTMLResponse(
-            "<div class='empty-state'>Strategy not found.</div>", status_code=404
-        )
+        return _reject(_SPEC_GONE_MSG, 404)
 
     # Same guards as /run: no inverted date range, one live job per session.
     date_err = _invalid_date_range(bybit_start, bybit_end) or _invalid_date_range(
@@ -2378,16 +2431,9 @@ async def sweep(
         # Index: granularity list (csv from the describe→sweep chain).
         picked = [g.strip() for g in granularity_csv.split(",") if g.strip()]
         if not ticker:
-            return HTMLResponse(
-                "<div class='empty-state'>Ticker required for Index sweep.</div>",
-                status_code=400,
-            )
+            return _reject("Ticker required for Index sweep.")
         if len(picked) < 2:
-            return HTMLResponse(
-                "<div class='empty-state'>Select at least 2 timeframes "
-                "(for comparison).</div>",
-                status_code=400,
-            )
+            return _reject("Select at least 2 timeframes (for comparison).")
         _idx_labels = {"1m": "1m", "5m": "5m", "15m": "15m", "60m": "1h", "1d": "1d"}
         label_of = _idx_labels
         display_symbol, display_category = ticker, "index"
@@ -2400,11 +2446,7 @@ async def sweep(
             raw = [x.strip() for x in intervals_csv.split(",") if x.strip()]
         picked = _normalize_intervals(raw)
         if len(picked) < 2:
-            return HTMLResponse(
-                "<div class='empty-state'>Select at least 2 timeframes "
-                "(for comparison).</div>",
-                status_code=400,
-            )
+            return _reject("Select at least 2 timeframes (for comparison).")
         label_of = dict(BYBIT_ALL_INTERVALS)
         display_symbol, display_category = symbol, category
 
@@ -2449,9 +2491,12 @@ async def sweep(
         from concurrent.futures import ThreadPoolExecutor
         from datetime import timedelta
 
-        import pandas as _pd
-
-        from data import _base_ccy, _bybit_cache_path, load_bybit_bars
+        from data import (
+            _base_ccy,
+            _bybit_cache_path,
+            _read_parquet_stats,
+            load_bybit_bars,
+        )
         from parallel_exec import get_worker_count, parallel_enabled
         from sandbox import run_backtest_guarded
 
@@ -2478,12 +2523,21 @@ async def sweep(
                             error="no cache — fetch from the Data screen",
                         )
                         return
-                    _df = _pd.read_parquet(cp)
-                    if _df.empty:
+                    # DeepR 2026-08-11 [ORTA]: buradaki tek soru "ilk/son bar
+                    # hangi gün?" — eskiden bunun için TÜM parquet belleğe
+                    # alınıyordu, hemen ardından load_index_bars aynı dosyayı
+                    # baştan okuyordu. _read_parquet_stats yalnızca ~4 KB'lık
+                    # footer'ı (row-group min/max istatistikleri) okur; tam
+                    # kolon decode'u tamamen boşaydı.
+                    _stats = _read_parquet_stats(cp)
+                    if _stats is None:
+                        _row(code, status="error", error="cache unreadable")
+                        return
+                    if not _stats["rows"] or not _stats["first"] or not _stats["last"]:
                         _row(code, status="error", error="no bars")
                         return
-                    s_d = _df.index[0].date()
-                    e_d = _df.index[-1].date()
+                    s_d = date.fromisoformat(_stats["first"][:10])
+                    e_d = date.fromisoformat(_stats["last"][:10])
                 bars = load_index_bars(ticker, s_d, e_d, code)
                 if bars.empty:
                     _row(code, status="error", error="no bars")
@@ -2543,10 +2597,23 @@ async def sweep(
                 else:
                     e_dt = None
                 if s_dt is None or e_dt is None:
-                    _df = _pd.read_parquet(cp)
-                    if not _df.empty:
-                        s_dt = s_dt or _df.index[0].to_pydatetime().replace(tzinfo=UTC)
-                        e_dt = e_dt or _df.index[-1].to_pydatetime().replace(tzinfo=UTC)
+                    # DeepR 2026-08-11 [ORTA]: aynı dosyayı iki kez tam okuma.
+                    # Burada gereken tek şey önbelleğin ilk/son bar zamanı;
+                    # load_bybit_bars zaten hemen ardından dosyayı baştan
+                    # okuyor. 8 timeframe'lik bir sweep bunları ThreadPool ile
+                    # paralel koşturuyor → 8 × (milyonlarca satırlık) gereksiz
+                    # decode ve RAM tepe noktası. Footer istatistikleri yeter.
+                    _stats = _read_parquet_stats(cp)
+                    if _stats is None:
+                        _row(code, status="error", error="cache unreadable")
+                        return
+                    if _stats["rows"] and _stats["first"] and _stats["last"]:
+                        s_dt = s_dt or datetime.fromisoformat(_stats["first"]).replace(
+                            tzinfo=UTC
+                        )
+                        e_dt = e_dt or datetime.fromisoformat(_stats["last"]).replace(
+                            tzinfo=UTC
+                        )
                     else:
                         s_dt = s_dt or datetime.now(UTC) - timedelta(days=7)
                         e_dt = e_dt or datetime.now(UTC)
@@ -2686,10 +2753,20 @@ async def progress(request: Request, run_id: str):
     if state["done"] and state["error"]:
         with _RUN_PROGRESS_LOCK:
             _RUN_PROGRESS.pop(run_id, None)
+        # İKİNCİ DERECE sink: `state['error']` worker'da `_set_error()` ile
+        # yazılıyor ve üreticilerinin çoğu ham Form alanı taşıyor ("No bars for
+        # {ticker}", "No cached bars for {symbol}/{category}/{interval}", ham
+        # istisna metni). Yani yük POST /backtest/run ile yazılıp SONRAKİ
+        # GET /backtest/progress pollingiyle basılıyor — saklanmış XSS.
+        # `style` içindeki süslü parantezler yok, ama `{{`/`}}` kuralını
+        # unutmamak için şablonda hiç literal parantez bırakmıyoruz.
         return HTMLResponse(
-            f"<div class='panel' style='border-color:rgba(239,68,68,0.5)'>"
-            f"<div class='panel-body'><span class='badge exit'>✗ ERROR</span>"
-            f"<pre class='diagram mt-3'>{state['error']}</pre></div></div>"
+            safe_html(
+                "<div class='panel' style='border-color:rgba(239,68,68,0.5)'>"
+                "<div class='panel-body'><span class='badge exit'>✗ ERROR</span>"
+                "<pre class='diagram mt-3'>{err}</pre></div></div>",
+                err=state["error"],
+            )
         )
 
     return templates.TemplateResponse(

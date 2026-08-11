@@ -4,3 +4,12 @@
 <span class="badge idle">◦ {{ status }}</span>
 {% endif %}
 <span class="text-muted text-mono" style="margin-left:8px;">iter #{{ iter_count }}</span>
+{% if oob %}
+{# Kontrolleri rozetle BİRLİKTE tazele: ikisi aynı gerçeği (koşu canlı mı)
+   gösteriyor ve ayrı güncellenirlerse ekran kendi kendisiyle çelişiyor.
+   `oob` yalnız HTMX yanıtlarında doğrudur — sayfa render'ında include
+   edildiğinde tanımsız kalır, yoksa kontroller ikizlenirdi. #}
+<div id="loop-controls" hx-swap-oob="true" style="display:contents;">
+  {% include "fragments/loop_controls.html" %}
+</div>
+{% endif %}

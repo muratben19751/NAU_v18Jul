@@ -25,5 +25,17 @@
   </div>
 </div>
 
+{# Backtest çalıştı ama kaydı diske düşmedi: tear sheet linki boş, /reports'ta
+   satır yok. Yeşil "Pipeline completed" başlığının yanında bunu açıkça söyle
+   (DeepR 2026-08-11 [ORTA]). #}
+{% if audit_degraded %}
+<div class="panel" style="border-color:rgba(251,191,36,0.45);margin-bottom:12px;">
+  <div class="panel-body">
+    <span class="badge" style="background:rgba(251,191,36,0.16);color:#fbbf24;">AUDIT DEGRADED</span>
+    <span class="text-muted" style="margin-left:8px;">{{ audit_error or 'Backtest log could not be written; this run will not appear in /reports.' }}</span>
+  </div>
+</div>
+{% endif %}
+
 {# Reuse the standard backtest result fragment #}
 {% include "fragments/backtest_result.html" %}

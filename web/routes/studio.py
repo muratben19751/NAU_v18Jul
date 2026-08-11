@@ -23,7 +23,7 @@ from fastapi.responses import HTMLResponse
 
 from composer import BLOCK_CATALOG, load_catalog
 from data import BYBIT_ALL_INTERVALS, BYBIT_CATEGORIES, BYBIT_SYMBOLS
-from web.shared import session_id
+from web.shared import session_id, set_session_cookie
 
 router = APIRouter(prefix="/studio")
 
@@ -169,6 +169,10 @@ def page(request: Request):
     # hem picker'ı hem varsayılan seçimi aynı listeden türet.
     _models = _llm_models()
 
+    # Sembol satırları (disk taraması) bir kez okunur: hem picker listesi hem
+    # de sihirbazın sembol→kategori haritası aynı görüntüden türesin.
+    _symbol_rows = _bybit_symbols()
+
     # Backtest tab: session-scoped last result (Faz 3).
     slot = last_result_get(sid)
     last_row = None
@@ -223,18 +227,25 @@ def page(request: Request):
         "last": last_row,
         "preferred_spec_id": request.query_params.get("spec_id", ""),
         "recent_runs": recent_runs(6),
-        "bybit_symbols": _bybit_symbols(),
+        "bybit_symbols": _symbol_rows,
         "bybit_categories": BYBIT_CATEGORIES,
         "bybit_intervals": BYBIT_ALL_INTERVALS,
         "index_symbols": catalog_index_symbols(),
         # ── Simple-mode wizard context ──
         "strategy_templates": STRATEGY_TEMPLATES,
+        # Sihirbazın hızlı coin butonları hangi kategoride koşacağını buradan
+        # öğrenir (bkz. _bybit_symbol_category_map).
+        "bybit_symbol_categories": _bybit_symbol_category_map(_symbol_rows),
         # ── AUTO cockpit: model picker (Claude + varsa OpenRouter) ──
         "llm_models": _models,
         "llm_or_free_only": _llm_or_free_only(),
         "llm_or_paid_extras": _llm_or_paid_extras(),
         # Brief açılışta hangi ucu seçili göstersin (liste canlı → fallback var).
         "mc_default_model": _mc_default_model(_models),
+        # AUTO brief SYMBOL seçicisi: noktalı id'ler dış katalogdan CANLI gelir
+        # (elle yazılı tek satır QQQ.NASDAQ, ingest edilen diğer hisseleri
+        # görünmez kılıyordu).
+        "mc_external_symbols": _mc_external_symbols(),
         # ── AUTO kokpiti: effort (düşünme bütçesi) seçici ──
         "llm_efforts": _llm_efforts(),
         "mc_default_effort": AUTO_DEFAULT_EFFORT,
@@ -243,11 +254,16 @@ def page(request: Request):
         **llm_badge(),
     }
     # Preserve strategy.py's manual render + cookie set (drafts session depends
-    # on nautlab_sid; session_id above mints it, we set it if absent).
+    # on nautlab_sid; session_id above mints it).
+    #
+    # KAYAN SÜRE (DeepR 2026-08-11 [ORTA]): çerez eskiden yalnız YOKSA
+    # yazılıyordu, yani sayfayı yenilemek ömrü uzatmıyordu — bu ekranda saatlerce
+    # çalışan kullanıcının son sonuç paneli, taslakları ve tek-aktif-koşu
+    # koruması, hepsi sid'e bağlı olduğu için bir anda sıfırlanıyordu. Her
+    # yanıtta yeniden yaz: aktif kullanım oturumu ayakta tutsun.
     html = templates.get_template("studio.html").render(request=request, **ctx)
     resp = HTMLResponse(html)
-    if not request.cookies.get("nautlab_sid"):
-        resp.set_cookie("nautlab_sid", sid, httponly=True, samesite="lax", max_age=3600)
+    set_session_cookie(resp, sid)
     return resp
 
 
@@ -308,6 +324,20 @@ def llm_badge() -> dict[str, str]:
     return {"llm_model_label": model_label(), "llm_model_id": model_id()}
 
 
+def _mc_external_symbols() -> list[str]:
+    """AUTO brief'inin SYMBOL kutusundaki noktalı (dış katalog) id'leri.
+
+    Dizin taraması; katalog kökü yoksa boş liste döner — bir seçici listesi
+    asla traceback etmeye değmez.
+    """
+    from data import list_external_instruments
+
+    try:
+        return [r["instrument_id"] for r in list_external_instruments()]
+    except Exception:
+        return []
+
+
 def _bybit_symbols():
     """Symbol list for the Backtest instrument picker — catalog symbols if
     present, else the static BYBIT_SYMBOLS fallback (same as backtest.page)."""
@@ -316,3 +346,32 @@ def _bybit_symbols():
     return list_catalog_bybit_symbols() or [
         {"symbol": s, "category": "linear"} for s in BYBIT_SYMBOLS
     ]
+
+
+# Aynı sembol birden çok pazarda önbellekte olabilir. Öncelik sırası: linear
+# (uygulamanın varsayılanı, en derin geçmiş) → spot → inverse.
+_CATEGORY_PRIORITY = ("linear", "spot", "inverse")
+
+
+def _bybit_symbol_category_map(rows) -> dict[str, str]:
+    """``{symbol: category}`` — hızlı coin butonu hangi pazarda koşacak.
+
+    SIMPLE sihirbazı butonlarını ``list_catalog_bybit_symbols()``'un
+    ``{symbol, category}`` çiftlerinden üretiyor ama kategoriyi ATIP her yere
+    sabit ``"linear"`` gönderiyordu (DeepR 2026-08-11 [ORTA]). Sonuç: yalnız
+    ``spot`` altında önbellekte olan bir sembolü seçen kullanıcıya MAX 404 →
+    "veri yok" yazıyor (veri aslında var), Run backtest de indirilmiş spot
+    verisi yerine linear'ı arıyordu. Listelenen şey ile koşulan şey aynı
+    olsun diye kategori sembolle birlikte taşınır.
+    """
+    order = {c: i for i, c in enumerate(_CATEGORY_PRIORITY)}
+    best: dict[str, str] = {}
+    for row in rows or []:
+        sym = row.get("symbol")
+        cat = row.get("category") or "linear"
+        if not sym:
+            continue
+        cur = best.get(sym)
+        if cur is None or order.get(cat, 99) < order.get(cur, 99):
+            best[sym] = cat
+    return best

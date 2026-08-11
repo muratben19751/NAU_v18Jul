@@ -89,9 +89,14 @@
       {# Quick buttons come from the cached-data catalog (bybit_symbols context),
          so they always match what's actually downloadable — static fallback is
          BTC/ETH/SOL when the cache is empty (see _bybit_symbols in routes/studio). #}
+      {% set _cats = bybit_symbol_categories | default({}, true) %}
       {% for sym in bybit_symbols | map(attribute="symbol") | unique | list %}
+      {# data-sw-category: bu sembolün önbellekte GERÇEKTEN bulunduğu pazar.
+         Sabit "linear" göndermek, spot-only bir coin'de MAX'ı 404'e ve koşuyu
+         yanlış seriye düşürüyordu (bkz. _bybit_symbol_category_map). #}
       <button type="button" class="sw-quick {% if sym == 'BTCUSDT' %}active{% endif %}"
-              data-sw-symbol="{{ sym }}" onclick="swPickSymbol('{{ sym }}')">{{ sym[:-4] if sym.endswith("USDT") else sym }}</button>
+              data-sw-symbol="{{ sym }}" data-sw-category="{{ _cats.get(sym, 'linear') }}"
+              onclick="swPickSymbol('{{ sym }}')">{{ sym[:-4] if sym.endswith("USDT") else sym }}</button>
       {% endfor %}
       <input type="text" id="sw-symbol" list="bybit-symbols-list" value="BTCUSDT"
              autocomplete="off" placeholder="or type to search…"
@@ -116,13 +121,9 @@
         <label class="field">End
           <input type="date" id="sw-end">
         </label>
-        <button type="button" class="btn btn-max"
-                title="Önbellekteki tüm veri aralığını doldur"
-                onclick="nlMaxRange(this, {source:'bybit',
-                  symbol: (document.getElementById('sw-symbol')||{}).value || 'BTCUSDT',
-                  category: 'linear',
-                  interval: (document.querySelector('.sw-quick.active')||{dataset:{}}).dataset.swInterval || '60'},
-                  '#sw-start', '#sw-end')">MAX</button>
+        <button type="button" class="btn btn-max" id="sw-max"
+                title="Önbellekteki tüm veri aralığını doldur (seçili coin + timeframe)"
+                onclick="swMaxRange(this)">MAX</button>
       </div>
     </details>
 
@@ -240,9 +241,22 @@
   // btDone/robDone: completion flags for the mandatory backtest step and the
   // optional reliability step — steps 4-5 stay locked until btDone (Bug 3).
   // Both reset when a NEW run starts, so a fresh selection re-locks the flow.
+  // category: seçili sembolün önbellekte bulunduğu Bybit pazarı. Sabit
+  // "linear" DEĞİL — coin listesi spot/linear karışık geliyor ve sabit
+  // kategori, spot-only bir coin'de sessizce yanlış seride koşuyordu.
   var swState = { mode: "", templateId: "", title: "", desc: "", specId: "",
-                  symbol: "BTCUSDT", interval: "60",
+                  symbol: "BTCUSDT", category: "linear", interval: "60",
                   btDone: false, robDone: false, robRunning: false };
+
+  // Sunucudan gelen sembol→kategori haritası (katalog taramasından türetilir).
+  // Elle yazılan, katalogda olmayan bir sembol için varsayılan "linear".
+  var swSymCat = {{ bybit_symbol_categories | default({}, true) | tojson }};
+
+  function swCategoryOf(sym) { return swSymCat[sym] || "linear"; }
+
+  // Açılış sembolünün (BTCUSDT) kategorisi de haritadan gelsin: katalogda
+  // yalnız spot varsa varsayılan seçim de spot olmalı.
+  swState.category = swCategoryOf(swState.symbol);
 
   function swGoto(n) {
     // Step 1 must have a selection before moving on.
@@ -363,17 +377,21 @@
 
   function swPickSymbol(sym) {
     swState.symbol = sym;
+    swState.category = swCategoryOf(sym);
     document.getElementById("sw-symbol").value = sym;
     document.querySelectorAll("[data-sw-symbol]").forEach(function (b) {
       b.classList.toggle("active", b.dataset.swSymbol === sym);
     });
+    swSyncRange();
   }
 
   function swSymbolTyped(v) {
     swState.symbol = (v || "BTCUSDT").toUpperCase();
+    swState.category = swCategoryOf(swState.symbol);
     document.querySelectorAll("[data-sw-symbol]").forEach(function (b) {
       b.classList.toggle("active", b.dataset.swSymbol === swState.symbol);
     });
+    swSyncRange();
   }
 
   function swPickInterval(code) {
@@ -381,6 +399,33 @@
     document.querySelectorAll("[data-sw-interval]").forEach(function (b) {
       b.classList.toggle("active", b.dataset.swInterval === code);
     });
+    swSyncRange();
+  }
+
+  // ── Tarih aralığı: MAX + seçimle senkron kalma ────────────────────────────
+  // MAX eskiden TF'yi `document.querySelector('.sw-quick.active')` ile
+  // okuyordu. O seçici BELGE SIRASINDAKİ ilk aktif düğmeyi döndürür ve bu,
+  // Coin satırındaki düğmedir (data-sw-interval taşımaz) → dataset.swInterval
+  // hep undefined → '60'. Yani "5 min" seçip MAX'a basınca kutulara 1 SAATLİK
+  // serinin kapsamı doluyor, koşu ya az veriyle çalışıyor ya "Insufficient
+  // data" ile ölüyordu (DeepR 2026-08-11 [ORTA]). Tek doğru kaynak swState.
+  window.swMaxRange = function (btn) {
+    nlMaxRange(btn, { source: "bybit", symbol: swState.symbol,
+                      category: swState.category, interval: swState.interval },
+               "#sw-start", "#sw-end");
+  };
+
+  // AUTO brief'indeki mcSyncRange ile aynı ders: aralık SEÇİME bağlıdır, bir
+  // kez doldurulup bırakılamaz. Sembol/TF/kategori değişince eldeki tarihler
+  // başka bir serinin kapsamıdır. Kutular BOŞSA dokunma — boş = "tüm önbellek"
+  // ve bu kullanıcının bilinçli tercihi.
+  function swSyncRange() {
+    var s = document.getElementById("sw-start");
+    var e = document.getElementById("sw-end");
+    var max = document.getElementById("sw-max");
+    if (!max) return;
+    if (!((s && s.value) || (e && e.value))) return;
+    swMaxRange(max);
   }
 
   function swUpdateSummary() {
@@ -410,7 +455,8 @@
     if (swState.mode === "saved") {
       htmx.ajax("POST", "/backtest/run", {
         target: "#result", swap: "innerHTML",
-        values: { spec_id: swState.specId, symbol: swState.symbol, category: "linear",
+        values: { spec_id: swState.specId, symbol: swState.symbol,
+                  category: swState.category,
                   interval: swState.interval, bybit_start: start, bybit_end: end },
       });
       hint.textContent = "";
@@ -426,7 +472,8 @@
     hint.textContent = "";
     htmx.ajax("POST", "/backtest/describe", {
       target: "#result", swap: "innerHTML",
-      values: { description: desc, symbol: swState.symbol, category: "linear",
+      values: { description: desc, symbol: swState.symbol,
+                category: swState.category,
                 interval: swState.interval, allow_short: "on",
                 bybit_start: start, bybit_end: end },
     });
@@ -471,6 +518,40 @@
     }
   }
 
+  // Sihirbazın tüm vaadi "AZ ÖNCE koştuğun sonucu iyileştir". Ama Adım 5
+  // yalnız description/symbol/category/interval gönderiyordu: `chat_new`'in
+  // beklediği bt_*/rob_* alanları boş geliyor, `_collect_chat_context` boş
+  // sözlük üretiyor ve AI, iyileştirmesi istenen backtest'i (PnL, Sharpe,
+  // drawdown, işlem sayısı, robustness kararı) HİÇ görmüyordu — kullanıcı
+  // jenerik bir cevap alıp bunun neden yüzeysel olduğunu anlayamıyordu
+  // (DeepR 2026-08-11 [ORTA]).
+  //
+  // Değerler #gen-form'daki gizli input'lardan DEĞİL, sonuç panellerinin
+  // data-* özniteliklerinden okunur: o form boş katalogda hiç render edilmez
+  // ama paneller sihirbazın kendi slotlarında her zaman vardır.
+  function swResultValues() {
+    var v = {};
+    var bt = document.querySelector("#result [data-bt-pnl-pct]");
+    if (bt) {
+      v.bt_pnl_pct   = bt.dataset.btPnlPct   || "";
+      v.bt_sharpe    = bt.dataset.btSharpe   || "";
+      v.bt_max_dd    = bt.dataset.btMaxDd    || "";
+      v.bt_n_trades  = bt.dataset.btNTrades  || "";
+      v.bt_win_rate  = bt.dataset.btWinRate  || "";
+      v.bt_spec_name = bt.dataset.btSpecName || "";
+      v.bt_best_tf   = bt.dataset.btBestTf   || "";
+    }
+    var rob = document.querySelector("#robustness-result [data-rob-summary]");
+    if (rob) {
+      v.rob_overfitting = rob.dataset.robOverfitting || "";
+      v.rob_verdict     = rob.dataset.robVerdict     || "";
+      v.rob_wfo_eff     = rob.dataset.robWfoEff      || "";
+      v.rob_oos_sharpe  = rob.dataset.robOosSharpe   || "";
+      v.rob_stability   = rob.dataset.robStability   || "";
+    }
+    return v;
+  }
+
   function swImprove() {
     var hint = document.getElementById("sw-improve-hint");
     var btn = document.getElementById("sw-improve-btn");
@@ -495,8 +576,10 @@
     };
     htmx.ajax("POST", "/backtest/chat/new", {
       target: "#chat-thread", swap: "innerHTML",
-      values: { description: desc, symbol: swState.symbol, category: "linear",
-                interval: swState.interval },
+      values: Object.assign(
+        { description: desc, symbol: swState.symbol,
+          category: swState.category, interval: swState.interval },
+        swResultValues()),
     }).then(done, function () {
       if (btn) btn.disabled = false;
       if (hint) hint.textContent = "✗ The chat could not start — please try again.";
@@ -505,7 +588,7 @@
 
   function swReset() {
     swState = { mode: "", templateId: "", title: "", desc: "", specId: "",
-                symbol: "BTCUSDT", interval: "60",
+                symbol: "BTCUSDT", category: swCategoryOf("BTCUSDT"), interval: "60",
                 btDone: false, robDone: false, robRunning: false };
     document.querySelectorAll(".sw-card").forEach(function (c) { c.classList.remove("active"); });
     document.getElementById("sw-custom-box").style.display = "none";

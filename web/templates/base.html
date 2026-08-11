@@ -8,9 +8,18 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/static/app.css?v={{ static_version }}">
-  <script src="https://unpkg.com/htmx.org@1.9.12"></script>
+  {# htmx + Chart.js are VENDORED under web/static/, not pulled from unpkg/
+     jsdelivr. İki sebep, ikisi de aynı gün ölçüldü (DeepR 2026-08-11 [ORTA]):
+     (a) güvenlik — CDN tarafında bir ele geçirme ya da MITM, bu uygulamanın
+     origin'inde tam JS yürütmesi demekti ve uygulama cloudflared tüneliyle
+     internete açık; `integrity` yoktu. (b) kullanılabilirlik — htmx tüm
+     etkileşim katmanı olduğu için internet/DNS kesildiğinde sayfa açılıyor
+     ama hiçbir düğme, polling ya da sekme çalışmıyordu. lightweight-charts.js
+     zaten vendored'dı; bu sadece tutarlılığı tamamlıyor. Sürümler AYNEN
+     korundu: htmx 1.9.12, Chart.js 4.4.4. #}
+  <script src="/static/htmx.min.js?v={{ static_version }}"></script>
   <script>htmx.config.allowScriptTags = true;</script>
-  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+  <script src="/static/chartjs.umd.min.js?v={{ static_version }}"></script>
   <script src="/static/lightweight-charts.js"></script>
   <script src="/static/chart.js?v={{ static_version }}"></script>
   {% block head %}{% endblock %}
@@ -48,9 +57,18 @@
           </span><span>Strategy Studio</span>
         </a>
         {% set _sid = first_studio_strategy_id() %}
+        {# Taze kurulumda burada gösterilecek strateji YOKTUR. Eski hâli
+           ölü bir bağlantıydı ve iki ayrı şekilde yalan söylüyordu (DeepR
+           2026-08-11 [ORTA]): (a) açıklama `title`'daydı ama .nav-disabled'ın
+           pointer-events:none'ı tooltip'i hiç göstermiyordu, (b) metin
+           "Strategy Builder'da yeni oluştur" diyordu — oysa strateji YARATAN
+           hiçbir uç/buton yok, tek yol seed betiği. Artık tıklanabilir ve
+           gerçekten yapılabilir olanı söylüyor. #}
         <a href="{{ '/studio/' + _sid if _sid else '#' }}"
            class="{{ 'active' if active == 'studio_builder' }}{{ ' nav-disabled' if not _sid }}"
-           {% if not _sid %}title="Henüz kayıtlı bir strateji yok — scripts/seed_studio.py veya Strategy Builder'da yeni oluştur" aria-disabled="true"{% endif %}>
+           {% if not _sid %}title="No saved strategy yet — run `python scripts/seed_studio.py` to create the first one, then reload."
+           aria-disabled="true"
+           onclick="if(window.showToast)showToast('Strategy Builder needs a saved strategy. Run: python scripts/seed_studio.py — then reload this page.','err');return false;"{% endif %}>
           <span class="nav-icon">
             <svg width="15" height="15" viewBox="0 0 15 15"><rect x="1.5" y="1.5" width="5" height="5" rx="1" style="fill:none;stroke:currentColor;stroke-width:1.3"></rect><rect x="8.5" y="1.5" width="5" height="5" rx="1" style="fill:none;stroke:currentColor;stroke-width:1.3"></rect><path d="M4 6.5v2.5h7v-2.5M4 12.5v-3.5M11 12.5v-3.5" style="fill:none;stroke:currentColor;stroke-width:1.3"></path></svg>
           </span><span>Strategy Builder</span>

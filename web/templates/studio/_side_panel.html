@@ -40,6 +40,9 @@
                 hx-target="#side-panel" hx-swap="outerHTML">▶ Run optimization</button>
         {% if opt_run and opt_run.status == "failed" %}
           <p class="opt-note" style="color:var(--short)">Last run failed: {{ opt_run.error }}</p>
+        {% elif opt_run and opt_run.status == "interrupted" %}
+          {# Sweep patlamadı, kesildi — ikisini aynı renkte söylemek yalan olurdu. #}
+          <p class="opt-note">Last run interrupted: {{ opt_run.error }}</p>
         {% endif %}
       {% endif %}
       <div class="wf">

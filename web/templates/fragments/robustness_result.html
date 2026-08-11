@@ -16,6 +16,31 @@
   </div>
   <div class="panel-body">
 
+    {# ── Kısmi bozulma bandı (DeepR 2026-08-11 [YÜKSEK]) ──────────────────────
+       Monte Carlo için koşulan tam backtest patladıysa sonuç TAM DEĞİL. Eskiden
+       bu bilgi (`full_error`) sandbox'tan geliyor ama hiçbir yerde okunmuyordu;
+       kullanıcı dolu WFO/IS-OOS tablolarını görüp koşuyu başarılı sanıyordu.
+       Bandı hero'nun ÜSTÜNE koyuyoruz: "bu ekranın bir parçası eksik" bilgisi
+       verdict'ten önce okunmalı. #}
+    {% if r.full_error %}
+    <div style="
+      border:1px solid rgba(239,68,68,0.35);
+      background:rgba(239,68,68,0.08);
+      border-left:4px solid #ef4444;
+      border-radius:6px;
+      padding:10px 14px;
+      margin-bottom:14px;">
+      <div style="font-size:12px;font-weight:700;color:#ef4444;margin-bottom:3px;">
+        ✗ Partially degraded run — the full backtest failed
+      </div>
+      <div class="mono" style="font-size:11px;color:#f2b8b5;word-break:break-word;">{{ r.full_error }}</div>
+      <div style="font-size:10px;color:#7d848f;margin-top:4px;">
+        Walk-Forward and In/Out-of-Sample below are real, but Monte Carlo could not run.
+        This is an infrastructure failure, not a verdict on the strategy.
+      </div>
+    </div>
+    {% endif %}
+
     {# ── Hero Karar Kartı ── #}
     <div id="rob-hero" style="
       border-left:4px solid #7d848f;
@@ -53,7 +78,13 @@
     <div style="display:flex;gap:8px;margin-bottom:14px;border-bottom:1px solid var(--border);padding-bottom:8px;">
       <button class="btn btn-secondary rob-tab active" data-tab="wfo" onclick="robTab(this,'wfo')">Walk-Forward</button>
       <button class="btn btn-secondary rob-tab" data-tab="split" onclick="robTab(this,'split')">In/Out-of-Sample</button>
-      <button class="btn btn-secondary rob-tab" data-tab="mc" onclick="robTab(this,'mc')">Monte Carlo</button>
+      {# Sekme kapalıyken bile bozulma görünsün: aksi hâlde kullanıcı Monte
+         Carlo'ya hiç tıklamadan koşuyu tam sanıyor. #}
+      <button class="btn btn-secondary rob-tab" data-tab="mc" onclick="robTab(this,'mc')"
+              {% if r.full_error %}style="color:#ef4444;border-color:rgba(239,68,68,0.45);"
+              title="The full backtest failed — Monte Carlo did not run"{% endif %}>
+        Monte Carlo{% if r.full_error %} ✗{% endif %}
+      </button>
     </div>
 
     {# ══════════════════════════════════════════════════
@@ -267,7 +298,31 @@
     <div id="rob-tab-mc" class="rob-tab-content" style="display:none;">
       {% set mc = r.mc %}
       {% if mc.error is defined and mc.error %}
+        {# "0 işlem" ile "backtest patladı" GÖRSEL olarak ayrı: ilki nötr bir
+           boş-durum (stratejiye dair bir olgu), ikincisi kırmızı bir hata
+           kutusu (altyapıya dair bir olgu). Eskiden ikisi de aynı gri
+           "No trade data." satırıydı — DeepR 2026-08-11 [YÜKSEK]. #}
+        {% if mc.failed or r.full_error %}
+        <div style="
+          border:1px solid rgba(239,68,68,0.35);
+          background:rgba(239,68,68,0.08);
+          border-left:4px solid #ef4444;
+          border-radius:6px;
+          padding:12px 14px;">
+          <div style="font-size:12px;font-weight:700;color:#ef4444;margin-bottom:4px;">
+            ✗ Monte Carlo could not run — the backtest failed
+          </div>
+          <div class="mono" style="font-size:11px;color:#f2b8b5;word-break:break-word;">
+            {{ r.full_error or mc.error }}
+          </div>
+          <div style="font-size:10px;color:#7d848f;margin-top:6px;">
+            Nothing here says the strategy is bad: the run never produced trades to
+            simulate because it errored out. Fix the error, then re-run.
+          </div>
+        </div>
+        {% else %}
         <div class="empty-state">{{ mc.error }}</div>
+        {% endif %}
       {% else %}
 
       {# Açıklama kutusu #}

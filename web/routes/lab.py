@@ -15,6 +15,7 @@ Bkz: [[strategy_and_actor]], [[order_flow_pipeline]], [[backtesting_guide]]
 
 from __future__ import annotations
 
+import logging
 import threading
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -27,6 +28,7 @@ router = APIRouter(prefix="/lab")
 from web.shared import (
     ProgressStore,  # noqa: E402
     session_id,  # noqa: E402
+    set_session_cookie,  # noqa: E402
 )
 from web.shared import chart_url as _chart_url  # noqa: E402
 from web.shared import log_backtest as _log_backtest  # noqa: E402
@@ -115,6 +117,36 @@ def _add_backtest_step(run_id: str, msg: str) -> None:
         state = _LAB_PROGRESS.get(run_id)
         if state is not None:
             state["backtest_steps"].append({"ts": ts, "msg": msg})
+
+
+def _record_backtest_log(run_id: str, spec, result, source: str, recipe: dict) -> None:
+    """Koşuyu paylaşılan backtest_log.jsonl'a yaz; düşerse GÖRÜNÜR kıl.
+
+    DeepR 2026-08-11 [ORTA]: burası `except Exception: pass` idi. Disk dolu /
+    dosya kilidi / izin hatasında Lab paneli "✓ N trade · PnL +X" diye YEŞİL
+    bitiyor, ama koşu /reports'a hiç düşmüyor ve tear sheet linki (``log_ts``)
+    boş kalıyordu — kullanıcı sonucun kaydedildiğini sanıyor, sonradan "bu
+    koşuyu yapmış mıydım" sorusu cevapsız kalıyordu.
+
+    Duruş ``agent_backtest._session_log`` ile aynı: backtest'in KENDİSİ geçerli
+    olduğu için hata terminal değil; logla + ``audit_degraded``/``audit_error``
+    kur, arayüz sarı bir şeritle söylesin. Aynı çağrının diğer iki kopyası
+    (``web/routes/backtest.py``, ``web/routes/agent_backtest.py``) bu düzeltmeyi
+    zaten almıştı; geride kalan tek kopya buydu.
+    """
+    try:
+        # The returned ts is the tear sheet key; iteration_row() carries it
+        # into the result panel from the dataclass.
+        result.log_ts = _log_backtest(spec, result, source, recipe)
+    except Exception as exc:
+        logging.getLogger(__name__).warning(
+            "Strategy Lab backtest log write failed for run %s", run_id, exc_info=True
+        )
+        with _LAB_LOCK:
+            state = _LAB_PROGRESS.get(run_id)
+            if state is not None:
+                state["audit_degraded"] = True
+                state["audit_error"] = f"Backtest log unavailable: {exc}"
 
 
 def _lab_worker(
@@ -332,17 +364,13 @@ def _lab_worker(
         )
 
         # Log to shared backtest_log.jsonl so /reports picks this up
-        try:
-            # The returned ts is the tear sheet key; iteration_row() carries it
-            # into the result panel from the dataclass.
-            result.log_ts = _log_backtest(
-                spec,
-                result,
-                "External" if is_external else "Bybit",
-                recipe,
-            )
-        except Exception:
-            pass
+        _record_backtest_log(
+            run_id,
+            spec,
+            result,
+            "External" if is_external else "Bybit",
+            recipe,
+        )
 
         with _LAB_LOCK:
             if run_id in _LAB_PROGRESS:
@@ -488,7 +516,8 @@ async def page(request: Request):
     # opens /lab directly (never having visited /studio, which sets it) POSTs
     # to /run with no cookie; session_id() then mints a fresh sid PER REQUEST
     # and the single-active-run guard below can never actually recognize a
-    # repeat submission from the same browser.
+    # repeat submission from the same browser. Yazma KOŞULSUZDUR (kayan süre):
+    # sayfayı yenilemek oturumu tazelesin, /studio ile aynı gerekçe.
     sid = session_id(request)
     resp = templates.TemplateResponse(
         request,
@@ -500,8 +529,7 @@ async def page(request: Request):
             "external_symbols": external_symbols,
         },
     )
-    if not request.cookies.get("nautlab_sid"):
-        resp.set_cookie("nautlab_sid", sid, httponly=True, samesite="lax", max_age=3600)
+    set_session_cookie(resp, sid)
     return resp
 
 
@@ -555,6 +583,10 @@ async def run(
             "error": None,
             "strategy_name": "",
             "hint": hint.strip(),
+            # Koşu başarılı ama KAYDI yoksa panelin bunu söylemesi için
+            # (bkz. _lab_worker'daki _log_backtest handler'ı).
+            "audit_degraded": False,
+            "audit_error": None,
         },
     )
     _session_lab_set_active(sid, run_id)
@@ -587,6 +619,8 @@ async def run(
             "error": raw["error"],
             "strategy_name": raw["strategy_name"],
             "hint": raw.get("hint", ""),
+            "audit_degraded": raw.get("audit_degraded", False),
+            "audit_error": raw.get("audit_error"),
         }
 
     return templates.TemplateResponse(
@@ -621,6 +655,8 @@ async def progress(request: Request, run_id: str):
             "error": raw["error"],
             "strategy_name": raw["strategy_name"],
             "bars_info": raw.get("bars_info", {}),
+            "audit_degraded": raw.get("audit_degraded", False),
+            "audit_error": raw.get("audit_error"),
         }
 
     if state["done"] and state["result"] is not None:
@@ -647,7 +683,15 @@ async def progress(request: Request, run_id: str):
         resp = templates.TemplateResponse(
             request,
             "fragments/lab_result.html",
-            {"last": last_row, "phases": state["phases"], "market": get_market_info()},
+            {
+                "last": last_row,
+                "phases": state["phases"],
+                "market": get_market_info(),
+                # Sonuç paneli kalıcıdır (poll yok): log yazımı düştüyse bunu
+                # SON ekranda söylemek zorundayız, yoksa uyarı hiç görülmez.
+                "audit_degraded": state["audit_degraded"],
+                "audit_error": state["audit_error"],
+            },
         )
         return resp
 

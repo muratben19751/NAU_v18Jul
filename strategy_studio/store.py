@@ -49,7 +49,7 @@ CREATE TABLE IF NOT EXISTS optimize_runs (
     strategy_id TEXT NOT NULL,
     version     INTEGER NOT NULL,
     is_draft    INTEGER NOT NULL DEFAULT 0,
-    status      TEXT NOT NULL,            -- running | done | failed
+    status      TEXT NOT NULL,            -- running | done | failed | interrupted
     results     TEXT,
     error       TEXT,
     created_at  TEXT NOT NULL,
@@ -71,7 +71,7 @@ CREATE TABLE IF NOT EXISTS ai_loops (
     loop_id     TEXT PRIMARY KEY,
     strategy_id TEXT NOT NULL,
     config      TEXT NOT NULL,
-    status      TEXT NOT NULL,     -- running | done | failed
+    status      TEXT NOT NULL,     -- running | done | failed | interrupted
     note        TEXT,
     created_at  TEXT NOT NULL,
     finished_at TEXT
@@ -98,7 +98,7 @@ CREATE TABLE IF NOT EXISTS studio_runs (
     strategy_id TEXT NOT NULL,
     version     INTEGER NOT NULL,
     is_draft    INTEGER NOT NULL DEFAULT 0,
-    status      TEXT NOT NULL,            -- running | done | failed
+    status      TEXT NOT NULL,            -- running | done | failed | interrupted
     metrics     TEXT,
     error       TEXT,
     created_at  TEXT NOT NULL,
@@ -126,6 +126,17 @@ _ADDED_COLUMNS = [
     # can require a run OF THE THING BEING DEPLOYED (see definition_hash).
     ("studio_runs", "defn_hash", "TEXT"),
 ]
+
+
+# Süreç ölünce 'running' kalabilen iş tabloları:
+# tür → (tablo, birincil anahtar sütunu, "neden" sütunu).
+# `deployments` burada YOK — onun kendi uzlaştırması var (runner.reconcile_orphans);
+# bunlar onun hiç uzlaştırılmayan üç kardeşi (DeepR 2026-08-11 [YÜKSEK]).
+_JOB_TABLES: dict[str, tuple[str, str, str]] = {
+    "run": ("studio_runs", "run_id", "error"),
+    "optimize": ("optimize_runs", "run_id", "error"),
+    "loop": ("ai_loops", "loop_id", "note"),
+}
 
 
 def definition_hash(defn) -> str:
@@ -659,6 +670,46 @@ class StrategyStore:
             con.execute(
                 "UPDATE deployments SET status=?, error=? WHERE deploy_id=?",
                 (status, error, deploy_id),
+            )
+
+    # ── crash-only uzlaştırma: sahipsiz 'running' işler ──────────
+    def live_jobs(self) -> list[dict]:
+        """DB'nin hâlâ 'running' saydığı her studio işi (tüm stratejiler).
+
+        `live_deployments()`'ın kardeşi. Üç iş de (backtest, optimize, AI loop)
+        Starlette `BackgroundTasks` ile UYGULAMA SÜRECİNDE koşar; süreç ölünce
+        satırı bitirecek kimse kalmaz. Uzlaştırma bu listeyi, süreçte gerçekten
+        koşanların kaydıyla karşılaştırır.
+        """
+        out: list[dict] = []
+        with self._connect() as con:
+            for kind, (table, id_col, _reason_col) in _JOB_TABLES.items():
+                rows = con.execute(
+                    f"SELECT {id_col} AS job_id, strategy_id, created_at "  # noqa: S608
+                    f"FROM {table} WHERE status='running'"
+                ).fetchall()
+                out += [{"kind": kind, **dict(r)} for r in rows]
+        return out
+
+    def interrupt_job(self, kind: str, job_id: str, reason: str) -> None:
+        """'running' satırını DÜRÜST bir sona bağla: `interrupted`.
+
+        `failed` DEĞİL: başarısızlık işin kendisi hakkında bir yargıdır ("bu
+        strateji/sweep koşarken patladı"), kesinti ise iş hakkında hiçbir şey
+        söylemez — sadece sonucunu asla öğrenemeyeceğiz. İkisini aynı kefeye
+        koymak kullanıcıya olmamış bir arıza raporlamaktır. Neden sütuna yazılır
+        (studio_runs/optimize_runs → `error`, ai_loops → `note`).
+
+        `AND status='running'` şartı: beklerken gerçekten biten bir işi geri
+        çevirmeyelim.
+        """
+        table, id_col, reason_col = _JOB_TABLES[kind]
+        now = datetime.now(UTC).isoformat()
+        with self._connect() as con:
+            con.execute(
+                f"UPDATE {table} SET status='interrupted', {reason_col}=?, "  # noqa: S608
+                f"finished_at=? WHERE {id_col}=? AND status='running'",
+                (reason, now, job_id),
             )
 
     def live_deployments(self) -> list[dict]:

@@ -92,6 +92,11 @@ def iteration_row(r: IterationResult) -> dict:
         # Costs
         "commission_fmt": fmt_money(m.get("commission_total")),
         "slippage_fmt": fmt_money(m.get("slippage_total")),
+        # Fills raporu alınamadıysa HER trade'in exit_kind/exit_reason'ı boş
+        # kalır. Bu None değilse tablo "sebep yok" değil "sebep ALINAMADI"
+        # demeli — sessiz boşluk "strateji SL/TP kullanmamış" diye okunuyordu
+        # (DeepR 2026-08-11 [ORTA], backtest.run_composed_backtest).
+        "exit_reasons_error": m.get("exit_reasons_error"),
         # Trade markers for price chart
         "trades": r.trades,
         "bars_info": r.bars_info,
@@ -276,3 +281,28 @@ def associate_steps(
                 out.setdefault(sp["key"], []).append(st)
                 break
     return out
+
+
+def loop_status_ctx(state, running: bool, status: str) -> dict:
+    """`fragments/loop_status.html` bağlamı — üç rota için TEK kaynak.
+
+    Rozet ve kontroller (MODE/Start/Stop) aynı gerçeği gösteriyor: döngü canlı
+    mı. Eskiden kontroller yalnız sayfa render'ında hesaplanıyordu, yani Start'a
+    basıldıktan sonra rozet "RUNNING" olurken Stop disabled kalıyordu — kullanıcı
+    başlattığı döngüyü F5'lemeden durduramıyordu. Şablon ikisini birlikte (OOB)
+    tazeliyor; bu yüzden bağlam da tek yerden gelmeli, yoksa üç rotadan biri
+    `has_catalog`'u unutur ve MODE seçicisi sessizce eksik kalır.
+
+    `oob=True`: bu bağlam HTMX yanıtı içindir. Sayfa render'ında dashboard
+    kendi include'unu yapar ve `oob` tanımsız kalır — aksi hâlde kontroller
+    ikizlenirdi.
+    """
+    from composer import has_catalog_entries
+
+    return {
+        "running": running,
+        "status": status,
+        "iter_count": len(state.iterations),
+        "has_catalog": has_catalog_entries(),
+        "oob": True,
+    }

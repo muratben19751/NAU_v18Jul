@@ -23,6 +23,9 @@ import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 
+from fastapi.responses import HTMLResponse
+from markupsafe import Markup, escape
+
 try:
     import markdown as _md
 
@@ -42,6 +45,97 @@ except Exception:  # pragma: no cover
 
 
 # ---------------------------------------------------------------------------
+# XSS'e kapalı hata gövdeleri — kullanıcı verisinin HTML'e girdiği TEK kapı.
+#
+# DeepR 2026-08-11 [ORTA]: onlarca hata yolunda ham istek verisi f-string ile
+# `HTMLResponse` gövdesine yazılıyordu (`f"<div class='empty-state'>Invalid
+# name: {name}</div>"`). Bunun teorik kalmamasının üç sebebi vardı: yanıtlar
+# text/html, `web/templates/studio.html` /agent/run için 4xx gövdelerini bile
+# bilerek DOM'a basıyor (`shouldSwap = true`), ve `htmx.config.allowScriptTags`
+# açık. Uygulama cloudflared tüneliyle internete bakıyor.
+#
+# Neden ortak yardımcı, neden tek tek f-string yaması değil: bu sink'ler 6
+# route modülüne dağılmış ve sürekli yenisi ekleniyor. `escape()` çağırmayı
+# hatırlamak bir SÜREÇ; şablonun kendisini `Markup` yapıp değerleri formatter'a
+# vermek bir MEKANİZMA. `server.py`'nin `nl2br` filtresi zaten aynı duruşu
+# alıyor (önce escape, sonra bilinçli Markup); burası onun route karşılığı.
+# ---------------------------------------------------------------------------
+
+
+def esc(value) -> Markup:
+    """Tek bir değeri HTML gövdesine gömülebilir hâle getir (None → boş).
+
+    ``escape()`` üstünde ince bir sarmalayıcı: ``None``'ı ``"None"`` diye
+    basmak yerine boş bırakır. ``str()`` çağırMAZ — bu önemli: ``str()``
+    bir ``Markup``'ı düz metne indirger ve ``escape()`` onu ikinci kez
+    kaçırırdı (``&lt;b&gt;``). ``escape()`` zaten ``__html__`` varsa ona,
+    yoksa ``str()``'e düşüyor; iç içe kullanım bu sayede güvenli.
+    """
+    return Markup("") if value is None else escape(value)
+
+
+def safe_html(template: str, /, **values) -> Markup:
+    """``template`` GÜVENİLİR bir literal, ``values`` GÜVENİLMEZ veridir.
+
+    ``Markup(template).format(...)`` markupsafe'in ``EscapeFormatter``'ını
+    kullanır: yer tutuculara giden her değer otomatik kaçırılır, şablonun
+    kendi etiketleri olduğu gibi kalır. Yani şablonu yazan (biz) HTML
+    üretebilir, veriyi gönderen (kullanıcı) üretemez.
+
+    ÖNEMLİ: ``template`` asla kullanıcı verisinden gelmemeli — literal olmalı.
+    Şablonda gerçek bir süslü parantez gerekiyorsa ``{{`` / ``}}`` ile kaçır
+    (ör. inline CSS).
+    """
+    return Markup(template).format(**{k: esc(v) for k, v in values.items()})
+
+
+def _toast_header(text: str) -> str:
+    """``HX-Toast`` başlığı için güvenli bir değer üret.
+
+    İki ayrı tuzak var ve ikisi de gövdedeki XSS'ten bağımsız:
+    (a) CR/LF içeren bir değer başlık enjeksiyonu demek — h11 çoğunu reddeder
+    ama biz hiç göndermeyelim; (b) Starlette başlıkları latin-1 kodlar, yani
+    Türkçe bir 'ş'/'ı' (ya da kullanıcının yapıştırdığı herhangi bir emoji)
+    doğrudan ``UnicodeEncodeError`` → 500 üretir. Hata yolunun kendisi 500
+    atmasın diye kodlanamayan karakterleri düşürüyoruz.
+
+    Gövdeye HTML kaçışı UYGULANMAZ: base.html toast'u ``textContent`` ile
+    basıyor, yani orada ``&lt;`` görünürdü.
+    """
+    flat = " ".join(str(text).split())
+    return flat.encode("latin-1", "replace").decode("latin-1")
+
+
+def error_html(
+    template: str,
+    status_code: int = 400,
+    *,
+    css_class: str = "empty-state",
+    toast: str | bool | None = None,
+    **values,
+) -> HTMLResponse:
+    """``<div class="empty-state">…</div>`` biçiminde kaçırılmış bir hata yanıtı.
+
+    ``template`` güvenilir literal, ``values`` kullanıcı verisi — kural
+    ``safe_html`` ile aynı. ``toast=True`` gövdenin düz-metin hâlini
+    ``HX-Toast`` başlığına da koyar (çağıranların elle ikinci kez yazdığı
+    mesajın tek kaynaktan gelmesi için); ``toast="..."`` ayrı bir metin verir.
+
+    ``css_class`` yalnızca çağıranın seçtiği sabit sınıf adıdır; yine de
+    kaçırılır ki bir gün değişkenden beslenirse sink açılmasın.
+    """
+    body = safe_html(template, **values)
+    resp = HTMLResponse(
+        Markup('<div class="{cls}">{body}</div>').format(cls=css_class, body=body),
+        status_code=status_code,
+    )
+    if toast:
+        text = toast if isinstance(toast, str) else template.format(**values)
+        resp.headers["HX-Toast"] = "err|" + _toast_header(text)
+    return resp
+
+
+# ---------------------------------------------------------------------------
 # Anonymous session id — a cookie-scoped id used to partition per-user state
 # (draft blocks in the composer, last backtest result). Lived only in
 # strategy.py; moved here so backtest.py can share the SAME session dimension
@@ -57,7 +151,33 @@ SESSION_COOKIE = "nautlab_sid"
 # could drift from it. Same isoformat shape as token_ledger lines, so plain
 # string comparison filters correctly.
 SERVER_STARTED_AT = datetime.now(UTC).isoformat(timespec="seconds")
-_SESSION_COOKIE_MAX_AGE = 3600
+
+# Oturum çerezinin ömrü. 1 SAATTİ ve bu, bu uygulamanın gerçek kullanım
+# ritmiyle çelişiyordu (DeepR 2026-08-11 [ORTA]): AUTO'nun varsayılan bütçesi
+# 4 saat, backtest+robustness turları da uzun. Kullanıcı bir saatten fazla aynı
+# sekmede çalıştığında çerez düşüyor, bir sonraki istekte yeni bir sid basılıyor
+# ve (a) son sonuç paneli, (b) Compose taslakları, (c) oturum başına
+# tek-aktif-koşu koruması sıfırlanıyordu — üçü de sid ile anahtarlı.
+# 30 gün: auth çerezi (server.py) ile aynı ölçek. Arkasındaki state zaten süreç
+# ömrüyle sınırlı bellek-içi sözlükler, yani uzun çerez fazladan bir şey
+# saklamıyor — sadece aynı tarayıcıya aynı adı vermeye devam ediyor.
+SESSION_COOKIE_MAX_AGE = 30 * 24 * 3600
+_SESSION_COOKIE_MAX_AGE = SESSION_COOKIE_MAX_AGE  # geriye dönük ad
+
+
+def set_session_cookie(response, sid: str) -> None:
+    """``nautlab_sid``'i ``response``'a yaz — çerez seçeneklerinin TEK yeri.
+
+    Aynı dört seçenek (httponly/samesite/max_age) dört ayrı modülde elle
+    kopyalanmıştı; biri güncellenince ötekiler sessizce eski ömürde kalıyordu.
+    """
+    response.set_cookie(
+        SESSION_COOKIE,
+        sid,
+        httponly=True,
+        samesite="lax",
+        max_age=SESSION_COOKIE_MAX_AGE,
+    )
 
 
 def session_id(request, response=None) -> str:
@@ -68,13 +188,7 @@ def session_id(request, response=None) -> str:
     if not sid:
         sid = uuid.uuid4().hex
     if response is not None:
-        response.set_cookie(
-            SESSION_COOKIE,
-            sid,
-            httponly=True,
-            samesite="lax",
-            max_age=_SESSION_COOKIE_MAX_AGE,
-        )
+        set_session_cookie(response, sid)
     return sid
 
 
@@ -493,6 +607,11 @@ def log_robustness(
         # Preserve error field so log accurately reflects MC failures.
         if "error" in mc_raw:
             mc_clean["error"] = mc_raw["error"]
+        # DeepR 2026-08-11 [YÜKSEK]: "0 işlem" ile "backtest çöktü" ayrımı log'da
+        # da yaşamalı — /reports geçmişe bakarken ekranın söylediğinden farklı
+        # bir hikâye anlatmasın.
+        if "failed" in mc_raw:
+            mc_clean["failed"] = bool(mc_raw["failed"])
 
         # In/Out-of-Sample: without equity curve
         sp_raw = result.get("split") or {}
@@ -526,6 +645,9 @@ def log_robustness(
                 "wfo_summary": result.get("wfo_summary") or {},
                 "monte_carlo": mc_clean,
                 "in_out_split": sp_clean,
+                # Kısmi bozulma işareti: Monte Carlo için koşulan tam backtest
+                # patladıysa bu koşu BAŞARILI bir koşu değildi.
+                "full_error": result.get("full_error") or "",
             }
         )
         with _ROBUSTNESS_LOG_LOCK:

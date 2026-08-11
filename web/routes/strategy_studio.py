@@ -40,6 +40,7 @@ from typing import get_args
 
 from fastapi import APIRouter, BackgroundTasks, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, PlainTextResponse, Response
+from markupsafe import Markup
 
 from strategy_studio.ai import (
     GuardrailReject,
@@ -96,12 +97,88 @@ from strategy_studio.registry import INDICATOR_REGISTRY, library_by_category
 from strategy_studio.runner import PaperRunner, RunnerError, reconcile_orphans
 from strategy_studio.schema import StrategyDefinition
 from strategy_studio.store import StrategyStore, definition_hash
+from web.shared import safe_html
 
 log = logging.getLogger(__name__)
 
 router = APIRouter()
 
 store = StrategyStore()
+
+
+# ── crash-only uzlaştırma: sahipsiz 'running' işler ──────────────────
+#
+# DeepR 2026-08-11 [YÜKSEK]. Deployment tarafı için bu tam olarak düşünülüp
+# çözülmüştü (`_reconcile_deployments` + "yeşil rozet yalan söyler" gerekçesi),
+# ama aynı crash-only mantığı kardeş üç tabloya (studio_runs / optimize_runs /
+# ai_loops) hiç uygulanmamıştı. Üçü de Starlette BackgroundTasks ile bu süreçte
+# koşar: pm2 restart'ı ya da bir çökme, satırı SONSUZA DEK 'running' bırakır.
+# Görünen sonuçlar: footer her 2 saniyede bir bitmeyecek bir koşuyu poll'lar,
+# optimizer paneli aynı şekilde, ve `route_loop_start` o strateji için KALICI
+# olarak "a loop is already running" (422) der — DB elle düzeltilmeden AI loop
+# bir daha başlatılamaz.
+#
+# "Canlı" olmanın tek kanıtı bu süreç-içi kayıttır; RUNNER.active_ids()'in
+# studio işleri için karşılığı.
+_ACTIVE_JOBS: set[str] = set()
+_ACTIVE_JOBS_LOCK = threading.Lock()
+
+# Uzlaştırma süreç ve VERİTABANI başına bir kez koşar. Anahtar db yolu: testler
+# `store`'u kendi geçici DB'leriyle değiştiriyor, tek bir bayrak olsaydı ilk
+# testten sonra hiçbirinde uzlaştırma çalışmazdı (ve canlı studio.db'ye import
+# anında yazmak da istemiyoruz — bu yüzden startup değil, İLK LİSTELEME).
+_JOBS_RECONCILED: set[str] = set()
+
+_INTERRUPTED_REASON = (
+    "sunucu yeniden başladı — bu işi yürüten süreç artık yaşamıyor, "
+    "sonucu bilinmiyor (başarısız DEĞİL: hiç bitmedi)"
+)
+
+
+def _claim_job(job_id: str) -> None:
+    """Bu iş BU süreçte koşuyor — uzlaştırma ona dokunmasın.
+
+    Sahiplenme, arka plan görevi başlamadan ÖNCE (rotada) yapılır: iki arasında
+    gelen bir listeleme isteği, henüz başlamamış bir işi 'kesintiye uğradı'
+    diye damgalamamalı.
+    """
+    with _ACTIVE_JOBS_LOCK:
+        _ACTIVE_JOBS.add(job_id)
+
+
+def _release_job(job_id: str) -> None:
+    with _ACTIVE_JOBS_LOCK:
+        _ACTIVE_JOBS.discard(job_id)
+
+
+def _reconcile_studio_jobs() -> int:
+    """Sahipsiz 'running' satırları `interrupted`'a çevir; kaç tane olduğunu dön."""
+    with _ACTIVE_JOBS_LOCK:
+        active = set(_ACTIVE_JOBS)
+    orphans = [j for j in store.live_jobs() if j["job_id"] not in active]
+    for job in orphans:
+        store.interrupt_job(job["kind"], job["job_id"], _INTERRUPTED_REASON)
+    if orphans:
+        log.warning(
+            "%d orphaned studio job(s) marked interrupted: %s",
+            len(orphans),
+            ", ".join(f"{j['kind']}:{j['job_id']}" for j in orphans),
+        )
+    return len(orphans)
+
+
+def _reconcile_studio_jobs_once() -> None:
+    """İlk listeleme isteğinde bir kez koş; kendi arızası sayfayı düşürmesin."""
+    key = store.db_path
+    if key in _JOBS_RECONCILED:
+        return
+    # Bayrak ÖNCE: uzlaştırma patlarsa her istekte yeniden denenip
+    # (ve her istekte log basıp) sayfayı yavaşlatmasın.
+    _JOBS_RECONCILED.add(key)
+    try:
+        _reconcile_studio_jobs()
+    except Exception:  # noqa: BLE001 — bayat bir satır sayfayı düşürmemeli
+        log.warning("studio job reconciliation failed", exc_info=True)
 
 
 def _tpl():
@@ -301,6 +378,9 @@ def _ctx(request: Request, defn: StrategyDefinition, **extra) -> dict:
 
 
 def _side_ctx(request: Request, defn: StrategyDefinition, **extra) -> dict:
+    # Panel bir koşu durumu GÖSTERECEK — göstermeden önce o durumun hâlâ doğru
+    # olduğundan emin ol (restart sonrası ilk listeleme).
+    _reconcile_studio_jobs_once()
     opt_run = store.latest_opt(defn.id)
     opt_results = None
     if opt_run and opt_run["status"] == "done" and opt_run["results"]:
@@ -836,6 +916,10 @@ def _execute_run(
         store.finish_run(run_id, metrics.to_json())
     except Exception as e:  # noqa: BLE001 — surface anything to the UI
         store.fail_run(run_id, str(e))
+    finally:
+        # Sahiplenmeyi bırak: satır artık bitti, uzlaştırmanın onu koruması
+        # gereksiz (ve bir sonraki uzlaştırma yanlış bir "canlı" listesi görmesin).
+        _release_job(run_id)
 
 
 @router.post("/studio/{strategy_id}/backtest")
@@ -861,6 +945,26 @@ def route_backtest(
                 return PlainTextResponse(f"invalid date: {v}", status_code=400)
     if date_from and date_to and date_from > date_to:
         return PlainTextResponse("start date is after end date", status_code=400)
+    # Tek canlı koşu (DeepR 2026-08-11 [ORTA]). Düğmeye üst üste basmak (ya da
+    # sekmeyi çoğaltıp basmak) her tıkta yeni bir run_id + arka plan görevi
+    # kuyruklıyordu; STUDIO_BACKTEST=nautilus iken bunların her biri gerçek bir
+    # motor koşusu ve hepsi FastAPI'nin ortak thread havuzunda çalışıyor —
+    # havuz dolduğunda bu sayfa dahil tüm senkron rotalar yanıt vermez oluyor,
+    # üstelik studio.db'ye her tık için çöp bir satır düşüyordu. `route_loop_start`
+    # ile AYNI duruş; önce uzlaştır, çünkü restart'tan kalan sahipsiz bir
+    # 'running' satır aksi hâlde düğmeyi KALICI olarak kilitlerdi.
+    _reconcile_studio_jobs_once()
+    live = store.latest_run(strategy_id)
+    if live and live["status"] == "running":
+        resp = PlainTextResponse(
+            "a backtest is already running for this strategy - wait for it to finish",
+            status_code=409,
+        )
+        resp.headers["HX-Toast"] = (
+            "err|A backtest is already running for this strategy - "
+            "wait for it to finish."
+        )
+        return resp
     date_range = (date_from, date_to) if (date_from or date_to) else None
     # compile FIRST so config errors surface immediately, not in the task
     try:
@@ -874,6 +978,7 @@ def route_backtest(
     # The hash records WHICH definition this run measures, so the deploy gate
     # can insist on a run of the definition being deployed (see _gate_baseline).
     store.create_run(run_id, strategy_id, defn.version, is_draft, definition_hash(defn))
+    _claim_job(run_id)  # görev başlamadan önce sahiplen (bkz. `_claim_job`)
     background_tasks.add_task(_execute_run, run_id, defn, date_range)
     return _render_footer(request, defn, store.latest_run(strategy_id))
 
@@ -1031,6 +1136,9 @@ def route_symbol_trades(request: Request, strategy_id: str, idx: int):
 
 @router.get("/studio/{strategy_id}/runs/latest")
 def route_latest_run(request: Request, strategy_id: str):
+    # Footer bu ucu `run.status == "running"` iken her 2 saniyede bir çağırır;
+    # sahipsiz bir satır burada uzlaştırılmazsa poll sonsuza kadar sürer.
+    _reconcile_studio_jobs_once()
     defn = _load_working(strategy_id)
     return _render_footer(request, defn, store.latest_run(strategy_id))
 
@@ -1089,6 +1197,8 @@ def _execute_opt(run_id: str, defn: StrategyDefinition) -> None:
         store.finish_opt(run_id, json.dumps([r.to_dict() for r in results]))
     except Exception as e:  # noqa: BLE001
         store.fail_opt(run_id, str(e))
+    finally:
+        _release_job(run_id)
 
 
 @router.post("/studio/{strategy_id}/optimize")
@@ -1132,6 +1242,7 @@ def route_optimize(
         return PlainTextResponse(str(e), status_code=422)
     run_id = uuid.uuid4().hex[:12]
     store.create_opt(run_id, strategy_id, defn.version, is_draft)
+    _claim_job(run_id)
     background_tasks.add_task(_execute_opt, run_id, defn)
     return HTMLResponse(_render_side(request, defn))
 
@@ -1432,6 +1543,10 @@ def _execute_loop(loop_id: str, strategy_id: str, cfg: dict) -> None:
         store.finish_loop(loop_id, "done", "max iterations reached")
     except Exception as e:  # noqa: BLE001
         store.finish_loop(loop_id, "failed", str(e))
+    finally:
+        # İçeride `return` ile biten dallar da var; sahiplenmeyi bırakmanın tek
+        # güvenli yeri burası.
+        _release_job(loop_id)
 
 
 @router.post("/studio/{strategy_id}/ai/loop/start")
@@ -1445,6 +1560,10 @@ def route_loop_start(
     ask: str = Form(""),
 ):
     _load_working(strategy_id)
+    # KALICI 422'nin kaynağı buydu: restart sonrası sahipsiz kalan bir 'running'
+    # satır, bu stratejide AI loop'u sonsuza dek kilitliyordu. Kapıyı çalmadan
+    # önce satırın hâlâ doğru olduğundan emin ol.
+    _reconcile_studio_jobs_once()
     active = store.latest_loop(strategy_id)
     if active and active["status"] == "running":
         return PlainTextResponse("a loop is already running", status_code=422)
@@ -1458,6 +1577,7 @@ def route_loop_start(
     }
     loop_id = uuid.uuid4().hex[:12]
     store.create_loop(loop_id, strategy_id, json.dumps(cfg))
+    _claim_job(loop_id)
     background_tasks.add_task(_execute_loop, loop_id, strategy_id, cfg)
     defn = _load_working(strategy_id)
     return HTMLResponse(_render_side(request, defn))
@@ -1569,10 +1689,19 @@ def route_deploy(
     deploy_id = uuid.uuid4().hex[:12]
     store.create_deployment(deploy_id, strategy_id, defn.version, environment, artifact)
     background_tasks.add_task(_runner_pickup, deploy_id, artifact)
+    # `environment` doğrulanmamış bir Form alanı ("live" dışındaki her değer
+    # serbestçe geçiyor) ve burada aynen geri yansıyor — başarı yolundaki tek
+    # elle-kurulmuş HTML gövdesi bu. `_render_deployments` zaten Jinja'dan
+    # (otomatik kaçışlı) geliyor, o yüzden Markup olarak ekleniyor.
     return HTMLResponse(
-        f'<div class="deploy-ok">Deployment <b>{deploy_id[:6]}</b> created '
-        f"({environment}, v{defn.version}) — pending runner pickup.</div>"
-        + _render_deployments(request, defn, oob=True)
+        safe_html(
+            '<div class="deploy-ok">Deployment <b>{did}</b> created '
+            "({env}, v{ver}) — pending runner pickup.</div>",
+            did=deploy_id[:6],
+            env=environment,
+            ver=defn.version,
+        )
+        + Markup(_render_deployments(request, defn, oob=True))
     )
 
 

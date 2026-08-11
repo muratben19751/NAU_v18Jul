@@ -15,19 +15,11 @@
       </div>
       <div class="spacer"></div>
 
-      <form hx-post="/loop/start" hx-target="#loop-status" hx-swap="innerHTML" class="row">
-        <label class="field" style="flex-direction:row; align-items:center; gap:8px;">
-          <span>MODE</span>
-          <select name="mode" {% if running %}disabled{% endif %}>
-            <option value="agent">🤖 LLM Agent</option>
-            {% if has_catalog %}<option value="catalog">📦 Catalog cycle</option>{% endif %}
-          </select>
-        </label>
-        <button type="submit" class="btn btn-primary" {% if running %}disabled{% endif %}>▶ Start</button>
-      </form>
-      <form hx-post="/loop/stop" hx-target="#loop-status" hx-swap="innerHTML">
-        <button type="submit" class="btn btn-danger" {% if not running %}disabled{% endif %}>■ Stop</button>
-      </form>
+      {# Kontroller kendi kapsayıcısında: /fragments/loop_status yanıtı bunu
+         OOB ile tazeliyor (bkz. fragments/loop_controls.html). #}
+      <div id="loop-controls" style="display:contents;">
+        {% include "fragments/loop_controls.html" %}
+      </div>
 
       <div id="loop-status" hx-get="/fragments/loop_status" hx-trigger="every 2s" hx-swap="innerHTML">
         {% include "fragments/loop_status.html" %}

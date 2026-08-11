@@ -23,6 +23,14 @@
       <div class="panel-title" style="font-size:13px;">Trades + Decision Reasons</div>
       <div class="panel-meta small">click → show on chart · click again → clear</div>
     </div>
+    {% if metrics and metrics.exit_reasons_error %}
+    {# Fills raporu alınamadı: Exit/Exit Reason sütunları tamamen boş kalacak.
+       Boş liste "sebep yok" diye okunmasın (DeepR 2026-08-11 [ORTA]). #}
+    <div style="margin:8px 12px 0;padding:6px 9px;border-radius:4px;font-size:11px;
+                background:rgba(251,191,36,0.12);color:#fbbf24;">
+      ⚠ Çıkış sebepleri bu koşu için alınamadı: {{ metrics.exit_reasons_error }}
+    </div>
+    {% endif %}
     <div class="panel-body" style="padding:0;max-height:420px;overflow:auto;">
       <table class="table mono rd-trades" style="font-size:11px;width:100%;">
         <thead>
@@ -57,9 +65,10 @@
               {% elif k == 'signal' %}<span class="badge" style="background:rgba(96,165,250,0.18);color:#60a5fa;">Signal</span>
               {% elif k == 'flip' %}<span class="badge" style="background:rgba(251,191,36,0.18);color:#fbbf24;">Flip</span>
               {% elif k == 'eob' %}<span class="badge" style="background:rgba(255,255,255,0.08);color:#c8c8c8;">Last</span>
+              {% elif metrics and metrics.exit_reasons_error %}<span class="text-muted" title="{{ metrics.exit_reasons_error }}">?</span>
               {% else %}<span class="text-muted">—</span>{% endif %}
             </td>
-            <td style="max-width:340px;white-space:normal;">{{ t.exit_reason or "—" }}</td>
+            <td style="max-width:340px;white-space:normal;">{{ t.exit_reason or ("alınamadı" if (metrics and metrics.exit_reasons_error) else "—") }}</td>
           </tr>
           {% endfor %}
         </tbody>

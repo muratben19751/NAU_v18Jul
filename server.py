@@ -72,6 +72,7 @@ import time as _time
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from urllib.parse import urlsplit as _urlsplit
 
 from fastapi import FastAPI, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
@@ -87,7 +88,41 @@ _log = _logging.getLogger(__name__)
 # default for local dev), auth is a no-op and behavior is unchanged. If set,
 # every request except /login and /static/* must carry a cookie derived from
 # the token (see _require_auth below).
-_ACCESS_TOKEN = _os.environ.get("NAU_ACCESS_TOKEN", "").strip()
+#
+# Dosya yedeği bilinçli: bu uygulama pm2 altında koşuyor ve pm2 daemon'u kendi
+# ortamını süreç başlatıldığı andan taşıyor. Bir ortam değişkenini kalıcı
+# yapmak, daemon'u (yanındaki onlarca uygulamayla birlikte) yeniden başlatmayı
+# gerektiriyordu; 2026-08-10'da tam bu yüzden token aylarca boş kaldı ve
+# cloudflared tüneli kapısız açık durdu. Aynı desen API anahtarı için zaten
+# var (`~/.nautilus_proxy_key`, llm_dispatch), tutarlı olan onu izlemek.
+# Öncelik env'de: bir dosyanın sessizce devralmasını istemiyoruz.
+_ACCESS_TOKEN_FILE = Path.home() / ".nau_access_token"
+
+
+def _read_access_token(env: dict | None = None) -> str:
+    """Erişim kapısının sırrı: önce ortam değişkeni, sonra home'daki dosya.
+
+    Dosya yedeği YALNIZ dağıtımda (PM2_HOME set) okunur. Kapsamı daraltmak
+    zorunlu: dosya her yerde okunsaydı, geliştirme makinesinde token oluşturmak
+    tüm route testlerini bir anda 303'e çevirirdi (ölçüldü: 211 test). PM2_HOME,
+    `_warn_if_unauthenticated_and_deployed` ve sandbox.py'nin zaten kullandığı
+    "gerçekten dağıtıldık" işareti — üçüncü bir işaret icat etmiyoruz.
+
+    Yerel dev/test'te kapı yine env ile açılabilir; sessizce açılmaz.
+    """
+    env = env if env is not None else _os.environ
+    token = env.get("NAU_ACCESS_TOKEN", "").strip()
+    if token:
+        return token
+    if not env.get("PM2_HOME"):
+        return ""
+    try:
+        return _ACCESS_TOKEN_FILE.read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
+_ACCESS_TOKEN = _read_access_token()
 _AUTH_COOKIE = "nau_auth"
 
 
@@ -196,10 +231,23 @@ STATIC_DIR = BASE_DIR / "web" / "static"
 
 
 def _static_version() -> str:
-    """Cache-busting hash based on chart.js + app.css + app.js content."""
+    """Cache-busting hash based on chart.js + app.css + app.js content.
+
+    The vendored third-party bundles (htmx, Chart.js — pulled off the CDN and
+    into web/static/ by the DeepR 2026-08-11 [ORTA] fix) are hashed too. They
+    only change when someone deliberately bumps a version, but when that day
+    comes the browser must not keep serving the old bundle from cache: the
+    tag's `?v=` would otherwise be identical across the bump.
+    """
     try:
         h = _hashlib.md5()
-        for name in ("chart.js", "app.css", "app.js"):
+        for name in (
+            "chart.js",
+            "app.css",
+            "app.js",
+            "htmx.min.js",
+            "chartjs.umd.min.js",
+        ):
             p = BASE_DIR / "web" / "static" / name
             if p.exists():
                 h.update(p.read_bytes())
@@ -257,6 +305,27 @@ def _first_studio_strategy_id() -> str | None:
 
 
 templates.env.globals["first_studio_strategy_id"] = _first_studio_strategy_id
+
+
+def _catalog_issues() -> dict | None:
+    """Bozuk (yüklenemeyen) strateji kayıtlarının özeti — yoksa None.
+
+    DeepR 2026-08-11 [YÜKSEK]: `composer.load_catalog` bozuk kayıtları sessizce
+    düşürüyordu; kullanıcı stratejisinin listeden kaybolduğunu görüyor ama
+    sebebini asla öğrenemiyordu. Bunu bir Jinja global'i yapıyoruz çünkü
+    katalog listesini render eden üç ayrı yüzey var (`compose_body`,
+    `save_result` OOB tazelemesi, tekil `/strategy` listesi) ve üçü de farklı
+    route'lardan besleniyor — bandı tek yerden almalarının yolu bu.
+    """
+    try:
+        from composer import last_catalog_load_issues
+
+        return last_catalog_load_issues()
+    except Exception:
+        return None
+
+
+templates.env.globals["catalog_issues"] = _catalog_issues
 # Sidebar only offers a Logout link when the access gate is actually on —
 # NAU_ACCESS_TOKEN unset (local dev default) means auth is a no-op, and a
 # logout link there would just redirect to a login screen with no gate.
@@ -414,7 +483,15 @@ async def login_submit(request: Request, token: str = Form(...)):
             _AUTH_COOKIE,
             _auth_cookie_value(_ACCESS_TOKEN),
             httponly=True,
-            samesite="lax",
+            # DeepR 2026-08-11 [ORTA]: "lax" → "strict". Lax, ÜST-SEVİYE bir
+            # çapraz-site GEZİNMESİNDE çerezi yine gönderir; bu uygulamada
+            # yazma yollarının bir kısmı düz form POST'u olabildiği ve yanıtlar
+            # HTML döndüğü için o kapı açık kalıyordu. Strict'te çerez yalnız
+            # aynı-site isteklerde gider. Bedeli tek-operatörlük bir uygulamada
+            # ihmal edilebilir: yer imi ve adres çubuğuna yazılan URL Strict
+            # çerezi GÖNDERİR; sadece başka bir sitedeki bağlantıya tıklayarak
+            # gelen ilk istek oturumsuz görünür, tazeleme yeter.
+            samesite="strict",
             secure=True,
             max_age=60 * 60 * 24 * 30,
         )
@@ -503,6 +580,155 @@ async def _require_auth(request: Request, call_next):
         resp.headers["HX-Redirect"] = "/login"
         return resp
     return RedirectResponse(url="/login", status_code=303)
+
+
+# ---------------------------------------------------------------------------
+# CSRF — durum değiştiren isteklerde köken (origin) doğrulaması
+#
+# DeepR 2026-08-11 [ORTA]: uygulamada hiçbir CSRF savunması yoktu. Tek dolaylı
+# engel `nau_auth` çerezinin `samesite="lax"` olmasıydı ve o da işe yaramıyordu:
+# NAU_ACCESS_TOKEN boşken (uzun süre öyleydi) çerez hiç gerekmiyor, dolayısıyla
+# SameSite hiçbir şeyi korumuyor. Operatörün tarayıcısında açılan kötücül bir
+# sayfa `POST /agent/run` (para harcatan LLM turu), `/loop/start`,
+# `/strategy/blocks/save-custom`, `/studio/{id}/deploy` çağırabiliyordu;
+# 127.0.0.1'e bağlı olmak bunu ENGELLEMEZ, çünkü isteği atan kurbanın kendi
+# tarayıcısı.
+#
+# NEDEN TOKEN DEĞİL DE ORIGIN: "çerezle eşleşen token + hx-headers" deseni bu
+# uygulamada sessizce kırılırdı. Yazma yollarının hepsi htmx değil —
+# `web/templates/reports.html`'de ham bir `fetch('/reports/layout', {method:
+# 'POST'})` var ve `htmx.ajax("POST", …)` çağrılarının bir kısmı `source`
+# elemanı vermiyor; ikisi de `<body hx-headers>`'ı devralmaz. Yani token
+# eklemek en az beş canlı yolu, testlerin göremeyeceği biçimde bozardı.
+# `Origin` başlığını ise TARAYICI koyar: fetch, XHR, htmx ve düz form POST'u —
+# hepsinde, istisnasız. Savunma tam olarak korunması gereken yüzeyle örtüşüyor.
+#
+# EŞLEŞTİRME NEDEN SADECE HOST ÜZERİNDEN: uygulama cloudflared tünelinin
+# arkasında düz http dinliyor, tarayıcı ise https görüyor — şema karşılaştırmak
+# her POST'u 403 yapardı. Host karşılaştırması ters-vekil arkasındaki standart
+# yaklaşım. Tünel Host'u yeniden yazarsa `NAU_ALLOWED_ORIGINS` ile açıkça
+# tanımlanır (reddedilen her istek zaten iki değeri de log'luyor).
+# ---------------------------------------------------------------------------
+_CSRF_SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS", "TRACE"})
+# /login: kapıdan geçmemiş bir tarayıcının tek yazma yolu; kendi rate-limiter'ı
+# var ve "kurbanı saldırganın hesabına girdirmek" tek-sır modelinde anlamsız.
+_CSRF_EXEMPT_PATHS = frozenset({"/login"})
+
+
+def _allowed_origin_hosts(request: Request) -> set[str]:
+    """Bu istek için meşru sayılan köken host'ları (hepsi küçük harf)."""
+    hosts = {
+        h.strip().lower()
+        for h in (
+            request.headers.get("host"),
+            request.headers.get("x-forwarded-host"),
+        )
+        if h and h.strip()
+    }
+    for raw in _os.environ.get("NAU_ALLOWED_ORIGINS", "").split(","):
+        raw = raw.strip()
+        if not raw:
+            continue
+        # Hem "https://host" hem çıplak "host" yazımını kabul et.
+        parsed = _urlsplit(raw if "//" in raw else "//" + raw)
+        if parsed.netloc:
+            hosts.add(parsed.netloc.lower())
+    return hosts
+
+
+def _csrf_origin_ok(request: Request) -> bool | None:
+    """``True`` aynı köken, ``False`` çapraz köken, ``None`` "tarayıcı değil".
+
+    ``None`` durumu bilinçli: `Origin` DA `Referer` DA yoksa istek bir
+    tarayıcıdan gelmiyordur (curl, pytest'in TestClient'ı, operatörün kendi
+    script'i). CSRF tanımı gereği bir tarayıcı-şaşırtma saldırısıdır; tarayıcı
+    yoksa saldırı da yoktur. Modern tarayıcılar GET/HEAD dışındaki her istekte
+    `Origin` gönderir — referrer-policy onu bastırırsa bile `null` olarak
+    gönderir, o da eşleşmeyeceği için ``False`` döner. Yani bu boşluk bir
+    tarayıcı tarafından ZORLANAMAZ. Yine de sadece tarayıcıdan erişilen bir
+    kurulumda kapatılabilsin diye `NAU_CSRF_REQUIRE_ORIGIN=1` bayrağı var.
+    """
+    allowed = _allowed_origin_hosts(request)
+    origin = request.headers.get("origin")
+    if origin:
+        return _urlsplit(origin).netloc.lower() in allowed
+    referer = request.headers.get("referer")
+    if referer:
+        return _urlsplit(referer).netloc.lower() in allowed
+    return None
+
+
+@app.middleware("http")
+async def _csrf_guard(request: Request, call_next):
+    if (
+        request.method in _CSRF_SAFE_METHODS
+        or request.url.path in _CSRF_EXEMPT_PATHS
+        or request.url.path.startswith("/static/")
+    ):
+        return await call_next(request)
+    verdict = _csrf_origin_ok(request)
+    if verdict is None and _os.environ.get("NAU_CSRF_REQUIRE_ORIGIN") == "1":
+        verdict = False
+    if verdict is False:
+        _log.warning(
+            "CSRF: cross-origin %s %s refused (origin=%r referer=%r host=%r)",
+            request.method,
+            request.url.path,
+            request.headers.get("origin"),
+            request.headers.get("referer"),
+            request.headers.get("host"),
+        )
+        # Gövde HTML değil: htmx bunu DOM'a basacak olsa bile zararsız kalsın.
+        return Response(
+            status_code=403,
+            content="CSRF: cross-origin request refused",
+            media_type="text/plain; charset=utf-8",
+        )
+    return await call_next(request)
+
+
+# ---------------------------------------------------------------------------
+# Temel güvenlik başlıkları. `frame-ancestors 'none'` + X-Frame-Options aynı
+# bulgunun clickjacking ayağını kapatıyor: başlıksızken kötücül bir sayfa
+# uygulamayı görünmez bir iframe'e alıp aynı işlemleri TIKLAMA üzerinden
+# tetikleyebiliyordu (origin kontrolü burada yardım etmez — tıklayan gerçekten
+# kullanıcının kendisi ve istek gerçekten aynı kökenli).
+#
+# CSP'nin script-src'i 'unsafe-inline' içeriyor ÇÜNKÜ uygulama satır-içi
+# script'lerle dolu (base.html'in toast/tearsheet bloğu, her sayfanın kendi
+# <script>'i) ve htmx `allowScriptTags` ile swap edilen parçaların script'ini
+# çalıştırıyor. Bunu dürüstçe söylemek gerekir: buradaki CSP satır-içi XSS'i
+# durdurmaz — onu #1'deki kaçış katmanı durduruyor. CSP'nin işi KÖKEN KİLİDİ:
+# artık hiçbir uzak script yüklenemez (htmx/Chart.js yerelleştirildiği için
+# buna gerek de kalmadı) ve bir XSS başarılı olsa bile veriyi başka bir
+# origin'e sızdıramaz (`connect-src 'self'`). 'unsafe-eval' YOK: şablonlarda
+# `hx-on`/`hx-vals js:`/`hx-trigger [expr]` kullanımı yok (tarandı), yani
+# htmx'in Function() yoluna hiç girilmiyor.
+# ---------------------------------------------------------------------------
+_CSP = "; ".join(
+    (
+        "default-src 'self'",
+        "script-src 'self' 'unsafe-inline'",
+        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+        "font-src 'self' https://fonts.gstatic.com data:",
+        "img-src 'self' data: blob:",
+        "connect-src 'self'",
+        "frame-ancestors 'none'",
+        "base-uri 'self'",
+        "form-action 'self'",
+        "object-src 'none'",
+    )
+)
+
+
+@app.middleware("http")
+async def _security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers.setdefault("Content-Security-Policy", _CSP)
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("Referrer-Policy", "same-origin")
+    return response
 
 
 from web.routes import (

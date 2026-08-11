@@ -31,8 +31,17 @@
             title="Enstrümanların önbellek/katalog kapsamının tamamını doldur"
             onclick="nlMaxRange(this, {url:'/studio/{{ defn.id }}/data-range'},
               '#bt-range-from', '#bt-range-to')">MAX</button>
+    {# hx-sync="this:drop": arka arkaya tıklamak isteği DÜŞÜRÜR, sıraya koymaz
+       (studio.html'deki AUTO START ile aynı duruş). Koruma yokken her tık ayrı
+       bir run_id + arka plan görevi kuyruklıyordu; STUDIO_BACKTEST=nautilus
+       iken her biri GERÇEK bir motor koşusu ve hepsi FastAPI'nin ortak thread
+       havuzunda — havuz dolunca senkron rotalar (bu sayfa dahil) yanıt
+       vermiyor, üstelik studio.db'de çöp koşu satırları kalıyordu
+       (DeepR 2026-08-11 [ORTA]). Sunucu tarafındaki 409 guard bunu tamamlar:
+       hx-sync yalnız UÇUŞTAKİ isteği kapsar, ikinci sekmeyi kapsamaz. #}
     <button class="btn primary" hx-post="/studio/{{ defn.id }}/backtest"
             hx-include="#bt-range-from,#bt-range-to"
+            hx-sync="this:drop"
             hx-target="#footer-metrics" hx-swap="outerHTML">▶ Run backtest</button>
     <button class="btn" hx-get="/studio/{{ defn.id }}/deploy/modal"
             hx-target="#modal-slot" hx-swap="innerHTML">⇪ Deploy</button>

@@ -13,6 +13,11 @@
   {% elif run and run.status == "failed" %}
     <div class="metric"><span class="k">Status</span><span class="v neg">Failed</span></div>
     <span class="status err">{{ run.error }}</span>
+  {% elif run and run.status == "interrupted" %}
+    {# Kesinti başarısızlık DEĞİL: koşu hakkında bir şey öğrenilmedi, sadece
+       sonucu kayboldu. "No runs yet"e düşürmek de olanı gizlerdi. #}
+    <div class="metric"><span class="k">Status</span><span class="v">Interrupted</span></div>
+    <span class="status">Run {{ run.run_id[:6] }} · {{ run.error }}</span>
   {% elif metrics %}
     <div class="metric"><span class="k">Net P&L</span>
       <span class="v {{ 'pos' if metrics.net_pnl_pct > 0 else 'neg' }}">{{ "%+.1f%%" | format(metrics.net_pnl_pct) }}</span></div>

@@ -102,12 +102,15 @@
         <div class="mc-grid2">
           <div class="mc-f">
             <label for="mc-symbol">SYMBOL</label>
-            <select id="mc-symbol" name="symbol">
+            <select id="mc-symbol" name="symbol" onchange="window.mcSyncRange()">
               <option value="BTCUSDT" selected>BTCUSDT</option>
               <option value="ETHUSDT">ETHUSDT</option>
               <option value="SOLUSDT">SOLUSDT</option>
-              {# Dotted id = external catalog (the route promotes it). #}
-              <option value="QQQ.NASDAQ">QQQ.NASDAQ</option>
+              {# Dotted id = external catalog (the route promotes it) — the list
+                 is scanned live so every ingested instrument is selectable. #}
+              {% for xsym in mc_external_symbols %}
+              <option value="{{ xsym }}">{{ xsym }}</option>
+              {% endfor %}
             </select>
           </div>
           <div class="mc-f">
@@ -182,7 +185,7 @@
         <div class="mc-grid2">
           <div class="mc-f">
             <label for="mc-category">CATEGORY</label>
-            <select id="mc-category" name="category">
+            <select id="mc-category" name="category" onchange="window.mcSyncRange()">
               <option value="linear">linear</option>
               <option value="spot" selected>spot</option>
             </select>
@@ -406,6 +409,15 @@
     Array.prototype.forEach.call(boxes, function (b) {
       b.parentElement.classList.toggle('on', b.checked);
     });
+    window.mcSyncRange();
+  };
+  // DATE RANGE, seçili sembol+TF'nin kapsamına bağlıdır. Açılışta bir kez
+  // MAX'a basmak yetmiyordu: sembolü BTCUSDT'den QQQC.NASDAQ'a çevirince
+  // Bybit'in dar cache penceresi kutularda kalıyor ve koşu "Insufficient data
+  // (63 bars)" ile ölüyordu. Sembol/TF her değiştiğinde MAX'ı yeniden hesapla.
+  window.mcSyncRange = function () {
+    var max = document.getElementById('mc-max');
+    if (max) max.click();
   };
   window.mcCheck = function (input) {
     input.parentElement.classList.toggle('on', input.checked);
@@ -476,10 +488,26 @@
 
   // Catalog → Backtest handoff: "▶ Bununla backtest" (catalog_list.html) sets
   // this and switches tab; picks the saved spec in the backtest #spec-picker.
-  window.studioBacktestSpec = function(specId) {
+  //
+  // Compose'da AZ ÖNCE kaydedilen bir strateji için #spec-picker'da <option>
+  // YOKTUR: save_result.html yalnız #catalog ve #drafts'ı OOB tazeliyor.
+  // `sel.value = specId` o zaman sessizce boş değere düşüyor ve ▶ handoff
+  // POST /backtest/run'a spec_id="" gönderip hiçliğe çıkıyordu (DeepR
+  // 2026-08-11 [ORTA]). Seçenek yoksa onu burada ekle — katalogda görünen bir
+  // strateji, seçicide de görünmeli.
+  window.studioBacktestSpec = function(specId, specName) {
     labMode('manuel');
     var sel = document.getElementById('spec-picker');
-    if (sel) sel.value = specId;
+    if (sel) {
+      var has = Array.prototype.some.call(sel.options, function (o) { return o.value === specId; });
+      if (!has) {
+        var opt = document.createElement('option');
+        opt.value = specId;
+        opt.textContent = (specName || specId) + ' · ' + specId;
+        sel.appendChild(opt);
+      }
+      sel.value = specId;
+    }
     labTab('backtest');
   };
 

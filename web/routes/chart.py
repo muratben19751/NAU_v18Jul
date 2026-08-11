@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 import re
-from datetime import UTC
+from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter, Query
 from fastapi.responses import JSONResponse
@@ -17,6 +17,87 @@ from fastapi.responses import JSONResponse
 router = APIRouter(prefix="/chart")
 
 _SYMBOL_RE = re.compile(r"^[A-Z0-9]{1,20}$")
+
+# Bar süresi (saniye) — hem pencere büyüklüğü tahmininde hem indirme
+# bütçesinde kullanılır. Eskiden istek gövdesinde iki ayrı yerel kopyası vardı.
+_SEC_PER_BAR = {
+    "1": 60,
+    "5": 300,
+    "15": 900,
+    "30": 1800,
+    "60": 3600,
+    "240": 14400,
+    "720": 43200,
+    "D": 86400,
+}
+
+_MAX_WINDOW_CANDLES = 60_000  # browser + fetch protection
+
+# ── İndirme bütçesi ────────────────────────────────────────────────────────
+# DeepR 2026-08-11 [ORTA]: pencere-genişliği kontrolü tek başına yeterli
+# DEĞİLDİ. `load_bybit_bars` istenen başlangıç önbelleğin başından eskiyse
+# ARADAKİ TÜM BOŞLUĞU doldurmaya çalışır; yani 2 GÜNLÜK bir pencere bile
+# (kapıdan rahat geçer) 2020→bugün arası 1 dakikalık bir backfill başlatabilir.
+# Sayfa başına ağ isteği + 429/5xx'te 2-32 sn uyku ve toplam sayfa sayısında
+# hiçbir üst sınır olmadığı için istek saatlerce asılı kalıyordu; üstelik
+# yazma yolu per-key kilidi tuttuğu için aynı seriyi okuyan backtest'ler de
+# bekliyordu. Tetiklemek için kötü niyet gerekmiyor: /reports'ta eski bir
+# koşunun bir işlemine tıklamak tam bu URL'i üretiyor (chart.js _reloadForTrade).
+#
+# Kural: bir istek önbelleğin DIŞINA en fazla bu kadar bar taşabilir. Aşımda
+# pencere erişilebilir aralığa kırpılır ve ne olduğu söylenir; hiçbir şey
+# kalmıyorsa veri uydurmak yerine sebebi yazan bir hata döner.
+_MAX_BACKFILL_BARS = 20_000
+
+
+def _clamp_backfill_window(
+    symbol: str,
+    category: str,
+    interval: str,
+    start: datetime,
+    end: datetime,
+) -> tuple[datetime, datetime, str]:
+    """Pencereyi "önbellek ± bütçe" aralığına kırp → (start, end, notice).
+
+    ``notice`` boşsa kırpma olmamıştır. Dönen ``start >= end`` ise istenen
+    pencere erişilebilir aralığın TAMAMEN dışındadır (çağıran hata basar).
+    Önbellek hiç yoksa pencere olduğu gibi döner: o durumda indirilecek şey
+    zaten ``_MAX_WINDOW_CANDLES`` ile sınırlı olan pencerenin kendisidir.
+    """
+    from data import coverage_range
+
+    try:
+        cov = coverage_range(
+            "bybit", symbol=symbol, category=category, interval=interval
+        )
+    except Exception:  # noqa: BLE001 — bir kapsam okuması grafiği düşürmemeli
+        cov = None
+    if not cov:
+        return start, end, ""
+
+    budget = timedelta(seconds=_MAX_BACKFILL_BARS * _SEC_PER_BAR.get(interval, 60))
+    # coverage_range GÜN döndürür; bitiş günü dahil sayılır (+1 gün).
+    cached_start = datetime.fromisoformat(cov["start"]).replace(tzinfo=UTC)
+    cached_end = datetime.fromisoformat(cov["end"]).replace(tzinfo=UTC) + timedelta(
+        days=1
+    )
+    new_start = max(start, cached_start - budget)
+    new_end = min(end, cached_end + budget)
+    if new_start >= new_end:
+        # Kırpmadan sonra geriye bir şey kalmadı — çağıranın hata metni için
+        # önbelleğin gerçek kapsamını taşı.
+        return new_start, new_end, f"{cov['start']} … {cov['end']}"
+    if (new_start, new_end) == (start, end):
+        return start, end, ""
+    return (
+        new_start,
+        new_end,
+        (
+            f"Range trimmed to the download budget ({_MAX_BACKFILL_BARS:,} bars "
+            f"per request). Cached data covers {cov['start']} … {cov['end']}; "
+            "reload to fetch further, or download the range from the Data screen."
+        ),
+    )
 
 
 @router.get("/data", response_class=JSONResponse)
@@ -30,8 +111,6 @@ async def chart_data(
     spec_id: str = Query(default=""),  # strategy spec — extract indicators from here
 ):
     """Return OHLCV bars + strategy indicators. Window by ts range or last N bars."""
-    from datetime import datetime, timedelta
-
     from data import BYBIT_ALL_INTERVALS, BYBIT_CATEGORIES, load_bybit_bars
 
     # /backtest/run and /data validate against the same whitelists; this
@@ -45,18 +124,6 @@ async def chart_data(
         return JSONResponse({"error": "invalid category"}, status_code=400)
     if interval not in dict(BYBIT_ALL_INTERVALS):
         return JSONResponse({"error": "invalid interval"}, status_code=400)
-
-    _SEC_PER_BAR = {
-        "1": 60,
-        "5": 300,
-        "15": 900,
-        "30": 1800,
-        "60": 3600,
-        "240": 14400,
-        "720": 43200,
-        "D": 86400,
-    }
-    _MAX_WINDOW_CANDLES = 60_000  # browser + fetch protection
 
     try:
         if start_ts and end_ts:
@@ -85,18 +152,29 @@ async def chart_data(
             start -= margin
             end += margin
         else:
-            ms_per_bar = {
-                "1": 60,
-                "5": 300,
-                "15": 900,
-                "30": 1800,
-                "60": 3600,
-                "240": 14400,
-                "720": 43200,
-                "D": 86400,
-            }.get(interval, 60)
             end = datetime.now(UTC)
-            start = end - timedelta(seconds=bars * ms_per_bar * 1.2)
+            start = end - timedelta(seconds=bars * _SEC_PER_BAR.get(interval, 60) * 1.2)
+
+        # İndirme bütçesi: pencerenin önbelleğin dışına taşan kısmını sınırla
+        # (bkz. _clamp_backfill_window). Bu kontrol pencere-genişliği testinden
+        # SONRA gelir, çünkü orası zaten "tarayıcıyı öldürecek kadar mum" hâlini
+        # eliyor; buradaki soru ise "kaç bar İNDİRİLECEK".
+        start, end, notice = _clamp_backfill_window(
+            symbol, category, interval, start, end
+        )
+        if start >= end:
+            return JSONResponse(
+                {
+                    "error": (
+                        f"That window is more than {_MAX_BACKFILL_BARS:,} bars "
+                        f"outside the downloaded data ({notice}). Download the "
+                        "range from the Data screen first."
+                    ),
+                    "candles": [],
+                    "trades": [],
+                    "indicators": {"overlays": [], "panes": []},
+                }
+            )
 
         # M9: data loading + candle construction + indicator computation in a
         # SINGLE synchronous closure, via asyncio.to_thread — the old version
@@ -130,6 +208,7 @@ async def chart_data(
                     "candles": [],
                     "trades": [],
                     "indicators": {"overlays": [], "panes": []},
+                    "notice": notice,
                 }
 
             if not (start_ts and end_ts):
@@ -173,6 +252,7 @@ async def chart_data(
 
             # Compute the strategy's actual indicators over this window
             indicators = {"overlays": [], "panes": []}
+            indicators_error = None
             if spec_id:
                 try:
                     from chart_indicators import indicators_for_spec
@@ -181,10 +261,29 @@ async def chart_data(
                     spec = next((s for s in load_catalog() if s.id == spec_id), None)
                     if spec is not None:
                         indicators = indicators_for_spec(spec, times, closes)
-                except Exception:
-                    pass  # indicator computation must not block the chart
+                except Exception as exc:
+                    # Gösterge hesabı grafiği BLOKLAMAMALI (mumlar geçerli), ama
+                    # sessizce boş dönmemeli: katman hiç görünmeyince kullanıcı
+                    # "bu stratejide gösterge yok" sonucuna varıyordu. Hatayı
+                    # logla ve payload'da taşı (DeepR 2026-08-11 [ORTA]).
+                    logging.warning(
+                        "indicator computation failed for spec %s: %s",
+                        spec_id,
+                        exc,
+                        exc_info=True,
+                    )
+                    indicators_error = f"{type(exc).__name__}: {exc}"
 
-            return {"candles": candles, "trades": [], "indicators": indicators}
+            return {
+                "candles": candles,
+                "trades": [],
+                "indicators": indicators,
+                "indicators_error": indicators_error,
+                # Pencere indirme bütçesine kırpıldıysa bunu SÖYLE: kullanıcı
+                # istediğinden dar bir grafiğe bakıyor olabilir (chart.js bunu
+                # toast'a çevirir).
+                "notice": notice,
+            }
 
         import asyncio
 

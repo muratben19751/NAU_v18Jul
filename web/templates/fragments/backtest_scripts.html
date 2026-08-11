@@ -90,6 +90,43 @@
     }
   });
 
+  // ── 4xx gövdelerini ekrana bas ─────────────────────────────────────────────
+  // htmx 1.x 2xx dışı yanıtları varsayılan olarak swap ETMEZ. Backtest
+  // yüzeyindeki reddetmeler (kayıtlı spec seçilmemiş/silinmiş, tarif çok kısa,
+  // sweep'te tek TF, bozuk tarih) tam da 4xx olduğu için düğmeye basmak hiçbir
+  // şey yapmıyormuş gibi görünüyordu: spinner sönüyor, sebep söylenmiyordu
+  // (DeepR 2026-08-11 [ORTA]). AUTO tarafında aynı sorun /agent/run için
+  // studio.html'de bu kancayla çözülmüştü; duruş burada da aynı.
+  //
+  // 409 HARİÇ: "zaten bir koşu var" yanıtının gövdesi bilerek swap edilmez —
+  // #result'a basmak canlı koşunun ilerleme panelini silerdi. Onun geri
+  // bildirimi HX-Toast (bkz. _busy_response).
+  //
+  // Yalnız SUBMIT uçları listelenir; kendini sonlandıran /backtest/progress ve
+  // /robustness/progress yoklamaları da 4xx dönebilir ve onların gövdesi
+  // sonucun yerine geçmemeli.
+  var BT_SHOW_4XX = {
+    "/backtest/run": 1, "/backtest/describe": 1, "/backtest/sweep": 1,
+    "/robustness/run": 1, "/backtest/chat/new": 1, "/backtest/plan": 1
+  };
+  document.body.addEventListener("htmx:beforeSwap", function(evt) {
+    var d = evt.detail, cfg = d && d.requestConfig, xhr = d && d.xhr;
+    if (!cfg || !xhr || !BT_SHOW_4XX[cfg.path]) return;
+    var st = xhr.status;
+    if (st < 400 || st >= 500 || st === 409) return;
+    if ((xhr.getResponseHeader("content-type") || "").indexOf("text/html") >= 0) {
+      d.shouldSwap = true;
+      d.isError = false;
+      return;
+    }
+    // HTML olmayan bir 4xx — pratikte FastAPI'nin JSON doğrulama hatası. Ham
+    // JSON'u sonuç paneline basmak kullanıcıya bir şey anlatmaz, ama sessiz
+    // kalmak da olmaz: en azından reddedildiğini söyle.
+    if (!xhr.getResponseHeader("HX-Toast") && window.showToast) {
+      showToast("The request was rejected (" + st + ") - check the form fields.", "err");
+    }
+  });
+
   // Re-init equity chart after every HTMX swap into #result.
   // Also fires the backtest chain when describe_progress injects a
   // data-bt-chain-url element (hx-trigger="load" doesn't fire on innerHTML swap).

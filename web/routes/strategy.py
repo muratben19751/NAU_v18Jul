@@ -13,7 +13,9 @@ just `/blocks/generate` as before.
 
 from __future__ import annotations
 
+import logging
 from typing import Any
+from urllib.parse import quote as _quote
 
 from fastapi import APIRouter, Form, Request, Response
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -29,7 +31,14 @@ from composer import (
     unregister_custom_block,
 )
 from state import get_state
-from web.shared import SESSION_COOKIE, ChatStore, render_md, session_id
+from web.shared import (
+    SESSION_COOKIE,
+    ChatStore,
+    error_html,
+    render_md,
+    session_id,
+    set_session_cookie,
+)
 from wiki_helper import read_wiki_page
 
 router = APIRouter(prefix="/strategy")
@@ -58,7 +67,6 @@ _DRAFTS: dict[str, list[SignalBlock]] = {}
 # can share the same session dimension. Thin aliases keep this module's existing
 # call-sites (and tests) unchanged.
 COOKIE = SESSION_COOKIE
-_COOKIE_MAX_AGE = 3600
 # Do not let _DRAFTS grow unbounded (every new sid left an entry, never evicted).
 # Insertion-order dict → drop the oldest sid (rough LRU; drafts are short-lived).
 _MAX_DRAFT_SESSIONS = 500
@@ -78,9 +86,7 @@ def _sid_cookie(resp: Response, sid: str) -> Response:
     tests, a fresh client hitting /strategy/drafts before /studio) never gets a
     ``nautlab_sid`` and its drafts vanish on the next call.
     """
-    resp.set_cookie(
-        SESSION_COOKIE, sid, httponly=True, samesite="lax", max_age=_COOKIE_MAX_AGE
-    )
+    set_session_cookie(resp, sid)
     return resp
 
 
@@ -210,26 +216,39 @@ def wiki_html_for(block_type: str) -> tuple[str, str]:
 
 def _preview_signals(code: str, meta: dict, role_hint: str) -> dict:
     """Run a validated evaluate() over recent BTC 1m closes to build a signal
-    preview chart. Non-fatal: any failure returns {} (the caller skips the chart).
+    preview chart.
 
     Parity with the runtime/loader (H490/M527): codegate-validate → inject full
     math/statistics/ind modules → compile with a loop budget → feed real OHLCV.
     Shared by both the generate and the AI-edit flows (single source of truth).
+
+    Non-fatal, but never SILENT (DeepR 2026-08-11 [ORTA]). Three distinct
+    outcomes, because they mean three different things to the user:
+
+    * ``{}`` — no BTC 1m cache / no ``evaluate``: there is nothing to preview.
+    * ``{"error": ...}`` — the preview itself could not run (compile/validate/
+      data). The chart is skipped and the reason is shown.
+    * ``{closes, dates, signals, eval_error, eval_error_bars}`` — the chart is
+      drawn, but ``evaluate()`` raised on ``eval_error_bars`` bars. Previously
+      this was indistinguishable from "the block produces no signals", so users
+      went looking for a logic bug in code that had actually crashed
+      (TypeError/IndexError, never surfaced anywhere).
+
+    exec ARTIK BU SÜREÇTE DEĞİL (DeepR 2026-08-11 [ORTA]). Eskiden bu fonksiyon
+    LLM'in ürettiği kodu doğrudan web sunucusunda derleyip ``evaluate()``'i 150
+    KEZ ART ARDA çağırıyordu — hiçbir duvar saati, hiçbir bellek tavanı yoktu ve
+    döngü bütçesi her çağrının başında sıfırlandığı için tek bir HTTP isteği
+    teorik olarak 750 milyon adım koşabiliyordu, üstelik olay döngüsünde.
+    Tehlikeli kısım (validate + exec + 150 barlık sürüş) artık
+    ``sandbox.run_block_preview_guarded`` ile öldürülebilir bir alt süreçte
+    koşuyor; parquet okuma, pencereleme ve yukarıdaki üç-sonuç sözleşmesi
+    burada kaldı. Gerekçenin tamamı sandbox.py'nin ilgili bölüm başlığında.
     """
     try:
-        import math as _math
-        import statistics as _stats
-
         import pandas as _pd
 
-        import indicators as _ind_mod
-        from codegate import (
-            compile_with_loop_budget,
-            safe_builtins,
-            safe_module_proxy,
-            validate_generated_code,
-        )
         from data import BYBIT_CACHE_DIR
+        from sandbox import run_block_preview_guarded
 
         cache_path = BYBIT_CACHE_DIR / "linear_BTCUSDT_1m.parquet"
         if not cache_path.exists():
@@ -243,79 +262,43 @@ def _preview_signals(code: str, meta: dict, role_hint: str) -> dict:
         volumes = [float(x) for x in df_raw["volume"].tolist()]
         dates = [str(df_raw.index[i])[:16] for i in range(len(df_raw))]
 
-        validate_generated_code(code)  # dunder/import/loop gates
-        _ALLOWED: dict = {
-            # Same builtins the smoke and on-disk loader use. Rebuilding the
-            # dict here from _ALLOWED_BUILTINS alone left out RuntimeError,
-            # which the injected loop-budget guard raises: a `while True` block
-            # died with `NameError: RuntimeError is not defined`, the preview's
-            # blanket except swallowed it, and every bar silently returned None
-            # — an empty preview that reads as "works" instead of "loop budget
-            # exceeded".
-            "__builtins__": safe_builtins(),
-            # Read-only proxies (see codegate.safe_module_proxy): this preview
-            # exec's inside the web-server process, so handing out the live
-            # modules would let one generated block rewrite `ind.calc_rsi` for
-            # every strategy that runs afterwards.
-            "math": safe_module_proxy(_math, "math"),
-            "statistics": safe_module_proxy(_stats, "statistics"),
-            "ind": safe_module_proxy(_ind_mod, "ind"),
-        }
-        ns: dict = {}
-        exec(compile_with_loop_budget(code, "<preview>"), _ALLOWED, ns)
-        for k, v in ns.items():
-            if callable(v) and not k.startswith("_"):
-                _ALLOWED[k] = v
-        # M1084: budget preamble names landed in ns; functions look them up in globals.
-        for _bk in ("__budget", "__budget_tick"):
-            if _bk in ns:
-                _ALLOWED[_bk] = ns[_bk]
-        ev = ns.get("evaluate")
-        if ev is None:
-            return {}
-
-        class _Block:
-            def __init__(self, params, role):
-                self.params = params
-                self.role = role
-                self.type = "custom"
-
-        class _Port:
-            def is_net_long(self, *a):
-                return False
-
-            def is_net_short(self, *a):
-                return False
-
-            def is_flat(self, *a):
-                return True
-
-        default_params = {
-            k: v.get("default") for k, v in (meta or {}).get("params", {}).items()
-        }
-        block, port, state = _Block(default_params, role_hint), _Port(), {}
         WINDOW = 150
         start_i = max(0, len(closes) - WINDOW)
-        signals = []
-        for i in range(start_i, len(closes)):
-            # M527: provide highs/lows/volumes to indicators like the runtime does.
-            _ind_dict = {
-                "highs": highs[: i + 1],
-                "lows": lows[: i + 1],
-                "volumes": volumes[: i + 1],
-            }
-            try:
-                sig = ev(state, block, closes[: i + 1], _ind_dict, port)
-            except Exception:
-                sig = None
-            signals.append({"i": i - start_i, "sig": sig})
+        ran, err = run_block_preview_guarded(
+            code,
+            meta,
+            role_hint,
+            closes=closes,
+            highs=highs,
+            lows=lows,
+            volumes=volumes,
+            start_i=start_i,
+        )
+        if err is not None:
+            # Duvar saati/bellek aşımı ya da çocuktaki derleme hatası. Sessizce
+            # boş grafik ÇİZMİYORUZ — sebebi söylemek bu bulgunun yarısıydı.
+            logging.getLogger(__name__).warning("block signal preview failed: %s", err)
+            return {"error": err}
+        if not ran or ran.get("no_evaluate"):
+            return {}
+        if ran.get("eval_error"):
+            logging.getLogger(__name__).warning(
+                "block preview evaluate() raised on %d bar(s): %s",
+                ran.get("eval_error_bars", 0),
+                ran["eval_error"],
+            )
         return {
             "closes": closes[start_i:],
             "dates": dates[start_i:],
-            "signals": signals,
+            "signals": ran["signals"],
+            "eval_error": ran.get("eval_error"),
+            "eval_error_bars": ran.get("eval_error_bars", 0),
         }
-    except Exception:
-        return {}
+    except Exception as exc:
+        logging.getLogger(__name__).warning(
+            "block signal preview failed before any bar ran", exc_info=True
+        )
+        return {"error": f"{type(exc).__name__}: {exc}"}
 
 
 @router.get("", response_class=HTMLResponse)
@@ -753,6 +736,8 @@ async def generate_custom_block(request: Request):
 
     On failure returns an error fragment with the failure message.
     """
+    import asyncio
+
     import custom_block_store as cbs
     from agent import GeneratedCodeError, propose_custom_block
     from server import templates
@@ -835,8 +820,11 @@ async def generate_custom_block(request: Request):
 
     # Run the generated evaluate() on recent BTC 1m closes to produce a
     # signal preview. Non-fatal: if anything fails we just skip the chart.
-    chart_data = _preview_signals(
-        proposal["code"], proposal.get("meta") or {}, role_hint
+    # to_thread: önizleme artık öldürülebilir bir alt süreç doğuruyor
+    # (sandbox.run_block_preview_guarded) ve spawn + bekleme senkron bir
+    # çağrıda olay döngüsünü bloklardı — tam da düzeltmeye çalıştığımız şey.
+    chart_data = await asyncio.to_thread(
+        _preview_signals, proposal["code"], proposal.get("meta") or {}, role_hint
     )
 
     return templates.TemplateResponse(
@@ -868,22 +856,18 @@ async def save_custom_block(
     from codegate import GeneratedCodeError, validate_generated_code
 
     if name in BLOCK_REGISTRY:
-        return HTMLResponse(
-            f"<div class='empty-state'>Name '{name}' is already registered.</div>",
-            status_code=409,
-        )
+        return error_html("Name '{name}' is already registered.", 409, name=name)
     if not cbs.is_valid_name(name):
-        return HTMLResponse(
-            f"<div class='empty-state'>Invalid name: {name}. Lowercase snake_case required.</div>",
-            status_code=400,
+        # `name` HENÜZ doğrulanmadı — tam olarak geçersizken bu dala giriyoruz,
+        # yani `<img onerror=…>` gibi bir Form değeri buradan geri yansırdı.
+        return error_html(
+            "Invalid name: {name}. Lowercase snake_case required.", 400, name=name
         )
 
     try:
         meta = _json.loads(meta_json)
     except Exception as e:
-        return HTMLResponse(
-            f"<div class='empty-state'>meta JSON error: {e}</div>", status_code=400
-        )
+        return error_html("meta JSON error: {e}", 400, e=e)
 
     # Re-validate defense-in-depth — form input could be tampered with.
     # M591: require_max_lookback=True — the M16 requirement on the production path
@@ -893,22 +877,23 @@ async def save_custom_block(
         validate_generated_code(code)
         _test_execute_generated(code, meta=meta, require_max_lookback=True)
     except GeneratedCodeError as e:
-        return HTMLResponse(
-            f"<div class='empty-state'>Code rejected: {e}</div>", status_code=400
-        )
+        # codegate hata metni reddedilen KODU alıntılayabiliyor — yani gövde
+        # dolaylı olarak kullanıcı girdisi taşıyor.
+        return error_html("Code rejected: {e}", 400, e=e)
 
     try:
         cbs.save_custom(name, meta, code, prompt=prompt)
         register_custom_from_disk(name)
     except Exception as e:
-        return HTMLResponse(
-            f"<div class='empty-state'>Save error: {type(e).__name__}: {e}</div>",
-            status_code=500,
-        )
+        return error_html("Save error: {kind}: {e}", 500, kind=type(e).__name__, e=e)
 
     # Full page reload — the block-type dropdown lives in multiple fragments.
     resp = HTMLResponse("")
-    resp.headers["HX-Redirect"] = "/strategy?saved_block=" + name
+    # quote(): `name` bu noktada `is_valid_name` süzgecinden geçti, ama URL'e
+    # ham string eklemek yapısal olarak kırılgan — ad karakter kümesi bir gün
+    # genişlerse (ya da bir çağıran doğrulamayı atlarsa) burası parametre/başlık
+    # enjeksiyonuna dönüşür. Kodlamayı şimdi yapıyoruz ki o gün gelmesin.
+    resp.headers["HX-Redirect"] = "/strategy?saved_block=" + _quote(name, safe="")
     return resp
 
 
@@ -954,10 +939,9 @@ async def block_chat_new(request: Request, name: str):
 
     info = cbs.get_custom(name)
     if info is None:
-        return HTMLResponse(
-            f"<div class='empty-state'>Custom block bulunamadı: {name}</div>",
-            status_code=404,
-        )
+        # `name` URL path parametresi ve bu dal tam olarak "kayıtlı değil"
+        # durumunda çalışıyor: saldırganın seçtiği her şey buraya düşer.
+        return error_html("Custom block bulunamadı: {name}", 404, name=name)
     if name in BLOCK_REGISTRY and BLOCK_REGISTRY[name].get("builtin"):
         return HTMLResponse(
             "<div class='empty-state'>Yerleşik (built-in) bloklar düzenlenemez.</div>",
@@ -967,9 +951,7 @@ async def block_chat_new(request: Request, name: str):
     try:
         code = cbs.module_path(name).read_text(encoding="utf-8")
     except OSError as e:
-        return HTMLResponse(
-            f"<div class='empty-state'>Blok kodu okunamadı: {e}</div>", status_code=500
-        )
+        return error_html("Blok kodu okunamadı: {e}", 500, e=e)
     meta = info.get("meta") or {}
 
     # İlk user mesajı: modele mevcut kod+meta gömülü; ekranda kısa görünüm (display).
@@ -999,9 +981,13 @@ async def block_chat_new(request: Request, name: str):
         "working_meta": reply["meta"],
         "working_code": reply["code"],
         "last_error": reply.get("error") or "",
-        "chart_data": _preview_signals(reply["code"], reply["meta"], "entry")
-        if reply.get("changed")
-        else {},
+        "chart_data": (
+            await asyncio.to_thread(
+                _preview_signals, reply["code"], reply["meta"], "entry"
+            )
+            if reply.get("changed")
+            else {}
+        ),
     }
     conv_id = _BLOCK_CHAT.new(conv)
     return _render_block_chat(request, conv, conv_id)
@@ -1045,7 +1031,7 @@ async def block_chat_turn(
         history + [user_turn],
     )
     chart = (
-        _preview_signals(reply["code"], reply["meta"], "entry")
+        await asyncio.to_thread(_preview_signals, reply["code"], reply["meta"], "entry")
         if reply.get("changed")
         else None
     )
@@ -1087,17 +1073,15 @@ async def block_chat_save(request: Request, conv_id: str = Form("")):
     code = conv["working_code"]
 
     if not cbs.is_valid_name(name):
-        return HTMLResponse(
-            f"<div class='empty-state'>Geçersiz ad: {name}</div>", status_code=400
-        )
+        return error_html("Geçersiz ad: {name}", 400, name=name)
     # Defense-in-depth: kaydetmeden önce tekrar doğrula (save-custom:583-585 ile aynı).
     try:
         validate_generated_code(code)
         _test_execute_generated(code, meta=meta, require_max_lookback=True)
     except GeneratedCodeError as e:
-        return HTMLResponse(
-            f"<div class='empty-state'>Kod reddedildi: {e}</div>", status_code=400
-        )
+        # Buradaki `code` MODELİN ürettiği metin — prompt injection ile
+        # şekillendirilebilir, yani hata metni de güvenilmez.
+        return error_html("Kod reddedildi: {e}", 400, e=e)
 
     try:
         cbs.save_custom(name, meta, code, prompt="AI ile düzenlendi")
@@ -1105,13 +1089,16 @@ async def block_chat_save(request: Request, conv_id: str = Form("")):
         unregister_custom_block(name)
         register_custom_from_disk(name)
     except Exception as e:
-        return HTMLResponse(
-            f"<div class='empty-state'>Kaydetme hatası: {type(e).__name__}: {e}</div>",
-            status_code=500,
+        return error_html(
+            "Kaydetme hatası: {kind}: {e}", 500, kind=type(e).__name__, e=e
         )
 
     resp = HTMLResponse("")
-    resp.headers["HX-Redirect"] = "/strategy?saved_block=" + name
+    # quote(): `name` bu noktada `is_valid_name` süzgecinden geçti, ama URL'e
+    # ham string eklemek yapısal olarak kırılgan — ad karakter kümesi bir gün
+    # genişlerse (ya da bir çağıran doğrulamayı atlarsa) burası parametre/başlık
+    # enjeksiyonuna dönüşür. Kodlamayı şimdi yapıyoruz ki o gün gelmesin.
+    resp.headers["HX-Redirect"] = "/strategy?saved_block=" + _quote(name, safe="")
     return resp
 
 
@@ -1121,10 +1108,7 @@ async def delete_custom_block(request: Request, name: str):
     from server import templates
 
     if name in BLOCK_REGISTRY and BLOCK_REGISTRY[name].get("builtin"):
-        return HTMLResponse(
-            f"<div class='empty-state'>Built-in block cannot be deleted: {name}</div>",
-            status_code=400,
-        )
+        return error_html("Built-in block cannot be deleted: {name}", 400, name=name)
     # M621: when a block was deleted, the specs using it were silently filtered
     # out and PERMANENTLY removed from the catalog on the next load_catalog. If
     # there is a dependent strategy, refuse to delete (unless explicitly requested
@@ -1137,12 +1121,17 @@ async def delete_custom_block(request: Request, name: str):
             s.name for s in load_catalog() if any(b.type == name for b in s.blocks)
         ]
         if dependents:
+            # `preview` kullanıcının kendi yazdığı strateji ADLARI — depolanmış
+            # (stored) XSS için klasik taşıyıcı.
             preview = ", ".join(dependents[:5]) + ("…" if len(dependents) > 5 else "")
-            return HTMLResponse(
-                f"<div class='empty-state'>⚠ {len(dependents)} strategies use the "
-                f"'{name}' block ({preview}). Deleting it also permanently deletes "
-                f"those strategies. To delete anyway, add ?force=1.</div>",
-                status_code=409,
+            return error_html(
+                "⚠ {n} strategies use the '{name}' block ({preview}). Deleting it "
+                "also permanently deletes those strategies. To delete anyway, "
+                "add ?force=1.",
+                409,
+                n=len(dependents),
+                name=name,
+                preview=preview,
             )
     cbs.delete_custom(name)
     unregister_custom_block(name)

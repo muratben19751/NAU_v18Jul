@@ -121,7 +121,13 @@ html, body {
   transition: background 0.15s, color 0.15s;
 }
 .nav a:hover { background: #14161a; color: var(--text-primary); }
-.nav a.nav-disabled { opacity: 0.45; cursor: default; pointer-events: none; }
+/* pointer-events:none İDİ — ve tam da açıklamayı öldürüyordu: tarayıcı
+   `title` tooltip'ini göstermiyor, tıklama da bir şey yapmıyordu, yani
+   kullanıcı soluk ve tepkisiz bir menü öğesi görüp nedenini asla
+   öğrenemiyordu (DeepR 2026-08-11 [ORTA]). Öğe artık tıklanabilir: gezinmeyi
+   onclick engelliyor, sebep toast olarak söyleniyor (bkz. base.html). */
+.nav a.nav-disabled { opacity: 0.45; cursor: help; }
+.nav a.nav-disabled:hover { background: transparent; color: var(--text-secondary); }
 .nav a.active {
   background: linear-gradient(90deg, var(--accent-soft), transparent 70%);
   color: #ffffff;

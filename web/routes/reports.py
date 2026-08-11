@@ -30,7 +30,7 @@ router = APIRouter(prefix="/reports")
 # Log paths come from web.shared (single source of truth; they were duplicated
 # with the writer modules). reports.py reads these via its own module globals,
 # so tests can still monkeypatch reports.BACKTEST_LOG / .ROBUSTNESS_LOG.
-from web.shared import BACKTEST_LOG, ROBUSTNESS_LOG  # noqa: E402
+from web.shared import BACKTEST_LOG, ROBUSTNESS_LOG, error_html  # noqa: E402
 
 REPORTS_LAYOUT = Path.home() / ".cache" / "nautilus_web_app" / "reports_layout.json"
 
@@ -255,7 +255,44 @@ def _rob_fields(rob: dict | None) -> dict:
 
 # H6: parse cache keyed by (mtime_ns, size) — if the log hasn't changed, ~3.6k
 # json.loads calls aren't repeated; each visit shouldn't re-pay the full cost.
+#
+# GEÇERSİZLEŞME SÖZLEŞMESİ: anahtar (mtime_ns, size). Log'a bir koşu yazıldığı
+# anda ikisi de değişir → bir sonraki /reports isteği yeniden parse eder.
+# Bayatlama penceresi YOK; dosya değişmediği sürece taze sayılır. Tek girdi
+# tutulur (aktif log), rotasyon (.jsonl.1) yeni bir anahtar demektir.
 _PARSE_CACHE: dict[str, tuple[tuple, list]] = {}
+
+# DeepR 2026-08-11 [ORTA]: önbellek 20 MB'lık logun TÜM parse edilmiş hâlini
+# tutuyordu — ölçüldü: 109 kayıt, 91,3 MB kalıcı Python heap'i. Sunucunun
+# ayak izi /reports'a bir kez girilmesiyle 91 MB artıyordu ve bir daha
+# düşmüyordu. Ölçüm dosyanın nereye gittiğini de gösterdi: 20,17 MB'lık
+# `metrics` alanının 20,03 MB'ı gömülü equity eğrileri (`equity_curve_mtm` +
+# `equity_curve_realized`), yani logun %99'u. Liste/filtre/CSV yollarının
+# hiçbiri bu eğrilere bakmıyor (grep: reports.py'de tek geçen yer yok) —
+# /reports/detail ise satırı `_find_log_record` ile diskten YENİDEN okuyor,
+# yani bu önbellekten beslenmiyor. Dolayısıyla eğriler parse'tan hemen sonra
+# düşürülüyor: aynı satırlar, ~90 MB daha az RAM.
+#
+# TTL bilinçli olarak YOK: tahliye ancak bir sonraki erişimde tetiklenebilirdi,
+# yani sayfa açıkken RAM'i düşürmez, kapalıyken de zaten kimse tahliye
+# çağırmaz — tek etkisi boşuna yeniden parse olurdu. Sınır bunun yerine
+# aşağıdaki kayıt tavanı: çarpıldığında VERİ KIRPILMAZ (rapor eksik satır
+# göstermemeli), önbellekleme atlanır ve durum warning ile loglanır.
+_PARSE_CACHE_MAX_RECORDS = 20_000
+
+# Yalnız gömülü eğri alanları düşürülür; kaydın kalan her alanı korunur.
+_HEAVY_METRIC_KEYS = ("equity_curve_mtm", "equity_curve_realized")
+
+
+def _slim_record(rec: dict) -> dict:
+    """Kaydı liste görünümünün kullandığı hâle indir (gömülü eğrileri at)."""
+    metrics = rec.get("metrics")
+    if not isinstance(metrics, dict):
+        return rec
+    if not any(k in metrics for k in _HEAVY_METRIC_KEYS):
+        return rec
+    rec["metrics"] = {k: v for k, v in metrics.items() if k not in _HEAVY_METRIC_KEYS}
+    return rec
 
 
 _CSV_FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r")
@@ -290,9 +327,22 @@ def _parsed_log_records() -> list[dict]:
             if not line:
                 continue
             try:
-                recs.append(json.loads(line))
+                recs.append(_slim_record(json.loads(line)))
             except Exception:
                 continue
+    if len(recs) > _PARSE_CACHE_MAX_RECORDS:
+        # Sınıra çarpıldı: satırları kırpmak raporu sessizce eksiltirdi, o
+        # yüzden veri tam döner ve sadece ÖNBELLEKLEME atlanır — maliyet
+        # görünür olsun diye de loglanır.
+        _PARSE_CACHE.pop("backtest_log", None)
+        logging.warning(
+            "reports parse cache SKIPPED: %s has %d records (> %d) — every "
+            "/reports request will re-parse it; rotate or prune the log",
+            BACKTEST_LOG,
+            len(recs),
+            _PARSE_CACHE_MAX_RECORDS,
+        )
+        return recs
     _PARSE_CACHE["backtest_log"] = (key, recs)
     return recs
 
@@ -536,9 +586,12 @@ def _detail_error(msg: str) -> HTMLResponse:
     # L7: callers pass raw exception / spec-validation text — printing it
     # unescaped would break the DOM / open injection in LLM-sourced text. Since
     # it's a single choke point, all callers are fixed here at once.
-    from markupsafe import escape
-
-    return HTMLResponse(f"<div class='empty-state'>{escape(msg)}</div>")
+    #
+    # DeepR 2026-08-11 [ORTA]: bu, uygulamadaki ZATEN doğru olan tek sink'ti;
+    # yerel `escape` çağrısı yerine ortak `error_html`'e bağlandı ki kaçış
+    # kuralı (ve bir gün değişirse değişikliği) tek yerde yaşasın. Durum kodu
+    # bilerek 200: bu gövde tear-sheet panelinin İÇİNE swap ediliyor.
+    return error_html("{msg}", 200, msg=msg)
 
 
 @router.get("/detail", response_class=HTMLResponse)

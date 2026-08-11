@@ -350,7 +350,25 @@ function _loadPriceChart(el) {
         el.innerHTML = '<div class="empty-state" style="padding:40px;">⚠ ' + d.error + '</div>';
         return;
       }
+      // Sunucu pencereyi indirme bütçesine kırptıysa bunu söyle — sessizce
+      // dar bir grafik çizmek, kullanıcıya olmayan bir "veri yok" anlatır.
+      if (d.notice && window.showToast) window.showToast(d.notice, "err");
       window.initPriceChart(el.id, d.candles, trades.length ? trades : (d.trades || []), { indicators: d.indicators });
+      // Gösterge hesabı patladıysa mumlar çizilir ama katman görünmez; bunu
+      // söylemezsek boş grafik "bu stratejide gösterge yok" diye okunuyor
+      // (DeepR 2026-08-11 [ORTA] — /chart/data indicators_error).
+      const prevWarn = el.nextElementSibling;
+      if (prevWarn && prevWarn.classList && prevWarn.classList.contains("chart-indicator-warning")) {
+        prevWarn.remove();
+      }
+      if (d.indicators_error) {
+        const warn = document.createElement("div");
+        warn.className = "chart-indicator-warning";
+        warn.style.cssText = "margin-top:6px;padding:5px 8px;border-radius:4px;font-size:10.5px;" +
+                             "background:rgba(251,191,36,0.12);color:#fbbf24;font-family:var(--mono);";
+        warn.textContent = "⚠ Indicators could not be computed for this strategy: " + d.indicators_error;
+        el.insertAdjacentElement("afterend", warn);
+      }
     })
     .catch(e => { el._chartDone = false; el._afterLoad = null; console.warn("chart load failed:", src, e); });
 }

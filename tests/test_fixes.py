@@ -81,11 +81,16 @@ class TestAutoWriteBaseCurrency:
 
         captured = {}
 
+        # price_hint: DeepR 2026-08-11 [YÜKSEK] — the catalog writer now derives
+        # the price precision from the frame it is about to write (sub-cent
+        # symbols must not land in the catalog as all-zero bars). The fake has
+        # to accept it, and capturing it keeps that wiring under test here too.
         def fake_make_instrument(
-            symbol="BTCUSDT", base="BTC", quote=None, category="linear"
+            symbol="BTCUSDT", base="BTC", quote=None, category="linear", **kw
         ):
             captured["base"] = base
             captured["category"] = category
+            captured["price_hint"] = kw.get("price_hint")
             m = MagicMock()
             m.id = MagicMock()
             return m
@@ -121,6 +126,11 @@ class TestAutoWriteBaseCurrency:
     def test_btc_base_still_works(self):
         captured = self._run("BTCUSDT")
         assert captured.get("base") == "BTC"
+
+    def test_price_hint_is_derived_from_the_frame(self):
+        """Katalog yazıcısı fiyat ölçeğini veriden alıyor mu (cent altı tuzağı)."""
+        captured = self._run("ETHUSDT")
+        assert captured.get("price_hint") == 1.0  # _run'ın çerçevesindeki tek fiyat
 
 
 # ---------------------------------------------------------------------------

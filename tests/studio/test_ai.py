@@ -188,6 +188,13 @@ def test_double_loop_blocked_while_running(client, monkeypatch):
     ) else None
     # simpler: create a running loop row directly
     client.store.create_loop("busyloop", SID, "{}")
+    # ...and mark it as running IN THIS PROCESS. A bare `running` row is no
+    # longer proof of life (DeepR 2026-08-11 [YÜKSEK]): after a restart such a
+    # row is an orphan and the start route reconciles it away, or the AI loop
+    # would be permanently 422-locked for this strategy. The in-process claim
+    # is what separates "genuinely running" from "left over by a dead process";
+    # see tests/studio/test_reconcile_studio_jobs.py for the other side.
+    monkeypatch.setattr(client.main, "_ACTIVE_JOBS", {"busyloop"})
     r = client.post(f"/studio/{SID}/ai/loop/start", data={"max_iterations": "1"})
     assert r.status_code == 422 and "already running" in r.text
 

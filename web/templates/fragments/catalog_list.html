@@ -1,3 +1,33 @@
+{# ── Sessizce düşürülen bozuk kayıtlar (DeepR 2026-08-11 [YÜKSEK]) ──────────
+   `load_catalog` bozuk kayıtları atlıyor; eskiden bunun tek izi yoktu, kullanıcı
+   "kaydettiğim strateji nerede?" sorusuyla baş başa kalıyordu. Sayı + gerekçe +
+   karantina dosyasının yolu burada; kayıt SİLİNMEDİ, kurtarılabilir.
+   `catalog_issues()` server.py'de tanımlı bir Jinja global'i (bu fragment üç
+   farklı route'tan include ediliyor, hiçbirinin context'ine bağlanamaz). #}
+{% set _ci = catalog_issues() if catalog_issues is defined else None %}
+{% if _ci %}
+<div style="
+  border:1px solid rgba(245,158,11,0.35);
+  background:rgba(245,158,11,0.08);
+  border-left:4px solid #f59e0b;
+  border-radius:6px;
+  padding:10px 14px;
+  margin-bottom:12px;">
+  <div style="font-size:12px;font-weight:700;color:#f59e0b;margin-bottom:3px;">
+    ⚠ {{ _ci.n_broken }} of {{ _ci.n_total }} saved strategies could not be loaded
+  </div>
+  <div style="font-size:10px;color:#7d848f;line-height:1.6;">
+    They are missing from the list below — not deleted. Reasons:
+    <ul class="mono" style="margin:4px 0 4px 16px;font-size:10px;color:#c8ccd2;">
+      {% for reason in _ci.reasons %}<li style="word-break:break-word;">{{ reason }}</li>{% endfor %}
+    </ul>
+    {% if _ci.quarantine_path %}
+    A copy of every skipped record (with its raw JSON) is in
+    <span class="mono" style="color:#c8ccd2;word-break:break-all;">{{ _ci.quarantine_path }}</span>.
+    {% endif %}
+  </div>
+</div>
+{% endif %}
 {% if catalog %}
 <table class="data">
   <thead>
@@ -23,8 +53,13 @@
         {# Composer→Backtest handoff: studioBacktestSpec() is defined only on
            /studio (it selects the spec in the Backtest tab and switches tabs).
            On the standalone page the guard makes this a no-op. #}
+        {# id + name data-* olarak taşınır: adı doğrudan onclick'in içine
+           gömmek tırnak/apostrof içeren bir strateji adında JS'i kırardı.
+           Ad, seçicide henüz <option>'ı olmayan (az önce kaydedilmiş) bir
+           strateji için etiket üretmeye yarıyor. #}
         <button class="btn btn-icon" type="button"
-                onclick="if(window.studioBacktestSpec)studioBacktestSpec('{{ s.id }}')"
+                data-spec-id="{{ s.id }}" data-spec-name="{{ s.name }}"
+                onclick="if(window.studioBacktestSpec)studioBacktestSpec(this.dataset.specId, this.dataset.specName)"
                 title="Switch to the Backtest tab with this strategy">▶</button>
         {# Edit: load this strategy back into the composer. ✎ overwrites the same
            record on Save; ⎘ saves as a NEW strategy (original preserved). Both

@@ -4,11 +4,31 @@
    (#gen-form, #result, #chat-thread, #plan-preview, #robustness-section …) —
    the backtest JS keys on them; the merged top-level tabs use a SEPARATE
    namespace (.lab-tab) so this file's inner .bt-tabs are untouched. #}
+{# Kapsayıcı KOŞULUN DIŞINDA: boş durumun kendini tazeleyebilmesi için hedef
+   elemanın her zaman var olması gerekiyor. Eskiden tüm gövde `{% if %}` ile
+   yok ediliyordu ve `catalog` sayfa render'ında bir kez okunduğu için, aynı
+   sayfada Compose sekmesinde ilk strateji kaydedildikten sonra Backtest
+   sekmesi hâlâ "No saved strategies yet" diyordu — kurtuluş yolu yalnız F5'ti
+   (DeepR 2026-08-11 [YÜKSEK]). #}
+<div id="backtest-body-inner">
 {% if not catalog %}
-  <div class="panel">
+  {# Boşken 15 saniyede bir yalnız BU parçayı tazele: `/studio` tam sayfa
+     render eder ama `hx-select` sadece bu düğümü alır. Katalog dolduğunda
+     gelen içerikte tetik olmadığı için yoklama kendiliğinden durur. #}
+  <div class="panel"
+       hx-get="/studio"
+       hx-select="#backtest-body-inner"
+       hx-target="#backtest-body-inner"
+       hx-swap="outerHTML"
+       hx-trigger="every 15s">
     <div class="panel-body empty-state">
       No saved strategies yet.<br>
-      <a href="/studio" class="btn btn-primary mt-3" style="margin-top:14px;">→ Open Strategy Composer</a>
+      {# Eski buton `/studio`'ya gidiyordu — kullanıcı zaten oradaysa hiçbir şey
+         olmuyordu. Compose sekmesine geçmek istenen davranış. #}
+      <button type="button" class="btn btn-primary mt-3" style="margin-top:14px;"
+              onclick="if (window.labTab) { labTab('compose'); } else { window.location = '/studio'; }">
+        → Open Strategy Composer
+      </button>
     </div>
   </div>
 {% else %}
@@ -619,3 +639,4 @@
 
 </div>
 {% endif %}
+</div>
