@@ -176,6 +176,43 @@ def fetch_minute_aggs(
     return rows, ("ok" if rows else "empty")
 
 
+def _swap_ticker_bars(
+    ticker: str, venue: str, stage_bar_root: Path, bar_root: Path, trash: Path
+) -> None:
+    """Staging'deki bar dizinlerini kataloğa ATOMİK geçir (eski veri korunur).
+
+    Sıra önemli: önce ESKİ dizinler `data/bar` DIŞINA taşınır, sonra yeniler
+    yerine konur. Yedeği `data/bar` içinde `.bak` gibi kardeş bir adla tutmak
+    olmazdı — `data.list_external_instruments` dizin adlarını `rsplit("-", 4)`
+    ile ayrıştırıyor ve `NEWT.NASDAQ-1-MINUTE-LAST-EXTERNAL.bak` SAHTE bir
+    "NEWT.NASDAQ-1" enstrümanı olarak panele düşerdi.
+
+    Takas yarıda kalırsa (Windows paylaşım ihlali gibi) taşınmış eski dizinler
+    geri konur: bu fonksiyonun tek sözü "ya yeni veri, ya eski veri".
+    """
+    staged = sorted(stage_bar_root.glob(f"{ticker}.{venue}-*"))
+    if not staged:
+        return
+    bar_root.mkdir(parents=True, exist_ok=True)
+    trash.mkdir(parents=True, exist_ok=True)
+    moved: list[tuple[Path, Path]] = []  # (asıl yer, yedek)
+    try:
+        for old in sorted(bar_root.glob(f"{ticker}.{venue}-*")):
+            backup = trash / old.name
+            shutil.rmtree(backup, ignore_errors=True)
+            os.replace(old, backup)
+            moved.append((old, backup))
+        for d in staged:
+            target = bar_root / d.name
+            shutil.rmtree(target, ignore_errors=True)
+            os.replace(d, target)
+    except OSError:
+        for target, backup in moved:
+            if not target.exists() and backup.exists():
+                os.replace(backup, target)
+        raise
+
+
 def download_minute_bars(
     tickers: set[str],
     start: date,
@@ -188,8 +225,20 @@ def download_minute_bars(
 ) -> dict[str, dict]:
     """Faz A — REST'ten 1-MINUTE bar'ları çek ve kataloğa yaz (taze, idempotent).
 
-    Hedeflerin mevcut bar dizinleri baştan silinir; yıl yıl indirilir, her yıl
-    yazılıp bırakılır (pik RAM ~1 yıl × 1 ticker).
+    Yeni veri önce YAN TARAFA (staging kökü) yazılır ve ancak ticker'ın
+    indirmesi BAŞARIYLA, en az bir bar'la bittiğinde kataloğa takas edilir.
+    Yıl yıl indirilir, her yıl yazılıp bırakılır (pik RAM ~1 yıl × 1 ticker).
+
+    DeepR 2026-08-11 [ORTA]: eskiden hedeflerin bar dizinleri İLK API
+    ÇAĞRISINDAN ÖNCE siliniyordu. Ağ hatası, plan penceresi dışı yıl
+    (`NOT_AUTHORIZED` — modülün kendi docstring'inde beklenen bir durum) ya da
+    `MassiveError` ile atlanan bir ticker, silme çoktan olduğu için önceden
+    başarıyla ingest edilmiş veriyi KALICI olarak yok ediyordu. Bu kök aynı
+    zamanda web uygulamasının okuduğu `data.EQUITY_CATALOG_DIR`: enstrüman
+    /data panelinden, Lab/Studio picker'larından ve o sembolü kullanan kayıtlı
+    stratejilerden düşüyordu. Kardeş modüller bu sınıfı zaten çözmüş
+    (`repair_massive_intraday._replace_day` `.bak` tutar, `download_flatfiles`
+    atomik `.part→replace` kullanır); burada da aynı duruş.
     """
     from nautilus_trader.model.data import Bar, BarType
     from nautilus_trader.model.objects import Price, Quantity
@@ -199,13 +248,15 @@ def download_minute_bars(
     pacer = _Pacer(rpm)
     cdir = catalog_dir or data.EQUITY_CATALOG_DIR
     cdir.mkdir(parents=True, exist_ok=True)
-    cat = ParquetDataCatalog(str(cdir))
     bar_root = cdir / "data" / "bar"
 
-    for tk in tickers:
-        for d in bar_root.glob(f"{tk}.{venue}-*"):
-            shutil.rmtree(d, ignore_errors=True)
-    cat.write_data([_equity(tk, venue) for tk in sorted(tickers)])
+    # Staging KATALOĞUN DIŞINDA, kardeş bir dizinde: aynı birimde olduğu için
+    # takas gerçek bir rename'dir (kopya değil), ama katalog kökünü tarayan
+    # hiçbir okuyucu (ParquetDataCatalog, /data paneli) yarım veriyi görmez.
+    staging = cdir.parent / f".{cdir.name}.staging-{os.getpid()}-{int(time.time())}"
+    shutil.rmtree(staging, ignore_errors=True)
+    stage_cat = ParquetDataCatalog(str(staging))
+    stage_bar_root = staging / "data" / "bar"
 
     stats: dict[str, dict] = {
         tk: {"bars": 0, "first": None, "last": None} for tk in tickers
@@ -213,73 +264,92 @@ def download_minute_bars(
     slices = _year_slices(start, end)
     t0 = time.time()
     failed: dict[str, str] = {}
-    for tk in sorted(tickers):
-        bt = BarType.from_str(f"{tk}.{venue}-1-MINUTE-LAST-EXTERNAL")
-        st = stats[tk]
-        try:
-            for lo, hi in slices:
-                rows, state = fetch_minute_aggs(
-                    tk, lo, hi, key, pacer, adjusted=adjusted
-                )
-                if state == "plan":
-                    _log(
-                        f"  {tk} {lo.year}: plan dışı (bu anahtarın geçmiş penceresi dışında)"
+    swapped: list[str] = []
+    try:
+        for tk in sorted(tickers):
+            bt = BarType.from_str(f"{tk}.{venue}-1-MINUTE-LAST-EXTERNAL")
+            st = stats[tk]
+            try:
+                for lo, hi in slices:
+                    rows, state = fetch_minute_aggs(
+                        tk, lo, hi, key, pacer, adjusted=adjusted
                     )
-                    continue
-                if state == "empty":
-                    _log(f"  {tk} {lo.year}: veri yok")
-                    continue
-                bars = []
-                for r in rows:
-                    ts = (
-                        int(r["t"]) * 1_000_000 + _MIN_NS
-                    )  # ms→ns, pencere BAŞI → KAPANIŞ
-                    bars.append(
-                        Bar(
-                            bt,
-                            Price(float(r["o"]), _PRICE_PRECISION),
-                            Price(float(r["h"]), _PRICE_PRECISION),
-                            Price(float(r["l"]), _PRICE_PRECISION),
-                            Price(float(r["c"]), _PRICE_PRECISION),
-                            Quantity(int(round(float(r.get("v") or 0))), 0),
-                            ts,
-                            ts,
+                    if state == "plan":
+                        _log(
+                            f"  {tk} {lo.year}: plan dışı (bu anahtarın geçmiş "
+                            "penceresi dışında)"
                         )
+                        continue
+                    if state == "empty":
+                        _log(f"  {tk} {lo.year}: veri yok")
+                        continue
+                    bars = []
+                    for r in rows:
+                        ts = (
+                            int(r["t"]) * 1_000_000 + _MIN_NS
+                        )  # ms→ns, pencere BAŞI → KAPANIŞ
+                        bars.append(
+                            Bar(
+                                bt,
+                                Price(float(r["o"]), _PRICE_PRECISION),
+                                Price(float(r["h"]), _PRICE_PRECISION),
+                                Price(float(r["l"]), _PRICE_PRECISION),
+                                Price(float(r["c"]), _PRICE_PRECISION),
+                                Quantity(int(round(float(r.get("v") or 0))), 0),
+                                ts,
+                                ts,
+                            )
+                        )
+                    stage_cat.write_data(bars)
+                    st["bars"] += len(bars)
+                    fd = (
+                        datetime.fromtimestamp(int(rows[0]["t"]) / 1e3, UTC)
+                        .date()
+                        .isoformat()
                     )
-                cat.write_data(bars)
-                st["bars"] += len(bars)
-                fd = (
-                    datetime.fromtimestamp(int(rows[0]["t"]) / 1e3, UTC)
-                    .date()
-                    .isoformat()
-                )
-                ld = (
-                    datetime.fromtimestamp(int(rows[-1]["t"]) / 1e3, UTC)
-                    .date()
-                    .isoformat()
-                )
-                if st["first"] is None or fd < st["first"]:
-                    st["first"] = fd
-                if st["last"] is None or ld > st["last"]:
-                    st["last"] = ld
-                _log(
-                    f"  {tk} {lo.year}: {len(bars):,} dakika bar ({time.time() - t0:.0f}s)"
-                )
-        except MassiveError as e:
-            # One ticker's failure (rate limit exhaustion, plan boundary hit
-            # mid-run, transient 5xx) must not orphan the tickers already
-            # written above: without this, the caller's exception aborts
-            # download() before write_manifest() runs for ANY ticker, leaving
-            # real parquet data on disk with no manifest entry — the same
-            # "data present but undiscoverable" failure class
-            # download_flatfiles.py's atomic .part→replace avoids.
-            failed[tk] = str(e)
-            _log(f"  {tk}: HATA, sonraki ticker'a geçiliyor — {e}")
-            continue
+                    ld = (
+                        datetime.fromtimestamp(int(rows[-1]["t"]) / 1e3, UTC)
+                        .date()
+                        .isoformat()
+                    )
+                    if st["first"] is None or fd < st["first"]:
+                        st["first"] = fd
+                    if st["last"] is None or ld > st["last"]:
+                        st["last"] = ld
+                    _log(
+                        f"  {tk} {lo.year}: {len(bars):,} dakika bar "
+                        f"({time.time() - t0:.0f}s)"
+                    )
+            except MassiveError as e:
+                # One ticker's failure (rate limit exhaustion, plan boundary hit
+                # mid-run, transient 5xx) must not orphan the tickers already
+                # written above: without this, the caller's exception aborts
+                # download() before write_manifest() runs for ANY ticker, leaving
+                # real parquet data on disk with no manifest entry — the same
+                # "data present but undiscoverable" failure class
+                # download_flatfiles.py's atomic .part→replace avoids.
+                failed[tk] = str(e)
+                _log(f"  {tk}: HATA, sonraki ticker'a geçiliyor — {e}")
+                continue
+            if not st["bars"]:
+                # Hiç yeni bar gelmedi (tüm yıllar plan dışı / boş). SİLME:
+                # eski katalog verisi tek doğru veri.
+                _log(f"  {tk}: yeni bar yok — mevcut katalog verisi korundu")
+                continue
+            _swap_ticker_bars(tk, venue, stage_bar_root, bar_root, staging / "_swap")
+            swapped.append(tk)
+        if swapped:
+            # Enstrüman tanımları takastan SONRA: bar'ı olmayan bir ticker'a
+            # tanım yazmak, panelde "veri yok" bir satır bırakmaktan ibaret.
+            ParquetDataCatalog(str(cdir)).write_data(
+                [_equity(tk, venue) for tk in swapped]
+            )
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
     if failed:
         _log(
-            f"{len(failed)} ticker başarısız oldu (kısmen indirilmiş olabilir, "
-            f"manifest'e yalnız bar'ı olanlar girecek): {sorted(failed)}"
+            f"{len(failed)} ticker başarısız oldu (eski katalog verisi korundu, "
+            f"manifest'e yalnız yeni bar'ı olanlar girecek): {sorted(failed)}"
         )
     return stats
 
@@ -325,7 +395,12 @@ def download(
         stats,
         venue=venue,
         catalog_dir=cdir,
-        adjusted=adjusted,
+        # REST yolu SPLIT-ONLY: Massive/Polygon `/v2/aggs adjusted=true` yalnız
+        # split ayarlar, temettüyü ASLA ayarlamaz. Eski tek `adjusted` bayrağı
+        # bu ikisini karıştırdığı için bazı partilerin notu "split/temettü
+        # ayarlı" diyordu — yanlıştı, artık iki alan ayrı yazılıyor.
+        split_adjusted=adjusted,
+        dividend_adjusted=False,
         source="massive:rest_aggs",
         note=(
             "Massive REST /v2/aggs ingest"

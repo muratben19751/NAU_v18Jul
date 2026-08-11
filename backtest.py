@@ -9,11 +9,24 @@ See: [[backtest_node]], [[backtesting_guide]], [[environment_contexts]], [[data_
 
 Low-level API path; matches the [[backtesting_guide]] "choose BacktestEngine if:" list. `_bars_from_df` is a helper written after `BarDataWrangler.process` was removed in v2 — see [[data_wranglers]] v1→v2 section. Sharpe nan bug: see [[portfolio]] and [[v1_to_v2_migration_lessons]].
 
+Instrument precision is a correctness surface, not a formatting detail: an
+unlisted sub-cent symbol used to get the 2-decimal Bybit default and backtest
+an all-zero OHLC series without a single error. `price_precision_for` /
+`price_scale_hint` derive it from the data and `_bars_from_df` raises
+`PricePrecisionError` rather than let a positive price round to 0 — the
+sibling of the Equity `size_precision=0` trap in
+[[index_backtest_via_equity_proxy]].
+
 `_metrics()`'s three `except Exception: pass` blocks (duration/commission/
 slippage) now log a warning instead of silently zeroing/NaN-ing a metric
 (2026-08-08 DeepR finding) — the slippage one is the exact "$0 slippage
 reads as none" regression class the surrounding code comment already warns
-about.
+about. The 2026-08-11 round closed the same hole one level deeper: the
+PER-ITEM commission handlers swallowed the error before the logging one could
+fire, so an unparsable fee line silently became 0 and net P&L looked better
+than it was. Unparsable items are now counted (`commission_unparsed`) and the
+total is flagged as a lower bound (`commission_total_is_partial`) — see
+[[auto_kapi_ve_geri_bildirim]].
 """
 
 from __future__ import annotations
@@ -210,6 +223,65 @@ _BYBIT_SPECS: dict[str, tuple[int, int, str]] = {
 # NAU fallback for unlisted symbols (app/universe/__init__.py → size_precision 3).
 _BYBIT_DEFAULT_SPEC: tuple[int, int, str] = (2, 3, "0.01")
 
+# ── Sub-cent (meme-coin) price scale ────────────────────────────────────────
+# DeepR 2026-08-11 [YÜKSEK]: the 2-decimal fallback above silently destroyed
+# every sub-cent symbol. `Price(0.000009, 2)` is `0.00`, so a PEPEUSDT /
+# SHIBUSDT / FLOKIUSDT backtest ran on an all-zero OHLC series and still
+# reported a "valid" result (no error, meaningless PnL). This is the exact
+# same class of trap as the Equity `size_precision=0` one recorded in the wiki
+# ([[index_backtest_via_equity_proxy]] "Kritik Trap"): a precision the user
+# never chose quietly turns a real number into 0. That one is handled by
+# clamping + a visible warning; this one is handled the same way — derive the
+# precision from the instrument's REAL price scale, and make the silent case
+# impossible by failing loudly in `_bars_from_df` if a positive price still
+# lands on 0 after conversion.
+#
+# Nautilus' standard build caps Price precision at 9 decimals.
+_MAX_PRICE_PRECISION = 9
+# How many significant digits the derived precision preserves. 5 keeps
+# 0.000009 as 0.000009000 and still yields pp=2 for a 60_000 BTC price.
+_PRICE_SIGNIFICANT_DIGITS = 5
+
+
+def price_precision_for(price: float) -> int:
+    """Decimal places needed to carry ``price`` without collapsing it to 0.
+
+    Order-of-magnitude based, so it is stable across data windows (the same
+    symbol always yields the same precision, whether it is derived on the
+    catalog-write path or on the backtest path). Clamped to
+    [2, ``_MAX_PRICE_PRECISION``]: never coarser than the 2-decimal Bybit
+    default and never past what Nautilus' `Price` accepts.
+    """
+    if not math.isfinite(price) or price <= 0:
+        return _BYBIT_DEFAULT_SPEC[0]
+    exp = math.floor(math.log10(price))
+    return max(2, min(_MAX_PRICE_PRECISION, _PRICE_SIGNIFICANT_DIGITS - exp))
+
+
+def price_scale_hint(df) -> float | None:
+    """Smallest strictly-positive OHLC price in ``df`` — the precision driver.
+
+    The MINIMUM (not the mean) is what matters: precision must be enough for
+    the smallest bar in the frame, otherwise exactly those bars round to 0.
+    Returns None when the frame carries no usable price column.
+    """
+    if df is None:
+        return None
+    try:
+        cols = [c for c in ("low", "open", "close", "high") if c in df.columns]
+        if not cols:
+            return None
+        vals = df[cols].to_numpy(dtype=float)
+        positive = vals[np.isfinite(vals) & (vals > 0)]
+        if positive.size == 0:
+            return None
+        return float(positive.min())
+    except Exception:
+        # A price hint is an optimisation of honesty, not a hard dependency —
+        # a weird frame must not break instrument construction. The
+        # _bars_from_df guard still catches the zeroing case.
+        return None
+
 
 def _make_bybit_instrument(
     symbol: str = "BTCUSDT",
@@ -217,6 +289,7 @@ def _make_bybit_instrument(
     quote: str | None = None,
     category: str = "linear",
     fee_bps_override: float | None = None,
+    price_hint: float | None = None,
 ) -> CurrencyPair:
     """Bybit crypto pair for a product category (spot/linear/inverse).
 
@@ -227,6 +300,13 @@ def _make_bybit_instrument(
     derived from the category. Precision is pinned per-symbol to NAU's
     universe.yaml (BTCUSDT→sp3, SOLUSDT→sp2, XRPUSDT→sp1 ...) so backtests here
     use the same instrument spec as the NAU catalog.
+
+    ``price_hint`` (a real observed price for this symbol, typically the
+    smallest positive OHLC value of the frame about to be backtested) is used
+    ONLY for symbols missing from ``_BYBIT_SPECS``: instead of blindly handing
+    a sub-cent meme coin the 2-decimal fallback — which turns every price into
+    0.00 — the precision is derived from that magnitude. Pinned symbols ignore
+    the hint so the NAU catalog identity never drifts.
     """
     market_symbol = _bybit_market_symbol(symbol, category)
     if quote is None:
@@ -235,10 +315,28 @@ def _make_bybit_instrument(
     iid = InstrumentId(symbol=sym, venue=_bybit_venue(category))
     # Precision is keyed by the canonical (USDT) symbol; inverse BTCUSD shares
     # BTC precision, so fall back to the market symbol then the default.
-    price_prec, size_prec, tick = _BYBIT_SPECS.get(
-        symbol.upper(),
-        _BYBIT_SPECS.get(market_symbol.upper(), _BYBIT_DEFAULT_SPEC),
-    )
+    _pinned = _BYBIT_SPECS.get(symbol.upper(), _BYBIT_SPECS.get(market_symbol.upper()))
+    if _pinned is not None:
+        price_prec, size_prec, tick = _pinned
+    else:
+        _, size_prec, tick = _BYBIT_DEFAULT_SPEC
+        price_prec = (
+            price_precision_for(price_hint)
+            if price_hint is not None
+            else _BYBIT_DEFAULT_SPEC[0]
+        )
+        if price_prec != _BYBIT_DEFAULT_SPEC[0]:
+            # Loud on the server side too: a precision nobody configured is a
+            # fact the operator should be able to see in the log.
+            tick = "0." + "0" * (price_prec - 1) + "1"
+            logging.getLogger(__name__).info(
+                "%s not in _BYBIT_SPECS — price_precision derived from the data "
+                "(smallest price %.12g → %d decimals, tick %s)",
+                market_symbol,
+                price_hint,
+                price_prec,
+                tick,
+            )
     size_step = "1" if size_prec == 0 else "0." + "0" * (size_prec - 1) + "1"
     maker_bps, taker_bps = _bybit_fees_bps(symbol, market_symbol)
     if fee_bps_override is not None:
@@ -386,6 +484,49 @@ def _bar_interval_ns(bar_type: BarType) -> int:
     return int(td.total_seconds() * 1_000_000_000)
 
 
+class PricePrecisionError(ValueError):
+    """A positive price collapses to 0 at the instrument's price_precision.
+
+    Its own type (not a bare ValueError) so callers — the /data catalog-write
+    route, the backtest worker — can recognise the case and say something
+    useful instead of surfacing it as an anonymous crash.
+    """
+
+
+def _assert_price_precision_survives(instrument, pp: int, *columns) -> None:
+    """Refuse a conversion that would silently zero out real prices.
+
+    DeepR 2026-08-11 [YÜKSEK]: a sub-cent symbol (PEPEUSDT ~9e-6) on the
+    2-decimal Bybit default produced `Price(0.00)` for every bar; the backtest
+    then reported a "successful" run over an all-zero series. Rounding a real
+    price to nothing is never a result the user asked for, so it is an error,
+    not a warning — the same stance the wiki takes on the Equity
+    ``size_precision=0`` trap.
+    """
+    smallest = None
+    for col in columns:
+        arr = np.asarray(col, dtype=float)
+        positive = arr[np.isfinite(arr) & (arr > 0)]
+        if positive.size == 0:
+            continue
+        m = float(positive.min())
+        if smallest is None or m < smallest:
+            smallest = m
+    if smallest is None:
+        return  # no positive price at all — nothing to lose to rounding
+    if float(Price(smallest, pp)) != 0.0:
+        return
+    needed = price_precision_for(smallest)
+    raise PricePrecisionError(
+        f"{instrument.id} price_precision={pp} cannot represent this data: the "
+        f"smallest price ({smallest:.12g}) rounds to 0.00, which would make the "
+        f"whole OHLC series zero and the backtest meaningless. "
+        f"This symbol needs about {needed} decimals — add it to "
+        f"backtest._BYBIT_SPECS with its real contract tick, or pass a "
+        f"price_hint so the precision is derived from the data."
+    )
+
+
 def _bars_from_df(bar_type: BarType, instrument, df: pd.DataFrame) -> list[Bar]:
     """Build Nautilus Bar objects directly from an OHLCV DataFrame.
 
@@ -400,6 +541,12 @@ def _bars_from_df(bar_type: BarType, instrument, df: pd.DataFrame) -> list[Bar]:
     ts_event/ts_init are the bar CLOSE time (see ``_bar_interval_ns``). This is
     the single funnel for both catalog writes and live-engine bars, so the shift
     is applied exactly once here.
+
+    Being that single funnel, this is also where the sub-cent trap is closed:
+    if the instrument's ``price_precision`` cannot represent a positive price
+    in the frame, the conversion is REFUSED (``PricePrecisionError``) instead
+    of quietly producing an all-zero OHLC series that the engine happily
+    "backtests". See ``price_precision_for``.
     """
     pp = instrument.price_precision
     sp = instrument.size_precision
@@ -415,6 +562,7 @@ def _bars_from_df(bar_type: BarType, instrument, df: pd.DataFrame) -> list[Bar]:
     lo = df["low"].to_numpy()
     c = df["close"].to_numpy()
     v = df["volume"].to_numpy()
+    _assert_price_precision_survives(instrument, pp, o, h, lo, c)
     ts_close = ts_ns + interval_ns
     return [
         Bar(
@@ -646,6 +794,8 @@ def _metrics(
             "long_ratio": float("nan"),
             "avg_duration_mins": float("nan"),
             "commission_total": 0.0,
+            "commission_unparsed": 0,
+            "commission_total_is_partial": False,
             "slippage_total": 0.0,
             "slippage_reported_total": 0.0,
             "slippage_estimated_total": 0.0,
@@ -686,21 +836,55 @@ def _metrics(
 
     # Commissions
     commission_total = 0.0
+    # DeepR 2026-08-11 [ORTA]: KALEM BAZLI sessiz sıfırlama. Dıştaki handler bir
+    # önceki turda loglanır hâle gelmişti ama içteki ikisi hâlâ sessizdi —
+    # ve iç handler hatayı yuttuğu için dıştaki LOGLAYAN handler hiç
+    # tetiklenmiyordu. 5 kalemin 2'si ayrıştırılamayınca komisyon sessizce
+    # eksik, net P&L olduğundan İYİ çıkıyordu; kapı kalibrasyonu tam da
+    # net/brüt tutarlılığı üzerine kurulu olduğu için bu karar bozan bir hata.
+    # Ayrıştırılamayan kalem artık 0 SAYILMAZ: sayılır, loglanır ve toplam
+    # "alt sınır" olarak metriklerde işaretlenir.
+    commission_unparsed = 0
+    commission_bad_samples: list[str] = []
+    commission_partial = False
     if "commissions" in positions_df.columns:
         try:
 
+            def _is_blank(v) -> bool:
+                """None/NaN/boş dize = 'komisyon yok' — hata DEĞİL.
+
+                Bunları hata saymak her temiz koşuyu kırmızıya boyardı ve
+                bayrak hiçbir şey anlatmaz hâle gelirdi.
+                """
+                if v is None:
+                    return True
+                if isinstance(v, float) and math.isnan(v):
+                    return True
+                return isinstance(v, str) and not v.strip()
+
+            def _note_bad(v) -> None:
+                nonlocal commission_unparsed
+                commission_unparsed += 1
+                if len(commission_bad_samples) < 3:
+                    commission_bad_samples.append(repr(v)[:60])
+
             def _parse_commissions(v):
-                if isinstance(v, list):
+                if isinstance(v, (list, tuple, set)):
                     s = 0.0
                     for item in v:
+                        if _is_blank(item):
+                            continue
                         try:
                             s += float(str(item).split()[0])
-                        except Exception:
-                            pass
+                        except (ValueError, IndexError, TypeError):
+                            _note_bad(item)
                     return s
+                if _is_blank(v):
+                    return 0.0
                 try:
                     return float(str(v).split()[0])
-                except Exception:
+                except (ValueError, IndexError, TypeError):
+                    _note_bad(v)
                     return 0.0
 
             commission_total = float(
@@ -710,9 +894,20 @@ def _metrics(
             # DeepR 2026-08-08 [ORTA]: was a bare `pass` — a positions_df schema
             # change silently zeroed commission_total instead of surfacing that
             # the P&L breakdown is now wrong.
+            commission_partial = True
             logging.getLogger(__name__).warning(
                 "_metrics: commission_total computation failed", exc_info=True
             )
+    if commission_unparsed:
+        commission_partial = True
+        logging.getLogger(__name__).warning(
+            "_metrics: %d commission item(s) could not be parsed (%s) — "
+            "commission_total %.4f is a LOWER BOUND, so net P&L looks better "
+            "than it is",
+            commission_unparsed,
+            ", ".join(commission_bad_samples),
+            commission_total,
+        )
 
     # Slippage from order fills
     slippage_reported_total = 0.0
@@ -930,6 +1125,11 @@ def _metrics(
         "long_ratio": long_ratio,
         "avg_duration_mins": avg_duration_mins,
         "commission_total": commission_total,
+        # DeepR 2026-08-11 [ORTA]: komisyon toplamının DÜRÜSTLÜK alanları.
+        # `commission_total_is_partial` True iken toplam bir ALT SINIRDIR:
+        # net P&L olduğundan iyi görünür, tüketici bunu bilmek zorunda.
+        "commission_unparsed": commission_unparsed,
+        "commission_total_is_partial": commission_partial,
         "slippage_total": slippage_total,
         "slippage_reported_total": slippage_reported_total,
         "slippage_estimated_total": slippage_estimated_total,
@@ -998,12 +1198,44 @@ def _reason_text(decision: dict | None) -> str | None:
     return " + ".join(parts)
 
 
+def _reason_fills_report(trader) -> tuple[pd.DataFrame | None, str | None]:
+    """Fills raporunu getir → ``(frame, error)``; alınamazsa ``(None, sebep)``.
+
+    DeepR 2026-08-11 [ORTA]: bu çağrı sessizce ``= None`` yapıyordu. Fills
+    frame'i olmadan HER trade'in ``exit_kind``/``entry_reason``/``exit_reason``
+    alanı boş kalıyor; tear sheet'te "bu trade neden kapandı" sütunu tüm
+    satırlarda boş görünüyor — sanki strateji hiç SL/TP kullanmamış gibi.
+    Metrikler ve grafik normal olduğu için bozulma fark edilmiyordu.
+
+    Sebep metnini DÖNDÜRMEK şart: çağıran onu ``metrics["exit_reasons_error"]``
+    olarak damgalar ve arayüz "çıkış sebepleri bu koşu için alınamadı: <sebep>"
+    diyebilir — boş bir liste "sebep yok" diye okunmaz. Aynı fonksiyonda
+    ayrıştırılamayan pozisyon satırları için zaten bir sayaç + ``logging.warning``
+    vardı; bu yol o standarda getirildi.
+    """
+    try:
+        return trader.generate_order_fills_report(), None
+    except Exception as exc:
+        logging.warning(
+            "order fills report unavailable — trade exit reasons will be "
+            "missing for this run: %s",
+            exc,
+            exc_info=True,
+        )
+        return None, f"{type(exc).__name__}: {exc}"
+
+
 def _fills_lookup(fills_df: pd.DataFrame | None) -> tuple[dict, dict]:
     """Convert the fills report to {order_id: tags/type} dicts in a single pass.
 
     The old version did a pandas ``.loc`` for every trade — on 1k trades the
     profile showed ~0.5s. On multi-fill orders the FIRST row wins (identical to
     the old ``iloc[0]`` semantics).
+
+    A parse failure here empties the whole reason join (every trade's exit shows
+    as "—"), so it is logged instead of swallowed: the partially built dicts are
+    still returned, because half the reasons are better than none and the caller
+    has no fallback source (DeepR 2026-08-11 [ORTA]).
     """
     tags_by_id: dict[str, str] = {}
     type_by_id: dict[str, str] = {}
@@ -1017,7 +1249,11 @@ def _fills_lookup(fills_df: pd.DataFrame | None) -> tuple[dict, dict]:
             for oid, t in fills_df["type"].items():
                 type_by_id.setdefault(str(oid), str(t or ""))
     except Exception:
-        pass
+        logging.warning(
+            "fills report could not be indexed — trade exit reasons will be "
+            "partially or fully missing",
+            exc_info=True,
+        )
     return tags_by_id, type_by_id
 
 
@@ -1592,10 +1828,9 @@ def run_composed_backtest(
         equity, equity_dates = _equity_curve(positions_df, starting_cash=_cap)
         # Entry/exit reasons: decision log (same lifecycle as _mtm_equity) +
         # fills report tag join
-        try:
-            reason_fills_df = engine.trader.generate_order_fills_report()
-        except Exception:
-            reason_fills_df = None
+        reason_fills_df, _fills_error = _reason_fills_report(engine.trader)
+        if _fills_error:
+            metrics["exit_reasons_error"] = _fills_error
         trades = _extract_trades(
             positions_df,
             marker_shift_s=_bar_interval_ns(active_bar_type) // 1_000_000_000,

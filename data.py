@@ -5,7 +5,13 @@ maintains its own on-disk parquet cache under ``~/.cache/nautilus_web_app/``.
 
 Wiki References
 ---------------
-Bkz: [[data_engine]], [[data_wranglers]], [[parquet_data_catalog]], [[bar_aggregation_and_type_syntax]], [[index_backtest_via_equity_proxy]], [[nau_performans_denetimi]]
+Bkz: [[data_engine]], [[data_wranglers]], [[parquet_data_catalog]], [[bar_aggregation_and_type_syntax]], [[index_backtest_via_equity_proxy]], [[nau_performans_denetimi]], [[us_equity_katalog_veri_butunlugu]]
+
+Eşzamanlılık (2026-08-11): `load_index_bars` ve `load_external_bars` de artık
+`load_bybit_bars`'ın desenini izliyor — okuma kilitsiz, oku-değiştir-yaz dizisi
+`_cache_lock` altında ve kilit alındıktan sonra disk tazeden okunuyor. Harici
+katalog kökü GEÇ BAĞLANIR (`external_catalog_roots`) ve manifest/enstrüman-meta
+önbellekleri `(mtime, size)` ile geçersizleşir; okuma HATASI önbelleğe yazılmaz.
 
 Feeds raw OHLCV frames into `backtest.py`. Cache-tail-forward parquets are the
 local analog of [[parquet_data_catalog]] — same nanosecond-timestamp Parquet idea,
@@ -104,6 +110,13 @@ EQUITY_CATALOG_DIR = CACHE_DIR / "equity_catalog"
 if EQUITY_CATALOG_DIR.exists() and EQUITY_CATALOG_DIR not in EXTERNAL_CATALOGS:
     EXTERNAL_CATALOGS.append(EQUITY_CATALOG_DIR)
 
+# Import anında kurulan varsayılan liste NESNESİ (kimlik karşılaştırması için
+# saklanır, kopyası değil). `external_catalog_roots` yalnız bu nesne
+# yerindeyken geç bağlama yapar: testler `EXTERNAL_CATALOGS`'u kendi tmp
+# kökleriyle DEĞİŞTİRİYOR ve oraya operatörün gerçek kataloğunu sızdırmak,
+# izole olması gereken testi kirletirdi.
+_EXTERNAL_CATALOGS_DEFAULT = EXTERNAL_CATALOGS
+
 # L31: a non-existent root silently turned into an empty panel — warn at module load.
 for _ext_root in EXTERNAL_CATALOGS:
     if not _ext_root.exists():
@@ -116,11 +129,58 @@ for _ext_root in EXTERNAL_CATALOGS:
             os.pathsep,
         )
 
-# Cache instrument metadata per external catalog root (read-only, static).
-_EXT_INSTRUMENT_META: dict[str, dict] = {}
+# Per-kök önbellekler: {kök: (imza, yük)}.
+#
+# DeepR 2026-08-11 [ORTA]: eskiden yalnız {kök: yük} idi ve gerekçe "the
+# external catalog is read-only reference data, so it never changes" diyordu.
+# Bu varsayım NAU_ev kökü için doğru olabilir ama projenin KENDİ ingest'inin
+# yazdığı `EQUITY_CATALOG_DIR` için yanlış: `ingest_equities` /
+# `download_massive` ayrı bir CLI süreci olarak yazıyor, çalışan sunucu
+# değişikliği ASLA görmüyordu. Sonuç tutarsız bir tabloydu — yeni ticker
+# picker'da GÖRÜNÜYOR (`_external_catalog_rows` her çağrıda diski tarıyor) ama
+# `split_adjusted`/`coverage_gaps` bayat manifest'ten okunuyor, yani UNADJUSTED
+# uyarısı tam da yeni gelen veri için susuyordu. İmza `(mtime, size)` tabanlı —
+# `composer._read_catalog_raw` ve `custom_block_store._read_registry` ile aynı
+# desen.
+_EXT_INSTRUMENT_META: dict[str, tuple[tuple, dict]] = {}
+_EXT_MANIFEST: dict[str, tuple[tuple, dict]] = {}
 
-# Cache the optional _manifest.json per external catalog root (M21).
-_EXT_MANIFEST: dict[str, dict] = {}
+# Enstrüman meta'sı okunamayan kökler — HATA SONUCU CACHE'LENMEZ (her çağrıda
+# yeniden denenir), bu küme yalnız aynı uyarıyı her çağrıda basmamak için var.
+_EXT_META_WARNED: set[str] = set()
+
+
+def external_catalog_roots() -> list[Path]:
+    """Aktif harici katalog kökleri — `EQUITY_CATALOG_DIR` GEÇ BAĞLANIR.
+
+    DeepR 2026-08-11 [ORTA]: bu kök yalnız MODÜL IMPORT ANINDA listeye
+    ekleniyordu. `ingest_equities.py` / `download_massive.py` ayrı bir CLI
+    süreci olarak kökü İLK KEZ oluşturursa, çalışan web sunucusu onu asla
+    görmüyor, restart gerekiyordu. Var olup olmadığı artık her çağrıda
+    sorulur (tek `stat()`).
+
+    Geç bağlama YALNIZ varsayılan liste yerindeyken yapılır: çağıran
+    `EXTERNAL_CATALOGS`'u bilinçli olarak değiştirdiyse (testler tmp köküyle
+    tam olarak bunu yapıyor) o liste son sözdür.
+    """
+    roots = list(EXTERNAL_CATALOGS)
+    if EXTERNAL_CATALOGS is _EXTERNAL_CATALOGS_DEFAULT:
+        try:
+            fresh = EQUITY_CATALOG_DIR.exists()
+        except OSError:
+            fresh = False
+        if fresh and EQUITY_CATALOG_DIR not in roots:
+            roots.append(EQUITY_CATALOG_DIR)
+    return roots
+
+
+def _stat_sig(path: Path) -> tuple:
+    """`(mtime_ns, size)` — dosya/dizin yoksa boş demet."""
+    try:
+        st = path.stat()
+    except OSError:
+        return ()
+    return (st.st_mtime_ns, st.st_size)
 
 
 # ---- Concurrency + atomic write helpers (M3) --------------------------
@@ -134,8 +194,23 @@ _PROC_LOCKS: dict[str, threading.Lock] = {}
 _PROC_LOCKS_GUARD = threading.Lock()
 
 
+# Kilidi bekleme süresi. DeepR 2026-08-11 [YÜKSEK]: 120 s idi, oysa bu modülün
+# kendi belgelediği GERÇEK tutma süresi ~10 dk (3 yıllık 1m backfill). Yani bir
+# indirme sürerken aynı seriyi YAZMAK isteyen ikinci çağıran, işin bitmesine
+# daha 8 dakika varken TimeoutError alıyordu — beklemenin tek anlamı olan şeyi
+# (öbürünün getirdiği veriyi kullanmak) tam da kaçırarak. Şimdi bekleme gerçek
+# tutma süresinin üstünde ama "terk edilmiş" eşiğinin (stale_after) altında:
+# canlı bir iş beklenir, ölmüş bir kilit kırılır. Yalnız YAZMA yolu bekler —
+# okuma yolu bu kilide hiç girmez (bkz. `load_bybit_bars`).
+_CACHE_LOCK_TIMEOUT_S = 900.0
+
+
 @contextmanager
-def _cache_lock(lock_path: Path, timeout: float = 120.0, stale_after: float = 1800.0):
+def _cache_lock(
+    lock_path: Path,
+    timeout: float = _CACHE_LOCK_TIMEOUT_S,
+    stale_after: float = 1800.0,
+):
     """Simple in-process + inter-process lock.
 
     Raises TimeoutError if not acquired within `timeout` seconds. A lock file
@@ -190,12 +265,45 @@ def _cache_lock(lock_path: Path, timeout: float = 120.0, stale_after: float = 18
         tlock.release()
 
 
+# Windows'ta `os.replace`, hedef dosya BAŞKA biri tarafından açıkken
+# PermissionError verir (POSIX'te vermez). Okuma yolu artık kilitsiz olduğuna
+# göre (DeepR 2026-08-11 [YÜKSEK]) yazarın tam o anda okuyan birine denk gelmesi
+# normal bir olaydır ve bir parquet okuması milisaniyeler sürer: kısa bir yeniden
+# deneme, "veri kaybettim" ile "50 ms bekledim" arasındaki fark.
+_REPLACE_RETRY_WAITS = (0.05, 0.15, 0.4)
+
+
+def _replace_with_retry(tmp: Path, path: Path) -> None:
+    """`os.replace` + Windows paylaşım ihlaline karşı kısa yeniden deneme."""
+    for wait in (*_REPLACE_RETRY_WAITS, None):
+        try:
+            os.replace(tmp, path)
+            return
+        except PermissionError:
+            if wait is None:
+                raise
+            time.sleep(wait)
+
+
+def _tmp_sibling(path: Path) -> Path:
+    """Benzersiz kardeş temp adı — SÜREÇ + THREAD.
+
+    DeepR 2026-08-11 [ORTA]: ad yalnız `os.getpid()` içeriyordu, yani aynı
+    süreçteki iki THREAD için AYNIYDI: biri diğerinin yarım dosyasını
+    `os.replace` edebilir ya da `finally` bloğunda silebilirdi. Yazma yolları
+    artık per-key `_cache_lock` altında (aynı hedefe iki thread giremez), ama
+    ad benzersizliği ucuz bir ikinci savunma — `custom_block_store._write_registry`
+    de tam bu gerekçeyle benzersiz kardeş ad kullanıyor.
+    """
+    return path.with_name(f"{path.name}.tmp-{os.getpid()}-{threading.get_ident()}")
+
+
 def _atomic_to_parquet(df: pd.DataFrame, path: Path) -> None:
     """M3a: to_parquet → temp file + os.replace — no half-written parquet remains."""
-    tmp = path.with_name(f"{path.name}.tmp-{os.getpid()}")
+    tmp = _tmp_sibling(path)
     try:
         df.to_parquet(tmp)
-        os.replace(tmp, path)
+        _replace_with_retry(tmp, path)
     finally:
         if tmp.exists():
             try:
@@ -206,7 +314,7 @@ def _atomic_to_parquet(df: pd.DataFrame, path: Path) -> None:
 
 def _atomic_write_json(obj, path: Path) -> None:
     """Write JSON sidecars atomically too (same pattern as M3a)."""
-    tmp = path.with_name(f"{path.name}.tmp-{os.getpid()}")
+    tmp = _tmp_sibling(path)
     try:
         tmp.write_text(json.dumps(obj, indent=2))
         os.replace(tmp, path)
@@ -411,6 +519,13 @@ def load_index_bars(
     H3: an unfinished day (today, UTC) is not written to the persistent
     parquet — it may remain in the in-memory return; once the day completes
     the next call re-fetches it.
+
+    Eşzamanlılık (DeepR 2026-08-11 [ORTA]): oku→tara→concat→yaz dizisi
+    `load_bybit_bars` ile AYNI deseni izler — okuma yolu kilitsiz (yazma
+    atomik olduğu için okuyan ya eski ya yeni dosyanın TAMAMINI görür), yazma
+    yolu `_cache_lock` altında ve kilidi aldıktan SONRA diski TAZE okur.
+    Eskiden hiç kilit yoktu: iki eşzamanlı /data/refresh/index (ya da
+    /backtest/sweep) birbirinin taradığı günleri kaybettiriyordu.
     """
     if granularity not in _GRAN_RULE:
         raise ValueError(f"granularity must be one of {list(_GRAN_RULE)}")
@@ -426,77 +541,97 @@ def load_index_bars(
     scanned_path = INDEX_CACHE_DIR / f"{safe}_{granularity}_scanned.json"
 
     empty_cols = ["open", "high", "low", "close", "volume"]
-    existing = pd.DataFrame(columns=empty_cols)
-    cached_days: set[date] = set()
-    if cache_path.exists():
-        try:
-            existing = pd.read_parquet(cache_path)
-        except Exception as read_err:
-            # M3c: corrupt parquet — ignore the cache, days will be re-scanned.
-            log.warning("ignoring corrupt index cache (%s): %s", cache_path, read_err)
-            existing = pd.DataFrame(columns=empty_cols)
-        if not existing.empty and not force:
-            cached_days = set(existing.index.normalize().date.tolist())
 
-    prior_scanned: set[str] = set()
-    if scanned_path.exists():
-        try:
-            prior_scanned = set(json.loads(scanned_path.read_text()))
-        except Exception:
-            prior_scanned = set()
-    scanned_empty: set[date] = set()
-    if not force:
-        for _s in prior_scanned:
+    def _read_state() -> tuple[pd.DataFrame, set[date], set[str], set[date]]:
+        """Diskteki güncel durum: (barlar, kapsanan günler, ham 'tarandı'
+        listesi, boş olduğu bilinen günler). Kilit altında TEKRAR çağrılır."""
+        existing = pd.DataFrame(columns=empty_cols)
+        cached_days: set[date] = set()
+        if cache_path.exists():
             try:
-                scanned_empty.add(date.fromisoformat(_s))
-            except (ValueError, TypeError):
-                continue
+                existing = pd.read_parquet(cache_path)
+            except Exception as read_err:
+                # M3c: corrupt parquet — ignore the cache, days are re-scanned.
+                log.warning(
+                    "ignoring corrupt index cache (%s): %s", cache_path, read_err
+                )
+                existing = pd.DataFrame(columns=empty_cols)
+            if not existing.empty and not force:
+                cached_days = set(existing.index.normalize().date.tolist())
+
+        prior_scanned: set[str] = set()
+        if scanned_path.exists():
+            try:
+                prior_scanned = set(json.loads(scanned_path.read_text()))
+            except Exception:
+                prior_scanned = set()
+        scanned_empty: set[date] = set()
+        if not force:
+            for _s in prior_scanned:
+                try:
+                    scanned_empty.add(date.fromisoformat(_s))
+                except (ValueError, TypeError):
+                    continue
+        return existing, cached_days, prior_scanned, scanned_empty
 
     wanted_days = []
     d = start
     while d <= end:
         wanted_days.append(d)
         d += timedelta(days=1)
-    missing_days = [
-        d for d in wanted_days if d not in cached_days and d not in scanned_empty
-    ]
+
+    def _missing(cached_days: set[date], scanned_empty: set[date]) -> list[date]:
+        return [
+            d for d in wanted_days if d not in cached_days and d not in scanned_empty
+        ]
 
     today_utc = datetime.now(UTC).date()
-    new_frames: list[pd.DataFrame] = []
-    newly_empty: list[date] = []
-    for day in missing_days:
-        rows = _stream_ticker_rows(ticker, day)
-        bars = (
-            _aggregate_ohlc(rows, granularity)
-            if not rows.empty
-            else pd.DataFrame(columns=empty_cols)
-        )
-        if bars.empty:
-            # M20: mark only PAST days as 'empty' — today (H3) may still be
-            # forming and should be retried on the next call.
-            # H371: IF THE SOURCE FILE EXISTS and the ticker is missing that
-            # day, it's 'scanned-empty' (permanent). But if the file is NOT
-            # THERE AT ALL (NFS outage / late-published daily file) don't
-            # poison the day — re-scan it later once the file arrives.
-            # Otherwise a transient outage permanently deletes past days.
-            if day < today_utc and _index_file_for(day).exists():
-                newly_empty.append(day)
-            continue
-        new_frames.append(bars)
+    existing, cached_days, prior_scanned, scanned_empty = _read_state()
+    combined = existing
+    if _missing(cached_days, scanned_empty):
+        # Yazma yolu: tarama + concat + yazma tek bir kilit altında.
+        with _cache_lock(cache_path.with_suffix(".lock")):
+            # Kilit altında TAZE oku — beklerken öbür yazar aynı günleri
+            # getirmiş olabilir; o zaman aşağıdaki döngü hiç taramaz.
+            existing, cached_days, prior_scanned, scanned_empty = _read_state()
+            combined = existing
+            new_frames: list[pd.DataFrame] = []
+            newly_empty: list[date] = []
+            for day in _missing(cached_days, scanned_empty):
+                rows = _stream_ticker_rows(ticker, day)
+                bars = (
+                    _aggregate_ohlc(rows, granularity)
+                    if not rows.empty
+                    else pd.DataFrame(columns=empty_cols)
+                )
+                if bars.empty:
+                    # M20: mark only PAST days as 'empty' — today (H3) may still
+                    # be forming and should be retried on the next call.
+                    # H371: IF THE SOURCE FILE EXISTS and the ticker is missing
+                    # that day, it's 'scanned-empty' (permanent). But if the file
+                    # is NOT THERE AT ALL (NFS outage / late-published daily
+                    # file) don't poison the day — re-scan it later once the file
+                    # arrives. Otherwise a transient outage permanently deletes
+                    # past days.
+                    if day < today_utc and _index_file_for(day).exists():
+                        newly_empty.append(day)
+                    continue
+                new_frames.append(bars)
 
-    if newly_empty:
-        merged = sorted(prior_scanned | {d.isoformat() for d in newly_empty})
-        _atomic_write_json(merged, scanned_path)
+            if newly_empty:
+                merged = sorted(prior_scanned | {d.isoformat() for d in newly_empty})
+                _atomic_write_json(merged, scanned_path)
 
-    if new_frames:
-        combined = pd.concat([existing, *new_frames])
-        combined = combined[~combined.index.duplicated(keep="last")].sort_index()
-        # H3: today's (UTC) bars aren't complete yet — don't write to disk,
-        # persist only past days. combined stays complete in the in-memory return.
-        persist = combined[combined.index.normalize().date < today_utc]
-        _atomic_to_parquet(persist, cache_path)  # M3a: atomic write
-    else:
-        combined = existing
+            if new_frames:
+                combined = pd.concat([existing, *new_frames])
+                combined = combined[
+                    ~combined.index.duplicated(keep="last")
+                ].sort_index()
+                # H3: today's (UTC) bars aren't complete yet — don't write to
+                # disk, persist only past days. combined stays complete in the
+                # in-memory return.
+                persist = combined[combined.index.normalize().date < today_utc]
+                _atomic_to_parquet(persist, cache_path)  # M3a: atomic write
 
     if combined.empty:
         return combined
@@ -613,18 +748,16 @@ def _fetch_bybit_page(
     )
 
 
-def _bybit_gap_frames(
-    cached: pd.DataFrame, cache_path: Path, step_ms: int, fetch_segment
-) -> list[pd.DataFrame]:
-    """M2: find and targeted-fill the holes INSIDE the cached range.
+def _bybit_gap_ranges(cached: pd.DataFrame, step_ms: int) -> list[tuple[int, int]]:
+    """Cache'in [ilk, son] aralığındaki DELİKLER — (başlangıç, bitiş) ms, kapalı.
 
-    Since the interval is fixed-step, the expected bar count of the [first, last]
-    range is arithmetic; if the actual row count is short, the > step_ms gaps
-    between consecutive bar opens mean holes. If the fill returns empty, the
-    range is marked 'known empty' in the '{cache_name}_gaps.json' sidecar so
-    that every call doesn't re-try the same range (e.g. exchange outage,
-    between listings).
+    Ağa çıkmaz, dosyaya dokunmaz: adım sabit olduğu için beklenen bar sayısı
+    aritmetiktir; satır sayısı eksikse ardışık açılışlar arasındaki > step_ms
+    boşluklar deliklerdir. Saf tespit olarak ayrıldı ki okuma yolu "bu istek
+    kilide girmeden karşılanır mı?" sorusunu ağa hiç çıkmadan sorabilsin.
     """
+    if cached.empty or len(cached.index) < 2:
+        return []
     try:
         idx_ns = cached.index.as_unit("ns").asi8
     except AttributeError:  # old pandas: asi8 is already ns
@@ -642,22 +775,60 @@ def _bybit_gap_frames(
         if cur - prev > step_ms:
             gaps.append((prev + step_ms, cur - step_ms))
         prev = cur
-    if not gaps:
+    return gaps
+
+
+def _bybit_gaps_path(cache_path: Path) -> Path:
+    return cache_path.with_name(f"{cache_path.stem}_gaps.json")
+
+
+def _bybit_known_empty(gaps_path: Path) -> list[list[int]]:
+    """'Bilinen boş' aralıklar (sidecar). Bozuk/eksik dosya = bilgi yok."""
+    if not gaps_path.exists():
+        return []
+    try:
+        return json.loads(gaps_path.read_text())
+    except Exception:
         return []
 
-    gaps_path = cache_path.with_name(f"{cache_path.stem}_gaps.json")
-    known: list[list[int]] = []
-    if gaps_path.exists():
-        try:
-            known = json.loads(gaps_path.read_text())
-        except Exception:
-            known = []
+
+def _bybit_pending_gaps(
+    cached: pd.DataFrame, cache_path: Path, step_ms: int
+) -> list[tuple[int, int]]:
+    """Doldurulması denenecek delikler: tespit edilenler eksi 'bilinen boş'lar."""
+    gaps = _bybit_gap_ranges(cached, step_ms)
+    if not gaps:
+        return []
+    known = _bybit_known_empty(_bybit_gaps_path(cache_path))
+    return [
+        (gs, ge)
+        for gs, ge in gaps
+        if not any(ks <= gs and ge <= ke for ks, ke in known)
+    ]
+
+
+def _bybit_gap_frames(
+    cached: pd.DataFrame, cache_path: Path, step_ms: int, fetch_segment
+) -> list[pd.DataFrame]:
+    """M2: find and targeted-fill the holes INSIDE the cached range.
+
+    Since the interval is fixed-step, the expected bar count of the [first, last]
+    range is arithmetic; if the actual row count is short, the > step_ms gaps
+    between consecutive bar opens mean holes. If the fill returns empty, the
+    range is marked 'known empty' in the '{cache_name}_gaps.json' sidecar so
+    that every call doesn't re-try the same range (e.g. exchange outage,
+    between listings).
+    """
+    pending = _bybit_pending_gaps(cached, cache_path, step_ms)
+    if not pending:
+        return []
+
+    gaps_path = _bybit_gaps_path(cache_path)
+    known = _bybit_known_empty(gaps_path)
 
     frames: list[pd.DataFrame] = []
     known_changed = False
-    for gs, ge in gaps:
-        if any(ks <= gs and ge <= ke for ks, ke in known):
-            continue  # known empty range — don't hammer the API again
+    for gs, ge in pending:
         log.warning(
             "bybit cache hole (%s): %s → %s (%d bars missing)",
             cache_path.name,
@@ -758,66 +929,45 @@ def load_bybit_bars(
             cur = next_cur
         return frames
 
-    # M3b: the read-modify-write block is under a per-key lock — concurrent
-    # requests for the same (category, symbol, interval) can't clobber each
-    # other's new bars (at thread + process level).
-    with _cache_lock(cache_path.with_suffix(".lock")):
-        cached = pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
-        # H626: on force_refresh the existing cache is ALSO READ — formerly it
-        # wasn't, and only [start,end) was written while ALL bars OUTSIDE the
-        # window were deleted (the /data refresh button with days=7 shrank years
-        # of 1m history to 7 days). Now the fresh window is MERGED with the
-        # cache (dedup keep='last' → the requested window is refreshed, the rest
-        # preserved).
-        if cache_path.exists():
-            try:
-                cached = pd.read_parquet(cache_path)
-            except Exception as read_err:
-                # M3c: corrupt parquet — ignore the cache, re-fetch the range.
-                log.warning(
-                    "ignoring corrupt bybit cache (%s): %s", cache_path, read_err
-                )
-                cached = pd.DataFrame(
-                    columns=["open", "high", "low", "close", "volume"]
-                )
-
-        new_frames: list[pd.DataFrame] = []
-        if force_refresh:
-            # UNCONDITIONALLY re-fetch the requested window (refresh stale/half
-            # bars); the rest of the cache is preserved via concat+dedup.
-            new_frames = _fetch_segment(start_ms, end_ms)
-        elif cached.empty:
-            new_frames = _fetch_segment(start_ms, end_ms)
-        else:
-            cached_start_ms = int(cached.index[0].timestamp() * 1000)
-            cached_end_ms = int(cached.index[-1].timestamp() * 1000)
-            # Backfill older history when the request predates the cache, so a
-            # wider `start` actually widens the returned range.
-            if start_ms < cached_start_ms:
-                new_frames += _fetch_segment(start_ms, cached_start_ms)
-            # M2: detect and targeted-fill holes inside the cache.
-            new_frames += _bybit_gap_frames(cached, cache_path, step_ms, _fetch_segment)
-            # H1a: the tail starts from the LAST cached bar (not cached_end_ms +
-            # step_ms) — when the last bar was written it may have been a half
-            # bar still forming; it's re-fetched and dedup keep='last' replaces
-            # it with the fresh one.
-            tail_from = cached_end_ms
-            if tail_from < end_ms:
-                new_frames += _fetch_segment(tail_from, end_ms)
-
-        if new_frames:
-            combined = pd.concat([cached, *new_frames])
-            combined = combined[~combined.index.duplicated(keep="last")].sort_index()
-            # H1b: crop the FORMING bar before writing to disk and the Nautilus
-            # catalog — if its open + step hasn't passed yet, the bar isn't done.
-            if not combined.empty:
-                now_ms = int(time.time() * 1000)
-                last_open_ms = int(combined.index[-1].timestamp() * 1000)
-                if last_open_ms + step_ms > now_ms:
-                    combined = combined.iloc[:-1]
-            _atomic_to_parquet(combined, cache_path)  # M3a: atomic write
-        else:
-            combined = cached
+    # OKUMA YOLU KİLİTSİZ (DeepR 2026-08-11 [YÜKSEK]). Bu blok eskiden KOŞULSUZ
+    # `_cache_lock` alıyordu: cache tamamen yetse, ağa hiç çıkılmayacak olsa bile.
+    # Kilit yazma boyunca (uzun bir backfill'de ~10 dk) tutulduğu için, o sırada
+    # AYNI seriyi yalnızca OKUMAK isteyen herkes — /data sayfası, backtest,
+    # loop_runner, parallel_exec işçileri — önce bir thread'i bekletiyor, sonra
+    # TimeoutError yiyordu. Yazma atomik (`_atomic_to_parquet` → os.replace)
+    # olduğu için okuyan ya eski ya yeni dosyanın TAMAMINI görür; yarım dosya
+    # görmesi mümkün değil, yani okumanın kilide hiç ihtiyacı yok.
+    cached = _read_bybit_cache(cache_path)
+    new_frames: list[pd.DataFrame] = []
+    if not force_refresh and _bybit_cache_covers(
+        cached, cache_path, start_ms, end_ms, step_ms
+    ):
+        combined = cached
+    else:
+        # Yazma yolu: okuma-değiştirme-yazma hâlâ per-key kilit altında (M3b),
+        # yoksa eşzamanlı iki indirme birbirinin barlarını ezer.
+        with _cache_lock(cache_path.with_suffix(".lock")):
+            # Kilit altında TAZE oku: beklerken öbür yazar zaten getirmiş
+            # olabilir; o zaman aşağıdaki dallar hiçbir şey getirmez ve yazma
+            # yapılmaz (ağ trafiği de boşa gitmez).
+            #
+            # H626: on force_refresh the existing cache is ALSO READ — formerly
+            # it wasn't, and only [start,end) was written while ALL bars OUTSIDE
+            # the window were deleted (the /data refresh button with days=7
+            # shrank years of 1m history to 7 days). Now the fresh window is
+            # MERGED with the cache (dedup keep='last' → the requested window is
+            # refreshed, the rest preserved).
+            cached = _read_bybit_cache(cache_path)
+            combined = _extend_bybit_cache(
+                cached,
+                cache_path,
+                start_ms,
+                end_ms,
+                step_ms,
+                force_refresh,
+                _fetch_segment,
+                new_frames,
+            )
 
     if combined.empty:
         return combined
@@ -842,6 +992,108 @@ def load_bybit_bars(
             )
 
     return result
+
+
+def _read_bybit_cache(cache_path: Path) -> pd.DataFrame:
+    """Cache parquet'ini KİLİTSİZ oku (yoksa/bozuksa boş çerçeve).
+
+    Yazma `os.replace` ile atomik olduğundan okuyan hep bütün bir dosya görür.
+    Yine de Windows'ta, yazar tam o anda dosyayı değiştiriyorsa açma denemesi
+    geçici bir paylaşım ihlaliyle düşebilir: bunu "cache bozuk" sayıp yıllarca
+    biriktirilmiş geçmişi yeniden indirmeye kalkmak yerine birkaç kez kısaca
+    yeniden dene; gerçekten bozuk dosya zaten hepsinde düşer.
+    """
+    empty = pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
+    if not cache_path.exists():
+        return empty
+    last_err: Exception | None = None
+    for wait in (*_REPLACE_RETRY_WAITS, None):
+        try:
+            return pd.read_parquet(cache_path)
+        except OSError as e:  # paylaşım ihlali / yarıda kalan okuma
+            last_err = e
+            if wait is None:
+                break
+            time.sleep(wait)
+        except Exception as e:  # M3c: gerçekten bozuk parquet
+            last_err = e
+            break
+    log.warning("ignoring corrupt bybit cache (%s): %s", cache_path, last_err)
+    return empty
+
+
+def _bybit_cache_covers(
+    cached: pd.DataFrame,
+    cache_path: Path,
+    start_ms: int,
+    end_ms: int,
+    step_ms: int,
+) -> bool:
+    """Bu istek yalnız cache'ten karşılanabilir mi? (ağ da kilit de gereksiz)
+
+    `_extend_bybit_cache`'in "getirilecek bir şey var mı" dallarının aynadaki
+    hâli: baş (start), kuyruk (end) ve içerideki delikler. Üçü de kapalıysa
+    çağıran diske bakıp dönebilir — bir indirme sürerken bile.
+    """
+    if cached.empty:
+        return False
+    cached_start_ms = int(cached.index[0].timestamp() * 1000)
+    cached_end_ms = int(cached.index[-1].timestamp() * 1000)
+    if start_ms < cached_start_ms or cached_end_ms < end_ms:
+        return False
+    return not _bybit_pending_gaps(cached, cache_path, step_ms)
+
+
+def _extend_bybit_cache(
+    cached: pd.DataFrame,
+    cache_path: Path,
+    start_ms: int,
+    end_ms: int,
+    step_ms: int,
+    force_refresh: bool,
+    _fetch_segment,
+    new_frames: list[pd.DataFrame],
+) -> pd.DataFrame:
+    """Eksikleri getir, birleştir, atomik yaz → birleşik çerçeve.
+
+    Çağıran kilidi tutar. `new_frames` çağıranın listesidir (yerinde doldurulur):
+    katalog yazımı "bu çağrıda gerçekten yeni bar geldi mi" bilgisine bakıyor.
+    """
+    if force_refresh or cached.empty:
+        # force_refresh: UNCONDITIONALLY re-fetch the requested window (refresh
+        # stale/half bars); the rest of the cache is preserved via concat+dedup.
+        new_frames += _fetch_segment(start_ms, end_ms)
+    else:
+        cached_start_ms = int(cached.index[0].timestamp() * 1000)
+        cached_end_ms = int(cached.index[-1].timestamp() * 1000)
+        # Backfill older history when the request predates the cache, so a
+        # wider `start` actually widens the returned range.
+        if start_ms < cached_start_ms:
+            new_frames += _fetch_segment(start_ms, cached_start_ms)
+        # M2: detect and targeted-fill holes inside the cache.
+        new_frames += _bybit_gap_frames(cached, cache_path, step_ms, _fetch_segment)
+        # H1a: the tail starts from the LAST cached bar (not cached_end_ms +
+        # step_ms) — when the last bar was written it may have been a half
+        # bar still forming; it's re-fetched and dedup keep='last' replaces
+        # it with the fresh one.
+        tail_from = cached_end_ms
+        if tail_from < end_ms:
+            new_frames += _fetch_segment(tail_from, end_ms)
+
+    if not new_frames:
+        return cached
+
+    combined = pd.concat([cached, *new_frames])
+    combined = combined[~combined.index.duplicated(keep="last")].sort_index()
+    # H1b: crop the FORMING bar before writing to disk and the Nautilus
+    # catalog — if its open + step hasn't passed yet, the bar isn't done.
+    if not combined.empty:
+        now_ms = int(time.time() * 1000)
+        last_open_ms = int(combined.index[-1].timestamp() * 1000)
+        if last_open_ms + step_ms > now_ms:
+            combined = combined.iloc[:-1]
+    _atomic_to_parquet(combined, cache_path)  # M3a: atomic write
+    return combined
 
 
 # ---------------------------------------------------------------------------
@@ -1251,38 +1503,76 @@ def _bybit_rows_uncached() -> list[dict]:
     return rows
 
 
-# DeepR 2026-08-09 [ORTA]: same shape as _bybit_rows' TTL cache above —
-# every /data GET rebuilt every ticker's parquet-footer stats +
-# nautilus_catalog_bar_state from scratch, `limit`/`query` only narrowed
-# the FINAL list, not the I/O. Cache the full, unfiltered build; apply
-# limit/query to the cached rows on every call instead of to the ticker
-# list before building them.
+# DeepR 2026-08-09 [ORTA] → 2026-08-11 [ORTA]: same shape as _bybit_rows' TTL
+# cache above, but the 08-09 turn cached the WRONG THING. It built every
+# ticker's rows and applied `limit`/`query` to the finished list, so /data —
+# which asks for 50 rows — paid for the whole universe. Ölçek hesaba
+# katılmamıştı: `discover_index_tickers` kaynağı ~2 GB'lık Polygon
+# grouped-daily dosyası, yani ~10.000 ticker × 5 granularity = 50.000 hücre,
+# her biri bir `_read_parquet_stats` (path.exists) + `nautilus_catalog_bar_state`
+# (is_dir + glob). Ölçüldü: 10k ticker için 50 satır göstermek 1826 ms sürüyor
+# ve 65,8 MB'ı sunucu ömrü boyunca modül global'inde tutuyordu.
+#
+# Artık limit/query önce TICKER LİSTESİNE uygulanıyor (kardeşi
+# `_external_catalog_rows` zaten böyle yapıyor) ve önbellek TEMBEL: yalnız
+# gerçekten gösterilen tickerların satırları kurulur ve saklanır.
+#
+# GEÇERSİZLEŞME SÖZLEŞMESİ:
+#   • Pencere 30 sn. Yeni bir indirme en geç bir TTL penceresi içinde,
+#     sayfa yenilemeden görünür. Pencere dolunca sözlük tamamen atılır —
+#     yani bayat satır taşınmaz, tembellik yalnız PENCERE İÇİNDE geçerlidir.
+#   • `refresh_row()` zorla tazelerken `_invalidate_index_rows_cache()`
+#     çağırır; yoksa force-refresh kullanıcıya refresh ÖNCESİ satırı verirdi.
+#   • Ticker registry'nin kendisi önbelleklenmez (`_read_ticker_registry`
+#     her çağrıda okur), yani Discover sonrası yeni tickerlar anında listede.
 _INDEX_ROWS_TTL_S = 30.0
-_index_rows_cache: tuple[float, list[dict]] | None = None
+# (pencere başlangıcı, {ticker: row}) — tembel doldurulur.
+_index_rows_cache: tuple[float, dict[str, dict]] | None = None
 _index_rows_lock = threading.Lock()
 
 
 def _index_rows(limit: int | None = None, query: str | None = None) -> list[dict]:
-    """List US-index tickers, optionally filtered. See _index_rows_uncached
-    for the (TTL-cached) I/O; this applies limit/query to the cached rows."""
-    global _index_rows_cache
-    with _index_rows_lock:
-        cached = _index_rows_cache
-        if cached is not None and time.monotonic() - cached[0] < _INDEX_ROWS_TTL_S:
-            rows = cached[1]
-        else:
-            rows = None
-    if rows is None:
-        rows = _index_rows_uncached()
-        with _index_rows_lock:
-            _index_rows_cache = (time.monotonic(), rows)
+    """List US-index tickers, optionally filtered.
 
+    ``limit``/``query`` narrow the TICKER LIST first; only the surviving
+    tickers pay the per-ticker I/O (see ``_index_rows_uncached``).
+    """
+    tickers: list[str] = _read_ticker_registry() or []
     if query:
         q = query.lower()
-        rows = [r for r in rows if q in r["key"].lower()]
+        tickers = [t for t in tickers if q in t.lower()]
     if limit:
-        rows = rows[:limit]
-    return rows
+        tickers = tickers[:limit]
+    return _index_rows_for(tickers)
+
+
+def _index_rows_for(tickers: list[str]) -> list[dict]:
+    """Rows for exactly ``tickers``, reusing anything already built this window."""
+    global _index_rows_cache
+    if not tickers:
+        return []
+    now = time.monotonic()
+    with _index_rows_lock:
+        cached = _index_rows_cache
+        if cached is None or now - cached[0] >= _INDEX_ROWS_TTL_S:
+            cached = (now, {})
+            _index_rows_cache = cached
+        stamp, by_ticker = cached
+        hits = {t: by_ticker[t] for t in tickers if t in by_ticker}
+
+    missing = [t for t in tickers if t not in hits]
+    # Ağır I/O kilit DIŞINDA: bir /data isteği diğerini beklemesin.
+    fresh = {r["key"]: r for r in _index_rows_uncached(missing)} if missing else {}
+    if fresh:
+        with _index_rows_lock:
+            current = _index_rows_cache
+            # Bu arada TTL döndüyse/geçersizleştiyse yeni pencereye yazma:
+            # satırlar o pencereden önce okunmuştu.
+            if current is not None and current[0] == stamp:
+                current[1].update(fresh)
+
+    merged = {**hits, **fresh}
+    return [merged[t] for t in tickers if t in merged]
 
 
 def _invalidate_index_rows_cache() -> None:
@@ -1291,10 +1581,14 @@ def _invalidate_index_rows_cache() -> None:
         _index_rows_cache = None
 
 
-def _index_rows_uncached() -> list[dict]:
-    """List every US-index ticker. If _tickers.json is missing (or corrupt),
-    return an empty list; the UI shows a Discover call-to-action in that case."""
-    tickers: list[str] = _read_ticker_registry() or []
+def _index_rows_uncached(tickers: list[str] | None = None) -> list[dict]:
+    """Build rows for ``tickers`` (default: every ticker in the registry).
+
+    If _tickers.json is missing (or corrupt) and no explicit list is given,
+    return an empty list; the UI shows a Discover call-to-action in that case.
+    """
+    if tickers is None:
+        tickers = _read_ticker_registry() or []
 
     rows: list[dict] = []
     for ticker in tickers:
@@ -1367,12 +1661,26 @@ def _auto_write_bybit_catalog(
     """
     from nautilus_trader.model.data import Bar
 
-    from backtest import _bars_from_df, _make_bybit_bar_type, _make_bybit_instrument
+    from backtest import (
+        _bars_from_df,
+        _make_bybit_bar_type,
+        _make_bybit_instrument,
+        price_scale_hint,
+    )
 
     # Infer base from the canonical symbol (BTCUSDT → BTC); quote is derived from
     # the category by _make_bybit_instrument (USDT for spot/linear, USD for inverse).
     base = _base_ccy(symbol)
-    instrument = _make_bybit_instrument(symbol=symbol, base=base, category=category)
+    # price_hint: an unlisted sub-cent symbol would otherwise be written into
+    # the Nautilus catalog with a 2-decimal precision, i.e. as all-zero bars
+    # (DeepR 2026-08-11 [YÜKSEK]). The frame we are about to write IS the
+    # authority on this symbol's real price scale.
+    instrument = _make_bybit_instrument(
+        symbol=symbol,
+        base=base,
+        category=category,
+        price_hint=price_scale_hint(df),
+    )
     bar_type = _make_bybit_bar_type(instrument.id, interval)
     if df.empty:
         return
@@ -1554,6 +1862,7 @@ def write_to_nautilus_catalog(source: str, **kw) -> dict:
         _make_bybit_instrument,
         _make_index_bar_type,
         _make_index_instrument,
+        price_scale_hint,
     )
 
     catalog = get_nautilus_catalog()
@@ -1586,6 +1895,11 @@ def write_to_nautilus_catalog(source: str, **kw) -> dict:
             symbol=symbol,
             base=_base_ccy(symbol),
             category=category,
+            # Same reason as _auto_write_bybit_catalog: derive the precision
+            # from the real price scale so sub-cent symbols aren't written as
+            # zeros. Both writers derive it from the same cached frame, so the
+            # catalog identity stays consistent between them.
+            price_hint=price_scale_hint(df),
         )
         bar_type = _make_bybit_bar_type(instrument.id, interval)
         bars = _bars_from_df(bar_type, instrument, df)
@@ -1643,18 +1957,49 @@ def write_to_nautilus_catalog(source: str, **kw) -> dict:
     }
 
 
+def _external_meta_signature(root: Path) -> tuple:
+    """Enstrüman tanımları için ucuz `(mtime, size)` imzası.
+
+    Tek tek enstrüman parquet'leri stat'lanmaz (591 enstrümanlı bir kökte bu
+    her /data isteğinde binlerce syscall demekti): yeni bir enstrüman ingest
+    edilince `data/<sınıf>/` dizinine yeni bir alt dizin girer ve o dizinin
+    mtime'ı değişir — geçersizleştirme için gereken tam olarak budur.
+    """
+    data_dir = root / "data"
+    parts: list = [_stat_sig(data_dir)]
+    try:
+        children = sorted(p.name for p in data_dir.iterdir() if p.is_dir())
+    except OSError:
+        children = []
+    for name in children:
+        parts.append((name, _stat_sig(data_dir / name)))
+    return tuple(parts)
+
+
 def _external_instrument_meta(root: Path) -> dict:
     """Return {instrument_id: {asset_class, price_precision, size_precision,
     price_increment, quote_currency}} for one external catalog root.
 
-    Loads the catalog's instrument definitions once and caches them (the
-    external catalog is read-only reference data, so it never changes).
+    Sonuç `(mtime, size)` imzasıyla önbelleklenir: yeni ingest edilen bir
+    enstrüman sunucu yeniden başlatılmadan görünür.
+
+    DeepR 2026-08-11 [ORTA]: okuma HATASI artık ÖNBELLEĞE YAZILMAZ. Eskiden
+    `except Exception: meta = {}` sonucu doğrudan cache'e giriyordu, yani
+    açılışta yaşanan tek bir dosya kilidi/geçici I/O hatası SÜREÇ ÖMRÜ BOYUNCA
+    "bu kökte enstrüman metası yok" anlamına geliyor, satırlar `asset_class`/
+    `price_precision`/`quote_currency` olmadan ("—") görünüyor ve bu "katalogda
+    bu bilgi yok" ile ayırt edilemiyordu. `composer.load_catalog`'un dersi:
+    okunamıyorsa cevap "bilinmiyor"dur, "boş"tur değil — burada da boş sözlük
+    dönülür ama SAKLANMAZ, bir sonraki çağrı yeniden dener.
     """
     key = str(root)
-    if key in _EXT_INSTRUMENT_META:
-        return _EXT_INSTRUMENT_META[key]
+    sig = _external_meta_signature(root)
+    cached = _EXT_INSTRUMENT_META.get(key)
+    if cached is not None and cached[0] == sig:
+        return cached[1]
 
     meta: dict = {}
+    skipped = 0
     try:
         from nautilus_trader.model.enums import asset_class_to_str
         from nautilus_trader.persistence.catalog import ParquetDataCatalog
@@ -1672,11 +2017,29 @@ def _external_instrument_meta(root: Path) -> dict:
                     ).split(" ")[0],
                 }
             except Exception:
+                skipped += 1
                 continue
-    except Exception:
-        meta = {}
+    except Exception as e:
+        if key not in _EXT_META_WARNED:
+            _EXT_META_WARNED.add(key)
+            log.warning(
+                "could not read instrument definitions from external catalog "
+                "%s: %s — meta shown as unknown; NOT cached, retried on the "
+                "next call",
+                root,
+                e,
+            )
+        return {}
 
-    _EXT_INSTRUMENT_META[key] = meta
+    _EXT_META_WARNED.discard(key)
+    if skipped:
+        log.warning(
+            "%d instrument definition(s) in %s could not be decoded — their "
+            "rows will show unknown precision/asset class",
+            skipped,
+            root,
+        )
+    _EXT_INSTRUMENT_META[key] = (sig, meta)
     return meta
 
 
@@ -1686,25 +2049,62 @@ def _external_manifest(root: Path) -> dict:
     Returns a symbol → meta dict (NAU_ev output: bars/first/last/ok/…, plus
     'adjusted' if present). If the file is missing or corrupt, an empty dict —
     'adjusted' info stays 'unknown'.
+
+    Önbellek `(mtime, size)` ile geçersizleşir: `write_manifest` bir koşumun
+    SONUNDA dosyayı yeniden yazar, sunucunun bunu görmek için restart'a
+    ihtiyacı yoktur. GEÇİCİ bir I/O hatası (dosya kilidi) sonucu saklanmaz —
+    bozuk JSON ise deterministik bir durumdur ve saklanır (dosya düzelince
+    imza zaten değişir); `custom_block_store._read_registry` ile aynı ayrım.
     """
     key = str(root)
-    if key in _EXT_MANIFEST:
-        return _EXT_MANIFEST[key]
-    manifest: dict = {}
     p = root / "_manifest.json"
+    sig = _stat_sig(p)
+    cached = _EXT_MANIFEST.get(key)
+    if cached is not None and cached[0] == sig:
+        return cached[1]
+
+    manifest: dict = {}
     try:
-        if p.exists():
-            loaded = json.loads(p.read_text())
-            if isinstance(loaded, dict):
-                manifest = loaded
-    except Exception as e:
-        log.warning("could not read external catalog manifest (%s): %s", p, e)
-    _EXT_MANIFEST[key] = manifest
+        raw = p.read_text()
+    except FileNotFoundError:
+        raw = None  # manifest opsiyonel — yokluğu bir hata değil
+    except OSError as e:
+        log.warning(
+            "could not read external catalog manifest (%s): %s — treated as "
+            "unknown, NOT cached",
+            p,
+            e,
+        )
+        return {}
+    if raw is not None:
+        try:
+            loaded = json.loads(raw)
+        except Exception as e:
+            log.warning("corrupt external catalog manifest (%s): %s", p, e)
+            loaded = None
+        if isinstance(loaded, dict):
+            manifest = loaded
+    _EXT_MANIFEST[key] = (sig, manifest)
     return manifest
 
 
-def _external_adjusted_flag(root: Path, instrument_id: str) -> bool | None:
-    """The 'adjusted' field in the manifest: True/False, None if unknown.
+def external_manifest() -> dict:
+    """Tüm harici katalog köklerinin manifestlerini tek sözlükte birleştir.
+
+    Kök-başına okuyucu (`_external_manifest`) çağıranın hangi kökte olduğunu
+    bilmesini şart koşuyor; enstrümanlar arası bir soru soran çağıran (ör.
+    "bu ticker hangi dikişin bileşeni?") bunu bilemez. Öncelik listedeki ilk
+    köktedir — aynı ticker iki kökte varsa /data panelinde de ilki kazanıyor.
+    """
+    merged: dict = {}
+    for root in external_catalog_roots():
+        for symbol, entry in (_external_manifest(Path(root)) or {}).items():
+            merged.setdefault(symbol, entry)
+    return merged
+
+
+def _external_manifest_entry(root: Path, instrument_id: str) -> dict:
+    """Manifest entry for an instrument id, or {}.
 
     The manifest is keyed by bare symbol (e.g. 'NVDA', 'BRK.A'), while
     instrument_id is like 'NVDA.NASDAQ' / 'BRK.A.NASDAQ' — only the LAST dot
@@ -1714,24 +2114,109 @@ def _external_adjusted_flag(root: Path, instrument_id: str) -> bool | None:
     """
     symbol = instrument_id.rsplit(".", 1)[0]
     entry = _external_manifest(root).get(symbol)
-    if isinstance(entry, dict):
-        val = entry.get("adjusted")
-        if isinstance(val, bool):
-            return val
-    return None
+    return entry if isinstance(entry, dict) else {}
 
 
-def _external_catalog_rows(query: str | None = None, limit: int | None = 50) -> dict:
-    """Scan the read-only external catalogs and return display rows.
+def _external_adjustment_flags(
+    root: Path, instrument_id: str
+) -> tuple[bool | None, bool | None]:
+    """(split_adjusted, dividend_adjusted) from the manifest; None = unknown.
 
-    Returns {"rows": [...], "total": int}. The heavy per-bar-type work
-    (parquet row counts) is done only for the ``limit`` rows actually shown;
-    instrument discovery and date ranges are pulled from the filesystem
-    (directory + parquet filenames) without decoding any bars.
+    M21 read a single 'adjusted' field, which conflated two different facts:
+    Polygon/Massive `/v2/aggs adjusted=true` adjusts for SPLITS ONLY and never
+    for dividends. Two batches in the same catalog carried that one flag with
+    contradictory notes ("split/dividend adjusted" vs "split only") and the
+    contradiction never surfaced in the UI, because nothing read the note.
+
+    The new schema keeps the two apart. For a pre-migration manifest,
+    `split_adjusted` falls back to the legacy `adjusted` field (they mean the
+    same thing), while `dividend_adjusted` is NOT guessed — it stays None
+    ('unknown') rather than being invented.
+    """
+    entry = _external_manifest_entry(root, instrument_id)
+    split = entry.get("split_adjusted")
+    if not isinstance(split, bool):
+        split = entry.get("adjusted")
+    div = entry.get("dividend_adjusted")
+    return (
+        split if isinstance(split, bool) else None,
+        div if isinstance(div, bool) else None,
+    )
+
+
+def _external_adjusted_flag(root: Path, instrument_id: str) -> bool | None:
+    """Legacy single-flag view = SPLIT adjustment. True/False, None if unknown."""
+    return _external_adjustment_flags(root, instrument_id)[0]
+
+
+def _external_coverage_gaps(root: Path, instrument_id: str) -> list[dict]:
+    """Per-ticker coverage gaps recorded in the manifest ([] if none/not computed).
+
+    A gap is a stretch of sessions the rest of the catalog trades through but
+    this symbol has no bars for — QQQ's own series is empty from 2004-12 to
+    2011-03 (the ticker was QQQQ then), which hides the whole 2008 bear market
+    and makes buy-and-hold maxDD look like 35.6% instead of 53.5%. The symbol
+    is deliberately NOT hidden from the pickers; the gap is surfaced next to it.
+    """
+    gaps = _external_manifest_entry(root, instrument_id).get("coverage_gaps")
+    return gaps if isinstance(gaps, list) else []
+
+
+# Order the timeframe buckets shortest→longest for stable display.
+_EXT_TF_ORDER = {
+    "1-MINUTE": 0,
+    "5-MINUTE": 1,
+    "15-MINUTE": 2,
+    "30-MINUTE": 3,
+    "1-HOUR": 4,
+    "4-HOUR": 5,
+    "1-DAY": 6,
+    "1-WEEK": 7,
+}
+
+# DeepR 2026-08-11 [ORTA]: bu panel her /data GET'inde sıfırdan çalışıyordu —
+# kardeşleri `_bybit_rows` (2026-08-08) ve `_index_rows` (2026-08-09) tam da bu
+# maliyet için 30 sn'lik TTL'e kavuşturulmuştu, external dışarıda kalmıştı.
+# Ölçüldü (bu kutu, 16 enstrüman / 293 parquet): çağrı başına 72–95 ms, tamamı
+# tekrar eden disk I/O'su. Kod içindeki not gerçek masaüstü kataloğunun 592
+# enstrüman olduğunu söylüyor → 592 × 7 timeframe ≈ 4000 dizin girişi taraması
+# + yüzlerce parquet footer okuması, sayfa başına saniyeler mertebesinde.
+#
+# İki katman, ikisi de aynı 30 sn'lik pencerede:
+#   1) discovery — katalog köklerinin `data/bar` dizin taraması + "used" kümesi,
+#   2) satırlar  — TEMBEL: yalnız gösterilen enstrümanın parquet footer'ları.
+#
+# GEÇERSİZLEŞME SÖZLEŞMESİ:
+#   • Pencere 30 sn; yeni ingest edilen bir ticker en geç bir pencere içinde
+#     görünür (kardeş panellerle aynı gecikme). Pencere dolunca hem discovery
+#     hem satırlar tamamen atılır — bayat satır bir sonraki pencereye taşınmaz.
+#   • Kök listesi değişirse (env override ya da `EQUITY_CATALOG_DIR`'in geç
+#     bağlanması) anahtar da değişir → TTL beklenmeden yeniden taranır. Bu
+#     olmasaydı ingest'in İLK KEZ oluşturduğu kök 30 sn boyunca görünmezdi.
+#   • Satır içindeki `split_adjusted`/`coverage_gaps` alanları
+#     `_external_manifest`'ten gelir; onun kendi `(mtime, size)` imzası var,
+#     yani pencere yenilendiğinde taze manifest okunur.
+#   • `_invalidate_external_rows_cache()` zorla tazeleme için.
+_EXTERNAL_ROWS_TTL_S = 30.0
+# (pencere başlangıcı, kök imzası, discovery, {instrument_id: row})
+_external_rows_cache: tuple[float, tuple, dict, dict[str, dict]] | None = None
+_external_rows_lock = threading.Lock()
+
+
+def _invalidate_external_rows_cache() -> None:
+    global _external_rows_cache
+    with _external_rows_lock:
+        _external_rows_cache = None
+
+
+def _external_catalog_discovery() -> dict:
+    """Which instruments exist in the external catalogs, and which were used.
+
+    Directory listing only — no parquet file is opened here.
     """
     # instrument_id -> {"root": Path, "bar_dirs": [(dir_name, interval, Path)]}
     catalog_map: dict[str, dict] = {}
-    for root in EXTERNAL_CATALOGS:
+    for root in external_catalog_roots():
         bar_dir = root / "data" / "bar"
         if not bar_dir.exists():
             continue
@@ -1747,8 +2232,6 @@ def _external_catalog_rows(query: str | None = None, limit: int | None = 50) -> 
             entry = catalog_map.setdefault(inst_id, {"root": root, "bar_dirs": []})
             entry["bar_dirs"].append((d.name, interval, d))
 
-    total = len(catalog_map)
-
     # Used-first ordering: an alphabetical first-page of a 592-instrument
     # catalog leads with tickers nobody asked for (A, AA, AAL, …). "Used" =
     # a pandas cache exists under EXTERNAL_CACHE_DIR, i.e. the instrument has
@@ -1760,6 +2243,100 @@ def _external_catalog_rows(query: str | None = None, limit: int | None = 50) -> 
         for f in EXTERNAL_CACHE_DIR.glob("*.parquet"):
             used_fns.add(f.name.rsplit("_", 1)[0])
     used = {i for i in catalog_map if _ticker_to_filename(i) in used_fns}
+    return {"catalog_map": catalog_map, "used": used}
+
+
+def _external_catalog_window() -> tuple[float, dict, dict[str, dict]]:
+    """(stamp, discovery, already-built rows) for the current 30 s window."""
+    global _external_rows_cache
+    now = time.monotonic()
+    roots_key = tuple(str(r) for r in external_catalog_roots())
+    with _external_rows_lock:
+        cached = _external_rows_cache
+        if (
+            cached is not None
+            and cached[1] == roots_key
+            and now - cached[0] < _EXTERNAL_ROWS_TTL_S
+        ):
+            return cached[0], cached[2], dict(cached[3])
+    discovery = _external_catalog_discovery()  # dizin taraması kilit DIŞINDA
+    with _external_rows_lock:
+        _external_rows_cache = (now, roots_key, discovery, {})
+    return now, discovery, {}
+
+
+def _external_catalog_row(inst_id: str, entry: dict, used: set[str]) -> dict:
+    """One display row — this is where the parquet footer reads happen."""
+    import pyarrow.parquet as _pq
+
+    meta = _external_instrument_meta(entry["root"]).get(inst_id, {})
+    bar_types = []
+    for dir_name, interval, d in entry["bar_dirs"]:
+        files = sorted(p for p in d.glob("*.parquet"))
+        if not files:
+            continue
+        # Date range from filenames: <startNs...Z>_<endNs...Z>.parquet
+        first = files[0].name.split("_")[0]
+        last = files[-1].name.split("_")[1].replace(".parquet", "")
+        n_rows = 0
+        for f in files:
+            try:
+                n_rows += _pq.read_metadata(str(f)).num_rows
+            except Exception:
+                pass
+        bar_types.append(
+            {
+                "dsl": dir_name,
+                "state": "ingested",
+                "rows": n_rows,
+                "first": first or None,
+                "last": last or None,
+                "in_nautilus_catalog": False,
+                "granularity": interval,
+            }
+        )
+    bar_types.sort(key=lambda b: _EXT_TF_ORDER.get(b["granularity"], 99))
+    adj_split, adj_div = _external_adjustment_flags(entry["root"], inst_id)
+    return {
+        "source": "external",
+        "key": inst_id,
+        "instrument_id": inst_id,
+        # Drives the used-first ordering's badge: loaded before.
+        "used": inst_id in used,
+        # Adjustment status from the manifest, split and dividend kept
+        # APART (True/False, None='unknown'). "adjusted" stays as the
+        # legacy alias of the split flag so existing templates keep
+        # working; dividend_adjusted is the newly honest half.
+        "adjusted": adj_split,
+        "split_adjusted": adj_split,
+        "dividend_adjusted": adj_div,
+        "coverage_gaps": _external_coverage_gaps(entry["root"], inst_id),
+        "asset_class": meta.get("asset_class", "—"),
+        "base_currency": None,
+        "quote_currency": meta.get("quote_currency", ""),
+        "price_precision": meta.get("price_precision", "—"),
+        "size_precision": meta.get("size_precision", "—"),
+        "price_increment": meta.get("price_increment", "—"),
+        "min_quantity": None,
+        "warnings": [],
+        "bar_types": bar_types,
+    }
+
+
+def _external_catalog_rows(query: str | None = None, limit: int | None = 50) -> dict:
+    """Scan the read-only external catalogs and return display rows.
+
+    Returns {"rows": [...], "total": int}. The heavy per-bar-type work
+    (parquet row counts) is done only for the ``limit`` rows actually shown;
+    instrument discovery and date ranges are pulled from the filesystem
+    (directory + parquet filenames) without decoding any bars. Both halves are
+    reused for 30 s (see ``_EXTERNAL_ROWS_TTL_S`` for the staleness contract).
+    """
+    stamp, discovery, cached_rows = _external_catalog_window()
+    catalog_map: dict[str, dict] = discovery["catalog_map"]
+    used: set[str] = discovery["used"]
+
+    total = len(catalog_map)
 
     inst_ids = sorted(used) + sorted(set(catalog_map) - used)
     if query:
@@ -1769,72 +2346,19 @@ def _external_catalog_rows(query: str | None = None, limit: int | None = 50) -> 
     if limit is not None:
         inst_ids = inst_ids[:limit]
 
-    # Order the timeframe buckets shortest→longest for stable display.
-    _order = {
-        "1-MINUTE": 0,
-        "5-MINUTE": 1,
-        "15-MINUTE": 2,
-        "30-MINUTE": 3,
-        "1-HOUR": 4,
-        "4-HOUR": 5,
-        "1-DAY": 6,
-        "1-WEEK": 7,
+    fresh: dict[str, dict] = {
+        i: _external_catalog_row(i, catalog_map[i], used)
+        for i in inst_ids
+        if i not in cached_rows
     }
+    if fresh:
+        with _external_rows_lock:
+            current = _external_rows_cache
+            # Bu arada pencere döndüyse/geçersizleştiyse yenisine yazma.
+            if current is not None and current[0] == stamp:
+                current[3].update(fresh)
 
-    import pyarrow.parquet as _pq
-
-    rows: list[dict] = []
-    for inst_id in inst_ids:
-        entry = catalog_map[inst_id]
-        meta = _external_instrument_meta(entry["root"]).get(inst_id, {})
-        bar_types = []
-        for dir_name, interval, d in entry["bar_dirs"]:
-            files = sorted(p for p in d.glob("*.parquet"))
-            if not files:
-                continue
-            # Date range from filenames: <startNs...Z>_<endNs...Z>.parquet
-            first = files[0].name.split("_")[0]
-            last = files[-1].name.split("_")[1].replace(".parquet", "")
-            n_rows = 0
-            for f in files:
-                try:
-                    n_rows += _pq.read_metadata(str(f)).num_rows
-                except Exception:
-                    pass
-            bar_types.append(
-                {
-                    "dsl": dir_name,
-                    "state": "ingested",
-                    "rows": n_rows,
-                    "first": first or None,
-                    "last": last or None,
-                    "in_nautilus_catalog": False,
-                    "granularity": interval,
-                }
-            )
-        bar_types.sort(key=lambda b: _order.get(b["granularity"], 99))
-        rows.append(
-            {
-                "source": "external",
-                "key": inst_id,
-                "instrument_id": inst_id,
-                # Drives the used-first ordering's badge: loaded before.
-                "used": inst_id in used,
-                # M21: split/dividend adjustment status from the manifest
-                # (True/False, None='unknown' if manifest or field is missing).
-                "adjusted": _external_adjusted_flag(entry["root"], inst_id),
-                "asset_class": meta.get("asset_class", "—"),
-                "base_currency": None,
-                "quote_currency": meta.get("quote_currency", ""),
-                "price_precision": meta.get("price_precision", "—"),
-                "size_precision": meta.get("size_precision", "—"),
-                "price_increment": meta.get("price_increment", "—"),
-                "min_quantity": None,
-                "warnings": [],
-                "bar_types": bar_types,
-            }
-        )
-
+    rows = [cached_rows[i] if i in cached_rows else fresh[i] for i in inst_ids]
     return {"rows": rows, "total": total, "matched": matched}
 
 
@@ -1860,7 +2384,7 @@ def _external_interval_ns(granularity: str) -> int:
 
 def _external_bar_dir(instrument_id: str, granularity: str) -> tuple[Path, Path] | None:
     """Locate (catalog_root, bar_dir) for instrument+granularity, or None."""
-    for root in EXTERNAL_CATALOGS:
+    for root in external_catalog_roots():
         bar_root = root / "data" / "bar"
         if not bar_root.exists():
             continue
@@ -1883,6 +2407,13 @@ def list_external_instruments() -> list[dict]:
     Returns [{"instrument_id": "QQQ.NASDAQ", "granularities": ["1-MINUTE", ...]}]
     sorted by instrument id; granularities sorted shortest→longest. No parquet
     footers are read — this stays fast for 500+ instruments.
+
+    Each record also carries the manifest's honesty fields: `adjusted` /
+    `split_adjusted` (legacy alias + the split flag), `dividend_adjusted`
+    (None = unknown; never guessed) and `coverage_gaps` (sessions the symbol is
+    missing while the rest of the catalog trades — see
+    `_external_coverage_gaps`). Only the manifest is read here, so this stays a
+    cheap directory scan.
     """
     _order = {
         "1-MINUTE": 0,
@@ -1896,7 +2427,7 @@ def list_external_instruments() -> list[dict]:
     }
     grans: dict[str, set[str]] = {}
     roots: dict[str, Path] = {}
-    for root in EXTERNAL_CATALOGS:
+    for root in external_catalog_roots():
         bar_root = root / "data" / "bar"
         if not bar_root.exists():
             continue
@@ -1908,15 +2439,22 @@ def list_external_instruments() -> list[dict]:
                 continue
             grans.setdefault(parts[0], set()).add(f"{parts[1]}-{parts[2]}")
             roots.setdefault(parts[0], root)
-    return [
-        {
-            "instrument_id": inst_id,
-            "granularities": sorted(g, key=lambda x: _order.get(x, 99)),
-            # M21: adjustment status from the manifest (None = unknown).
-            "adjusted": _external_adjusted_flag(roots[inst_id], inst_id),
-        }
-        for inst_id, g in sorted(grans.items())
-    ]
+    out: list[dict] = []
+    for inst_id, g in sorted(grans.items()):
+        root = roots[inst_id]
+        split, div = _external_adjustment_flags(root, inst_id)
+        out.append(
+            {
+                "instrument_id": inst_id,
+                "granularities": sorted(g, key=lambda x: _order.get(x, 99)),
+                # Adjustment status from the manifest (None = unknown).
+                "adjusted": split,  # legacy alias of split_adjusted
+                "split_adjusted": split,
+                "dividend_adjusted": div,
+                "coverage_gaps": _external_coverage_gaps(root, inst_id),
+            }
+        )
+    return out
 
 
 def external_instrument_object(instrument_id: str):
@@ -1925,7 +2463,7 @@ def external_instrument_object(instrument_id: str):
     size precision match the fixed-point encoding of the stored bars."""
     from nautilus_trader.persistence.catalog import ParquetDataCatalog
 
-    for root in EXTERNAL_CATALOGS:
+    for root in external_catalog_roots():
         try:
             cat = ParquetDataCatalog(str(root))
             for inst in cat.instruments():
@@ -1957,6 +2495,13 @@ def load_external_bars(
     (name, size, mtime)) — if the signature is NOT EQUAL to the value in the
     sidecar, re-decode.
     ``start``/``end`` slice inclusively; naive datetimes are treated as UTC.
+
+    Eşzamanlılık (DeepR 2026-08-11 [ORTA]): decode→yaz dizisi `_cache_lock`
+    altında, kilit alındıktan sonra cache TAZE okunur — `load_bybit_bars` ile
+    aynı desen. Bu fonksiyon gerçekten eşzamanlı çağrılıyor: studio
+    `NautilusBacktestAdapter.load_bars` loader'ı bilinçli olarak kilit DIŞINDA
+    çağırır, `web/routes/lab.py` ve `web/routes/agent_backtest.py` de kendi
+    thread'lerinden. Cache'ten karşılanan (yalnız okuyan) çağrı kilide girmez.
     """
     interval_ns = _external_interval_ns(granularity)
     located = _external_bar_dir(instrument_id, granularity)
@@ -1980,45 +2525,58 @@ def load_external_bars(
     )
     sig_path = cache_path.with_name(f"{cache_path.stem}_srcsig.json")
 
-    df: pd.DataFrame | None = None
-    if cache_path.exists() and sig_path.exists():
+    def _read_cache() -> pd.DataFrame | None:
+        if not (cache_path.exists() and sig_path.exists()):
+            return None
         try:
             if json.loads(sig_path.read_text()) == src_sig:
-                df = pd.read_parquet(cache_path)
+                return pd.read_parquet(cache_path)
         except Exception:
-            df = None  # corrupt cache/signature — re-decode
+            return None  # corrupt cache/signature — re-decode
+        return None
+
+    df = _read_cache()  # okuma yolu kilitsiz
 
     if df is None:
-        from nautilus_trader.persistence.catalog import ParquetDataCatalog
+        # Yazma yolu: decode + yazma tek bir kilit altında (bybit yolundaki
+        # duruş — pahalı iş de kilidin içinde kalır ki bekleyen ikinci çağıran
+        # aynı seriyi ikinci kez çözmesin).
+        with _cache_lock(cache_path.with_suffix(".lock")):
+            # Kilit altında TAZE oku: beklerken öbür çağıran zaten yazmış olabilir.
+            df = _read_cache()
+            if df is None:
+                from nautilus_trader.persistence.catalog import ParquetDataCatalog
 
-        cat = ParquetDataCatalog(str(root))
-        bars = cat.bars(bar_types=[bar_dir.name])
-        if not bars:
-            raise ValueError(f"no bars decoded for {bar_dir.name}")
-        recs = [
-            (
-                b.ts_event - interval_ns,
-                float(b.open),
-                float(b.high),
-                float(b.low),
-                float(b.close),
-                float(b.volume),
-            )
-            for b in bars
-        ]
-        # ts_event is bar CLOSE — shift back one interval to OPEN-time index.
-        # L15: a SINGLE pass over the bar list (instead of five separate list-comps).
-        df = pd.DataFrame(
-            recs, columns=["ts_ns", "open", "high", "low", "close", "volume"]
-        )
-        df.index = pd.to_datetime(df.pop("ts_ns").to_numpy(), unit="ns", utc=True)
-        df.index.name = "timestamp"
-        df = df[~df.index.duplicated(keep="last")].sort_index()
-        try:
-            _atomic_to_parquet(df, cache_path)  # M3a
-            _atomic_write_json(src_sig, sig_path)
-        except Exception:
-            pass  # cache is an optimization; the frame itself is valid
+                cat = ParquetDataCatalog(str(root))
+                bars = cat.bars(bar_types=[bar_dir.name])
+                if not bars:
+                    raise ValueError(f"no bars decoded for {bar_dir.name}")
+                recs = [
+                    (
+                        b.ts_event - interval_ns,
+                        float(b.open),
+                        float(b.high),
+                        float(b.low),
+                        float(b.close),
+                        float(b.volume),
+                    )
+                    for b in bars
+                ]
+                # ts_event is bar CLOSE — shift back one interval to OPEN-time
+                # index. L15: a SINGLE pass over the bar list.
+                df = pd.DataFrame(
+                    recs, columns=["ts_ns", "open", "high", "low", "close", "volume"]
+                )
+                df.index = pd.to_datetime(
+                    df.pop("ts_ns").to_numpy(), unit="ns", utc=True
+                )
+                df.index.name = "timestamp"
+                df = df[~df.index.duplicated(keep="last")].sort_index()
+                try:
+                    _atomic_to_parquet(df, cache_path)  # M3a
+                    _atomic_write_json(src_sig, sig_path)
+                except Exception:
+                    pass  # cache is an optimization; the frame itself is valid
 
     if start is not None:
         if start.tzinfo is None:
@@ -2149,7 +2707,7 @@ def coverage_range(
         # "1-HOUR" style granularity is exactly the {step}-{AGG} infix. File
         # names carry the range: <startNs…Z>_<endNs…Z>.parquet (both sortable).
         prefix = f"{instrument_id}-{granularity}-"
-        for root in EXTERNAL_CATALOGS:
+        for root in external_catalog_roots():
             bar_dir = root / "data" / "bar"
             if not bar_dir.exists():
                 continue
@@ -2183,7 +2741,7 @@ def _external_catalog_source_label() -> str:
     local ingest. Same "root exists + has a data/bar dir" test the row
     scanner uses.
     """
-    active = [r for r in EXTERNAL_CATALOGS if (r / "data" / "bar").exists()]
+    active = [r for r in external_catalog_roots() if (r / "data" / "bar").exists()]
     has_local = EQUITY_CATALOG_DIR in active
     has_other = any(r != EQUITY_CATALOG_DIR for r in active)
     if has_local and has_other:
