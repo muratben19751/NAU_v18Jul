@@ -1,0 +1,11 @@
+{
+  "env": {
+    "ANTHROPIC_BASE_URL": "https://openrouter.ai/api",
+    "ANTHROPIC_API_KEY": ""
+  },
+  "permissions": {
+    "allow": [
+      "PowerShell(python -c \"import nautilus_trader, fastapi, uvicorn, anthropic, pandas; print\\('deps present', nautilus_trader.__version__\\)\")"
+    ]
+  }
+}

@@ -83,7 +83,12 @@ def test_paper_deploy_creates_record_and_artifact(client):
             "kill_switch": "3",
         },
     )
-    assert r.status_code == 200 and "pending runner pickup" in r.text
+    # Onay satırı runner'ın GERÇEKTEN var olup olmadığını söyler: STUDIO_RUNNER
+    # ayarlı değilken "pending runner pickup" demek, beklenen bir pickup varmış
+    # gibi okunuyordu — oysa yalnız simüle edilen bir tanesi var ve hiçbir emir
+    # gönderilmeyecek (DeepR 2026-08-11 [ORTA]). Test ortamında runner yok.
+    assert r.status_code == 200
+    assert "simulated pickup only" in r.text and "nothing will trade" in r.text
     dep = client.store.latest_deployment(EID)
     # stub runner picked it up in the background task after the response
     assert dep["environment"] == "paper" and dep["status"] == "running"

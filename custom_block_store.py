@@ -47,6 +47,8 @@ from pathlib import Path
 from tempfile import mkstemp
 from typing import Any
 
+from app_constants import DATA_DIR
+
 log = logging.getLogger(__name__)
 
 # M(store): in-process lock for registry.json + block .py writes — if the agent

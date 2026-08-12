@@ -1,0 +1,1205 @@
+diff --git a/backtest.py b/backtest.py
+index 7fe5ae5..8848626 100644
+--- a/backtest.py
++++ b/backtest.py
+@@ -22,7 +22,7 @@ from decimal import Decimal
+ import numpy as np
+ import pandas as pd
+ from nautilus_trader.backtest.engine import BacktestEngine, BacktestEngineConfig
+-from nautilus_trader.backtest.models import FeeModel, MakerTakerFeeModel
++from nautilus_trader.backtest.models import FeeModel, FillModel, MakerTakerFeeModel
+ from nautilus_trader.config import LoggingConfig
+ from nautilus_trader.model import (
+     Bar,
+@@ -113,10 +113,12 @@ def _bybit_fees_bps(symbol: str, market_symbol: str) -> tuple[float, float]:
+     )
+ 
+ 
+-# Slippage INTENTIONALLY not modeled: Nautilus FillModel is probabilistic
+-# (breaks the deterministic backtest); the constant stays only for external
+-# analysis/tests.
+-SLIPPAGE_BPS: float = 2.0  # ~1 tick slippage estimate per fill (not modeled)
++# AUTO enables Nautilus' adverse one-tick slippage on every aggressive fill.
++# ``prob_slippage=1`` plus a pinned seed is deterministic; a probabilistic
++# unseeded FillModel would make ranking/replay irreproducible. This bps constant
++# remains an external-analysis approximation, not the engine's tick-sized input.
++SLIPPAGE_BPS: float = 2.0
++SLIPPAGE_RANDOM_SEED: int = 42
+ 
+ # Interactive Brokers — US stock/ETF (e.g. QQQ) commission. IBKR Pro "Fixed"
+ # plan: fixed fee per share, minimum per order, and a cap as a percentage of
+@@ -451,7 +453,7 @@ def _parse_money_column(series: pd.Series) -> np.ndarray:
+     return result
+ 
+ 
+-def _periods_per_year(bar_type=None, instrument=None) -> int:
++def _periods_per_year(bar_type=None, instrument=None, bars_df=None) -> int:
+     """H5/M35/L42: derive the annualization base FROM SOURCE + BAR INTERVAL.
+ 
+     Returns are at bar frequency; the correct factor is sqrt(bars per year).
+@@ -494,7 +496,19 @@ def _periods_per_year(bar_type=None, instrument=None) -> int:
+         return 52
+     if bar_sec >= 86400:  # daily+
+         return 252  # NAU 252 trading days
+-    return max(1, int(252 * 6.5 * 3600 / bar_sec))  # intraday equity (RTH)
++    # External catalogs are the authority on their own session shape. QQQ 1H,
++    # for example, contains seven hourly bars on a normal session; the old
++    # hard-coded 6.5h estimate returned 1638 instead of the observed 1764.
++    try:
++        if bars_df is not None and len(bars_df) >= 20:
++            idx = pd.DatetimeIndex(bars_df.index)
++            per_day = pd.Series(1, index=idx.normalize()).groupby(level=0).sum()
++            observed = int(round(float(per_day.median()))) * 252
++            if observed > 0:
++                return observed
++    except (TypeError, ValueError, AttributeError):
++        pass
++    return max(1, int(252 * 6.5 * 3600 / bar_sec))  # intraday equity fallback
+ 
+ 
+ def _sharpe_manual(equity_series: list[float], annualization: int = 365) -> float:
+@@ -520,6 +534,28 @@ def _sharpe_manual(equity_series: list[float], annualization: int = 365) -> floa
+     return mu / sigma * math.sqrt(annualization)
+ 
+ 
++def _sortino_manual(equity_series: list[float], annualization: int = 365) -> float:
++    """Sortino from the same bar-resolution return series as ``_sharpe_manual``.
++
++    The downside deviation uses zero as the target return and all observations
++    (non-negative returns contribute zero), which keeps its denominator on the
++    same bar-frequency basis as Sharpe.  Returning NaN for no downside risk is
++    deliberate: a finite score would fabricate a ranking signal.
++    """
++    if len(equity_series) < 2:
++        return float("nan")
++    arr = np.asarray(equity_series, dtype=float)
++    returns = np.diff(arr) / arr[:-1]
++    returns = returns[np.isfinite(returns)]
++    if len(returns) < 2:
++        return float("nan")
++    downside = np.minimum(returns, 0.0)
++    downside_dev = float(np.sqrt(np.mean(np.square(downside))))
++    if downside_dev == 0.0:
++        return float("nan")
++    return float(np.mean(returns)) / downside_dev * math.sqrt(annualization)
++
++
+ def _max_dd_from_series(equity_series: list[float]) -> float:
+     """Compute max drawdown from any equity series (bar or trade resolution).
+ 
+@@ -559,6 +595,8 @@ def _metrics(
+     annualization: int | None = None,
+     mtm_ts: list[int] | None = None,
+     starting_cash: float | None = None,
++    slippage_model_active: bool = False,
++    price_increment: float | None = None,
+ ) -> dict:
+     """Compute backtest metrics.
+ 
+@@ -593,6 +631,7 @@ def _metrics(
+             "avg_loss": 0.0,
+             # L33: on an empty run use 0.0 instead of NaN (NAU rule; NaN breaks JSON).
+             "profit_factor": 0.0,
++            "profit_factor_returns": 0.0,
+             "avg_return": float("nan"),
+             "volatility": float("nan"),
+             "max_winner": 0.0,
+@@ -602,9 +641,14 @@ def _metrics(
+             "avg_duration_mins": float("nan"),
+             "commission_total": 0.0,
+             "slippage_total": 0.0,
++            "slippage_reported_total": 0.0,
++            "slippage_estimated_total": 0.0,
++            "slippage_fill_count": 0,
++            "slippage_model_active": bool(slippage_model_active),
+             "runner": "BacktestEngine",
+             # Phase 1 additions
+             "sharpe_nautilus": float("nan"),
++            "sortino_nautilus": float("nan"),
+             "sharpe_per_trade": float("nan"),
+             "annualization": annualization,
+             "max_dd_mtm": 0.0,
+@@ -655,15 +699,31 @@ def _metrics(
+             pass
+ 
+     # Slippage from order fills
+-    slippage_total = 0.0
++    slippage_reported_total = 0.0
++    slippage_estimated_total = 0.0
++    slippage_fill_count = 0
+     try:
+         fills_df = engine.trader.generate_order_fills_report()
++        slippage_fill_count = int(len(fills_df))
+         if not fills_df.empty and "slippage" in fills_df.columns:
+-            slippage_total = float(
++            slippage_reported_total = float(
+                 pd.to_numeric(fills_df["slippage"], errors="coerce").sum()
+             )
++        # Some Nautilus reports omit/zero the slippage column even though the
++        # deterministic FillModel moved market fills by one tick. Preserve the
++        # reported number separately and expose a conservative one-tick audit
++        # estimate so "model active + 636 fills + $0" is no longer invisible.
++        if slippage_model_active and slippage_reported_total == 0 and price_increment:
++            qty_col = next(
++                (c for c in ("last_qty", "quantity", "qty", "filled_qty") if c in fills_df),
++                None,
++            )
++            if qty_col:
++                quantities = np.abs(_parse_money_column(fills_df[qty_col]))
++                slippage_estimated_total = float(quantities.sum()) * float(price_increment)
+     except Exception:
+         pass
++    slippage_total = slippage_reported_total or slippage_estimated_total
+ 
+     # Realized equity curve for max drawdown (backward-compat) + MTM if available
+     dd_pnls = pnls
+@@ -708,7 +768,7 @@ def _metrics(
+             return float("nan")
+ 
+     sharpe_nautilus = _stat(ret, "Sharpe Ratio (252 days)")
+-    sortino = _stat(ret, "Sortino Ratio (252 days)")
++    sortino_nautilus = _stat(ret, "Sortino Ratio (252 days)")
+     volatility = _stat(ret, "Returns Volatility (252 days)")
+     avg_return = _stat(ret, "Average (Return)")
+     profit_factor = _stat(ret, "Profit Factor")
+@@ -722,6 +782,10 @@ def _metrics(
+     if _using_mtm:
+         sharpe_manual = _sharpe_manual(mtm_equity, annualization=annualization)
+         sharpe = sharpe_manual if not math.isnan(sharpe_manual) else sharpe_nautilus
++        sortino_manual = _sortino_manual(mtm_equity, annualization=annualization)
++        sortino = (
++            sortino_manual if not math.isnan(sortino_manual) else sortino_nautilus
++        )
+     else:
+         # H610: no MTM (registry strategies — MACrossover/RSIMeanReversion).
+         # realized_equity_full is TRADE-resolution; applying bar-frequency
+@@ -729,6 +793,7 @@ def _metrics(
+         # Make the frequency-correct Nautilus 252-day value primary; if that's
+         # missing too, the per-trade sqrt(n) base.
+         sharpe = sharpe_nautilus
++        sortino = sortino_nautilus
+ 
+     # M35: per-trade Sharpe for NAU comparison (NAU_ev: mean/std × sqrt(n_trades)
+     # from per-TRADE returns). M620: NAU uses population std (ddof=0) and in the
+@@ -751,6 +816,30 @@ def _metrics(
+     if math.isinf(profit_factor):
+         profit_factor = 99.0 if profit_factor > 0 else 0.0
+ 
++    # 2026-08-04: `profit_factor` above is Nautilus' RETURNS-series statistic. It
++    # is not what a trader reads off a backtest card: an audited AUTO iteration
++    # showed PF 20.27 beside a 36% win rate and Sharpe 0.19 — three numbers that
++    # cannot describe the same 671 trades under the usual definition. Compute the
++    # TRADE-level profit factor (gross wins / gross losses over closed positions,
++    # net of commission since `pnls` is realized PnL) and publish that as
++    # `profit_factor`; the returns-series value stays as `profit_factor_returns`
++    # so nothing that depended on it is silently rewritten.
++    profit_factor_returns = profit_factor
++    # `pnls` is a numpy array here (_parse_money_column) — `if pnls:` on an array
++    # raises "truth value ... is ambiguous", so length is checked explicitly.
++    _pnl_arr = np.asarray(pnls, dtype=float)
++    if _pnl_arr.size:
++        _wins = float(_pnl_arr[_pnl_arr > 0].sum())
++        _losses = float(-_pnl_arr[_pnl_arr < 0].sum())
++        if _losses > 0:
++            profit_factor = min(99.0, _wins / _losses)
++        else:
++            # No losing trade at all: the ratio is unbounded → NAU's finite cap,
++            # and 0.0 when there were no wins either (flat book, not perfection).
++            profit_factor = 99.0 if _wins > 0 else 0.0
++    if math.isnan(profit_factor):
++        profit_factor = 0.0
++
+     # L19: bar-resolution MTM equity curve (ts, eq) — the realized step-curve
+     # in the UI didn't show intra-position dips; max_dd comes from this series,
+     # and now the curve can be shown too. >5000 points are uniformly thinned.
+@@ -798,6 +887,7 @@ def _metrics(
+         "volatility": volatility,
+         "avg_return": avg_return,
+         "profit_factor": profit_factor,
++        "profit_factor_returns": profit_factor_returns,
+         "win_rate": win_rate,
+         "max_dd": max_dd,
+         # H11: positive-percentage field for the NAU boundary comparison (the
+@@ -816,9 +906,14 @@ def _metrics(
+         "avg_duration_mins": avg_duration_mins,
+         "commission_total": commission_total,
+         "slippage_total": slippage_total,
++        "slippage_reported_total": slippage_reported_total,
++        "slippage_estimated_total": slippage_estimated_total,
++        "slippage_fill_count": slippage_fill_count,
++        "slippage_model_active": bool(slippage_model_active),
+         "runner": "BacktestEngine",
+         # Phase 1 additions
+         "sharpe_nautilus": sharpe_nautilus,  # Nautilus 252-day value kept for audit
++        "sortino_nautilus": sortino_nautilus,  # same 252-day audit reference
+         "sharpe_per_trade": sharpe_per_trade,  # M35: NAU per-trade base
+         "annualization": annualization,  # H5: real bars/year base
+         "max_dd_mtm": max_dd_mtm,  # MTM drawdown (== max_dd when MTM available)
+@@ -1137,7 +1232,7 @@ def run_backtest(
+             engine,
+             positions_df,
+             mtm_equity=mtm_equity,
+-            annualization=_periods_per_year(active_bar_type, instrument),
++            annualization=_periods_per_year(active_bar_type, instrument, df),
+             mtm_ts=getattr(strategy, "_mtm_ts", None),
+         )
+         equity, equity_dates = _equity_curve(positions_df)
+@@ -1313,6 +1408,11 @@ def run_composed_backtest(
+             # Commission by instrument type: crypto→Bybit maker/taker,
+             # US stock/ETF (QQQ etc.)→Interactive Brokers Fixed (see _fee_model_for).
+             fee_model=_fee,
++            fill_model=(
++                FillModel(prob_slippage=1.0, random_seed=SLIPPAGE_RANDOM_SEED)
++                if getattr(spec, "model_slippage", False)
++                else None
++            ),
+         )
+         engine.add_instrument(active_instrument)
+ 
+@@ -1458,9 +1558,11 @@ def run_composed_backtest(
+             engine,
+             positions_df,
+             mtm_equity=mtm_equity,
+-            annualization=_periods_per_year(active_bar_type, active_instrument),
++            annualization=_periods_per_year(active_bar_type, active_instrument, df),
+             mtm_ts=getattr(_composed_strategy, "_mtm_ts", None),
+             starting_cash=_cap,
++            slippage_model_active=bool(getattr(spec, "model_slippage", False)),
++            price_increment=float(active_instrument.price_increment),
+         )
+         equity, equity_dates = _equity_curve(positions_df, starting_cash=_cap)
+         # Entry/exit reasons: decision log (same lifecycle as _mtm_equity) +
+@@ -1715,7 +1817,12 @@ def run_backtest_node(
+             "sharpe_nautilus": _sf(returns, "Sharpe Ratio (252 days)"),
+             "annualization": 252,
+             "sortino": _sf(returns, "Sortino Ratio (252 days)"),
++            # BacktestNode path: no per-trade PnL series is available here,
++            # so both fields carry Nautilus' RETURNS-series statistic. On the
++            # Engine path "profit_factor" is the TRADE-level ratio — do not
++            # compare this field across runners (same caveat as "sharpe").
+             "profit_factor": _sf(returns, "Profit Factor"),
++            "profit_factor_returns": _sf(returns, "Profit Factor"),
+             "max_dd": float("nan"),  # BacktestNode stats have no Max Drawdown
+             "volatility": _sf(returns, "Returns Volatility (252 days)"),
+             "long_ratio": _sf(general, "Long Ratio"),
+@@ -1921,7 +2028,12 @@ def run_composed_backtest_node(
+             "sharpe_nautilus": _sf(returns, "Sharpe Ratio (252 days)"),
+             "annualization": 252,
+             "sortino": _sf(returns, "Sortino Ratio (252 days)"),
++            # BacktestNode path: no per-trade PnL series is available here,
++            # so both fields carry Nautilus' RETURNS-series statistic. On the
++            # Engine path "profit_factor" is the TRADE-level ratio — do not
++            # compare this field across runners (same caveat as "sharpe").
+             "profit_factor": _sf(returns, "Profit Factor"),
++            "profit_factor_returns": _sf(returns, "Profit Factor"),
+             "max_dd": float("nan"),  # BacktestNode stats have no Max Drawdown
+             "volatility": _sf(returns, "Returns Volatility (252 days)"),
+             "long_ratio": _sf(general, "Long Ratio"),
+diff --git a/backtest_robustness.py b/backtest_robustness.py
+index cceb6cd..22ede87 100644
+--- a/backtest_robustness.py
++++ b/backtest_robustness.py
+@@ -30,6 +30,11 @@ def _env_float(name: str, default: float) -> float:
+ # lookback leakage from spilling into the test window. NAU pattern.
+ WF_EMBARGO_DAYS = max(0.0, _env_float("NAUTILUS_WF_EMBARGO_DAYS", 2))
+ 
++
++def _stable_symbol_iteration_id(symbol: str) -> int:
++    """Cross-process stable backtest trace id for a symbol."""
++    return int(hashlib.sha1(symbol.encode()).hexdigest(), 16) % 10000
++
+ # M268/M431: unit-timeout for the parallel batches in robustness — so a hung
+ # custom-block unit does not hold the whole suite hostage to the sandbox's 900s
+ # global timeout (wholesale loss of all the work). Batch budget < global timeout.
+@@ -37,6 +42,15 @@ WF_EMBARGO_DAYS = max(0.0, _env_float("NAUTILUS_WF_EMBARGO_DAYS", 2))
+ # 'unit timeout'.
+ WFO_BATCH_TIMEOUT_S = _env_float("NAUTILUS_WFO_BATCH_TIMEOUT_S", 600.0)
+ 
++# Smallest in-sample Sharpe the IS/OOS overfitting RATIO may be divided by.
++# The ratio oos_sharpe/in_sharpe is meaningless when the denominator is noise:
++# an in-sample Sharpe of 0.0037 (measured, run 3cad3325) turns an OOS Sharpe of
++# 0.203 into "54.18 → ✓ Robust". Below this floor there is no in-sample edge to
++# generalize FROM, so the criterion reports "not measured" rather than a ratio
++# (a floor on the denominator would keep manufacturing a verdict out of noise).
++# Same family as the Calmar floor in agent_backtest._score.
++IS_SHARPE_MIN = _env_float("NAUTILUS_IS_SHARPE_MIN", 0.05)
++
+ 
+ def _run_many_kw(run_many):
+     """Pass timeout_s if run_many supports it (parallel_exec.run_units); silently
+@@ -230,6 +244,8 @@ def run_walk_forward(
+                 bar_type=bar_type,
+                 venue=venue,
+             )
++            if test_result and not test_result.error:
++                _stamp_window_benchmark(test_result.metrics, test_bars)
+ 
+         # Naive (unchanged) spec on the SAME OOS window — honest baseline.
+         naive_result = None
+@@ -243,6 +259,8 @@ def run_walk_forward(
+                 bar_type=bar_type,
+                 venue=venue,
+             )
++            if naive_result and not naive_result.error:
++                _stamp_window_benchmark(naive_result.metrics, test_bars)
+ 
+         windows.append(
+             _wfo_window_entry(
+@@ -299,6 +317,33 @@ def _derive_test_objective(metrics: dict, objective: str):
+     return float(v)
+ 
+ 
++def _stamp_window_benchmark(metrics: dict | None, bars: pd.DataFrame) -> None:
++    """Attach slice-local buy-and-hold/excess returns to a test result."""
++    if not metrics or bars is None or len(bars) < 2 or "close" not in bars:
++        return
++    try:
++        first = float(bars["close"].iloc[0])
++        last = float(bars["close"].iloc[-1])
++        if not np.isfinite(first) or not np.isfinite(last) or first <= 0:
++            return
++        from backtest import STARTING_CASH
++
++        pnl_pct = metrics.get("pnl_pct")
++        if pnl_pct is None:
++            pnl_pct = float(metrics.get("pnl") or 0.0) / float(STARTING_CASH)
++        benchmark = last / first - 1.0
++        excess = float(pnl_pct) - benchmark
++        metrics["benchmark_return_fraction"] = benchmark
++        metrics["excess_return_fraction"] = excess
++        # Legacy aliases keep archived viewers and old callers readable.
++        metrics["benchmark_return_pct"] = benchmark
++        metrics["excess_pnl_pct"] = excess
++        metrics["benchmark_cost_basis"] = "gross_buy_and_hold_no_costs"
++        metrics["strategy_return_cost_basis"] = "net_simulated_costs"
++    except (TypeError, ValueError, KeyError):
++        return
++
++
+ def _wfo_window_entry(
+     window_n,
+     train_start,
+@@ -576,6 +621,14 @@ def _run_walk_forward_parallel(
+         m = meta[window_n]
+         pt = test_payloads.get(f"w{window_n}t")
+         pn = test_payloads.get(f"w{window_n}n")
++        test_bars = bars_df.loc[
++            (bars_df.index >= pd.Timestamp(test_start))
++            & (bars_df.index < pd.Timestamp(test_end))
++        ]
++        if pt and not pt.get("error"):
++            _stamp_window_benchmark(pt.get("metrics"), test_bars)
++        if pn and not pn.get("error"):
++            _stamp_window_benchmark(pn.get("metrics"), test_bars)
+         windows.append(
+             _wfo_window_entry(
+                 window_n,
+@@ -651,6 +704,11 @@ def wfo_aggregate(windows: list[dict]) -> dict:
+ 
+     oos_sharpe_penalized = _penalized(("test_metrics", "sharpe"))
+     oos_pnl_penalized = _penalized(("test_metrics", "pnl"))
++    # The same dispersion penalty over the NAIVE series — the unchanged spec is
++    # what the agent saves to the catalog, so this is the number a pass/fail gate
++    # must read (agent_backtest._wfo_test). The optimized aggregate above stays
++    # as the diagnostic "did re-fitting help?".
++    oos_sharpe_naive_penalized = _penalized(("test_metrics_naive", "sharpe"))
+     is_obj = [
+         w["train_objective"] for w in windows if w.get("train_objective") is not None
+     ]
+@@ -705,6 +763,12 @@ def wfo_aggregate(windows: list[dict]) -> dict:
+         "oos_pnl_penalized": (
+             round(oos_pnl_penalized, 2) if oos_pnl_penalized is not None else None
+         ),
++        # The gate's number: same penalty over the UNCHANGED spec's OOS windows.
++        "oos_sharpe_naive_penalized": (
++            round(oos_sharpe_naive_penalized, 3)
++            if oos_sharpe_naive_penalized is not None
++            else None
++        ),
+         "param_cv": param_cv,
+         "unstable_params": unstable,
+         "stability_label": stability_label,
+@@ -975,9 +1039,34 @@ def run_insample_oos_split(
+         oos_sharpe = _num(oos_m.get("sortino"))
+         metric_used = "Sortino"
+ 
+-    if not in_sharpe or in_sharpe <= 0 or oos_sharpe is None:
++    # 2026-08-04: this used to be ONE branch producing ONE label,
++    # "— (yetersiz veri)", for three different situations. Two of them are not
++    # the same thing at all:
++    #
++    #   * a metric could not be computed  → the criterion was NOT MEASURED
++    #   * the in-sample Sharpe is <= 0    → the strategy LOSES in-sample; that
++    #                                       is a real, measured failure
++    #
++    # The agent gate counted the shared label as a FAILURE, while the very same
++    # "yetersiz" marker on the multi-symbol criterion counted as SKIPPED — two
++    # criteria, one marker, opposite handling. Splitting the labels lets the
++    # gate do the right thing with each (see agent_backtest._robustness_passed).
++    #
++    # The third case is the near-zero denominator: measured on run 3cad3325 a
++    # candidate with in-sample Sharpe 0.0037 (55 trades for +1.10 USD — noise)
++    # divided into an OOS Sharpe of 0.203 and scored 54.18, which the old
++    # thresholds proudly labelled "✓ Robust". A strategy with no in-sample edge
++    # was called robust BECAUSE it had no edge. There is nothing to generalize
++    # from, so the honest verdict is "not measured", not a ratio.
++    if in_sharpe is None or oos_sharpe is None:
+         score = None
+-        label = "— (yetersiz veri)"
++        label = "— (ölçülemedi: Sharpe/Sortino hesaplanamadı)"
++    elif in_sharpe <= 0:
++        score = None
++        label = "✗ IS negatif (in-sample kenar yok)"
++    elif abs(in_sharpe) < IS_SHARPE_MIN:
++        score = None
++        label = f"— (ölçülemedi: IS Sharpe ~0, |{in_sharpe:.4f}| < {IS_SHARPE_MIN})"
+     else:
+         score = round(oos_sharpe / in_sharpe, 2)
+         if (
+@@ -1026,7 +1115,9 @@ def run_multi_symbol(
+     """Measures generalizability by testing the strategy on multiple symbols.
+ 
+     Runs the same spec over the same time range in a backtest for each symbol.
+-    Results: how many symbols had positive PnL, average Sharpe, per-symbol detail.
++    Results: how many symbols beat their own buy-and-hold baseline, average
++    Sharpe, and per-symbol detail. Absolute profit in a bull market is not
++    evidence of generalizable alpha.
+ 
+     ``source="external"``: symbols are external-catalog instrument ids
+     (e.g. "SPY.ARCA"), ``interval`` is the catalog DSL (e.g. "1-DAY"), and the
+@@ -1034,8 +1125,8 @@ def run_multi_symbol(
+ 
+     Returns: {
+         symbols_tested: int,
+-        symbols_positive: int,          # those with PnL > 0
+-        pass_rate: float,               # positive / total
++        symbols_positive: int,          # those with excess return > 0
++        pass_rate: float,               # alpha-positive / total
+         generalization_label: str,      # "✓ Generalizable" / "⚠ Limited" / "✗ Symbol specific"
+         primary_symbol: str,
+         results: [
+@@ -1092,7 +1183,7 @@ def run_multi_symbol(
+                 "source": source,
+                 # Stable iteration_id: hash(sym) is per-process random with PYTHONHASHSEED
+                 # (record ids change on restart). sha1 is deterministic.
+-                "iteration_id": int(hashlib.sha1(sym.encode()).hexdigest(), 16) % 10000,
++                "iteration_id": _stable_symbol_iteration_id(sym),
+                 "rationale": f"multi-symbol · {sym}",
+             }
+             for sym in symbols
+@@ -1129,18 +1220,27 @@ def run_multi_symbol(
+             pnl = m.get("pnl", 0.0) or 0.0
+             sharpe = m.get("sharpe")
+             n_trades = m.get("n_trades", 0) or 0
+-            pnl_pct = pnl / STARTING_CASH * 100
+-            icon = "✓" if pnl > 0 else "✗"
++            pnl_pct = m.get("pnl_pct", pnl / STARTING_CASH)
++            benchmark = m.get("benchmark_return_fraction")
++            excess = m.get("excess_return_fraction")
++            icon = "✓" if excess is not None and excess > 0 else "✗"
+             sharpe_str = f"{sharpe:.2f}" if sharpe is not None else "—"
++            excess_str = f"{100 * excess:+.1f}%" if excess is not None else "—"
+             _p(
+-                f"  [{sym}] {icon} PnL={pnl:+.2f} {cur} ({pnl_pct:+.1f}%) · "
+-                f"Sharpe={sharpe_str} · {n_trades} trade"
++                f"  [{sym}] {icon} PnL={pnl:+.2f} {cur} ({100 * pnl_pct:+.1f}%) · "
++                f"Excess={excess_str} · Sharpe={sharpe_str} · {n_trades} trade"
+             )
+             results.append(
+                 {
+                     "symbol": sym,
+                     "pnl": round(pnl, 2),
+-                    "pnl_pct": round(pnl_pct, 2),
++                    "pnl_pct": round(pnl_pct, 6),
++                    "benchmark_return_fraction": round(benchmark, 6)
++                    if benchmark is not None
++                    else None,
++                    "excess_return_fraction": round(excess, 6)
++                    if excess is not None
++                    else None,
+                     "sharpe": round(sharpe, 2) if sharpe is not None else None,
+                     "n_trades": n_trades,
+                     "error": None,
+@@ -1195,7 +1295,10 @@ def run_multi_symbol(
+                 r = run_composed_backtest(
+                     spec,
+                     df,
+-                    iteration_id=hash(sym) % 10000,
++                    # Python's hash is randomized per process.  The parallel
++                    # branch already uses SHA1, so retain identical trace ids
++                    # when the pool is disabled too.
++                    iteration_id=_stable_symbol_iteration_id(sym),
+                     rationale=f"multi-symbol · {sym}",
+                     instrument=instr,
+                     bar_type=bt,
+@@ -1221,19 +1324,29 @@ def run_multi_symbol(
+                 pnl = m.get("pnl", 0.0) or 0.0
+                 sharpe = m.get("sharpe")
+                 n_trades = m.get("n_trades", 0) or 0
+-                pnl_pct = pnl / STARTING_CASH * 100
++                _stamp_window_benchmark(m, df)
++                pnl_pct = m.get("pnl_pct", pnl / STARTING_CASH)
++                benchmark = m.get("benchmark_return_fraction")
++                excess = m.get("excess_return_fraction")
+ 
+-                icon = "✓" if pnl > 0 else "✗"
++                icon = "✓" if excess is not None and excess > 0 else "✗"
+                 sharpe_str = f"{sharpe:.2f}" if sharpe is not None else "—"
++                excess_str = f"{100 * excess:+.1f}%" if excess is not None else "—"
+                 _p(
+-                    f"  [{sym}] {icon} PnL={pnl:+.2f} {cur} ({pnl_pct:+.1f}%) · "
+-                    f"Sharpe={sharpe_str} · {n_trades} trade"
++                    f"  [{sym}] {icon} PnL={pnl:+.2f} {cur} ({100 * pnl_pct:+.1f}%) · "
++                    f"Excess={excess_str} · Sharpe={sharpe_str} · {n_trades} trade"
+                 )
+                 results.append(
+                     {
+                         "symbol": sym,
+                         "pnl": round(pnl, 2),
+-                        "pnl_pct": round(pnl_pct, 2),
++                        "pnl_pct": round(pnl_pct, 6),
++                        "benchmark_return_fraction": round(benchmark, 6)
++                        if benchmark is not None
++                        else None,
++                        "excess_return_fraction": round(excess, 6)
++                        if excess is not None
++                        else None,
+                         "sharpe": round(sharpe, 2) if sharpe is not None else None,
+                         "n_trades": n_trades,
+                         "error": r.error,
+@@ -1251,11 +1364,17 @@ def run_multi_symbol(
+                     }
+                 )
+ 
+-    # Results with enough trades
++    # Results with enough trades and an actually measured alpha. Missing market
++    # data must not silently become a pass merely because the strategy made
++    # nominal PnL during a broad rally.
+     valid = [
+-        r for r in results if not r.get("error") and (r.get("n_trades") or 0) >= 5
++        r
++        for r in results
++        if not r.get("error")
++        and (r.get("n_trades") or 0) >= 5
++        and r.get("excess_return_fraction") is not None
+     ]  # 3→5
+-    positive = [r for r in valid if (r.get("pnl") or 0) > 0]
++    positive = [r for r in valid if (r.get("excess_return_fraction") or 0) > 0]
+     n_valid = len(valid)
+     n_positive = len(positive)
+     pass_rate = n_positive / n_valid if n_valid > 0 else 0.0
+@@ -1273,7 +1392,7 @@ def run_multi_symbol(
+     avg_sharpe = round(sum(sharpes) / len(sharpes), 2) if sharpes else None
+ 
+     _p(
+-        f"Multi-symbol completed · {n_positive}/{n_valid} symbols positive · "
++        f"Multi-symbol completed · {n_positive}/{n_valid} symbols positive alpha · "
+         f"pass_rate={pass_rate:.0%} · {label}"
+     )
+ 
+diff --git a/composer.py b/composer.py
+index 770db84..cd12455 100644
+--- a/composer.py
++++ b/composer.py
+@@ -22,6 +22,7 @@ from __future__ import annotations
+ 
+ import json
+ import logging
++import math
+ import os
+ import threading
+ import uuid
+@@ -1146,12 +1147,26 @@ def register_custom_from_disk(name: str) -> None:
+     info = cbs.get_custom(name)
+     if info is None:
+         raise ValueError(f"no such custom block: {name}")
++    # Current AUTO blocks persist role metadata at generation time. Earlier
++    # ``agnt_e``/``agnt_x`` artifacts did not, even though their reserved names
++    # already encode the only safe role. Backfill that durable fact before this
++    # module enters the registry; a conflicting hand-edited record is rejected
++    # rather than being allowed to masquerade as its opposite signal type.
++    inferred_role = cbs.ensure_agent_role_metadata(name)
++    if inferred_role is not None:
++        info = cbs.get_custom(name)
++        if info is None:  # defensive: a concurrent cleanup won the race
++            raise ValueError(f"custom block disappeared during role migration: {name}")
++    meta = dict(info.get("meta") or {})
++    declared_role = meta.get("role") if meta.get("role") in {"entry", "exit"} else None
+     module = _load_module_from_path(name, cbs.module_path(name))
+     evaluate = getattr(module, "evaluate", None)
+     if not callable(evaluate):
+         raise ValueError(f"{name}.py has no callable `evaluate`")
+ 
+-    def _eval_wrapper(strategy, idx, block, closes, _fn=evaluate):
++    def _eval_wrapper(
++        strategy, idx, block, closes, _fn=evaluate, _declared_role=declared_role
++    ):
+         # Give custom blocks a small mutable state dict scoped by block idx.
+         key = f"custom_state_{idx}"
+         state = strategy._prev_state.setdefault(key, {})
+@@ -1180,7 +1195,27 @@ def register_custom_from_disk(name: str) -> None:
+         block_view = SimpleNamespace(
+             params=dict(block.params), role=block.role, type=block.type
+         )
+-        return _fn(state, block_view, closes_view, indicators, _PortfolioView(strategy))
++        signal = _fn(state, block_view, closes_view, indicators, _PortfolioView(strategy))
++        # Legacy AUTO files were only syntactically validated, so a rare branch
++        # could return the opposite vocabulary despite a normal smoke result.
++        # Never reinterpret it at runtime: fail closed to no signal. New blocks
++        # are rejected earlier by agent._test_execute_generated; this is the
++        # durable catalog/restart defense for legacy artifacts.
++        if _declared_role == "entry":
++            allowed = {None, "long", "short"}
++        elif _declared_role == "exit":
++            allowed = {None, "exit"}
++        else:
++            allowed = None
++        if allowed is not None and signal not in allowed:
++            logging.warning(
++                "custom block '%s' returned %r outside declared %s role; ignored",
++                name,
++                signal,
++                _declared_role,
++            )
++            return None
++        return signal
+ 
+     max_lookback_fn = getattr(module, "max_lookback", None)
+     validate_fn = getattr(module, "validate", None)
+@@ -1217,7 +1252,7 @@ def register_custom_from_disk(name: str) -> None:
+     register_custom_block(
+         name,
+         {
+-            "meta": info["meta"],
++            "meta": meta,
+             "eval": _eval_wrapper,
+             "on_start": None,
+             "max_lookback": _lookback_with_floor,
+@@ -1251,6 +1286,16 @@ _load_custom_blocks()
+ # --------------------------------------------------------------------------
+ 
+ 
++def _signal_matches_role(role: str, result) -> bool:
++    """Interpret a block output using the role's exact signal vocabulary."""
++
++    if role == "entry":
++        return result in ("long", "short")
++    if role == "exit":
++        return result == "exit"
++    return False
++
++
+ @dataclass
+ class SignalBlock:
+     type: BlockType
+@@ -1297,6 +1342,10 @@ class ComposedStrategySpec:
+     # Delay fill: execute entry on next bar's open instead of signal bar's close
+     # Eliminates same-bar look-ahead bias; default True for more realistic execution
+     delay_fill: bool = True
++    # Deterministic adverse fill model. AUTO enables this so selection,
++    # robustness and holdout all pay one tick on aggressive fills; manual/legacy
++    # specs remain backward compatible unless explicitly enabled.
++    model_slippage: bool = False
+ 
+     def to_dict(self) -> dict:
+         d = asdict(self)
+@@ -1336,6 +1385,7 @@ class ComposedStrategySpec:
+             trend_interval=str(d.get("trend_interval", "60")),
+             trend_ema_period=int(d.get("trend_ema_period", 50)),
+             delay_fill=bool(d.get("delay_fill", True)),
++            model_slippage=bool(d.get("model_slippage", False)),
+         )
+ 
+     def validate(self) -> str | None:
+@@ -1347,6 +1397,16 @@ class ComposedStrategySpec:
+             reg_entry = BLOCK_REGISTRY.get(b.type)
+             if reg_entry is None:
+                 return f"Unknown block type: {b.type}"
++            # Custom blocks generated for AUTO carry their semantic role in
++            # metadata. A saved exit block must never be re-used as an entry
++            # (or vice versa): the function may still execute, but its return
++            # vocabulary has a different meaning and can manufacture trades.
++            declared_role = (reg_entry.get("meta") or {}).get("role")
++            if declared_role in ("entry", "exit") and b.role != declared_role:
++                return (
++                    f"Custom block {b.type!r} is declared for role "
++                    f"{declared_role!r}, not {b.role!r}."
++                )
+             v = reg_entry.get("validate")
+             if v is not None:
+                 # Carry the L25 isolation into validate too: give the custom validate
+@@ -1368,8 +1428,17 @@ class ComposedStrategySpec:
+                 return "sl_value must be > 0 when bracket is enabled."
+             if self.tp_type != "off" and self.tp_value <= 0:
+                 return "tp_value must be > 0 when TP is not off."
+-        if self.trade_size_mode == "percent_equity" and self.trade_size_percent <= 0:
+-            return "trade_size_percent must be > 0."
++        if self.trade_size_mode == "percent_equity":
++            try:
++                pct = float(self.trade_size_percent)
++            except (TypeError, ValueError):
++                return "trade_size_percent must be a finite number."
++            if not math.isfinite(pct):
++                return "trade_size_percent must be a finite number."
++            if pct <= 0:
++                return "trade_size_percent must be > 0."
++            if pct > 100:
++                return "trade_size_percent must be <= 100 for an unlevered strategy."
+         if self.trade_size_mode == "atr_target" and self.trade_size_atr_risk <= 0:
+             return "trade_size_atr_risk must be > 0."
+         if self.trade_size_mode == "fixed_usdt" and self.trade_size_usdt <= 0:
+@@ -1929,8 +1998,19 @@ class ComposedStrategy(Strategy):
+             # Fixed dollar → quantity: divide the USDT amount by the price
+             return max(0.0, float(self.spec.trade_size_usdt) / price)
+         if mode == "percent_equity":
+-            equity = self._current_equity()
+-            return max(0.0, equity * (self.spec.trade_size_percent / 100.0) / price)
++            # Never submit a percent-equity order above account equity. Besides
++            # malformed/manual specs, AUTO's exposure setting is environment
++            # controlled; fail closed on non-finite account/pct values rather
++            # than turning them into an unbounded share quantity.
++            try:
++                equity = float(self._current_equity())
++                pct = float(self.spec.trade_size_percent)
++            except (TypeError, ValueError):
++                return 0.0
++            if not math.isfinite(equity) or not math.isfinite(pct):
++                return 0.0
++            notional = max(0.0, equity) * min(max(pct, 0.0), 100.0) / 100.0
++            return notional / price
+         if mode == "atr_target":
+             if self._atr is None or not self._atr.initialized or self._atr.value <= 0:
+                 return float(self.spec.trade_size)
+@@ -2309,7 +2389,11 @@ class ComposedStrategy(Strategy):
+         exit_fires_per: list[bool] = []
+         for i, b in self._exit_blocks:
+             r = self._eval_block(i, b, closes)
+-            exit_fires_per.append(bool(r))
++            # Role contract is deliberately exact. ``bool('long')`` used to
++            # turn an entry-style custom block into an exit signal, so malformed
++            # generated code could pass smoke/runtime and still win a backtest.
++            # Only the exit vocabulary's affirmative value may close a position.
++            exit_fires_per.append(_signal_matches_role("exit", r))
+ 
+         if self.spec.entry_logic == "AND":
+             long_fires = bool(self._entry_blocks) and all(long_fires_per)
+diff --git a/data.py b/data.py
+index ed24598..a469c2b 100644
+--- a/data.py
++++ b/data.py
+@@ -24,7 +24,7 @@ import time
+ from contextlib import contextmanager
+ from datetime import UTC, date, datetime, timedelta
+ from pathlib import Path
+-from typing import Literal
++from typing import Any, Literal
+ 
+ import pandas as pd
+ import requests
+@@ -1901,8 +1901,6 @@ def load_external_bars(
+         bars = cat.bars(bar_types=[bar_dir.name])
+         if not bars:
+             raise ValueError(f"no bars decoded for {bar_dir.name}")
+-        # ts_event is bar CLOSE — shift back one interval to OPEN-time index.
+-        # L15: a SINGLE pass over the bar list (instead of five separate list-comps).
+         recs = [
+             (
+                 b.ts_event - interval_ns,
+@@ -1914,6 +1912,8 @@ def load_external_bars(
+             )
+             for b in bars
+         ]
++        # ts_event is bar CLOSE — shift back one interval to OPEN-time index.
++        # L15: a SINGLE pass over the bar list (instead of five separate list-comps).
+         df = pd.DataFrame(
+             recs, columns=["ts_ns", "open", "high", "low", "close", "volume"]
+         )
+@@ -1959,6 +1959,67 @@ def load_external_bars(
+     return df
+ 
+ 
++def external_data_gap_report(
++    df: pd.DataFrame,
++    *,
++    max_calendar_days: int = 14,
++    granularity: str = "",
++) -> dict[str, Any] | None:
++    """Return the largest suspicious calendar gap in an external series.
++
++    Weekends and ordinary exchange holidays fit comfortably under 14 days.
++    Multi-month/year holes do not, and silently annualizing/ranking across them
++    creates non-reproducible edge.  For known intraday granularities, also flag
++    a large *same-session* gap. This intentionally avoids guessing overnight or
++    holiday sessions, keeping the validation safe for equity and crypto feeds.
++    """
++    if df is None or len(df) < 2 or not isinstance(df.index, pd.DatetimeIndex):
++        return None
++    idx = pd.DatetimeIndex(df.index).sort_values()
++    active_days = idx.normalize().unique().sort_values()
++    if len(active_days) >= 2:
++        deltas = active_days[1:] - active_days[:-1]
++        largest_idx = int(deltas.argmax())
++        largest_days = int(deltas[largest_idx] / pd.Timedelta(days=1))
++        if largest_days > max_calendar_days:
++            return {
++                "kind": "calendar",
++                "days": largest_days,
++                "from": active_days[largest_idx].date().isoformat(),
++                "to": active_days[largest_idx + 1].date().isoformat(),
++                "max_allowed_days": int(max_calendar_days),
++            }
++
++    # Do not infer a cadence from arbitrary caller text.  A same-date gap of
++    # more than three expected bars is a conservative corruption/missing-data
++    # signal; cross-date gaps remain governed by the calendar rule above.
++    interval_minutes = {
++        "1-MINUTE": 1,
++        "5-MINUTE": 5,
++        "15-MINUTE": 15,
++        "30-MINUTE": 30,
++        "1-HOUR": 60,
++        "4-HOUR": 240,
++        "12-HOUR": 720,
++    }.get(str(granularity).upper())
++    if not interval_minutes:
++        return None
++    deltas = idx[1:] - idx[:-1]
++    same_day = idx[1:].normalize() == idx[:-1].normalize()
++    max_gap = pd.Timedelta(minutes=interval_minutes * 3)
++    suspect = (deltas > max_gap) & same_day
++    if not suspect.any():
++        return None
++    suspect_i = next(i for i, value in enumerate(suspect) if value)
++    return {
++        "kind": "intraday",
++        "from": idx[suspect_i].isoformat(),
++        "to": idx[suspect_i + 1].isoformat(),
++        "gap_minutes": int(deltas[suspect_i] / pd.Timedelta(minutes=1)),
++        "max_allowed_minutes": interval_minutes * 3,
++    }
++
++
+ def coverage_range(
+     source: str,
+     *,
+diff --git a/parallel_exec.py b/parallel_exec.py
+index 0127a4a..070ce4e 100644
+--- a/parallel_exec.py
++++ b/parallel_exec.py
+@@ -265,6 +265,31 @@ def _run_unit(unit: dict) -> dict:
+             if not result.error
+             else 0,
+         }
++        if unit.get("kind") == "symbol" and not result.error:
++            # Multi-symbol acceptance is based on alpha, so compute buy-and-hold
++            # over this worker's exact data slice (not the parent's primary bar
++            # series).  Keep the value in the metrics envelope consumed by the
++            # robustness reducer.
++            try:
++                first = float(bars["close"].iloc[0])
++                last = float(bars["close"].iloc[-1])
++                if first > 0 and len(bars) >= 2:
++                    benchmark = last / first - 1.0
++                    metrics = payload["metrics"]
++                    pnl_pct = metrics.get("pnl_pct")
++                    if pnl_pct is None:
++                        from backtest import STARTING_CASH
++
++                        pnl_pct = float(metrics.get("pnl") or 0.0) / float(STARTING_CASH)
++                    excess = float(pnl_pct) - benchmark
++                    metrics["benchmark_return_fraction"] = benchmark
++                    metrics["excess_return_fraction"] = excess
++                    metrics["benchmark_return_pct"] = benchmark
++                    metrics["excess_pnl_pct"] = excess
++                    metrics["benchmark_cost_basis"] = "gross_buy_and_hold_no_costs"
++                    metrics["strategy_return_cost_basis"] = "net_simulated_costs"
++            except (KeyError, TypeError, ValueError, IndexError):
++                pass
+         if unit.get("want_equity"):
+             payload["equity_curve"] = result.equity_curve or []
+         if unit.get("kind") == "symbol":
+diff --git a/web/mission.py b/web/mission.py
+index 0875686..d03ebbe 100644
+--- a/web/mission.py
++++ b/web/mission.py
+@@ -154,6 +154,9 @@ def _candidates(state: dict, running: bool, stopping: bool = False) -> list[dict
+                 "spark": _sparkline(pts, h=46 if is_leader else 36),
+                 "spark_h": 46 if is_leader else 36,
+                 "metrics": [
++                    f"Excess {r['excess_return_fraction'] * 100:+.1f}%"
++                    if r.get("excess_return_fraction") is not None
++                    else "Excess —",
+                     f"PF {r['profit_factor']:.2f}"
+                     if r.get("profit_factor") is not None
+                     else "PF —",
+@@ -367,4 +370,7 @@ def _cost_label(token_info: dict | None) -> str:
+     ti = token_info or {}
+     total = fmt_tokens(ti.get("total"))
+     usd = ti.get("cost_usd")
+-    return f"{total} · ${usd:.2f}" if usd is not None else total
++    if usd is None:
++        return total
++    suffix = "reported" if ti.get("cost_source") == "provider_reported" else "est."
++    return f"{total} · ${usd:.2f} {suffix}"
+diff --git a/web/routes/sessions.py b/web/routes/sessions.py
+index d5934d4..2ad1ff0 100644
+--- a/web/routes/sessions.py
++++ b/web/routes/sessions.py
+@@ -17,6 +17,7 @@ Geri kalanı app-spesifik; Nautilus kavramı değil.
+ from __future__ import annotations
+ 
+ import json
++import os
+ import re
+ from collections import deque
+ from datetime import datetime
+@@ -216,6 +217,150 @@ def _build_timeline_spans(events: list[dict]) -> list[dict]:
+ # active (growing) file is re-read. Invalidation is in the key itself.
+ _SUMMARY_CACHE: dict[str, tuple[tuple, dict]] = {}
+ 
++# The session corpus is historical evidence, not a reason to fan out hundreds
++# of simultaneous disk reads on a page render.  Cache hits are cheap; cold
++# summaries of very large legacy JSONLs remain I/O-bound, so keep the read
++# pressure bounded while preserving every visible session.
++try:
++    _SESSION_SUMMARY_CONCURRENCY = max(
++        1, min(32, int(os.environ.get("NAUTILUS_SESSION_SUMMARY_CONCURRENCY", "8")))
++    )
++except ValueError:
++    _SESSION_SUMMARY_CONCURRENCY = 8
++
++# A historical session may contain hundreds of MB of old, curve-heavy JSONL.
++# The list page is navigation, not forensic replay: it must stay responsive
++# without asking the disk to parse the whole corpus.  The detail route remains
++# the explicit full-history view.
++try:
++    _SESSION_SUMMARY_FULL_SCAN_MAX_BYTES = max(
++        0,
++        int(os.environ.get("NAUTILUS_SESSION_SUMMARY_FULL_SCAN_MAX_BYTES", str(8 * 1024 * 1024))),
++    )
++except ValueError:
++    _SESSION_SUMMARY_FULL_SCAN_MAX_BYTES = 8 * 1024 * 1024
++_SUMMARY_EDGE_BYTES = 128 * 1024
++try:
++    _SESSION_DETAIL_FULL_SCAN_MAX_BYTES = max(
++        0,
++        int(
++            os.environ.get(
++                "NAUTILUS_SESSION_DETAIL_FULL_SCAN_MAX_BYTES", str(64 * 1024 * 1024)
++            )
++        ),
++    )
++except ValueError:
++    _SESSION_DETAIL_FULL_SCAN_MAX_BYTES = 64 * 1024 * 1024
++_DETAIL_EDGE_BYTES = 2 * 1024 * 1024
++
++
++def _read_events_head_tail(run_id: str, edge_bytes: int = _DETAIL_EDGE_BYTES) -> list[dict]:
++    """Bounded forensic preview for a huge session detail request.
++
++    The normal detail replay intentionally reads all events.  For multi-GB
++    legacy JSONLs, that turns one browser request into an I/O/RAM denial of
++    service.  Keep the start metadata plus the terminal evidence, and label it
++    explicitly as partial instead of pretending the omitted middle is empty.
++    """
++    path = SESSION_LOG_DIR / f"{run_id}.jsonl"
++    try:
++        size = path.stat().st_size
++        with path.open("rb") as fh:
++            head = fh.read(edge_bytes)
++            if size <= edge_bytes:
++                tail = b""
++            else:
++                fh.seek(max(0, size - edge_bytes))
++                tail = fh.read(edge_bytes)
++    except OSError:
++        return []
++
++    def _parse(blob: bytes) -> list[dict]:
++        parsed: list[dict] = []
++        for line in blob.decode("utf-8", errors="replace").splitlines():
++            try:
++                event = json.loads(line)
++            except (TypeError, ValueError):
++                continue
++            if isinstance(event, dict) and "event" in event:
++                parsed.append(event)
++        return parsed
++
++    # Head ends and tail begins may contain one cut JSON line; _parse rejects it.
++    return [*_parse(head), *_parse(tail)]
++
++
++def _large_session_summary(run_id: str, path: Path, size_mb: float) -> dict:
++    """Build a bounded summary from the JSONL head and tail.
++
++    Counts are intentionally unknown rather than guessed.  Completion, winner
++    and latest token data are terminal events and normally live at the tail;
++    start metadata is at the head.
++    """
++    try:
++        with path.open("rb") as fh:
++            head = fh.read(_SUMMARY_EDGE_BYTES)
++            fh.seek(max(0, path.stat().st_size - _SUMMARY_EDGE_BYTES))
++            tail = fh.read(_SUMMARY_EDGE_BYTES)
++    except OSError:
++        return {
++            "run_id": run_id, "ts_start": "—", "ts_end": "—", "elapsed": "",
++            "size_mb": size_mb, "symbol": "—", "intervals": [],
++            "n_iterations": "—", "continuous": False, "hint": "",
++            "outcome": "unreadable", "total_rounds": "?", "n_backtest": "?",
++            "n_rob": "?", "n_custom": "?", "n_step": "?", "winner_spec": "",
++            "winner_score": None, "cost_eur": None, "cost_usd": None,
++            "cost_source": None, "has_blocks": False,
++        }
++
++    def _objects(blob: bytes) -> list[dict]:
++        answer: list[dict] = []
++        for line in blob.decode("utf-8", errors="replace").splitlines():
++            try:
++                event = json.loads(line)
++            except (TypeError, ValueError):
++                continue
++            if isinstance(event, dict):
++                answer.append(event)
++        return answer
++
++    head_events = _objects(head)
++    tail_events = _objects(tail)
++    start_ev = next((e for e in head_events if e.get("event") == "session_start"), {})
++    end_ev = next((e for e in reversed(tail_events) if e.get("event") == "session_end"), {})
++    tok_ev = next((e for e in reversed(tail_events) if e.get("event") == "token_snapshot"), {})
++    winner_ev = next((e for e in reversed(tail_events) if e.get("event") == "winner"), {})
++    ts_start = start_ev.get("ts", "")
++    ts_end = (end_ev or tok_ev or {}).get("ts", "")
++    elapsed = ""
++    try:
++        elapsed_seconds = int(
++            (datetime.fromisoformat(ts_end) - datetime.fromisoformat(ts_start)).total_seconds()
++        )
++        elapsed = f"{elapsed_seconds // 3600:02d}:{(elapsed_seconds % 3600) // 60:02d}:{elapsed_seconds % 60:02d}"
++    except (TypeError, ValueError):
++        pass
++    return {
++        "run_id": run_id,
++        "ts_start": ts_start[:19].replace("T", " ") if ts_start else "—",
++        "ts_end": ts_end[:19].replace("T", " ") if ts_end else "—",
++        "elapsed": elapsed,
++        "size_mb": size_mb,
++        "symbol": start_ev.get("symbol", "—"),
++        "intervals": start_ev.get("intervals", []),
++        "n_iterations": start_ev.get("n_iterations", "—"),
++        "continuous": start_ev.get("continuous_mode", False),
++        "hint": start_ev.get("hint", ""),
++        "outcome": end_ev.get("outcome", "running"),
++        "total_rounds": end_ev.get("completed_rounds", end_ev.get("total_rounds", "?")),
++        "n_backtest": "?", "n_rob": "?", "n_custom": "?", "n_step": "?",
++        "winner_spec": winner_ev.get("spec_name", ""),
++        "winner_score": winner_ev.get("score"),
++        "cost_eur": tok_ev.get("cost_eur"), "cost_usd": tok_ev.get("cost_usd"),
++        "cost_source": tok_ev.get("cost_source"),
++        "has_blocks": (SESSION_LOG_DIR / f"{run_id}_blocks").exists(),
++    }
++
+ 
+ def _session_summary(run_id: str) -> dict:
+     """Fast summary for the session list — read only key events."""
+@@ -231,6 +376,16 @@ def _session_summary(run_id: str) -> dict:
+             return cached[1]
+     size_mb = round(path.stat().st_size / 1_048_576, 1) if path.exists() else 0
+ 
++    if (
++        path.exists()
++        and _SESSION_SUMMARY_FULL_SCAN_MAX_BYTES
++        and path.stat().st_size > _SESSION_SUMMARY_FULL_SCAN_MAX_BYTES
++    ):
++        summary = _large_session_summary(run_id, path, size_mb)
++        if cache_key is not None:
++            _SUMMARY_CACHE[run_id] = (cache_key, summary)
++        return summary
++
+     start_ev = end_ev = tok_ev = winner_ev = None
+     n_backtest = n_phase = n_step = n_rob = n_custom = 0
+     last_ts = ""
+@@ -337,9 +492,15 @@ def _session_summary(run_id: str) -> dict:
+     if winner_ev and not end_ev:
+         outcome = "winner_found"
+ 
+-    total_rounds = (
+-        (tok_ev or {}).get("round") or (end_ev or {}).get("total_rounds") or "?"
+-    )
++    # A token snapshot can belong to an admitted-but-incomplete next round.
++    # Session completion fields are authoritative; falling back to snapshot
++    # round recreated the phantom round seen in d4b86c48 (2 completed, shown 3).
++    if end_ev and end_ev.get("completed_rounds") is not None:
++        total_rounds = end_ev["completed_rounds"]
++    elif end_ev and end_ev.get("total_rounds") is not None:
++        total_rounds = end_ev["total_rounds"]
++    else:
++        total_rounds = (tok_ev or {}).get("round") or "?"
+ 
+     summary = {
+         "run_id": run_id,
+@@ -362,6 +523,7 @@ def _session_summary(run_id: str) -> dict:
+         "winner_score": (winner_ev or {}).get("score"),
+         "cost_eur": (tok_ev or {}).get("cost_eur"),
+         "cost_usd": (tok_ev or {}).get("cost_usd"),
++        "cost_source": (tok_ev or {}).get("cost_source"),
+         "has_blocks": (SESSION_LOG_DIR / f"{run_id}_blocks").exists(),
+     }
+     if cache_key is not None:
+@@ -386,10 +548,25 @@ async def sessions_list(request: Request):
+             key=lambda p: p.stat().st_mtime,
+             reverse=True,
+         )
+-        # Run blocking file I/O in thread pool to avoid blocking the event loop
+-        sessions = await asyncio.gather(
+-            *[asyncio.to_thread(_session_summary, p.stem) for p in jsonl_files]
+-        )
++        # The recent sessions are the useful operational view.  Full history
++        # remains addressable directly by run id; do not make one page render
++        # fan out over every archive ever created.
++        try:
++            limit = min(100, max(1, int(request.query_params.get("limit", "25"))))
++        except ValueError:
++            limit = 25
++        jsonl_files = jsonl_files[:limit]
++        # Run blocking file I/O in a bounded thread pool.  The old all-at-once
++        # gather could start one full scan per historical session (93 files / a
++        # multi-GB corpus in the live review), causing disk thrash and a slow
++        # Studio response even though each individual summary is cache-aware.
++        semaphore = asyncio.Semaphore(_SESSION_SUMMARY_CONCURRENCY)
++
++        async def _one_summary(path: Path) -> dict:
++            async with semaphore:
++                return await asyncio.to_thread(_session_summary, path.stem)
++
++        sessions = await asyncio.gather(*[_one_summary(p) for p in jsonl_files])
+ 
+     return templates.TemplateResponse(
+         request,
+@@ -421,7 +598,15 @@ async def session_detail(request: Request, run_id: str):
+     # structural events (backtest_result/winner/token_snapshot…) are ALWAYS
+     # read to end of file — later rounds of continuous sessions
+     # are no longer lost. The truncated flag prints a warning in the template.
+-    events, steps_truncated = await asyncio.to_thread(_read_events, run_id, 20_000)
++    detail_truncated = bool(
++        _SESSION_DETAIL_FULL_SCAN_MAX_BYTES
++        and path.stat().st_size > _SESSION_DETAIL_FULL_SCAN_MAX_BYTES
++    )
++    if detail_truncated:
++        events = await asyncio.to_thread(_read_events_head_tail, run_id)
++        steps_truncated = False
++    else:
++        events, steps_truncated = await asyncio.to_thread(_read_events, run_id, 20_000)
+ 
+     # Group by event type — group steps by round
+     # (M13: filters use .get — a line without 'event' was already dropped by the parse guard)
+@@ -562,6 +747,7 @@ async def session_detail(request: Request, run_id: str):
+             "n_events": len(events),
+             "n_steps": len(steps),
+             "steps_truncated": steps_truncated,
++            "detail_truncated": detail_truncated,
+             "size_mb": round(path.stat().st_size / 1_048_576, 1),
+         },
+     )
