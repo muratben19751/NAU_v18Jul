@@ -31,14 +31,42 @@ _KIND_COLORS = {
     "rob": "#d9755d",
 }
 
+STEP_KINDS = frozenset(_KIND_COLORS)
 
-def _step_kind(msg: str) -> str:
+
+def step_kind_of(step: dict) -> str:
+    """Bir adım kaydının konsol sınıfı — ÖNCE yapısal alan, sonra metin.
+
+    DeepR 2026-08-11 [DÜŞÜK] (mimari): kokpit, alan katmanının SERBEST METİN
+    log satırlarını anahtar kelimeyle geri-mühendislik ediyordu; bir
+    ``_add_step`` mesajının sözcüğü değişince (ya da Türkçeleşince)
+    sınıflandırma SESSİZCE bozuluyor ve hiçbir tip kontrolü bunu yakalamıyordu.
+    Artık ``kind`` üretildiği yerde (``agent_backtest._add_step``) yazılıyor ve
+    hem canlı durumda hem oturum logunda YAPISAL bir alan olarak taşınıyor;
+    burada yalnızca okunuyor.
+
+    Metin tabanlı `classify_step_kind` yine de duruyor ama tek bir işi var:
+    ``kind`` alanı OLMAYAN kayıtlar — yani bu değişiklikten ÖNCE yazılmış
+    oturum loglarının /sessions replay'i. Yeni bir koşuda hiç çalışmaz.
+    """
+    k = step.get("kind")
+    if k in STEP_KINDS:
+        return k
+    return classify_step_kind(step.get("msg") or "")
+
+
+def classify_step_kind(msg: str) -> str:
     """Classify an agent step log line into a console kind tag.
 
     Patterns are taken from the actual ``_add_step`` call sites in
     ``web/routes/agent_backtest.py`` (see tests/test_auto_mission.py), ordered
     most-specific first: robustness lines mention backtests too, and block
     generation mentions strategies, so the order carries meaning.
+
+    ÇAĞRILDIĞI İKİ YER: (1) ``_add_step`` yazma anında, mesajı üreten modülün
+    kendi içinde — orada metin ile sınıf yan yana durur, ıraksama denetlenebilir;
+    (2) burada, ``kind``siz eski kayıtlar için geri düşüş. Render sırasında
+    yeni kayıtlar için ARTIK ÇALIŞMAZ.
     """
     m = msg.lower()
     if any(
@@ -281,7 +309,7 @@ def mission_view(
         msg = (st.get("msg") or "").strip()
         if not msg:
             continue
-        k = _step_kind(msg)
+        k = step_kind_of(st)
         lines.append({"t": st.get("ts", ""), "k": k, "c": _KIND_COLORS[k], "m": msg})
     tail = lines[-1] if lines else {"t": "", "m": "starting…"}
     lines = list(reversed(lines[:-1]))[:9]

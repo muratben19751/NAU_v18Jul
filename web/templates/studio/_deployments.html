@@ -1,9 +1,19 @@
-{# ctx: defn, deployments (list[dict]) #}
+{# ctx: defn, deployments (list[dict]), runner_is_stub #}
 {% set any_pending = deployments | selectattr("status", "equalto", "pending") | list %}
 <div id="deployments-panel"
   {% if any_pending %}
     hx-get="/studio/{{ defn.id }}/deployments/panel" hx-trigger="every 2s" hx-swap="outerHTML"
   {% endif %}>
+  {# Runner yokken satırlar yine 'running' oluyor (davranış korunuyor) ama arkada
+     hiçbir TradingNode yok — bunu söylemeyen yeşil bir rozet yalandır. Aynı
+     desen backtest motoru için `engine_is_stub` ile zaten uygulanmış. #}
+  {% if runner_is_stub and deployments %}
+    <p class="opt-note"><span class="sim-badge"
+       title="STUDIO_RUNNER=paper ayarlanmadığı sürece deployment'lar yalnız veritabanında yaşar: hiçbir TradingNode kurulmaz, emir gönderilmez, Pause/Stop yalnız satırın durumunu çevirir."
+       >⚠ SİMÜLE — runner yok</span>
+      No runner process is attached (<code>STUDIO_RUNNER</code> unset); these rows
+      change state but nothing is trading.</p>
+  {% endif %}
   {% if not deployments %}
     <p class="opt-note">No deployments yet — use ⇪ Deploy in the header.</p>
   {% endif %}
@@ -13,9 +23,12 @@
       <span class="dep-id">{{ d.deploy_id[:6] }}</span>
       <span class="env {{ d.environment }}">{{ d.environment | upper }}</span>
       <span class="op">v{{ d.version }}</span>
-      <span class="dep-st st-{{ d.status }}">
+      <span class="dep-st st-{{ d.status }}"
+        {% if runner_is_stub and d.status in ["running", "paused"] %}
+          title="Simulated pickup — no TradingNode is behind this row (STUDIO_RUNNER unset)"
+        {% endif %}>
         {% if d.status == "pending" %}<span class="pulse-dot"></span>{% endif %}
-        {{ d.status | upper }}</span>
+        {{ d.status | upper }}{% if runner_is_stub and d.status in ["running", "paused"] %} · SIM{% endif %}</span>
     </div>
     {% if d.status == "failed" and d.error %}
       {# A failed deployment without its reason is just a red badge; the reason

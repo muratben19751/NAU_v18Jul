@@ -39,7 +39,9 @@ import threading
 from datetime import UTC, datetime
 from pathlib import Path
 
-LEDGER_PATH = Path.home() / ".cache" / "nautilus_web_app" / "token_usage.jsonl"
+from app_constants import DATA_DIR
+
+LEDGER_PATH = DATA_DIR / "token_usage.jsonl"  # kök: app_constants.DATA_DIR
 
 _LOCK = threading.Lock()
 

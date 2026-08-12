@@ -19,6 +19,7 @@ import logging
 import re
 from datetime import UTC
 from pathlib import Path
+from typing import Any
 
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
@@ -166,6 +167,45 @@ def _fmt_elapsed(sec: float | None) -> str:
     return f"{sec / 60:.1f}min"
 
 
+_ROB_IDENTITY_KEYS = ("spec_id", "spec_name", "symbol", "interval")
+
+
+def _slim_rob_record(rec: dict) -> dict:
+    """Robustness satırını /reports tablosunun GERÇEKTEN okuduğu alanlara indir.
+
+    `_parsed_log_records`'ın 2026-08-11'de düzeltilen RAM hatasını yeniden
+    üretmemek için: önbelleğe alınan şey artık ham kayıt DEĞİL. Ölçüldü (gerçek
+    log, son kayıt): 319 KB'lık satırın 169 KB'ı `in_out_split`, 149 KB'ı
+    `walk_forward` — ve bunların da neredeyse tamamı gömülü
+    `in_sample_metrics` / `oos_metrics` / `test_metrics` blokları. Tüketici
+    (`_rob_fields` + aşağıdaki kimlik kontrolü) bu blokların yalnızca birkaç
+    SKALERİNE bakıyor; gerisi rapor ekranında hiçbir yerde görünmüyor.
+    """
+    sp = rec.get("in_out_split") or {}
+    oos = sp.get("oos_metrics") or {}
+    mc = rec.get("monte_carlo") or {}
+    out = {k: rec[k] for k in _ROB_IDENTITY_KEYS if k in rec}
+    if "in_out_split" in rec:
+        out["in_out_split"] = {
+            "overfitting_label": sp.get("overfitting_label"),
+            "oos_metrics": {"sharpe": oos.get("sharpe"), "pnl": oos.get("pnl")},
+        }
+    if "monte_carlo" in rec:
+        out["monte_carlo"] = {
+            "median_final": mc.get("median_final"),
+            "max_dd_p95": mc.get("max_dd_p95"),
+        }
+    if "walk_forward" in rec:
+        # Yalnız pencere SAYISI ve her pencerenin test PnL'i okunuyor
+        # (`wf_pass` oranı); `chosen_params`/`test_metrics` blokları değil.
+        out["walk_forward"] = [
+            {"test_metrics": {"pnl": (w.get("test_metrics") or {}).get("pnl", 0)}}
+            for w in (rec.get("walk_forward") or [])
+            if isinstance(w, dict)
+        ]
+    return out
+
+
 def _load_robustness_index() -> dict:
     """Robustness record index.
 
@@ -174,9 +214,24 @@ def _load_robustness_index() -> dict:
     records (no identity fields) and backward compatibility, single
     ``spec_id`` / ``spec_name`` keys are also kept (last-writer-wins, used only
     as a fallback).
+
+    DeepR 2026-08-11 [DÜŞÜK]: `_load_rows` bunu HER /reports isteğinde çağırıp
+    logun tamamını baştan `json.loads` ediyordu — hemen aşağıdaki
+    `_parsed_log_records` tam olarak bu iş için `(mtime_ns, size)` anahtarlı
+    bir önbellek kullanırken robustness logu o düzeltmenin dışında kalmıştı.
+    Bugünkü dosya küçük (7 kayıt / 4,9 MB, 0,03 s) ama kayıt başına ~700 KB
+    olduğu için koşumlar biriktikçe doğrusal büyür. Anahtara DOSYA YOLU da
+    girer: aynı süreç içinde başka bir loga geçmek (testler, rotasyon) bayat
+    bir indeksle karşılaşmasın.
     """
-    if not ROBUSTNESS_LOG.exists():
+    try:
+        st = ROBUSTNESS_LOG.stat()
+    except OSError:
         return {}
+    key = (str(ROBUSTNESS_LOG), st.st_mtime_ns, st.st_size)
+    cached = _PARSE_CACHE.get("robustness_log")
+    if cached and cached[0] == key:
+        return cached[1]
     index: dict = {}
     with open(ROBUSTNESS_LOG) as f:
         for line in f:
@@ -184,7 +239,7 @@ def _load_robustness_index() -> dict:
             if not line:
                 continue
             try:
-                rec = json.loads(line)
+                rec = _slim_rob_record(json.loads(line))
             except Exception:
                 continue
             sid = rec.get("spec_id") or ""
@@ -198,6 +253,7 @@ def _load_robustness_index() -> dict:
                 index[sid] = rec
             if sname:
                 index[sname] = rec
+    _PARSE_CACHE["robustness_log"] = (key, index)
     return index
 
 
@@ -260,7 +316,9 @@ def _rob_fields(rob: dict | None) -> dict:
 # anda ikisi de değişir → bir sonraki /reports isteği yeniden parse eder.
 # Bayatlama penceresi YOK; dosya değişmediği sürece taze sayılır. Tek girdi
 # tutulur (aktif log), rotasyon (.jsonl.1) yeni bir anahtar demektir.
-_PARSE_CACHE: dict[str, tuple[tuple, list]] = {}
+# İki girdi: "backtest_log" → (anahtar, satır listesi) ve "robustness_log" →
+# (anahtar, indeks sözlüğü). İkisi de aynı geçersizleşme sözleşmesini paylaşır.
+_PARSE_CACHE: dict[str, tuple[tuple, Any]] = {}
 
 # DeepR 2026-08-11 [ORTA]: önbellek 20 MB'lık logun TÜM parse edilmiş hâlini
 # tutuyordu — ölçüldü: 109 kayıt, 91,3 MB kalıcı Python heap'i. Sunucunun

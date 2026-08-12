@@ -56,7 +56,7 @@ log = logging.getLogger(__name__)
 _STORE_LOCK = threading.RLock()
 _REGISTRY_GUARD_STATE = threading.local()
 
-STORE_DIR = Path.home() / ".cache" / "nautilus_web_app" / "custom_blocks"
+STORE_DIR = DATA_DIR / "custom_blocks"  # kök: app_constants.DATA_DIR
 REGISTRY_FILE = STORE_DIR / "registry.json"
 _REGISTRY_LOCK_FILE = "registry.lock"
 

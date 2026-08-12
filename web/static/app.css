@@ -596,6 +596,9 @@ select { cursor: pointer; }
 .badge.entry { color: var(--pnl-up); border-color: rgba(46,212,126,0.35); background: rgba(46,212,126,0.06); }
 .badge.exit { color: var(--pnl-down-soft); border-color: rgba(242,92,92,0.35); background: rgba(242,92,92,0.06); }
 .badge.role { color: var(--text-muted); border-color: #262626; background: transparent; }
+/* Kaynağın kendisi kullanılamıyor (ör. INDEX_ROOT yok) — "0 tickers" ile
+   karıştırılmasın diye .warning-strip ile aynı kırmızı ailesinden. */
+.badge.warn { color: #fca5a5; border-color: rgba(248,113,113,0.5); background: rgba(248,113,113,0.08); }
 .badge.running { color: var(--pnl-up); border-color: rgba(46,212,126,0.35); background: rgba(46,212,126,0.08); }
 .badge.idle { color: var(--text-muted); }
 

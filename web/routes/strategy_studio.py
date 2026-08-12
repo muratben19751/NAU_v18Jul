@@ -373,6 +373,13 @@ def _ctx(request: Request, defn: StrategyDefinition, **extra) -> dict:
         # every template that renders a metric MUST be able to flag it as
         # simulated, or a random-walk number reads as a real backtest result.
         "engine_is_stub": isinstance(ADAPTER, StubBacktestAdapter),
+        # DeepR 2026-08-11 [ORTA]: aynı dürüstlük ÜÇÜNCÜ motor anahtarı için de
+        # gerekiyordu. `STUDIO_RUNNER=paper` ayarlı değilken `_runner_pickup`
+        # hiçbir TradingNode kurmadan satırı 'running' yapıyor; panel yeşil
+        # rozeti ve Pause/Stop düğmelerini gösteriyordu, yani kullanıcı HİÇ
+        # ÇALIŞMAYAN bir deployment'ı canlı sanıyordu. `engine_is_stub`'ın
+        # karşılığı: davranış aynı kalır, ekran ne olduğunu söyler.
+        "runner_is_stub": RUNNER is None,
         **extra,
     }
 
@@ -1693,13 +1700,21 @@ def route_deploy(
     # serbestçe geçiyor) ve burada aynen geri yansıyor — başarı yolundaki tek
     # elle-kurulmuş HTML gövdesi bu. `_render_deployments` zaten Jinja'dan
     # (otomatik kaçışlı) geliyor, o yüzden Markup olarak ekleniyor.
+    # "pending runner pickup" runner yokken de yazıyordu — beklenen bir pickup
+    # yok, simüle edilen bir tanesi var. Onay satırının kendisi bunu söylesin.
+    tail = (
+        " — simulated pickup only (STUDIO_RUNNER unset): nothing will trade."
+        if RUNNER is None
+        else " — pending runner pickup."
+    )
     return HTMLResponse(
         safe_html(
             '<div class="deploy-ok">Deployment <b>{did}</b> created '
-            "({env}, v{ver}) — pending runner pickup.</div>",
+            "({env}, v{ver}){tail}</div>",
             did=deploy_id[:6],
             env=environment,
             ver=defn.version,
+            tail=tail,
         )
         + Markup(_render_deployments(request, defn, oob=True))
     )
@@ -1724,6 +1739,14 @@ def _runner_pickup(deploy_id: str, artifact: str) -> None:
     if RUNNER is None:
         time.sleep(1.0)  # simulated pickup; keeps the panel's poll meaningful
         store.set_deployment_status(deploy_id, "running")
+        # Ekrandaki rozet (`runner_is_stub`) operatör baktığında doğruyu
+        # söylüyor; log da söylesin ki sonradan "bu koşu neden hiç emir
+        # göndermemiş" sorusunun cevabı kayıtta olsun.
+        log.warning(
+            "deployment %s marked running WITHOUT a runner (STUDIO_RUNNER unset) — "
+            "no TradingNode was started and no order will be sent",
+            deploy_id,
+        )
         return
     RUNNER.launch(deploy_id, json.loads(artifact))
 

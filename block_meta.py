@@ -13,6 +13,52 @@ See: [[webapp_module_map]].
 
 from __future__ import annotations
 
+# Bir bloğun rol alanının kabul ettiği TÜM değerler. `composer_spec.validate`
+# ve `agent._coerce_block` de bu ikiliyi varsayıyor; form uçları da aynı listeyi
+# kullansın diye burada, meta'nın yanında duruyor.
+BLOCK_ROLES = ("entry", "exit")
+
+
+def coerce_params(meta: dict, raw: dict) -> dict:
+    """Form/JSON parametrelerini katalog meta'sının TİP ve MİN/MAX'ına zorla.
+
+    DeepR 2026-08-11 [DÜŞÜK]: `POST /strategy/drafts` parametreyi yalnız
+    `int()`/`float()` ile çeviriyor, `_BUILTIN_META`'daki `min`/`max` ise
+    SADECE HTML input attribute'u olarak kullanılıyordu — yani tarayıcı dışı
+    her yol (curl, otomasyon, eski tarayıcı) sınırları geçiyordu. Sonuç sessiz
+    bir ölü bloktu: `p_period=0` + donchian → `max([])` ValueError,
+    `p_lookback=0` + price_breakout → `max([])`, `p_fast=0` + ma_cross →
+    ZeroDivisionError; üçü de `composer._eval_block`'un geniş `except`'i
+    tarafından yutuluyor, blok her barda `None` dönüyor ve kullanıcı HATA
+    DEĞİL, "0 işlemli geçerli görünen bir backtest" görüyordu.
+
+    `robustness._clamp_commission_pct` ("HTML min/max yalnız tarayıcı tarafı")
+    ve `agent._coerce_block` (LLM önerileri için AYNI kırpma) aynı dersin
+    başka yerlerdeki uygulamaları — bu, form yolundaki eksik halkaydı.
+
+    Sözleşme `agent._coerce_block` ile birebir: çevrilemeyen değer default'a
+    düşer, sayısal değer aralığa KIRPILIR, enum dışı seçim default olur.
+    Meta'da olmayan parametre adları YOK SAYILIR (bilinmeyen `p_*` alanı
+    spec'e sızmasın).
+    """
+    out: dict = {}
+    for pname, pspec in (meta.get("params") or {}).items():
+        if pname not in raw:
+            continue
+        value = raw[pname]
+        try:
+            if pspec["type"] == "int":
+                v = max(pspec["min"], min(pspec["max"], int(value)))
+            elif pspec["type"] == "float":
+                v = max(pspec["min"], min(pspec["max"], float(value)))
+            else:
+                v = value if value in pspec["options"] else pspec["default"]
+        except (TypeError, ValueError, KeyError):
+            v = pspec.get("default", 0)
+        out[pname] = v
+    return out
+
+
 _BUILTIN_META: dict[str, dict] = {
     "ma_cross": {
         "label": "MA Cross",

@@ -215,8 +215,14 @@ async def index_discover(request: Request, force: bool = Form(default=False)):
     """Rebuild ``_tickers.json`` from ``INDEX_ROOT``. Slow; returns an HTML
     fragment swapped into ``#discover-result`` (not JSON — the form does
     ``hx-swap="innerHTML"``)."""
+    from data import index_root_warning
     from server import templates
 
+    # Kök hiç yoksa taramaya girme: 404'ün gövdesi de panelin gösterdiği
+    # cümlenin AYNISI olsun (DeepR 2026-08-11 [ORTA]). Buton bu durumda zaten
+    # disabled; buraya yine de doğrudan istekle gelinebilir.
+    if (warn := index_root_warning()) is not None:
+        raise HTTPException(404, warn)
     try:
         tickers = await asyncio.to_thread(discover_index_tickers, force=force)
     except FileNotFoundError as e:

@@ -582,6 +582,14 @@ def result_snapshot(request: Request, run_id: str):
 async def tickers(request: Request):
     import asyncio
 
+    from data import index_root_warning
+
+    # DeepR 2026-08-11 [ORTA]: kök hiç yokken kullanıcı "ticker discovery
+    # failed: FileNotFoundError: …" görüyordu — teşhis değil, yankı. Sebebi
+    # /data panelindekiyle AYNI cümleyle söyle; hata sınıfını beklemek yerine
+    # ÖNCE sor, çünkü bu durumda discovery'yi denemenin de anlamı yok.
+    if (warn := index_root_warning()) is not None:
+        return HTMLResponse(safe_html("<option value=''>{w}</option>", w=warn))
     try:
         ts = await asyncio.to_thread(discover_index_tickers)
     except Exception as e:
@@ -1021,7 +1029,16 @@ async def run(
                     return
                 bars = load_index_bars(ticker, start_d, end_d, granularity)
                 if bars.empty:
-                    _set_error(f"No bars for {ticker}.")
+                    # DeepR 2026-08-11 [ORTA]: "No bars for SPX." kullanıcıya
+                    # veri boşluğu gibi okunuyordu; oysa varsayılan kurulumda
+                    # sebep Index KÖKÜNÜN hiç olmaması. Kök yoksa gerçek sebebi
+                    # ekle — teşhis /data paneliyle aynı cümle olsun.
+                    from data import index_root_warning
+
+                    _set_error(
+                        f"No bars for {ticker}."
+                        + (f" {w}" if (w := index_root_warning()) else "")
+                    )
                     return
                 rationale = f"user-run · Index {ticker} {granularity} {start_d}→{end_d}"
                 run_spec = spec

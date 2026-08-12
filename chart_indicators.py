@@ -95,15 +95,38 @@ def _rsi(closes: list[float], period: int) -> list[float | None]:
 
 
 def _bollinger(closes: list[float], period: int, k: float):
+    """Bollinger bantları — KOŞAN kare toplamıyla O(n).
+
+    DeepR 2026-08-11 [DÜŞÜK]: yukarıdaki 2026-08-09 notu `_sma`/`_ema`/`_rsi`'yi
+    inceleyip O(n) olduklarını doğrulamış ama `_bollinger` o incelemenin dışında
+    kalmıştı — her `i` için `closes[i-period+1:i+1]` dilimi alınıp pencere
+    baştan taranıyordu, yani gerçekten O(n·period) idi. `_MAX_WINDOW_CANDLES`
+    60.000 mum olduğu için bir bollinger_break spec'i grafikte açıldığında
+    ölçülen maliyet: period=20 → 95,6 ms, period=200 → 691,5 ms. Koşan toplam +
+    koşan kare toplamıyla ikisi de ~11 ms'e (period'dan BAĞIMSIZ) iner.
+
+    Varyans `E[x²] − m²` ile hesaplanır. Bu, saf-fark formülüne göre büyük
+    fiyatlarda (BTC ~60k) sondan birkaç basamak hassasiyet kaybettirir; iki
+    nedenle kabul edilebilir: (1) bu seriler zaten GÖRSEL yaklaşımlar (dosya
+    başlığındaki uyarı — Nautilus tipik fiyat kullanır, buradaki bant ~20bps
+    sapabilir), (2) neredeyse sabit bir pencerede oluşabilecek küçük NEGATİF
+    varyans `max(0.0, …)` ile kırpılır, yani `sqrt` asla domain hatası vermez.
+    """
     mid = _sma(closes, period)
     upper: list[float | None] = [None] * len(closes)
     lower: list[float | None] = [None] * len(closes)
-    for i in range(len(closes)):
-        if mid[i] is None or i < period - 1:
-            continue
-        window = closes[i - period + 1 : i + 1]
+    if period <= 0:
+        return mid, upper, lower
+    sq = 0.0
+    for i, c in enumerate(closes):
+        sq += c * c
+        if i >= period:
+            old = closes[i - period]
+            sq -= old * old
         m = mid[i]
-        var = sum((x - m) ** 2 for x in window) / period
+        if m is None or i < period - 1:
+            continue
+        var = max(0.0, sq / period - m * m)
         sd = var**0.5
         upper[i] = m + k * sd
         lower[i] = m - k * sd

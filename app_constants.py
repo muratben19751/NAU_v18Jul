@@ -12,6 +12,11 @@
   character-for-character identical in backtest_robustness.py,
   parallel_exec.py, and wfo_optimizer.py before this — a bugfix to one would
   silently not reach the other two.
+- ``DATA_DIR``: kalıcı depolama kökü. Sekiz modül bunu birbirinden habersiz
+  ``Path.home() / ".cache" / "nautilus_web_app"`` diye kendi içinde kuruyordu
+  ve hiçbirinde ortam değişkeniyle yeniden yönlendirme yoktu (DeepR 2026-08-11
+  [ORTA]); veri dizinini taşımak ya da ikinci bir instance koşturmak için sekiz
+  dosyayı ayrı ayrı yamamak gerekiyordu.
 """
 
 from __future__ import annotations
@@ -19,22 +24,77 @@ from __future__ import annotations
 import math
 import os
 import subprocess
+from pathlib import Path
 
 STARTING_CASH = 10_000.0
 
 
-def env_float(name: str, default: float) -> float:
+def env_float(
+    name: str, default: float, *, lo: float | None = None, hi: float | None = None
+) -> float:
+    """Ortam değişkenini float'a çevir; bozuk/boş değerde ``default``.
+
+    ``lo``/``hi`` verilirse sonuç o aralığa kırpılır — çağıranların ayrı ayrı
+    yazdığı ``max(0.01, ...)`` sarmalayıcılarının tek yerdeki karşılığı.
+    """
     try:
-        return float(os.environ.get(name, "") or default)
+        v = float(os.environ.get(name, "") or default)
     except ValueError:
-        return default
+        v = float(default)
+    if lo is not None:
+        v = max(lo, v)
+    if hi is not None:
+        v = min(hi, v)
+    return v
 
 
-def env_int(name: str, default: int) -> int:
+def env_int(
+    name: str, default: int, *, lo: int | None = None, hi: int | None = None
+) -> int:
+    """Ortam değişkenini int'e çevir; bozuk/boş değerde ``default`` (+ kırpma)."""
     try:
-        return int(os.environ.get(name, "") or default)
+        v = int(os.environ.get(name, "") or default)
     except ValueError:
-        return default
+        v = int(default)
+    if lo is not None:
+        v = max(lo, v)
+    if hi is not None:
+        v = min(hi, v)
+    return v
+
+
+# ── Kalıcı depolama kökü ─────────────────────────────────────────────────────
+# Varsayılan BİLEREK değişmedi: mevcut kurulumların ~/.cache altındaki katalogu,
+# token defteri ve oturum logları yerinde kalsın. Değişen tek şey, artık tek bir
+# yerden geliyor ve NAU_DATA_DIR ile yeniden yönlendirilebiliyor olması.
+#
+# Import anında çözülür (eski davranışla aynı): modüller bunu kendi
+# modül-global'lerine bağlıyor ve testler o bağları monkeypatch ediyor.
+def default_data_dir() -> Path:
+    return Path.home() / ".cache" / "nautilus_web_app"
+
+
+def data_dir() -> Path:
+    """Kalıcı veri kökü — ``NAU_DATA_DIR`` ile taşınabilir."""
+    raw = (os.environ.get("NAU_DATA_DIR") or "").strip()
+    return Path(raw).expanduser() if raw else default_data_dir()
+
+
+DATA_DIR = data_dir()
+
+
+# Strategy Studio'nun SQLite'ı tek istisnaydı: çalışma zamanı verisini KAYNAK
+# AĞACINA (repo kökündeki studio.db) yazıyor. Varsayılan burada da korunuyor —
+# taşımak, mevcut kurulumların kayıtlı stratejilerini görünmez kılardı — ama
+# artık NAU_STUDIO_DB ile yönlendirilebilir ve konum tek bir yerde yazılı.
+def studio_db_path() -> Path:
+    raw = (os.environ.get("NAU_STUDIO_DB") or "").strip()
+    return (
+        Path(raw).expanduser() if raw else Path(__file__).resolve().parent / "studio.db"
+    )
+
+
+STUDIO_DB_PATH = studio_db_path()
 
 
 # On Windows, when a CONSOLE application (claude CLI, bash/gunzip/awk) is launched,

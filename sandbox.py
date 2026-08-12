@@ -357,9 +357,14 @@ def _robustness_child(q, payload):
     """Child target: rebuild the Nautilus instrument, run the agent's full
     robustness suite, relay its progress steps, and return the result dict.
 
-    Sets ``agent_backtest._IPC_Q`` so the module's ``_add_step`` calls (used
-    throughout ``_run_full_robustness``) relay to the parent instead of touching
-    the child's own empty progress dict.
+    Suite artık `auto.robustness` (web'den bağımsız alan katmanı) — bu çocuk
+    süreç eskiden `import web.routes.agent_backtest as ab` yapıp `ab._IPC_Q = q`
+    ile başka bir modülün private global'ini set ediyordu, yani HTTP servis
+    etmeyen bir worker sırf bu çağrı için tüm FastAPI router ağacını
+    yüklüyordu (DeepR 2026-08-11 [YÜKSEK], `sandbox -> web.routes.agent_backtest
+    -> sandbox` döngüsü). İlerleme aktarımı artık açık bir `progress_fn`:
+    `_relay` eski `_add_step`'in child dalıyla birebir aynı — aynı ``progress``
+    etiketi, aynı yutulan istisna.
 
     Spawned NON-daemonic (so it may own a parallel_exec.BacktestPool);
     the parent watchdog guarantees it never outlives the server.
@@ -369,14 +374,20 @@ def _robustness_child(q, payload):
 
     _child_stdio_guard()
 
+    def _relay(msg: str) -> None:
+        # Tag matches _run_in_child's ("progress", ...) branch. A dead/closed
+        # queue must never abort the suite — audit relay is best effort.
+        try:
+            q.put(("progress", msg))
+        except Exception:
+            pass
+
     try:
         spec, bars_df, recipe, trades, symbol, interval = payload
         instrument, bar_type = _build_instrument_bar_type(recipe, bars_df)
-        import web.routes.agent_backtest as ab
+        from auto.robustness import run_full_robustness
 
-        ab._IPC_Q = q  # route _add_step → parent (as ('progress', msg))
-        rob = ab._run_full_robustness(
-            "child",
+        rob = run_full_robustness(
             spec,
             bars_df,
             instrument,
@@ -387,6 +398,7 @@ def _robustness_child(q, payload):
             interval=interval,
             category=recipe.get("category", "linear"),
             source=recipe.get("source", "bybit"),
+            progress_fn=_relay,
         )
         q.put(("result", rob))
     except Exception as e:  # pragma: no cover - defensive

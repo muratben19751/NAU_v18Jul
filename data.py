@@ -43,8 +43,11 @@ from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal
 
+import numpy as np
 import pandas as pd
 import requests
+
+from app_constants import DATA_DIR
 
 log = logging.getLogger(__name__)
 
@@ -59,7 +62,10 @@ def _get_bybit_session() -> requests.Session:
     return _bybit_session.s
 
 
-CACHE_DIR = Path.home() / ".cache" / "nautilus_web_app"
+# Kök tek kaynaktan (app_constants.DATA_DIR) — sekiz modül bunu birbirinden
+# habersiz kuruyordu ve hiçbiri env ile taşınamıyordu (DeepR 2026-08-11 [ORTA]).
+# Varsayılan yol değişmedi.
+CACHE_DIR = DATA_DIR
 BYBIT_CACHE_DIR = CACHE_DIR / "bybit"
 # Pandas cache for bars decoded from read-only EXTERNAL catalogs — lives here,
 # never inside the external root (external catalogs are reference data).
@@ -74,14 +80,62 @@ NAUTILUS_CATALOG_DIR = CACHE_DIR / "nautilus_catalog"
 # ---- US indices (Polygon-style tick CSVs on NFS) ----
 # NFS mount is unreliable for large sequential reads. Set NAUTILUS_INDEX_ROOT
 # to a local mirror when the remote path is not usable.
-INDEX_ROOT = Path(
-    os.environ.get(
-        "NAUTILUS_INDEX_ROOT",
-        "/Users/i034216/Z/us_indices/values_v1",
-    )
-)
+_INDEX_ROOT_ENV = "NAUTILUS_INDEX_ROOT"
+# Bu varsayılan BAŞKA bir makinenin (macOS) yolu; burada asla var olmaz.
+# Adı ayrıca saklanıyor ki "kök yok" uyarısı bunu ayırt edebilsin: env var
+# ayarlıyken kök yoksa yol YANLIŞ, ayarlı değilken kök yoksa Index kaynağı
+# bu kutuda hiç KURULMAMIŞ demektir — operatöre söylenecek şey farklı.
+_INDEX_ROOT_DEFAULT = "/Users/i034216/Z/us_indices/values_v1"
+INDEX_ROOT = Path(os.environ.get(_INDEX_ROOT_ENV, _INDEX_ROOT_DEFAULT))
 INDEX_CACHE_DIR = CACHE_DIR / "indices"
 TICKER_REGISTRY = INDEX_CACHE_DIR / "_tickers.json"
+
+
+def index_root_status() -> dict:
+    """Index kaynağının bu kutuda kurulu olup olmadığı — tek doğruluk kaynağı.
+
+    DeepR 2026-08-11 [ORTA]: `EXTERNAL_CATALOGS` var olmayan bir kök için
+    modül yüklenirken açıkça uyarıyordu (L31, aşağıda), `INDEX_ROOT` için
+    eşdeğeri YOKTU. Varsayılan bir macOS yolu olduğundan Windows/Linux
+    kutuda Index kaynağıyla ilgili HER adım kırılıyor — /data'daki "Discover
+    tickers" 404, /backtest/tickers boş `<option>`, Index backtest'i "No bars
+    for {ticker}" — ve hiçbiri "kök yok" demiyordu. Operatör UI'da üç
+    kaynaktan birinin sessizce ölü olduğunu ancak deneyerek anlıyordu.
+
+    `configured` = env var ayarlı mı (yani varsayılan kullanılmıyor mu).
+    Her çağrıda `exists()` çağrılır, önbelleklenmez: kök bir NFS mount ve
+    sunucu ömrü içinde bağlanıp kopabilir.
+    """
+    return {
+        "root": str(INDEX_ROOT),
+        "exists": INDEX_ROOT.exists(),
+        "configured": os.environ.get(_INDEX_ROOT_ENV) is not None,
+        "env_var": _INDEX_ROOT_ENV,
+    }
+
+
+def index_root_warning() -> str | None:
+    """Index kökü kullanılamıyorsa operatöre gösterilecek tek cümle, yoksa None.
+
+    Metin hem modül yükleme log'unda hem /data panelinde hem de ticker
+    picker'ının hata `<option>`'ında aynen kullanılır: kullanıcının üç ayrı
+    yerde gördüğü teşhis birbirini tutsun.
+    """
+    st = index_root_status()
+    if st["exists"]:
+        return None
+    if st["configured"]:
+        return (
+            f"{st['env_var']} points at {st['root']}, which does not exist — "
+            "the US-Index source is unavailable until the path is reachable."
+        )
+    return (
+        f"{st['env_var']} is not set and the built-in default ({st['root']}) is "
+        "another machine's path — the US-Index source is unavailable on this box. "
+        f"Set {st['env_var']} to a local Polygon daily-file root, or use the "
+        "Bybit / External sources instead."
+    )
+
 
 # ---- External read-only Nautilus catalogs surfaced on the /data page ----
 # Other projects' ParquetDataCatalog roots that this app references in place
@@ -129,6 +183,11 @@ for _ext_root in EXTERNAL_CATALOGS:
             os.pathsep,
         )
 
+# Aynı dürüstlük Index kökü için de: DeepR 2026-08-11 [ORTA] tam olarak bu
+# uyarının EKSİK olduğunu saptadı — UI'daki üç kaynaktan biri sessizce ölüydü.
+if (_idx_warn := index_root_warning()) is not None:
+    log.warning("%s", _idx_warn)
+
 # Per-kök önbellekler: {kök: (imza, yük)}.
 #
 # DeepR 2026-08-11 [ORTA]: eskiden yalnız {kök: yük} idi ve gerekçe "the
@@ -144,6 +203,12 @@ for _ext_root in EXTERNAL_CATALOGS:
 # desen.
 _EXT_INSTRUMENT_META: dict[str, tuple[tuple, dict]] = {}
 _EXT_MANIFEST: dict[str, tuple[tuple, dict]] = {}
+
+# Çözülmüş Nautilus enstrüman NESNELERİ: {kök: (imza, {id: instrument}, bozuk)}.
+# `_EXT_INSTRUMENT_META` bunun bir izdüşümü — ikisi tek bir `cat.instruments()`
+# geçişini paylaşır (DeepR 2026-08-11 [DÜŞÜK]: `external_instrument_object`
+# aynı geçişi HER ÇAĞRIDA yeniden yapıp sonucu atıyordu).
+_EXT_INSTRUMENT_OBJ: dict[str, tuple[tuple, dict, int]] = {}
 
 # Enstrüman meta'sı okunamayan kökler — HATA SONUCU CACHE'LENMEZ (her çağrıda
 # yeniden denenir), bu küme yalnız aynı uyarıyı her çağrıda basmamak için var.
@@ -748,6 +813,32 @@ def _fetch_bybit_page(
     )
 
 
+_EPOCH_MS_DIVISOR = {"ns": 1_000_000, "us": 1_000, "ms": 1}
+
+
+def _index_epoch_ms(index) -> np.ndarray:
+    """DatetimeIndex → epoch MİLİSANİYE (int64 dizi), kopyasız.
+
+    `index.as_unit("ns").asi8` doğru ama pahalı: 1M elemanlı bir indekste
+    ölçüldü, tek başına 29 ms (indeksin birimi 'us' ise gerçekten yeniden
+    ölçekleyip kopyalıyor). `asi8` ham sayacı bedelsiz verir; ondan ms'ye
+    inmek yalnızca birime bağlı bir tamsayı bölmesi. Taban bölmesi zincirleme
+    yapıldığında da aynı sonucu verir (us→ns→ms ile us→ms özdeş), yani sonuç
+    ESKİ YOLLA BİT BİT AYNI — sadece 1M elemanlık bir ara dizi ayrılmıyor.
+    Bilinmeyen/egzotik birimde eski (güvenli) yola düşülür.
+    """
+    unit = getattr(index, "unit", "ns")
+    div = _EPOCH_MS_DIVISOR.get(unit)
+    if div is not None:
+        return index.asi8 // div if div > 1 else index.asi8
+    if unit == "s":
+        return index.asi8 * 1000
+    try:
+        return index.as_unit("ns").asi8 // 1_000_000
+    except AttributeError:  # old pandas: asi8 is already ns
+        return index.asi8 // 1_000_000
+
+
 def _bybit_gap_ranges(cached: pd.DataFrame, step_ms: int) -> list[tuple[int, int]]:
     """Cache'in [ilk, son] aralığındaki DELİKLER — (başlangıç, bitiş) ms, kapalı.
 
@@ -758,24 +849,22 @@ def _bybit_gap_ranges(cached: pd.DataFrame, step_ms: int) -> list[tuple[int, int
     """
     if cached.empty or len(cached.index) < 2:
         return []
-    try:
-        idx_ns = cached.index.as_unit("ns").asi8
-    except AttributeError:  # old pandas: asi8 is already ns
-        idx_ns = cached.index.asi8
-    ms = idx_ns // 1_000_000
+    ms = _index_epoch_ms(cached.index)
     first_ms, last_ms = int(ms[0]), int(ms[-1])
     expected = (last_ms - first_ms) // step_ms + 1
     if len(ms) >= expected:
         return []
 
-    gaps: list[tuple[int, int]] = []
-    prev = int(ms[0])
-    for cur in ms[1:]:
-        cur = int(cur)
-        if cur - prev > step_ms:
-            gaps.append((prev + step_ms, cur - step_ms))
-        prev = cur
-    return gaps
+    # DeepR 2026-08-11 [DÜŞÜK]: burası eskiden `for cur in ms[1:]` ile numpy
+    # int64 dizisini Python'da tek tek geziyor, her elemanı `int()` ile
+    # kutuluyordu. 1M barlık bir 1m önbelleğinde ölçüldü: 85,0 ms → 1,6 ms
+    # (bunun 29 ms'i taramada değil, aşağıdaki `_index_epoch_ms`'in kaldırdığı
+    # `as_unit("ns")` kopyasındaydı). `load_bybit_bars` bu maliyeti HER çağrıda
+    # (chart, sweep, robustness, agent Phase-0) ödüyordu. Delik SAYISI zaten
+    # küçük olduğundan Python döngüsü yalnız gerçek deliklerin üzerinde döner;
+    # taramanın kendisi numpy'de.
+    hole_at = np.flatnonzero(np.diff(ms) > step_ms)
+    return [(int(ms[i]) + step_ms, int(ms[i + 1]) - step_ms) for i in hole_at.tolist()]
 
 
 def _bybit_gaps_path(cache_path: Path) -> Path:
@@ -1976,6 +2065,42 @@ def _external_meta_signature(root: Path) -> tuple:
     return tuple(parts)
 
 
+def _external_instruments(root: Path) -> dict:
+    """`{instrument_id: Nautilus enstrüman nesnesi}` — kök başına önbellekli.
+
+    DeepR 2026-08-11 [DÜŞÜK]: katalogdaki TÜM enstrüman tanımlarını çözen
+    `cat.instruments()` geçişi iki yerde ayrı ayrı yapılıyordu —
+    `_external_instrument_meta` sonucu önbelleğe alıyor,
+    `external_instrument_object` ise aynı geçişi HER ÇAĞRIDA yineleyip
+    doğrusal aramayla tekini bulup gerisini atıyordu. `backtest_robustness`'ın
+    çok-sembollü sıralı dalı bunu sembol BAŞINA çağırdığı için maliyet sembol
+    sayısıyla çarpılıyordu. Artık tek geçiş var; meta bu sözlüğün izdüşümü.
+
+    Hata YÜKSELTİLİR, önbelleğe yazılmaz: geçici bir dosya kilidi "bu kökte
+    enstrüman yok" diye kalıcılaşmamalı (bkz. `_external_instrument_meta`).
+    Dönen sözlük ÇAĞIRANA AİT DEĞİLDİR (önbelleğin kendisidir) — değiştirmeyin.
+    """
+    key = str(root)
+    sig = _external_meta_signature(root)
+    cached = _EXT_INSTRUMENT_OBJ.get(key)
+    if cached is not None and cached[0] == sig:
+        return cached[1]
+
+    from nautilus_trader.persistence.catalog import ParquetDataCatalog
+
+    cat = ParquetDataCatalog(str(root))
+    objs: dict = {}
+    broken = 0
+    for inst in cat.instruments():
+        try:
+            objs[str(inst.id)] = inst
+        except Exception:
+            # id'si bile okunamayan tanım: anahtarı yok, saklanamaz.
+            broken += 1
+    _EXT_INSTRUMENT_OBJ[key] = (sig, objs, broken)
+    return objs
+
+
 def _external_instrument_meta(root: Path) -> dict:
     """Return {instrument_id: {asset_class, price_precision, size_precision,
     price_increment, quote_currency}} for one external catalog root.
@@ -1999,15 +2124,14 @@ def _external_instrument_meta(root: Path) -> dict:
         return cached[1]
 
     meta: dict = {}
-    skipped = 0
     try:
         from nautilus_trader.model.enums import asset_class_to_str
-        from nautilus_trader.persistence.catalog import ParquetDataCatalog
 
-        cat = ParquetDataCatalog(str(root))
-        for inst in cat.instruments():
+        instruments = _external_instruments(root)
+        skipped = _EXT_INSTRUMENT_OBJ[key][2]
+        for inst_id, inst in instruments.items():
             try:
-                meta[str(inst.id)] = {
+                meta[inst_id] = {
                     "asset_class": asset_class_to_str(inst.asset_class),
                     "price_precision": int(inst.price_precision),
                     "size_precision": int(inst.size_precision),
@@ -2460,17 +2584,20 @@ def list_external_instruments() -> list[dict]:
 def external_instrument_object(instrument_id: str):
     """Return the Nautilus instrument object (e.g. Equity) defined in an
     external catalog, or None. The real catalog definition is used so price/
-    size precision match the fixed-point encoding of the stored bars."""
-    from nautilus_trader.persistence.catalog import ParquetDataCatalog
+    size precision match the fixed-point encoding of the stored bars.
 
+    Arama `_external_instruments`'ın kök başına ÖNBELLEKLİ sözlüğü üzerinden
+    yapılır: eskiden her çağrı `ParquetDataCatalog(...).instruments()` ile
+    katalogdaki tüm tanımları yeniden çözüp doğrusal arama yapıyordu, yani
+    çok-sembollü robustness dalında maliyet sembol sayısıyla çarpılıyordu.
+    """
     for root in external_catalog_roots():
         try:
-            cat = ParquetDataCatalog(str(root))
-            for inst in cat.instruments():
-                if str(inst.id) == instrument_id:
-                    return inst
+            inst = _external_instruments(root).get(instrument_id)
         except Exception:
             continue
+        if inst is not None:
+            return inst
     return None
 
 
@@ -2785,6 +2912,9 @@ def list_catalog(
         "bybit": _bybit_rows(),
         "index": _index_rows(limit=index_limit, query=index_query),
         "index_total": total_index_tickers,
+        # None = kök erişilebilir. Dolu ise panel "registry yok, Discover'a bas"
+        # demek yerine gerçek sebebi söyler — o buton bu durumda 404 döner.
+        "index_root_warning": index_root_warning(),
         "index_query": index_query,
         "index_limit": index_limit,
         "external": external["rows"],

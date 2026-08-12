@@ -46,7 +46,9 @@
   <div class="panel-header">
     <div class="panel-title">
       US Indices (Polygon)
-      {% if catalog.index_total is not none %}
+      {% if catalog.index_root_warning %}
+        <span class="badge warn">source unavailable</span>
+      {% elif catalog.index_total is not none %}
         <span class="badge">{{ "{:,}".format(catalog.index_total) }} tickers</span>
       {% else %}
         <span class="badge">registry missing</span>
@@ -57,6 +59,14 @@
     </div>
   </div>
   <div class="panel-body">
+
+    {# Kök erişilemiyorsa bunu ÖNCE söyle: "Discover tickers" bu durumda 404
+       döner ve kullanıcı sebebini ancak deneyerek öğrenirdi. #}
+    {% if catalog.index_root_warning %}
+      <div class="warning-strip">
+        <span>⚠ {{ catalog.index_root_warning }}</span>
+      </div>
+    {% endif %}
 
     <div class="row data-filter">
       <form method="get" action="/data" class="row">
@@ -72,14 +82,19 @@
             hx-target="#discover-result"
             hx-swap="innerHTML"
             hx-disabled-elt="find button">
-        <button type="submit" class="btn btn-secondary" title="Rebuild _tickers.json from INDEX_ROOT (slow)">
+        <button type="submit" class="btn btn-secondary"
+                {% if catalog.index_root_warning %}disabled
+                title="{{ catalog.index_root_warning }}"
+                {% else %}title="Rebuild _tickers.json from INDEX_ROOT (slow)"{% endif %}>
           🔍 Discover tickers
         </button>
       </form>
     </div>
     <div id="discover-result" class="small text-muted"></div>
 
-    {% if catalog.index_total is none %}
+    {% if catalog.index_root_warning and catalog.index_total is none %}
+      {# Uyarı şeridi yukarıda; burada tekrar etmiyoruz. #}
+    {% elif catalog.index_total is none %}
       <div class="empty-state">
         Ticker registry (<code>_tickers.json</code>) not built yet. Click <b>Discover tickers</b> to scan
         <code>NAUTILUS_INDEX_ROOT</code>.

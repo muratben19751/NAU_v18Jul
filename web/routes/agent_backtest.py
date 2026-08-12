@@ -57,10 +57,23 @@ kapsamı dışında — gelecekte ayrı bir iş. Bkz.
 
 2026-08-09 DeepR turu dosyayı yine (5000+ satır) çok büyük diye işaretledi
 ([DÜŞÜK]) — A0-A11b sonrası hâlâ büyük çünkü ~40 modül-seviyesi yardımcı
-BİLİNÇLİ OLARAK aynı dosyada tutuluyor (`tests/test_lock_nesting.py`'nin
-AST taraması bu dosyayı hedefliyor; ayrı bir alt-pakete taşımak o regresyon
-testini kör bırakır — planın "Adım 12: YAPILMAYACAK" kararı). Adım 10
-sonradan (aynı gün) tamamlandı — dosya bilinçli olarak yine de büyük.
+BİLİNÇLİ OLARAK aynı dosyada tutuluyor. Adım 10 sonradan (aynı gün)
+tamamlandı — dosya bilinçli olarak yine de büyük.
+
+2026-08-11 [YÜKSEK] düzeltmesi: robustluk suite'i (`_run_full_robustness`) ve
+saf yardımcıları (`peer_exclusions`, `wfo_test`, `valid_wfo_windows`, MC
+eşikleri) `auto/robustness.py`'ye taşındı. Gerekçe bir satır sayısı değil,
+bağımlılık YÖNÜ: `sandbox._robustness_child` ayrı bir süreçte suite'i çağırmak
+için bu modülü import edip `_IPC_Q` private global'ini dışarıdan set ediyordu —
+HTTP servis etmeyen bir worker tüm router ağacını yüklüyordu ve statik grafikte
+`sandbox -> web.routes.agent_backtest -> sandbox` döngüsü vardı. Suite artık
+altta duruyor, route ve sandbox onu çağırıyor; ilerleme bildirimi modül-global
+kuyruk yerine açık bir `progress_fn` parametresi. Yukarıdaki eski
+"`tests/test_lock_nesting.py` bölmeyi engelliyor" gerekçesi düşürüldü: o testin
+`_TARGETS`'ı zaten çok dosyalı bir sözlük, yeni yola bir satır eklemek yeterli
+(taşınan kod `_AGENT_LOCK`'a hiç dokunmadığı için bu turda gerekmedi).
+Katman kuralını `tests/test_auto_layer_is_web_free.py` bekçilik ediyor.
+`_agent_worker` hâlâ burada — bir sonraki doğal kesme çizgisi o.
 """
 
 from __future__ import annotations
@@ -84,6 +97,24 @@ from typing import NamedTuple
 import pandas as pd
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse
+
+# Robustluk suite'i ve saf yardımcıları artık web'den bağımsız `auto` paketinde
+# (DeepR 2026-08-11 [YÜKSEK]: sandbox child'ı sırf suite için tüm router ağacını
+# import ediyordu). Alt tireli takma adlar KASITLI: bu modülün tarihsel import
+# yüzeyi (testler `ab._peer_exclusions`, `ab._MC_DD_LIMIT` … diye erişiyor)
+# taşıma yüzünden değişmesin — davranış birebir korunuyor.
+from auto.robustness import MC_DD_LIMIT as _MC_DD_LIMIT
+from auto.robustness import MC_DD_TAIL_LIMIT as _MC_DD_TAIL_LIMIT
+from auto.robustness import bare_ticker as _bare_ticker  # noqa: F401
+from auto.robustness import (  # noqa: F401
+    multi_symbol_definitive_failure as _multi_symbol_definitive_failure,
+)
+from auto.robustness import peer_exclusions as _peer_exclusions  # noqa: F401
+from auto.robustness import (  # noqa: F401
+    split_definitive_failure as _split_definitive_failure,
+)
+from auto.robustness import valid_wfo_windows as _valid_wfo_windows
+from auto.robustness import wfo_test as _wfo_test
 
 router = APIRouter(prefix="/agent")
 
@@ -169,11 +200,6 @@ _KNOWN_CONTINUOUS_TAIL_GAPS = {
     ("QQQ.NASDAQ", "2004-11-30", "2011-03-23", 2304): "2011-03-23",
 }
 
-# L2: Monte Carlo drawdown limits (%).  The median describes the typical path;
-# strict publication also has to reject a materially unsafe adverse tail.
-_MC_DD_LIMIT = -25.0
-_MC_DD_TAIL_LIMIT = -35.0
-
 # L32: Sealed holdout — the last N days of data are completely withheld from the
 # iteration + robustness phases; tested exactly once only AFTER the winner is
 # declared. The result is NOT BOUND to the decision, shown for information only.
@@ -232,11 +258,6 @@ _WINLESS_ROUND_LIMIT = int(os.environ.get("AGENT_WINLESS_ROUND_LIMIT", "3"))
 
 # L26: lightweight best-effort SQLite index of winner + robustness moments.
 _AGENT_INDEX_DB = Path.home() / ".cache" / "nautilus_web_app" / "agent_index.db"
-
-# When this module runs inside a sandbox child process (robustness offloaded to
-# a subprocess so it can't freeze the web server), progress steps are relayed to
-# the parent via this queue instead of the child's own _AGENT_PROGRESS.
-_IPC_Q = None
 
 # ── Session Logger ────────────────────────────────────────────────────────────
 # SESSION_LOG_DIR moved to web/shared.py (DeepR 2026-08-09 [YÜKSEK]) — the
@@ -669,24 +690,41 @@ def _is_progress_noise(msg: str) -> bool:
     return bool(_PROGRESS_NOISE.search(msg or ""))
 
 
-def _add_step(run_id: str, msg: str) -> None:
-    # In a sandbox child, relay the step to the parent (tag matches _run_in_child).
-    if _IPC_Q is not None:
-        try:
-            _IPC_Q.put(("progress", msg))
-        except Exception:
-            pass
-        return
+def _add_step(run_id: str, msg: str, *, kind: str | None = None) -> None:
+    """Bir ilerleme satırı kaydet — metinle BİRLİKTE yapısal ``kind`` alanı.
+
+    DeepR 2026-08-11 [DÜŞÜK] (mimari): AUTO kokpiti (``web/mission.py``) olay
+    tipini RENDER anında bu mesajların METNİNDEN çıkarıyordu — "robustness",
+    "bar", "block", "claude" gibi anahtar kelimelerle. Yani sunum katmanı, alan
+    katmanının serbest metnini geri-mühendislik ediyordu: buradaki bir satırın
+    sözcüğünü değiştirmek (ya da Türkçeleştirmek) kokpitin renklendirmesini
+    SESSİZCE bozardı ve hiçbir tip kontrolü bunu yakalamazdı.
+
+    Sınıf artık ÜRETİLDİĞİ yerde belirlenir ve hem canlı duruma hem oturum
+    loguna yapısal bir alan olarak yazılır. Doğru sınıfı zaten bilen bir çağrı
+    yeri ``kind=`` ile açıkça söyler (tahmine hiç girilmez); söylemezse metin
+    sınıflandırıcısı BURADA, mesajın yanı başında çalışır — metin ile sınıf
+    aynı katmanda durur ve ıraksaması test edilebilir.
+
+    Bu fonksiyon YALNIZ parent (web) sürecinde koşar. Eskiden bir
+    `_IPC_Q is not None` dalı vardı: sandbox child'ı bu modülü import edip
+    global'i set ediyordu. Child artık `auto.robustness.run_full_robustness`'i
+    kendi `progress_fn` kapanışıyla çağırıyor, bu modülü hiç görmüyor.
+    """
+    from web.mission import STEP_KINDS, classify_step_kind
+
+    if kind not in STEP_KINDS:
+        kind = classify_step_kind(msg)
     t = _ts()
     with _AGENT_LOCK:
         s = _AGENT_PROGRESS.get(run_id)
         if s is not None:
-            s["steps"].append({"ts": t, "msg": msg})
+            s["steps"].append({"ts": t, "msg": msg, "kind": kind})
             # Cap to prevent unbounded memory growth in continuous mode.
             if len(s["steps"]) > 500:
                 s["steps"] = s["steps"][-500:]
     if not _is_progress_noise(msg):
-        _session_log(run_id, "step", ts=t, msg=msg)
+        _session_log(run_id, "step", ts=t, msg=msg, kind=kind)
 
 
 # ── Timeline (Gantt) span track ───────────────────────────────────────────────
@@ -710,10 +748,11 @@ def _tl_begin(
     round_num: int = 1,
     **meta,
 ) -> None:
-    """Open a span in the timeline. No-op inside a sandbox child (_IPC_Q set) —
-    child sub-phases are derived on the parent side from step markers."""
-    if _IPC_Q is not None:
-        return
+    """Open a span in the timeline.
+
+    Child sub-phases are derived on the parent side from step markers (see
+    `_make_rob_progress`); the timeline itself only ever lives in this process.
+    """
     t0 = datetime.now(UTC).timestamp()
     span = {
         "key": key,
@@ -756,8 +795,6 @@ def _tl_begin(
 
 def _tl_end(run_id: str, key: str, *, status: str = "ok", **meta) -> None:
     """Close the most recent open span with `key`. Unknown/closed key → no-op."""
-    if _IPC_Q is not None:
-        return
     t1 = datetime.now(UTC).timestamp()
     found = False
     with _AGENT_LOCK:
@@ -779,8 +816,6 @@ def _tl_end(run_id: str, key: str, *, status: str = "ok", **meta) -> None:
 
 def _tl_close_open(run_id: str, *, status: str = "fail") -> None:
     """Close all spans left open (error / stop / end-of-round cleanup)."""
-    if _IPC_Q is not None:
-        return
     t1 = datetime.now(UTC).timestamp()
     closed: list[str] = []
     with _AGENT_LOCK:
@@ -824,7 +859,9 @@ def _make_rob_progress(run_id: str, cand_idx: int, round_num: int):
             state["open"] = None
 
     def progress(msg: str) -> None:
-        _add_step(run_id, msg)
+        # Bu köprüden geçen HER satır robustness çocuğundan gelir — sınıfı
+        # metinden tahmin etmeye gerek yok, yapısal olarak biliniyor.
+        _add_step(run_id, msg, kind="rob")
         head = msg.lstrip()[:1]
         if head in _TL_ROB_MARKERS:
             _close("ok")
@@ -1554,7 +1591,9 @@ def _propose_initial_strategy(
     dummy_history: list = []
 
     if web_research:
-        _add_step(run_id, "🌐 Running web research…")
+        # 🌐 glifi robustness'ın multi-symbol satırında da var; sınıfı metinden
+        # değil buradan söyle (aksi hâlde iki farklı olay aynı kelimeye bağlı).
+        _add_step(run_id, "🌐 Running web research…", kind="llm")
     _tl_begin(
         run_id,
         "llm",
@@ -2060,7 +2099,8 @@ def _run_backtest_iteration(
         _recipe(is_external, instrument_id, symbol, category, iter_iv),
         iteration_id=i,
         rationale=f"agent-run · iter {i + 1}/{n_iterations} · {run_label} {iter_iv}",
-        progress_fn=lambda m, _i=i: _add_step(run_id, f"  └ {m}"),
+        # Backtest çocuğunun ilerleme satırları — sınıf yapısal olarak belli.
+        progress_fn=lambda m, _i=i: _add_step(run_id, f"  └ {m}", kind="test"),
         timeout_s=_remaining_phase_timeout(wstate.worker_t0, max_hours, 150.0),
         force_subprocess=True,
     )
@@ -2560,63 +2600,6 @@ class _TfLoader:
         return df
 
 
-# Liquid peer basket for multi-symbol robustness on external (US equity) runs.
-# Real instrument ids from the catalog — SPY/IWM are on the ARCA venue, not NASDAQ.
-EXTERNAL_PEER_BASKET = [
-    "SPY.ARCA",
-    "QQQ.NASDAQ",
-    "IWM.ARCA",
-    "AAPL.NASDAQ",
-    "MSFT.NASDAQ",
-]
-
-
-def _bare_ticker(instrument_id: str) -> str:
-    """ "QQQ.NASDAQ" → "QQQ" (manifest anahtarları venue taşımaz).
-
-    YALNIZ son nokta atılır: 'BRK.A.NASDAQ' → 'BRK.A'. İlk noktadan bölmek
-    data.py'de bir kez yapıldı ve noktalı sembollerin manifest kaydını
-    kaybettirdi (M1260) — aynı hatayı ikinci kez yazmayalım.
-    """
-    return (instrument_id or "").rsplit(".", 1)[0].strip().upper()
-
-
-def _peer_exclusions(instrument_id: str) -> set[str]:
-    """Multi-symbol testinden dışlanacak bare ticker'lar.
-
-    Düz `p != symbol` karşılaştırması DİKİLMİŞ serileri tanımıyordu: QQQC,
-    `stitch:QQQ+QQQQ` ile üretilmiş sürekli bir seridir, dolayısıyla bir QQQC
-    koşusunda peer olarak QQQ seçmek "başka bir enstrümanda da çalışıyor mu"
-    sorusunu sormuyor — aynı veriyi ikinci kez soruyor. Genelleşebilirlik testi
-    diye görünen şey, testin kendisinin tekrarıydı (DeepR 2026-08-10).
-
-    Dışlama iki yönlü: dikilmiş seri bileşenlerini dışlar, bileşen de kendisini
-    içeren dikişi dışlar (QQQ koşusunda QQQC peer olamaz).
-    """
-    from data import external_manifest
-
-    me = _bare_ticker(instrument_id)
-    out = {me}
-    try:
-        manifest = external_manifest() or {}
-    except Exception:
-        return out
-
-    def _components(entry: dict) -> set[str]:
-        src = str((entry or {}).get("source") or "")
-        if not src.startswith("stitch:"):
-            return set()
-        return {
-            p.strip().upper() for p in src[len("stitch:") :].split("+") if p.strip()
-        }
-
-    out |= _components(manifest.get(me) or {})
-    for ticker, entry in manifest.items():
-        if me in _components(entry):
-            out.add(str(ticker).strip().upper())
-    return out
-
-
 # Hisse senedi koşularında hesabın ne kadarı tek pozisyona girsin (yüzde).
 # Sistem aynı anda tek pozisyon tutar, dolayısıyla "tam yatırım" doğal taban
 # çizgisidir; %5 gibi bir değer $10k hesapta ~2 hisse eder ve sabit komisyonu
@@ -2656,43 +2639,6 @@ def _clamp_spec_trade_size(spec):
         "trade_size": float(spec.trade_size),
     }
     return None if before == after else {"before": before, "after": after}
-
-
-def _wfo_test(w: dict) -> dict:
-    """A WFO window's DECISION metric — the metric of the spec that gets SAVED.
-
-    ``run_walk_forward`` re-optimizes the parameters on every window's train
-    slice (GA, backtest_robustness.py) and reports two OOS results:
-
-    - ``test_metrics``       — the RE-OPTIMIZED spec on the test slice
-    - ``test_metrics_naive`` — the UNCHANGED spec (what the agent appends to
-      the catalog and what the user would actually run)
-
-    The gate used to read the first one, so the certificate went to a strategy
-    re-fitted every 3 months while the deployed artifact was never re-fitted.
-    Measured on run 1376c812: one candidate scored a penalized OOS Sharpe of
-    −0.069 optimized (the pass threshold is >0) against −0.896 naive on the same
-    windows — a pass would have shipped something a full point worse than the
-    number that authorized it.
-
-    Fallback: when the spec has no optimizable numeric parameter the WFO builds
-    an empty search space, ``naive_result`` is never run and ``test_metrics`` IS
-    the unoptimized run — so falling back to it keeps the same meaning.
-    """
-    return (w.get("test_metrics_naive") or {}) or (w.get("test_metrics") or {})
-
-
-_WFO_MIN_TRADES = 3
-
-
-def _valid_wfo_windows(wfo: list[dict]) -> list[dict]:
-    """WFO windows with enough trades in their decision metric to count."""
-    return [
-        w
-        for w in wfo
-        if (_wfo_test(w).get("n_trades") or w.get("test_n_trades") or 0)
-        >= _WFO_MIN_TRADES
-    ]
 
 
 def _robustness_passed(
@@ -2865,17 +2811,6 @@ def _robustness_passed(
             )
         return False
     return True
-
-
-def _multi_symbol_definitive_failure(ms: dict | None) -> bool:
-    """True only for an evaluated, explicit symbol-specific rejection."""
-
-    return "✗" in str((ms or {}).get("generalization_label", ""))
-
-
-def _split_definitive_failure(split: dict | None) -> bool:
-    """True when IS/OOS has already produced an explicit rejection."""
-    return "✗" in str((split or {}).get("overfitting_label", ""))
 
 
 def _holdout_promotion_verdict(
@@ -3070,296 +3005,6 @@ def _llm_cost_usd(
     return model, token_ledger.cost_usd(
         {"input": ti, "output": to, "cache_read": tcr, "cache_write": tcw}, model
     )
-
-
-def _run_full_robustness(
-    run_id: str,
-    spec,
-    bars_df,
-    instrument,
-    bar_type,
-    venue,
-    trades: list,
-    symbol: str = "BTCUSDT",
-    interval: str = "1",
-    category: str = "linear",
-    source: str = "bybit",
-) -> dict:
-    """Run robustness in the order Multi-Symbol → IS/OOS → WFO → MC.
-
-    ``source="external"``: ``symbol`` is an external catalog instrument id
-    (e.g. "QQQ.NASDAQ"), ``interval`` is the catalog DSL ("1-DAY"); the
-    multi-symbol universe is chosen from EXTERNAL_PEER_BASKET.
-
-    When NAUTILUS_PARALLEL=1 (default), independent backtest units
-    (multi-symbol, IS/OOS pair, WFO window×candidate) are distributed to a
-    process pool; if the pool can't be set up or a stage blows up in the pool,
-    that stage is re-run on the untouched sequential path. NAUTILUS_PARALLEL=0 →
-    fully sequential (old behavior).
-    """
-    import shutil as _shutil
-
-    from backtest import STARTING_CASH
-    from backtest_robustness import (
-        run_insample_oos_split,
-        run_monte_carlo,
-        run_multi_symbol,
-        run_walk_forward,
-    )
-
-    pf = lambda m: _add_step(run_id, m)  # noqa: E731
-
-    # ── Parallel pool (optional) ──────────────────────────────────────────────
-    pool = None
-    run_many = None
-    snapshot_path = None
-    try:
-        from parallel_exec import (
-            BacktestPool,
-            get_worker_count,
-            make_snapshot,
-            parallel_enabled,
-        )
-
-        if parallel_enabled():
-            # Warm the trend-filter cache BEFORE fan-out: on a cold cache multiple
-            # workers race to write the same parquet (data.py to_parquet).
-            if getattr(spec, "trend_filter", False):
-                try:
-                    if source == "external":
-                        from data import load_external_bars
-
-                        load_external_bars(
-                            symbol, getattr(spec, "trend_interval", "1-DAY")
-                        )
-                    else:
-                        from data import load_bybit_bars
-
-                        load_bybit_bars(
-                            symbol=symbol,
-                            interval=getattr(spec, "trend_interval", "60"),
-                            category=category,
-                            start=bars_df.index[0].to_pydatetime(),
-                            end=bars_df.index[-1].to_pydatetime(),
-                        )
-                except Exception as warm_exc:
-                    _add_step(run_id, f"  ⚠ Could not warm trend cache: {warm_exc}")
-            snapshot_path = make_snapshot(bars_df)
-            pool_recipe = (
-                {"source": "external", "instrument_id": symbol, "granularity": interval}
-                if source == "external"
-                else {"symbol": symbol, "interval": interval, "category": category}
-            )
-            pool = BacktestPool(
-                snapshot_path,
-                pool_recipe,
-                max_workers=get_worker_count(),
-            )
-            run_many = pool.run_units
-            _add_step(
-                run_id,
-                f"⚡ Parallel mode: {pool.max_workers} worker processes "
-                "(can be disabled with NAUTILUS_PARALLEL=0)",
-            )
-    except Exception as pool_exc:
-        _add_step(
-            run_id, f"⚠ Could not set up parallel pool ({pool_exc}) — sequential mode"
-        )
-        run_many = None
-
-    def _stage(label, fn, /, *args, **kwargs):
-        """Run a robustness stage with the pool (if any); on a pool error re-run
-        the same stage on the sequential path. The sequential path is always up."""
-        if run_many is not None:
-            try:
-                return fn(*args, run_many=run_many, **kwargs)
-            except Exception as par_exc:
-                _add_step(
-                    run_id,
-                    f"  ⚠ {label} parallel stage failed "
-                    f"({type(par_exc).__name__}) — re-running sequentially",
-                )
-        return fn(*args, **kwargs)
-
-    try:
-        # 1) Multi-Symbol — cheapest test, eliminates fast (saves IS/OOS and WFO time up front)
-        if source == "external":
-            from data import _external_bar_dir
-
-            # First filter peers that HAVE data at this granularity, THEN clip to
-            # 3 (scoring is already tolerant). The reverse order used to never try
-            # the 4th/5th peer if the first 3 peers had no data.
-            # Dışlama dikiş-farkındalıklı: QQQC = stitch:QQQ+QQQQ olduğu için
-            # düz `p != symbol` QQQ'yu peer sanıyordu (bkz. _peer_exclusions).
-            excluded = _peer_exclusions(symbol)
-            other_symbols = [
-                p
-                for p in EXTERNAL_PEER_BASKET
-                if _bare_ticker(p) not in excluded
-                and _external_bar_dir(p, interval) is not None
-            ][:3]
-            # 365 calendar days ≈ 252 equity bars — too few for the _MIN_TRADES threshold; use 730.
-            ms_days = 730
-        else:
-            other_symbols = [
-                s for s in ("BTCUSDT", "ETHUSDT", "SOLUSDT") if s != symbol
-            ]
-            ms_days = 365  # 180→365: more trades → statistical reliability
-        _add_step(
-            run_id,
-            f"🌐 Multi-Symbol — the strategy is also being tested on {', '.join(other_symbols)}. "
-            "Is it generalizable or specific only to this symbol?",
-        )
-        ms = _stage(
-            "Multi-Symbol",
-            run_multi_symbol,
-            spec,
-            primary_symbol=symbol,
-            symbols=other_symbols,
-            interval=interval,
-            category=category,
-            days=ms_days,
-            progress_fn=pf,
-            source=source,
-        )
-        _add_step(
-            run_id,
-            f"  → positive on {ms.get('symbols_positive', 0)}/{ms.get('symbols_valid', 0)} symbols · "
-            f"{ms.get('generalization_label', '?')}",
-        )
-
-        # A definitive symbol-specific rejection already fixes the final gate
-        # result. Do not spend minutes on IS/OOS + WFO for an outcome that cannot
-        # change. Return explicit skipped sections so the audit log remains clear.
-        if _multi_symbol_definitive_failure(ms):
-            reason = "skipped after definitive multi-symbol rejection"
-            _add_step(run_id, f"  ⏭ {reason}: IS/OOS, Walk-Forward and Monte Carlo")
-            return {
-                "split": {"error": reason},
-                "wfo_windows": [],
-                "mc": {"error": reason},
-                "multi_symbol": ms,
-                "short_circuit": "multi_symbol",
-            }
-
-        # 2) IS/OOS Split
-        _add_step(
-            run_id,
-            "📊 IS/OOS Split — 70% of data for training, 30% real OOS test. "
-            "The OOS/IS Sharpe ratio measures overfitting (≥0.7 = robust).",
-        )
-        split = _stage(
-            "IS/OOS",
-            run_insample_oos_split,
-            spec,
-            bars_df,
-            instrument,
-            bar_type,
-            venue,
-            split_pct=0.7,
-            progress_fn=pf,
-        )
-        sp = split or {}
-        is_m = sp.get("in_sample_metrics") or {}
-        oos_m = sp.get("oos_metrics") or {}
-        _add_step(
-            run_id,
-            f"  IS result: PnL={is_m.get('pnl', 0):+.2f} · "
-            f"Sharpe={is_m.get('sharpe', float('nan')):.2f} · "
-            f"{is_m.get('n_trades', 0)} trade | "
-            f"OOS result: PnL={oos_m.get('pnl', 0):+.2f} · "
-            f"Sharpe={oos_m.get('sharpe', float('nan')):.2f} · "
-            f"{oos_m.get('n_trades', 0)} trade",
-        )
-        _add_step(run_id, f"  → Overfitting score: {sp.get('overfitting_label', '?')}")
-
-        # In strict AUTO, an explicit split rejection guarantees that the final
-        # gate cannot pass. WFO and Monte Carlo cannot reverse that measured
-        # failure, so avoid the remaining expensive work.
-        if _split_definitive_failure(split):
-            reason = "skipped after definitive IS/OOS rejection"
-            _add_step(run_id, f"  ⏭ {reason}: Walk-Forward and Monte Carlo")
-            return {
-                "split": split,
-                "wfo_windows": [],
-                "mc": {"error": reason},
-                "multi_symbol": ms,
-                "short_circuit": "is_oos",
-            }
-
-        # 3) Walk-Forward
-        _add_step(
-            run_id,
-            "📈 Walk-Forward — rolling-window OOS test. Each window has 6 months training + 2 months test. "
-            "≥50% of windows must have positive PnL.",
-        )
-        wfo = _stage(
-            "Walk-Forward",
-            run_walk_forward,
-            spec,
-            bars_df,
-            instrument,
-            bar_type,
-            venue,
-            train_months=6,
-            test_months=2,
-            step_months=3,  # 2→3: ~24 windows instead of 35, 30% faster
-            progress_fn=pf,
-        )
-        if wfo:
-            # Reported on the SAME series the gate decides on (_wfo_test): the
-            # unchanged spec's OOS windows. Showing the re-optimized count next
-            # to a naive verdict made the two disagree on screen.
-            valid_wfo = _valid_wfo_windows(wfo)
-            pos = sum(1 for w in valid_wfo if _wfo_test(w).get("pnl", 0) > 0)
-            avg_pnl = (
-                sum(_wfo_test(w).get("pnl", 0) for w in valid_wfo) / len(valid_wfo)
-                if valid_wfo
-                else 0.0
-            )
-            pos_opt = sum(
-                1 for w in wfo if (w.get("test_metrics") or {}).get("pnl", 0) > 0
-            )
-            _add_step(
-                run_id,
-                f"  → {pos}/{len(valid_wfo)} valid windows positive (saved spec) · "
-                f"average test PnL={avg_pnl:+.2f} USDT · "
-                f"{pos_opt}/{len(wfo)} when re-optimized per window (diagnostic)",
-            )
-
-        # 4) Monte Carlo (already vectorized numpy — no pool needed)
-        mc: dict = {"error": "No trade data."}
-        if trades:
-            _add_step(
-                run_id,
-                f"🎲 Monte Carlo — shuffles the sequence of {len(trades)} trades {300} times to "
-                f"measure the luck factor. Median DD < {_MC_DD_LIMIT:.0f}% is risky.",
-            )
-            mc = run_monte_carlo(
-                trades,
-                n_sims=300,
-                starting_cash=STARTING_CASH,
-                progress_fn=pf,
-            )
-            if not mc.get("error"):
-                _add_step(
-                    run_id,
-                    f"  → Median final: ${mc.get('median_final', 0):,.0f} · "
-                    f"p5 scenario: ${mc.get('p5_final', 0):,.0f} · "
-                    f"Median max DD: {mc.get('max_dd_p50', 0):.1f}%",
-                )
-        else:
-            _add_step(
-                run_id,
-                "  ⚠ Monte Carlo skipped — no trades were opened in the backtest",
-            )
-
-        return {"split": split, "wfo_windows": wfo, "mc": mc, "multi_symbol": ms}
-    finally:
-        if pool is not None:
-            pool.shutdown()
-        if snapshot_path is not None:
-            _shutil.rmtree(Path(snapshot_path).parent, ignore_errors=True)
 
 
 # ── Worker ────────────────────────────────────────────────────────────────────

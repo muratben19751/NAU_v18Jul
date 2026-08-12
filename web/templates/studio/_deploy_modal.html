@@ -1,9 +1,19 @@
-{# ctx: defn, metrics, objective_value, gate_default, has_draft #}
+{# ctx: defn, metrics, objective_value, gate_default, has_draft, runner_is_stub #}
 <div class="modal-back" id="deploy-modal">
   <div class="modal">
     <div class="m-head">⇪ Deploy strategy
       <span class="x" onclick="document.getElementById('deploy-modal').remove()">✕</span></div>
     <div class="m-body">
+      {# Söylenecek yer BURASI: kullanıcı Paper/Live seçip Capital ve kill-switch
+         girmeden ÖNCE hiçbir şeyin gerçekten koşmayacağını bilmeli. #}
+      {% if runner_is_stub %}
+      <p class="opt-note"><span class="sim-badge"
+         title="STUDIO_RUNNER=paper ayarlanmadığı sürece deployment yalnız veritabanında yaşar."
+         >⚠ SİMÜLE — runner yok</span>
+        <code>STUDIO_RUNNER</code> is unset, so this deploy only records a row and
+        flips it to RUNNING after a second — no TradingNode starts and no order
+        is ever sent, whichever environment you pick below.</p>
+      {% endif %}
       <p class="opt-note">Deploys <b>v{{ defn.version }} (saved)</b>{% if has_draft %} —
         your unsaved draft changes are <b>not</b> included; Save first to deploy them{% endif %}.</p>
 
