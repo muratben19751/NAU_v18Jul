@@ -103,6 +103,13 @@ from fastapi.responses import HTMLResponse
 # import ediyordu). Alt tireli takma adlar KASITLI: bu modülün tarihsel import
 # yüzeyi (testler `ab._peer_exclusions`, `ab._MC_DD_LIMIT` … diye erişiyor)
 # taşıma yüzünden değişmesin — davranış birebir korunuyor.
+from auto.log_thinning import (
+    downsample_indices,
+    is_point_series,
+    spark_points,
+    thin_curves,
+    thin_pair,
+)
 from auto.robustness import MC_DD_LIMIT as _MC_DD_LIMIT
 from auto.robustness import MC_DD_TAIL_LIMIT as _MC_DD_TAIL_LIMIT
 from auto.robustness import bare_ticker as _bare_ticker  # noqa: F401
@@ -115,10 +122,12 @@ from auto.robustness import (  # noqa: F401
 )
 from auto.robustness import valid_wfo_windows as _valid_wfo_windows
 from auto.robustness import wfo_test as _wfo_test
+from web.templating import get_market_info, templates
 
 router = APIRouter(prefix="/agent")
 
 from web.shared import (
+    MAX_LLM_TEXT_LEN,  # noqa: E402
     SESSION_LOG_DIR,  # noqa: E402
     ProgressStore,  # noqa: E402
     error_html,  # noqa: E402
@@ -967,92 +976,16 @@ def _set_robustness_scan(run_id: str, current: int, total: int) -> None:
 # ── Core helpers ──────────────────────────────────────────────────────────────
 
 
-def _downsample_indices(count: int, cap: int) -> list[int]:
-    """Evenly-spaced indices (keeps first/last) shrinking a length-``count``
-    sequence to ``cap`` points — shared by every curve-thinning path below so
-    the rounding formula lives in exactly one place."""
-    step = (count - 1) / (cap - 1)
-    return [int(round(i * step)) for i in range(cap)]
-
-
-def _spark_points(curve, n: int = 40) -> list[float]:
-    """Downsample an equity curve to at most ``n`` points for the cockpit
-    sparkline. Keeps first/last so the visual slope stays honest."""
-    if not curve:
-        return []
-    pts = [float(v) for v in curve if v is not None]
-    if len(pts) <= n:
-        return [round(v, 4) for v in pts]
-    return [round(pts[i], 4) for i in _downsample_indices(len(pts), n)]
-
-
-def _thin_pair(values, dates, cap: int = 400) -> tuple[list, list]:
-    """Downsample an equity curve and its date axis on the SAME indices.
-
-    ``_thin_curves`` fixed the robustness payload; the ``backtest_result`` event
-    then became the biggest line in the session log at ~301 KB apiece (measured
-    on run 3cad3325), because ``equity_curve``/``equity_dates`` were written raw
-    — 4,800 points for a single 15-minute iteration. No template reads these
-    back (the session detail page counts the events and reads metrics; the tear
-    sheet draws from the backtest log), so their only job here is forensic
-    shape, and 400 points carry that.
-
-    The two arrays MUST be reduced together: thinning them independently would
-    silently de-align value i from date i, which is worse than dropping either.
-    """
-    vals = list(values or [])
-    dts = list(dates or [])
-    if len(vals) <= cap:
-        return vals, dts
-    idx = _downsample_indices(len(vals), cap)
-    out_v = [vals[i] for i in idx]
-    # Dates may be absent or shorter (older records) — only index what exists.
-    out_d = [dts[i] for i in idx if i < len(dts)] if dts else []
-    return out_v, out_d
-
-
-def _thin_curves(obj, cap: int = 40):
-    """Oturum loguna yazılacak yapıdaki uzun sayı dizilerini indirger (KOPYA döner).
-
-    `backtest_result` yolunda equity eğrileri ~40 noktaya indirgeniyordu ama
-    `robustness_result` yolunda ham yazılıyordu; aynı ders ikinci yüzeye
-    uygulanmamıştı. Bedeli ölçüldü: olay başına **3,5 MB** (88 WFO penceresi ×
-    train/test/naive metrikleri, 50 Monte Carlo eğrisi, 8.605 noktalık ham OOS
-    eğrisi) ve 76 oturumda **11,8 GB** disk — tek dosya 4,7 GB. Bu, `/sessions`
-    listesinin soğuk açılışını 114 saniyeye çıkaran maliyetin de kaynağı.
-
-    İndirgenen şey **seri**dir ve seriler bu yükte İKİ biçimde gelir:
-
-    - düz sayı dizisi — ``mc.curves_sample[i]``, ``mc.percentile_curves.p50``
-    - **zaman damgalı çift** dizisi — ``equity_curve_mtm`` şu şekildedir:
-      ``[["2021-06-03T19:00:00+00:00", 10000.0], …]``
-
-    İlk sürüm yalnız birincisini tanıyordu (`all(isinstance(v, (int, float)))`)
-    ve üretimde **en büyük kalemi ıskaladı**: `wfo_windows` 2,39 MB ve
-    `split.*.equity_curve_mtm` 0,35 MB indirgenmeden yazılmaya devam etti,
-    olay 2,97 MB kaldı. Ders: indirgeme kuralı verinin GERÇEK şekline göre
-    yazılmalı — "eğri = sayı listesi" varsayımı doğrulanmamıştı.
-
-    Sözlükler, dizgeler ve dict listeleri (ör. işlem kayıtları) olduğu gibi
-    korunur — indirgeme bir görselleştirme kaybıdır, adli kayıt kaybı değil.
-    Girdi ASLA değiştirilmez: aynı `rob` sözlüğü karar ve ekran yollarında da
-    kullanılıyor.
-    """
-    if isinstance(obj, dict):
-        return {k: _thin_curves(v, cap) for k, v in obj.items()}
-    if isinstance(obj, list):
-        if len(obj) > cap and obj:
-            if all(
-                isinstance(v, (int, float)) and not isinstance(v, bool) for v in obj
-            ):
-                return _spark_points(obj, cap)
-            if _is_point_series(obj):
-                # Çiftleri BOZMADAN seyrelt: aynı adım mantığı, elemanlar aynen
-                # korunur (zaman damgası + değer birlikte anlamlı).
-                step = (len(obj) - 1) / (cap - 1)
-                return [obj[int(round(i * step))] for i in range(cap)]
-        return [_thin_curves(v, cap) for v in obj]
-    return obj
+# Eğri indirgeme `auto/log_thinning.py`'ye taşındı: saf fonksiyonlar, HTTP ile
+# ilgileri yok, ama burada durdukları için `compact_sessions.py` (bir CLI aracı)
+# onları çağırabilmek adına tüm router ağacını import etmek zorundaydı — üstelik
+# alt çizgili adları başka bir modülün private yüzeyinden çekerek
+# (DeepR 2026-08-11 [ORTA]). Alt çizgili adlar burada alias olarak kalıyor:
+# bu dosyada onlarca çağrı yeri ve testlerde doğrudan referanslar var.
+_downsample_indices = downsample_indices
+_spark_points = spark_points
+_thin_pair = thin_pair
+_thin_curves = thin_curves
 
 
 _WFO_KEEP_METRICS = (
@@ -1119,14 +1052,7 @@ def _compact_wfo_windows(windows) -> list:
     return out
 
 
-def _is_point_series(seq) -> bool:
-    """``[[ts, value], …]`` biçiminde bir seri mi? (dict listeleri HARİÇ)"""
-    return all(
-        isinstance(v, (list, tuple))
-        and 2 <= len(v) <= 4
-        and all(isinstance(x, (int, float, str)) for x in v)
-        for v in seq
-    )
+_is_point_series = is_point_series  # auto.log_thinning'e taşındı (alias)
 
 
 def _proposal_to_spec(proposal: dict):
@@ -4183,7 +4109,6 @@ async def tokens(request: Request):
 
 @router.get("", response_class=HTMLResponse)
 async def page(request: Request):
-    from server import get_market_info, templates
 
     # If there is an unfinished run, AUTOMATICALLY bind the page to it — so after
     # a server restart / tab refresh the user sees the running run (even if the
@@ -4407,7 +4332,20 @@ async def run(
     view: str = Form(default=""),
 ):
     from agent import resolve_effort
-    from server import get_market_info, templates
+
+    # `hint` her iterasyonun prompt'una yeniden ekleniyor: burada sınır YOKTU,
+    # yani yapıştırılan çok megabaytlık bir metnin maliyeti tur sayısıyla
+    # ÇARPILIYORDU. Diğer LLM uçlarının hepsi 4000'de kesiyordu; AUTO'nunki
+    # kesmiyordu (DeepR 2026-08-11 [DÜŞÜK]).
+    hint = hint.strip()
+    if len(hint) > MAX_LLM_TEXT_LEN:
+        return error_html(
+            "Hint is too long ({n} characters, max {cap}) — it is re-sent with "
+            "every iteration, so the cost multiplies by the round count.",
+            400,
+            n=len(hint),
+            cap=MAX_LLM_TEXT_LEN,
+        )
 
     # Form değeri ile FİİLEN uygulanacak değer aynı şey değil — brief'e (yani
     # kokpitin gösterdiği şeye) çözülmüş hâli yazılır, ham girdi değil.
@@ -4768,7 +4706,6 @@ def _terminal_message(run_id: str) -> str:
 async def progress(request: Request, run_id: str):
     import asyncio
 
-    from server import get_market_info, templates
     from web.viewmodels import iteration_row
 
     # AUTO Mission Control asks for its own fragment (?view=mission); the

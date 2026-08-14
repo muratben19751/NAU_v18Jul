@@ -16,6 +16,7 @@ from fastapi.responses import HTMLResponse
 
 from loop_runner import run_loop
 from state import get_state
+from web.templating import get_bars, templates
 from web.viewmodels import loop_status_ctx
 
 router = APIRouter(prefix="/loop")
@@ -23,7 +24,6 @@ router = APIRouter(prefix="/loop")
 
 @router.post("/start", response_class=HTMLResponse)
 async def start(request: Request, mode: str = Form("agent")):
-    from server import get_bars, templates
 
     state = get_state()
 
@@ -55,7 +55,6 @@ async def start(request: Request, mode: str = Form("agent")):
 
 @router.post("/stop", response_class=HTMLResponse)
 async def stop(request: Request):
-    from server import templates
 
     state = get_state()
     if state.running:

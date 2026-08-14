@@ -24,6 +24,7 @@ from fastapi.responses import HTMLResponse
 from composer import BLOCK_CATALOG, load_catalog
 from data import BYBIT_ALL_INTERVALS, BYBIT_CATEGORIES, BYBIT_SYMBOLS
 from web.shared import session_id, set_session_cookie
+from web.templating import get_market_info, templates
 
 router = APIRouter(prefix="/studio")
 
@@ -132,7 +133,6 @@ def page(request: Request):
     # (load_catalog + custom-block listing + read_wiki_page + recent_runs)
     # doesn't stall the event loop.
     import custom_block_store as cbs
-    from server import get_market_info, templates
 
     # Import backtest/strategy-side helpers lazily to avoid import-time
     # coupling; these are the same functions the standalone /backtest and

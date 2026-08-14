@@ -43,11 +43,28 @@ from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal
 
-import numpy as np
 import pandas as pd
 import requests
 
 from app_constants import DATA_DIR
+from nau_data.atomic_io import (
+    REPLACE_RETRY_WAITS,
+    atomic_to_parquet,
+    atomic_write_json,
+    replace_with_retry,
+    stat_sig,
+    tmp_sibling,
+)
+from nau_data.bar_math import (
+    EPOCH_MS_DIVISOR,
+    EXT_GRAN_SECONDS,
+    GRAN_RULE,
+    aggregate_ohlc,
+    bybit_gap_ranges,
+    catalog_fname_ns,
+    external_interval_ns,
+    index_epoch_ms,
+)
 
 log = logging.getLogger(__name__)
 
@@ -239,14 +256,8 @@ def external_catalog_roots() -> list[Path]:
     return roots
 
 
-def _stat_sig(path: Path) -> tuple:
-    """`(mtime_ns, size)` — dosya/dizin yoksa boş demet."""
-    try:
-        st = path.stat()
-    except OSError:
-        return ()
-    return (st.st_mtime_ns, st.st_size)
-
+# `nau_data.atomic_io`'a taşındı (DeepR 2026-08-11 [ORTA]) — durum taşımaz.
+_stat_sig = stat_sig
 
 # ---- Concurrency + atomic write helpers (M3) --------------------------
 #
@@ -330,76 +341,19 @@ def _cache_lock(
         tlock.release()
 
 
-# Windows'ta `os.replace`, hedef dosya BAŞKA biri tarafından açıkken
-# PermissionError verir (POSIX'te vermez). Okuma yolu artık kilitsiz olduğuna
-# göre (DeepR 2026-08-11 [YÜKSEK]) yazarın tam o anda okuyan birine denk gelmesi
-# normal bir olaydır ve bir parquet okuması milisaniyeler sürer: kısa bir yeniden
-# deneme, "veri kaybettim" ile "50 ms bekledim" arasındaki fark.
-_REPLACE_RETRY_WAITS = (0.05, 0.15, 0.4)
-
-
-def _replace_with_retry(tmp: Path, path: Path) -> None:
-    """`os.replace` + Windows paylaşım ihlaline karşı kısa yeniden deneme."""
-    for wait in (*_REPLACE_RETRY_WAITS, None):
-        try:
-            os.replace(tmp, path)
-            return
-        except PermissionError:
-            if wait is None:
-                raise
-            time.sleep(wait)
-
-
-def _tmp_sibling(path: Path) -> Path:
-    """Benzersiz kardeş temp adı — SÜREÇ + THREAD.
-
-    DeepR 2026-08-11 [ORTA]: ad yalnız `os.getpid()` içeriyordu, yani aynı
-    süreçteki iki THREAD için AYNIYDI: biri diğerinin yarım dosyasını
-    `os.replace` edebilir ya da `finally` bloğunda silebilirdi. Yazma yolları
-    artık per-key `_cache_lock` altında (aynı hedefe iki thread giremez), ama
-    ad benzersizliği ucuz bir ikinci savunma — `custom_block_store._write_registry`
-    de tam bu gerekçeyle benzersiz kardeş ad kullanıyor.
-    """
-    return path.with_name(f"{path.name}.tmp-{os.getpid()}-{threading.get_ident()}")
-
-
-def _atomic_to_parquet(df: pd.DataFrame, path: Path) -> None:
-    """M3a: to_parquet → temp file + os.replace — no half-written parquet remains."""
-    tmp = _tmp_sibling(path)
-    try:
-        df.to_parquet(tmp)
-        _replace_with_retry(tmp, path)
-    finally:
-        if tmp.exists():
-            try:
-                tmp.unlink()
-            except OSError:
-                pass
-
-
-def _atomic_write_json(obj, path: Path) -> None:
-    """Write JSON sidecars atomically too (same pattern as M3a)."""
-    tmp = _tmp_sibling(path)
-    try:
-        tmp.write_text(json.dumps(obj, indent=2))
-        os.replace(tmp, path)
-    finally:
-        if tmp.exists():
-            try:
-                tmp.unlink()
-            except OSError:
-                pass
-
+# Yazma ilkelleri `nau_data.atomic_io`'da: yarım dosya bırakmama, benzersiz
+# kardeş temp adı, Windows paylaşım-ihlali yeniden denemesi. Hiçbiri `data`
+# global'ine dokunmuyor, o yüzden taşınmaları güvenli (DeepR 2026-08-11 [ORTA]).
+_REPLACE_RETRY_WAITS = REPLACE_RETRY_WAITS
+_replace_with_retry = replace_with_retry
+_tmp_sibling = tmp_sibling
+_atomic_to_parquet = atomic_to_parquet
+_atomic_write_json = atomic_write_json
 
 Granularity = Literal["1d", "1m", "5m", "15m", "60m"]
-# pandas resample rule (converts raw NFS ticks into OHLCV via _aggregate_ohlc)
-_GRAN_RULE = {
-    "1d": "1D",
-    "1m": "1min",
-    "5m": "5min",
-    "15m": "15min",
-    "60m": "60min",
-}
+# Resample kuralı `nau_data.bar_math`'ta (tek kaynak).
+_GRAN_RULE = GRAN_RULE
+
 # Nautilus BarType step/aggregation: granularity → (step, aggregation).
 # _index_rows' DSL badges and _make_index_bar_type derive from here; single source.
 _GRAN_BARSPEC: dict[str, tuple[int, str]] = {
@@ -542,26 +496,7 @@ def _stream_ticker_rows(ticker: str, day: date) -> pd.DataFrame:
     return df
 
 
-def _aggregate_ohlc(rows: pd.DataFrame, granularity: Granularity) -> pd.DataFrame:
-    """Convert raw (ticker,value,timestamp) rows into OHLCV bars."""
-    if rows.empty:
-        return pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
-    ts = pd.to_datetime(rows["timestamp"], unit="ns", utc=True)
-    s = pd.Series(rows["value"].astype(float).values, index=ts, name="value")
-    rule = _GRAN_RULE[granularity]
-    bars = s.resample(rule).agg(
-        open="first",
-        high="max",
-        low="min",
-        close="last",
-    )
-    bars = bars.dropna(subset=["open"])
-    # M34: NAU convention — index series have no volume concept. Formerly the
-    # tick count was written; that fake volume could mislead volume-based
-    # blocks. Thanks to volume_spike's avg<=0 guard, 0 is a no-op.
-    bars["volume"] = 0.0
-    bars.index.name = "timestamp"
-    return bars
+_aggregate_ohlc = aggregate_ohlc  # nau_data.bar_math
 
 
 def load_index_bars(
@@ -813,58 +748,10 @@ def _fetch_bybit_page(
     )
 
 
-_EPOCH_MS_DIVISOR = {"ns": 1_000_000, "us": 1_000, "ms": 1}
-
-
-def _index_epoch_ms(index) -> np.ndarray:
-    """DatetimeIndex → epoch MİLİSANİYE (int64 dizi), kopyasız.
-
-    `index.as_unit("ns").asi8` doğru ama pahalı: 1M elemanlı bir indekste
-    ölçüldü, tek başına 29 ms (indeksin birimi 'us' ise gerçekten yeniden
-    ölçekleyip kopyalıyor). `asi8` ham sayacı bedelsiz verir; ondan ms'ye
-    inmek yalnızca birime bağlı bir tamsayı bölmesi. Taban bölmesi zincirleme
-    yapıldığında da aynı sonucu verir (us→ns→ms ile us→ms özdeş), yani sonuç
-    ESKİ YOLLA BİT BİT AYNI — sadece 1M elemanlık bir ara dizi ayrılmıyor.
-    Bilinmeyen/egzotik birimde eski (güvenli) yola düşülür.
-    """
-    unit = getattr(index, "unit", "ns")
-    div = _EPOCH_MS_DIVISOR.get(unit)
-    if div is not None:
-        return index.asi8 // div if div > 1 else index.asi8
-    if unit == "s":
-        return index.asi8 * 1000
-    try:
-        return index.as_unit("ns").asi8 // 1_000_000
-    except AttributeError:  # old pandas: asi8 is already ns
-        return index.asi8 // 1_000_000
-
-
-def _bybit_gap_ranges(cached: pd.DataFrame, step_ms: int) -> list[tuple[int, int]]:
-    """Cache'in [ilk, son] aralığındaki DELİKLER — (başlangıç, bitiş) ms, kapalı.
-
-    Ağa çıkmaz, dosyaya dokunmaz: adım sabit olduğu için beklenen bar sayısı
-    aritmetiktir; satır sayısı eksikse ardışık açılışlar arasındaki > step_ms
-    boşluklar deliklerdir. Saf tespit olarak ayrıldı ki okuma yolu "bu istek
-    kilide girmeden karşılanır mı?" sorusunu ağa hiç çıkmadan sorabilsin.
-    """
-    if cached.empty or len(cached.index) < 2:
-        return []
-    ms = _index_epoch_ms(cached.index)
-    first_ms, last_ms = int(ms[0]), int(ms[-1])
-    expected = (last_ms - first_ms) // step_ms + 1
-    if len(ms) >= expected:
-        return []
-
-    # DeepR 2026-08-11 [DÜŞÜK]: burası eskiden `for cur in ms[1:]` ile numpy
-    # int64 dizisini Python'da tek tek geziyor, her elemanı `int()` ile
-    # kutuluyordu. 1M barlık bir 1m önbelleğinde ölçüldü: 85,0 ms → 1,6 ms
-    # (bunun 29 ms'i taramada değil, aşağıdaki `_index_epoch_ms`'in kaldırdığı
-    # `as_unit("ns")` kopyasındaydı). `load_bybit_bars` bu maliyeti HER çağrıda
-    # (chart, sweep, robustness, agent Phase-0) ödüyordu. Delik SAYISI zaten
-    # küçük olduğundan Python döngüsü yalnız gerçek deliklerin üzerinde döner;
-    # taramanın kendisi numpy'de.
-    hole_at = np.flatnonzero(np.diff(ms) > step_ms)
-    return [(int(ms[i]) + step_ms, int(ms[i + 1]) - step_ms) for i in hole_at.tolist()]
+# Epoch/delik aritmetiği `nau_data.bar_math`'ta — ağ yok, disk yok, durum yok.
+_EPOCH_MS_DIVISOR = EPOCH_MS_DIVISOR
+_index_epoch_ms = index_epoch_ms
+_bybit_gap_ranges = bybit_gap_ranges
 
 
 def _bybit_gaps_path(cache_path: Path) -> Path:
@@ -1875,20 +1762,7 @@ def list_catalog_bybit_symbols() -> list[dict]:
     )
 
 
-def _catalog_fname_ns(stamp: str) -> int | None:
-    """Catalog parquet file name stamp → epoch ns.
-
-    E.g. '2026-07-08T00-00-00-000000000Z' (Nautilus '{startZ}_{endZ}.parquet'
-    naming, bar CLOSE times). None if unparseable.
-    """
-    try:
-        body = stamp.removesuffix("Z")
-        date_part, _, time_part = body.partition("T")
-        hh, mm, ss, nanos = time_part.split("-")
-        dt = datetime.fromisoformat(f"{date_part}T{hh}:{mm}:{ss}+00:00")
-        return int(dt.timestamp()) * 1_000_000_000 + int(nanos)
-    except Exception:
-        return None
+_catalog_fname_ns = catalog_fname_ns  # nau_data.bar_math
 
 
 def nautilus_catalog_bar_state(bar_type_str: str) -> dict | None:
@@ -2488,22 +2362,8 @@ def _external_catalog_rows(query: str | None = None, limit: int | None = 50) -> 
 
 # ── External catalog bar loading (read-only backtest data source) ────────────
 
-_EXT_GRAN_SECONDS = {"MINUTE": 60, "HOUR": 3600, "DAY": 86400, "WEEK": 604800}
-
-
-def _external_interval_ns(granularity: str) -> int:
-    """'1-DAY' → 86400e9. Raises ValueError on anything that isn't a
-    time-aggregated catalog step (defensive against form tampering).
-
-    Note (L34): for DAY/WEEK the derived duration is the CALENDAR NOMINAL
-    interval (24 hours / 7 days), not the session length. The close→open shift
-    uses this nominal step; shortened sessions / half days are not modeled
-    separately.
-    """
-    step_s, _, unit = granularity.partition("-")
-    if not step_s.isdigit() or unit not in _EXT_GRAN_SECONDS:
-        raise ValueError(f"unsupported external granularity {granularity!r}")
-    return int(step_s) * _EXT_GRAN_SECONDS[unit] * 1_000_000_000
+_EXT_GRAN_SECONDS = EXT_GRAN_SECONDS  # nau_data.bar_math
+_external_interval_ns = external_interval_ns
 
 
 def _external_bar_dir(instrument_id: str, granularity: str) -> tuple[Path, Path] | None:

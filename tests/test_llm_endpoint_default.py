@@ -197,3 +197,71 @@ class TestStudioAiClientEndpoint:
 
         with pytest.raises(httpx.ConnectError):
             HttpAnthropicClient(api_key="k").complete("p")
+
+
+class TestStudioCallsLandInTheSharedTokenLedger:
+    """DeepR 2026-08-11 [ORTA]: Studio'nun istemcisi yanıttaki ``usage``
+    bloğunu ATIYORDU. Bu bir muhasebe ayrıntısı değil, KARAR sorunuydu:
+    `/tokens` rozeti ve AUTO'nun bütçe tavanı aynı defterden okuyor, yani
+    Studio'da harcanan her token "hiç harcanmamış" görünüyordu. Uç noktayı
+    birleştirmek (yukarıdaki sınıf) işin yarısıydı; ölçümü birleştirmek
+    diğer yarısı.
+    """
+
+    @staticmethod
+    def _reply(usage=None):
+        body = {"content": [{"type": "text", "text": "ok"}], "stop_reason": "end"}
+        if usage is not None:
+            body["usage"] = usage
+        return body
+
+    def _patch_post(self, monkeypatch, body):
+        def _fake_post(url, **kwargs):
+            return httpx.Response(200, json=body, request=httpx.Request("POST", url))
+
+        monkeypatch.setattr(httpx, "post", _fake_post)
+
+    def _capture_ledger(self, monkeypatch):
+        import token_ledger
+
+        seen = []
+        monkeypatch.setattr(
+            token_ledger,
+            "record",
+            lambda model, usage, purpose="": seen.append((model, usage, purpose)),
+        )
+        return seen
+
+    def test_usage_is_recorded_with_the_model_and_a_purpose_tag(self, monkeypatch):
+        seen = self._capture_ledger(monkeypatch)
+        usage = {"input_tokens": 1234, "output_tokens": 56}
+        self._patch_post(monkeypatch, self._reply(usage))
+
+        HttpAnthropicClient(api_key="k", model="claude-sonnet-4-6").complete("p")
+
+        assert len(seen) == 1
+        model, recorded, purpose = seen[0]
+        assert model == "claude-sonnet-4-6"
+        assert recorded == usage
+        assert purpose == "studio:suggest"
+
+    def test_a_reply_without_usage_records_nothing(self, monkeypatch):
+        """Sıfır token'lık sahte bir kayıt, hiç kayıt olmamasından kötüdür."""
+        seen = self._capture_ledger(monkeypatch)
+        self._patch_post(monkeypatch, self._reply())
+
+        HttpAnthropicClient(api_key="k").complete("p")
+
+        assert seen == []
+
+    def test_a_broken_ledger_never_fails_the_suggestion(self, monkeypatch):
+        """Muhasebe, sonucun kendisinden daha az önemli."""
+        import token_ledger
+
+        def _boom(*a, **k):
+            raise OSError("ledger unwritable")
+
+        monkeypatch.setattr(token_ledger, "record", _boom)
+        self._patch_post(monkeypatch, self._reply({"input_tokens": 1}))
+
+        assert HttpAnthropicClient(api_key="k").complete("p") == "ok"

@@ -27,11 +27,15 @@ router = APIRouter(prefix="/lab")
 
 from web.shared import (
     ProgressStore,  # noqa: E402
+    SessionRunGuard,  # noqa: E402
+    esc,  # noqa: E402
+    invalid_date_range,  # noqa: E402
     session_id,  # noqa: E402
     set_session_cookie,  # noqa: E402
 )
 from web.shared import chart_url as _chart_url  # noqa: E402
 from web.shared import log_backtest as _log_backtest  # noqa: E402
+from web.templating import get_market_info, templates
 
 # Phase state per run. Separate from backtest.py's _RUN_PROGRESS so the two
 # features don't interfere. ProgressStore holds dict+lock+capped eviction (M11:
@@ -40,34 +44,22 @@ _LAB_STORE = ProgressStore(50)
 _LAB_PROGRESS = _LAB_STORE.raw()
 _LAB_LOCK = _LAB_STORE.lock
 
-# Per-session single-active-run guard — same shape as backtest.py's
-# _session_active_kind/_session_set_active (kept local rather than imported:
-# backtest.py's version dispatches across ITS OWN three stores via a
-# module-private dict, and reaching into that from here would either force a
-# backtest.py→lab.py import back-reference or a shared registry neither file
-# currently has; a second small guard scoped to this one store is simpler and
-# has no cross-module coupling).
-_ACTIVE_LAB_RUNS: dict[str, str] = {}  # sid → run_id
-_ACTIVE_LAB_RUNS_LOCK = threading.Lock()
+# Per-session single-active-run guard. Bu 12 satır üç route modülüne elle
+# kopyalanmıştı ve kopyalar ayrışmıştı: `backtest.py`'ninki terk edilmiş
+# oturumlar için bir tavan + budama taşıyordu, buradaki ve `robustness.py`
+# taşımıyordu — yani sözlük süreç ömrü boyunca sınırsız büyüyordu
+# (DeepR 2026-08-11 [DÜŞÜK]). Tek sınıf `web.shared.SessionRunGuard`.
+_LAB_GUARD = SessionRunGuard(lambda _kind: _LAB_STORE)
+_ACTIVE_LAB_RUNS = _LAB_GUARD.raw()  # geriye dönük ad (testler bunu okuyor)
+_ACTIVE_LAB_RUNS_LOCK = _LAB_GUARD.lock
 
 
 def _session_lab_busy(sid: str) -> bool:
-    with _ACTIVE_LAB_RUNS_LOCK:
-        rid = _ACTIVE_LAB_RUNS.get(sid)
-    if rid is None:
-        return False
-    raw = _LAB_PROGRESS.get(rid)
-    if raw is None or raw.get("done"):
-        with _ACTIVE_LAB_RUNS_LOCK:
-            if _ACTIVE_LAB_RUNS.get(sid) == rid:
-                _ACTIVE_LAB_RUNS.pop(sid, None)
-        return False
-    return True
+    return _LAB_GUARD.busy(sid)
 
 
 def _session_lab_set_active(sid: str, rid: str) -> None:
-    with _ACTIVE_LAB_RUNS_LOCK:
-        _ACTIVE_LAB_RUNS[sid] = rid
+    _LAB_GUARD.set_active(sid, rid)
 
 
 _PHASES = [
@@ -500,8 +492,6 @@ def _atr_stop_fallback() -> dict:
 async def page(request: Request):
     import asyncio
 
-    from server import get_market_info, templates
-
     # External catalog ids for the symbol picker (directory scan, threaded off
     # the event loop). Best-effort: an empty list just hides the optgroup.
     try:
@@ -543,7 +533,6 @@ async def run(
     start_date: str = Form(default=""),
     end_date: str = Form(default=""),
 ):
-    from server import get_market_info, templates
 
     sid = session_id(request)
     if _session_lab_busy(sid):
@@ -555,6 +544,18 @@ async def run(
         resp.headers["HX-Toast"] = (
             "err|A Strategy Lab run is already running - wait for it to finish."
         )
+        return resp
+
+    # Geçersiz tarih SESSİZCE yutuluyordu: `_parse_date` None döndürüyor, koşu
+    # da varsayılan (tüm önbellek) penceresinde başlıyordu. Kullanıcı "2024'ü
+    # test ettim" sanıyor, eline başka bir dönemin sonucu geçiyordu — panelde
+    # hiçbir uyarı yoktu (DeepR 2026-08-11 [DÜŞÜK]). `/backtest` aynı kuralı
+    # zaten uyguluyordu; artık ikisi de `web.shared.invalid_date_range` okuyor.
+    if (date_err := invalid_date_range(start_date, end_date)) is not None:
+        resp = HTMLResponse(
+            f"<div class='empty-state'>{esc(date_err)}</div>", status_code=400
+        )
+        resp.headers["HX-Toast"] = f"err|{date_err}"
         return resp
 
     def _parse_date(s: str) -> datetime | None:
@@ -639,7 +640,6 @@ async def run(
 
 @router.get("/progress/{run_id}", response_class=HTMLResponse)
 async def progress(request: Request, run_id: str):
-    from server import get_market_info, templates
     from web.viewmodels import iteration_row
 
     with _LAB_LOCK:

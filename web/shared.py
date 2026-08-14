@@ -165,6 +165,48 @@ SESSION_COOKIE_MAX_AGE = 30 * 24 * 3600
 _SESSION_COOKIE_MAX_AGE = SESSION_COOKIE_MAX_AGE  # geriye dönük ad
 
 
+# LLM'e serbest metin geçiren her ucun üst sınırı.
+#
+# DeepR 2026-08-11 [DÜŞÜK]: sınır `web/routes/strategy.py` ve
+# `web/routes/backtest.py` içinde iki ayrı kopya olarak yaşıyordu ve iki uç onu
+# hiç uygulamıyordu: AUTO'nun `hint`'i (`POST /agent/run`) ve Studio'nun `ask`'i
+# (`/studio/{id}/ai/suggest`, `/studio/{id}/loop/start`). Yapıştırılan çok
+# megabaytlık bir metin oradan doğrudan ücretli bir çağrıya gidiyordu; AUTO
+# tarafında daha da kötüsü, `hint` her iterasyonun prompt'una yeniden
+# ekleniyor, yani maliyet tur sayısıyla ÇARPILIYORDU.
+#
+# Kopya sayısı ikiden dörde çıkacaktı; o eşikte "yerel tutmak yeni bir import'u
+# hak etmiyor" gerekçesi geçerliliğini yitirir. Yaprak modülde tek tanım.
+MAX_LLM_TEXT_LEN = 4000
+
+
+def invalid_date_range(start: str, end: str) -> str | None:
+    """Bozuk ya da ters çevrilmiş bir tarih aralığı için hata cümlesi, yoksa None.
+
+    Boş değerler geçerli (boş = tüm önbellek). Yalnız ikisi de verilip
+    ``start > end`` olduğunda ya da biri ``YYYY-MM-DD`` olarak ayrıştırılamadığında
+    hata döner.
+
+    DeepR 2026-08-11 [DÜŞÜK]: `/backtest` bu kuralı uyguluyordu, `/lab/run`
+    uygulamıyordu — geçersiz tarihi sessizce ``None``'a çevirip VARSAYILAN
+    pencerede koşuyordu. Kullanıcı "2024 için test ettim" sanıyor, sonuç başka
+    bir dönemin sonucu oluyordu; hiçbir yerde uyarı yoktu. Kuralın yaprak
+    modülde tek kopyası olsun ki üçüncü bir yüzey eklendiğinde de aynı şeyi
+    söylesin.
+    """
+    s, e = (start or "").strip(), (end or "").strip()
+    if not s and not e:
+        return None
+    try:
+        sd = datetime.strptime(s, "%Y-%m-%d").date() if s else None
+        ed = datetime.strptime(e, "%Y-%m-%d").date() if e else None
+    except ValueError:
+        return "Dates must be in YYYY-MM-DD format."
+    if sd and ed and sd > ed:
+        return "End date cannot be before the start date."
+    return None
+
+
 def set_session_cookie(response, sid: str) -> None:
     """``nautlab_sid``'i ``response``'a yaz — çerez seçeneklerinin TEK yeri.
 
@@ -264,6 +306,78 @@ class ProgressStore:
                     on_evict(evict_id)
             self._d[run_id] = initial
             return True
+
+
+class SessionRunGuard:
+    """Oturum başına tek aktif koşu: ``sid → (kind, run_id)`` kaydı.
+
+    DeepR 2026-08-11 [DÜŞÜK]: bu koruma üç route modülüne elle kopyalanmıştı
+    (``backtest``, ``lab``, ``robustness``) ve üçünden yalnız biri test
+    ediliyordu. Kopyalar zaten ayrışmıştı: ``backtest.py``'ninki terk edilmiş
+    oturumlar için bir tavan + budama taşıyor, ``lab``/``robustness``
+    kopyaları taşımıyordu — yani o iki sözlük süreç ömrü boyunca sınırsız
+    büyüyordu. Kopyalanan bir korumanın sessizce ayrışması tam da bunun gibi
+    görünür: davranışsal fark değil, yalnız bir tanesine yapılmış bir
+    iyileştirme.
+
+    Tek sınıf, üç kullanım. ``kind`` çoklu-store ayrımı içindir
+    (``run``/``gen``/``sweep``); tek store'lu çağrılar varsayılanı kullanır.
+
+    Kilitleme sözleşmesi kopyalardan devralındı ve bilinçlidir: store
+    aramaları kayıt kilidinin DIŞINDA yapılır — iç içe kilit yok.
+    """
+
+    def __init__(self, resolve_store, max_entries: int = 500) -> None:
+        # resolve_store: kind -> ProgressStore (ya da .get(rid) sunan herhangi bir şey)
+        self._resolve = resolve_store
+        self._d: dict[str, tuple[str, str]] = {}
+        self._lock = threading.Lock()
+        self.max_entries = max_entries
+
+    def active_kind(self, sid: str) -> str | None:
+        """Bu oturumun canlı işinin türü, yoksa None (bayat kaydı temizler)."""
+        with self._lock:
+            ent = self._d.get(sid)
+        if ent is None:
+            return None
+        kind, rid = ent
+        raw = self._resolve(kind).get(rid)
+        if raw is None or raw.get("done"):
+            # Bitti (ya da tahliye edildi / sunucu yeniden başladı) — kaydı düşür.
+            with self._lock:
+                if self._d.get(sid) == ent:
+                    self._d.pop(sid, None)
+            return None
+        return kind
+
+    def busy(self, sid: str) -> bool:
+        return self.active_kind(sid) is not None
+
+    def set_active(self, sid: str, rid: str, kind: str = "run") -> None:
+        ent = (kind, rid)
+        with self._lock:
+            over_cap = len(self._d) >= self.max_entries and sid not in self._d
+            snapshot = list(self._d.items()) if over_cap else []
+            self._d[sid] = ent
+        if not over_cap:
+            return
+        # Terk edilmiş oturumları fırsatçı budama. Store aramaları kilit
+        # DIŞINDA — kilit iç içe geçmesin.
+        for other_sid, other_ent in snapshot:
+            other_kind, other_rid = other_ent
+            raw = self._resolve(other_kind).get(other_rid)
+            if raw is None or raw.get("done"):
+                with self._lock:
+                    if self._d.get(other_sid) == other_ent:
+                        self._d.pop(other_sid, None)
+
+    def raw(self) -> dict[str, tuple[str, str]]:
+        """Altındaki sözlük — testlerin ve mevcut doğrudan erişimin kullandığı."""
+        return self._d
+
+    @property
+    def lock(self) -> threading.Lock:
+        return self._lock
 
 
 # ---------------------------------------------------------------------------

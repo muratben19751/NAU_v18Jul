@@ -126,6 +126,35 @@ class HttpAnthropicClient:
         text, _ = self._complete_at(prompt, bigger)
         return text
 
+    def _record_usage(self, usage) -> None:
+        """Bu çağrının token'larını ortak deftere yaz.
+
+        DeepR 2026-08-11 [ORTA]: Studio'nun kendi LLM istemcisi tek choke
+        point'i (`llm_dispatch`) baypas ediyordu ve yanıttaki ``usage`` bloğunu
+        atıyordu. Sonuç muhasebe değil, KARAR sorunu: `/tokens` rozeti ve AUTO'nun
+        bütçe tavanı aynı defterden okuyor, yani Studio'da harcanan her token
+        "hiç harcanmamış" görünüyordu. Uç noktayı birleştirmek (aynı DeepR turu,
+        [YÜKSEK]) yarısıydı; ölçümü birleştirmek diğer yarısı.
+
+        Yolun tamamını `llm_dispatch`'e taşımak değil, defteri paylaşmak seçildi:
+        bu sınıf docstring'inde bilinçli bir "INTEGRATION POINT" ve
+        `agent.py`'nin private durumundan uzak durması isteniyor. Defter zaten
+        bağımsız bir modül; bağlanması gereken tek şey o.
+
+        Kayıt asla çağrıyı düşürmez: muhasebe, sonucun kendisinden daha az
+        önemli (aynı duruş `llm_dispatch._ledger_record_usage`'da da var).
+        """
+        if not usage:
+            return
+        try:
+            import token_ledger
+
+            token_ledger.record(self.model, usage, "studio:suggest")
+        except Exception:
+            logging.getLogger(__name__).debug(
+                "studio token ledger write failed", exc_info=True
+            )
+
     def _complete_at(self, prompt: str, max_tokens: int) -> tuple[str, str | None]:
         """One logical call (with transient-failure retry) → (text, stop_reason)."""
         import httpx  # local import: optional dependency at runtime
@@ -150,6 +179,7 @@ class HttpAnthropicClient:
                 )
                 r.raise_for_status()
                 body = r.json()
+                self._record_usage(body.get("usage"))
                 text = "".join(
                     b.get("text", "")
                     for b in body.get("content", [])

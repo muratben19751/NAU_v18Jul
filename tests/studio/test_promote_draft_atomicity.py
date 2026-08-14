@@ -12,6 +12,7 @@ the exact json that was read.
 from __future__ import annotations
 
 import threading
+import time
 
 import pytest
 
@@ -80,24 +81,48 @@ def test_promote_runs_in_a_single_transaction(store, monkeypatch):
     )
 
 
-def test_concurrent_draft_write_during_promote_loses_nothing(store):
-    """End-state check under real threads: neither write may vanish."""
+def test_concurrent_draft_write_during_promote_loses_nothing(store, monkeypatch):
+    """End-state check under real threads: neither write may vanish.
+
+    The interleaving is pinned, not left to the scheduler: the concurrent
+    `save_draft` is released only once promote's transaction holds the
+    BEGIN IMMEDIATE write lock (signalled from inside `_insert_version`), so
+    it is guaranteed to arrive DURING the promote — the exact window the old
+    three-transaction implementation lost writes in. It queues on the SQLite
+    lock and commits after, so it must survive as the next draft. Without the
+    sync, a loaded machine could commit the 9.9 write before promote even
+    read the draft, and promote would legitimately promote 9.9 instead —
+    valid last-write-wins, but not the window under test.
+    """
     base = store.load(build_engine_fixture().id)
     sid = base.id
     store.save_draft(_tweaked(base, 4.4))
 
     errors: list[str] = []
+    in_txn = threading.Event()
+    original = StrategyStore._insert_version
+
+    def _signalling(self, con, defn):
+        # The BEGIN IMMEDIATE write lock is held here. Wake the concurrent
+        # writer and give it a moment to reach the lock before proceeding.
+        in_txn.set()
+        time.sleep(0.05)
+        return original(self, con, defn)
 
     def _concurrent_edit():
         try:
+            if not in_txn.wait(timeout=10):
+                raise TimeoutError("promote never entered its transaction")
             store.save_draft(_tweaked(base, 9.9))
         except Exception as e:  # noqa: BLE001 — surfaced in the assertion below
             errors.append(f"{type(e).__name__}: {e}")
 
+    monkeypatch.setattr(StrategyStore, "_insert_version", _signalling)
     t = threading.Thread(target=_concurrent_edit)
     t.start()
     version = store.promote_draft(sid)
     t.join(timeout=10)
+    monkeypatch.undo()
 
     assert not errors, errors
     assert version == base.version + 1
@@ -110,6 +135,10 @@ def test_concurrent_draft_write_during_promote_loses_nothing(store):
     surviving = {saved} | ({draft.risk.take_profit_r.value} if draft else set())
     assert surviving <= {4.4, 9.9} and surviving, surviving
     assert 4.4 in surviving, f"the promoted draft's value was lost ({surviving})"
+    # With the interleaving pinned, the end state is exact: 4.4 was promoted
+    # and the mid-promote 9.9 write survived as the next draft.
+    assert saved == 4.4
+    assert draft is not None and draft.risk.take_profit_r.value == 9.9
 
 
 def test_promote_without_a_draft_still_raises(store):

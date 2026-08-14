@@ -41,6 +41,9 @@ dependencies = [
 dev = [
     "pytest>=8.0",
     "ruff>=0.6",
+    # Tarayıcı E2E'si (`pytest -m browser`). Paket tarayıcı İKİLİSİNİ getirmez;
+    # `playwright install chromium` ayrı bir adım (CI'da da öyle).
+    "playwright>=1.49",
 ]
 # Only needed for the retired Streamlit UI under legacy/ (not the FastAPI app).
 legacy = [
@@ -74,6 +77,10 @@ extend-exclude = [
     # format --check .`'i (CI'nın koştuğu komut) test koşumundan sonra
     # kimsenin yapmadığı bir değişiklik yüzünden kırıyordu.
     "work",
+    # Oturum içi scratch (pytest geçici dizinleri) — gitignore'lu, ürün kodu
+    # değil; içindeki pytest-* dizinleri Windows ACL'i yüzünden okunamayabiliyor
+    # ve `ruff format --check .` yalnız bu yüzden exit 2 veriyordu.
+    ".tmp",
 ]
 
 [tool.ruff.lint]
@@ -89,14 +96,22 @@ ignore = ["E501", "E402"]
 testpaths = ["tests"]
 # e2e: canlı ağ çağrısı yapan (örn. Bybit'ten gerçek bar indiren), dakikalar
 # sürebilen testler — varsayılan koşumdan hariç, açıkça `-m e2e` ile çalıştırılır.
-markers = ["e2e: hits a live external API and can take minutes; run explicitly with -m e2e"]
+markers = [
+    "e2e: hits a live external API and can take minutes; run explicitly with -m e2e",
+    # browser: gerçek Chromium açar (Playwright). Şablonlara gömülü inline JS —
+    # sihirbaz adım kilitleri, mod geçişi, canlı düğüm taşıma, mcSyncRange —
+    # `TestClient` ile erişilemez; tek yolu tarayıcı. Varsayılan koşumda
+    # DESELECT edilir (skip DEĞİL: biri kasıt, öbürü kaza) ve CI'da kendi
+    # adımında koşar. Yerelde: `playwright install chromium && pytest -m browser`.
+    "browser: drives a real Chromium via Playwright; run explicitly with -m browser",
+]
 # `-ra`: DeepR 2026-08-11 [YÜKSEK] — atlanan testler SESSİZ olmasın. Ortama
 # bağlı skip'ler (dış katalog yoksa test_sandbox.TestExternalRecipe gibi)
 # özet satırında yalnız bir sayı olarak görünüyordu; gerekçesi hiçbir yere
 # basılmadığı için "1 skipped" kimsenin bakmadığı bir rakamdı. `-ra` her
 # skip/xfail'in SEBEBİNİ dosya:satır ile birlikte kısa özete yazar, yani
 # "hangi kritik akış bu makinede/CI'da sınanmadı" sorusu tek bakışta cevaplanır.
-addopts = "-m \"not e2e\" -ra"
+addopts = "-m \"not e2e and not browser\" -ra"
 # Üçüncü-parti deprecation gürültüsünü sustur (ikisi de bizim kodumuzda değil,
 # `grep utcnow` → 0; yükseltme dışında düzeltilemez) — gerçek sinyal görünür kalsın.
 #   - Timestamp.utcnow: nautilus_trader 1.230 engine.run() içinden

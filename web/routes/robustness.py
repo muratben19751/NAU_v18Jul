@@ -29,10 +29,12 @@ router = APIRouter(prefix="/robustness")
 
 from web.shared import (
     ProgressStore,  # noqa: E402
+    SessionRunGuard,  # noqa: E402
     error_html,  # noqa: E402
     session_id,  # noqa: E402
 )
 from web.shared import log_robustness as _log_robustness  # noqa: E402
+from web.templating import templates
 
 # ProgressStore holds dict + lock + capped eviction; aliases keep existing
 # direct-access sites unchanged. Log writer/path now live in web.shared.
@@ -43,30 +45,19 @@ _LOCK = _STORE.lock
 # Per-session single-active-run guard — only client-side protection existed
 # before (backtest_scripts.html's querySelector check), so a direct POST
 # (curl/automation/two tabs) could start multiple concurrent sandbox
-# WFO/Monte Carlo child processes for the same session. Same shape as
-# lab.py's local guard (see its comment for why this isn't shared with
-# backtest.py's cross-store dispatcher instead).
-_ACTIVE_ROBUSTNESS_RUNS: dict[str, str] = {}  # sid → run_id
-_ACTIVE_ROBUSTNESS_RUNS_LOCK = threading.Lock()
+# WFO/Monte Carlo child processes for the same session. Üç kopyanın ortak
+# sınıfı `web.shared.SessionRunGuard` (DeepR 2026-08-11 [DÜŞÜK]).
+_ROBUSTNESS_GUARD = SessionRunGuard(lambda _kind: _STORE)
+_ACTIVE_ROBUSTNESS_RUNS = _ROBUSTNESS_GUARD.raw()  # geriye dönük ad
+_ACTIVE_ROBUSTNESS_RUNS_LOCK = _ROBUSTNESS_GUARD.lock
 
 
 def _session_robustness_busy(sid: str) -> bool:
-    with _ACTIVE_ROBUSTNESS_RUNS_LOCK:
-        rid = _ACTIVE_ROBUSTNESS_RUNS.get(sid)
-    if rid is None:
-        return False
-    raw = _PROGRESS.get(rid)
-    if raw is None or raw.get("done"):
-        with _ACTIVE_ROBUSTNESS_RUNS_LOCK:
-            if _ACTIVE_ROBUSTNESS_RUNS.get(sid) == rid:
-                _ACTIVE_ROBUSTNESS_RUNS.pop(sid, None)
-        return False
-    return True
+    return _ROBUSTNESS_GUARD.busy(sid)
 
 
 def _session_robustness_set_active(sid: str, rid: str) -> None:
-    with _ACTIVE_ROBUSTNESS_RUNS_LOCK:
-        _ACTIVE_ROBUSTNESS_RUNS[sid] = rid
+    _ROBUSTNESS_GUARD.set_active(sid, rid)
 
 
 def _add_step(run_id: str, msg: str) -> None:
@@ -119,7 +110,6 @@ async def run(
     objective: str = Form("sharpe"),
 ):
     from composer import load_catalog
-    from server import templates
 
     sid = session_id(request)
     if _session_robustness_busy(sid):
@@ -321,7 +311,6 @@ async def run(
 
 @router.get("/progress/{run_id}", response_class=HTMLResponse)
 async def progress(request: Request, run_id: str):
-    from server import templates
 
     with _LOCK:
         raw = _PROGRESS.get(run_id)

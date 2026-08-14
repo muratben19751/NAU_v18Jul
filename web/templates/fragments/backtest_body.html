@@ -115,10 +115,15 @@
                 <input type="text" name="symbol" list="bybit-symbols-list"
                        value="BTCUSDT" autocomplete="off" placeholder="BTC, ETH, SOL…">
               </label>
+              {# Sabit 'linear' değil: BTCUSDT katalogda yalnız spot altındaysa
+                 MAX 404 veriyor ve koşu olmayan seriyi arıyordu. AUTO brief'i
+                 ve SIMPLE sihirbazı da aynı kaynağı okur
+                 (DeepR 2026-08-11 [DÜŞÜK]). #}
+              {% set _bt_cat = bybit_default_category() %}
               <label class="field">Category
                 <select name="category">
                   {% for cat in bybit_categories %}
-                  <option value="{{ cat }}" {% if cat == 'linear' %}selected{% endif %}>{{ cat }}</option>
+                  <option value="{{ cat }}" {% if cat == _bt_cat %}selected{% endif %}>{{ cat }}</option>
                   {% endfor %}
                 </select>
               </label>

@@ -13,6 +13,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
 from state import get_state
+from web.templating import templates
 from web.viewmodels import best_card, iteration_row, loop_status_ctx
 
 router = APIRouter(prefix="/fragments")
@@ -20,7 +21,6 @@ router = APIRouter(prefix="/fragments")
 
 @router.get("/iterations", response_class=HTMLResponse)
 async def iterations(request: Request):
-    from server import templates
 
     state = get_state()
     iters, _, _, _ = state.snapshot()
@@ -34,7 +34,6 @@ async def iterations(request: Request):
 
 @router.get("/best", response_class=HTMLResponse)
 async def best(request: Request):
-    from server import templates
 
     state = get_state()
     _, b, _, _ = state.snapshot()
@@ -47,7 +46,6 @@ async def best(request: Request):
 
 @router.get("/loop_status", response_class=HTMLResponse)
 async def loop_status(request: Request):
-    from server import templates
 
     state = get_state()
     _, _, running, status = state.snapshot()

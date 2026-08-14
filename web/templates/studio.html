@@ -185,9 +185,14 @@
         <div class="mc-grid2">
           <div class="mc-f">
             <label for="mc-category">CATEGORY</label>
+            {# Açılış değeri katalogdan: üç yüzey (AUTO / SIMPLE / /backtest)
+               aynı BTCUSDT için üç farklı sabit gösteriyordu ve hiçbiri hangi
+               serinin gerçekten indirilmiş olduğunu bilmiyordu
+               (DeepR 2026-08-11 [DÜŞÜK]). #}
+            {% set _mc_cat = bybit_default_category() %}
             <select id="mc-category" name="category" onchange="window.mcSyncRange()">
-              <option value="linear">linear</option>
-              <option value="spot" selected>spot</option>
+              <option value="linear" {% if _mc_cat == 'linear' %}selected{% endif %}>linear</option>
+              <option value="spot" {% if _mc_cat == 'spot' %}selected{% endif %}>spot</option>
             </select>
           </div>
           <div class="mc-f">
@@ -351,13 +356,14 @@
   //    wizard slots on entering Simple mode and restore them to their Pro
   //    homes on leaving — polling, chain triggers and chart re-init keep
   //    working verbatim wherever the node lives. #}
+  var SW_MOVES = [
+    ['result',            'sw-result-slot', 'bt-tabpanel-result', null],
+    ['robustness-result', 'sw-rob-slot',    'rob-home',           null],
+    ['chat-thread',       'sw-chat-slot',   'bt-tabpanel-plan',   'plan-preview'],
+  ];
+
   function swMoveNodes(toSimple) {
-    var moves = [
-      ['result',            'sw-result-slot', 'bt-tabpanel-result', null],
-      ['robustness-result', 'sw-rob-slot',    'rob-home',           null],
-      ['chat-thread',       'sw-chat-slot',   'bt-tabpanel-plan',   'plan-preview'],
-    ];
-    moves.forEach(function (m) {
+    SW_MOVES.forEach(function (m) {
       var node = document.getElementById(m[0]);
       if (!node) return;
       if (toSimple) {
@@ -373,6 +379,47 @@
       }
     });
   }
+
+  // Boş katalog → dolu katalog geçişinde İKİZLENME.
+  //
+  // Katalog boşken Pro gövdesi (`backtest_body.html`) yalnız boş-durum
+  // panelini basar: `#bt-tabpanel-result` / `#rob-home` / `#bt-tabpanel-plan`
+  // DOM'da YOKTUR. Bu yüzden sihirbaz kendi kopyalarını üretir ve
+  // `swMoveNodes(false)` restore edecek bir ev bulamadığı için düğümler
+  // slotlarda kalır — Pro moduna geçildiğinde canlı sonuç paneli görünmez.
+  //
+  // İlk strateji kaydedilince boş-durum paneli kendini 15 sn'de bir yoklayıp
+  // `#backtest-body-inner`'ı TAM gövdeyle değiştiriyor (DeepR 2026-08-11
+  // [YÜKSEK]) — ve o tam gövde KENDİ `#result`/`#chat-thread`/
+  // `#robustness-result` düğümlerini getiriyor. Sonuç: aynı id'den iki tane.
+  // Yinelenen id ile `hx-target="#result"` belirsizleşir; htmx ilkini seçer,
+  // yani ilerleme güncellemeleri sihirbazın gizli slotuna akmaya devam eder ve
+  // kullanıcı hiçbir hata görmeden sonucunu kaybeder.
+  //
+  // Tarayıcı E2E'si (`tests/browser/`) bulundu; sunucu tarafından görünmezdi
+  // (DeepR 2026-08-11 [ORTA]).
+  function swDedupeLiveNodes() {
+    SW_MOVES.forEach(function (m) {
+      var all = document.querySelectorAll('#' + m[0] + ', [id="' + m[0] + '"]');
+      if (all.length < 2) return;
+      // Taze gövdeninki KANONİK: htmx onu yeni içerikle bastı. Slotta kalan
+      // yetimler kaldırılır.
+      var home = document.getElementById(m[2]);
+      var canonical = null;
+      all.forEach(function (n) {
+        if (home && home.contains(n)) canonical = n;
+      });
+      if (!canonical) canonical = all[all.length - 1];
+      all.forEach(function (n) { if (n !== canonical) n.remove(); });
+    });
+  }
+
+  document.body.addEventListener('htmx:afterSwap', function (e) {
+    if (!e.target || e.target.id !== 'backtest-body-inner') return;
+    swDedupeLiveNodes();
+    var active = document.querySelector('.mode-btn.active');
+    swMoveNodes(!!active && active.dataset.mode === 'simple');
+  });
 
   window.labMode = function(mode) {
     document.querySelectorAll('.mode-btn').forEach(b =>

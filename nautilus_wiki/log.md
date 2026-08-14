@@ -1372,3 +1372,5 @@ Bu turda eklenen: 46 test (15 + 15 + 16). Tam suite yeşil.
   kalibrasyonu, katalog onarımı, motor hızlandırması, kritik güvenlik)
 - `index_backtest_via_equity_proxy` → `us_equity_katalog_veri_butunlugu` bağı
   eklendi (öksüzdü)
+
+- 2026-08-13 — DeepR kalan bulgular: `web/templating.py` (server↔routes çift yönlü bağımlılığı, 54 fonksiyon-içi import), `nau_config.py` (77 ortam değişkeninin kataloğu + sürüklenme testi), `auto/log_thinning.py`, `web.shared.SessionRunGuard` / `MAX_LLM_TEXT_LEN` / `invalid_date_range`. Bkz. [[webapp_module_map]].

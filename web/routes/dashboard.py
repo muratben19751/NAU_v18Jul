@@ -14,13 +14,13 @@ from fastapi.responses import HTMLResponse
 
 from composer import load_catalog
 from state import get_state
+from web.templating import get_market_info, templates
 
 router = APIRouter()
 
 
 @router.get("/", response_class=HTMLResponse)
 async def dashboard(request: Request):
-    from server import get_market_info, templates
 
     state = get_state()
     catalog = load_catalog()

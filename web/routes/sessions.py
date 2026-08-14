@@ -29,6 +29,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, Response
 
 from web.shared import SESSION_LOG_DIR
+from web.templating import get_market_info, templates
 
 router = APIRouter(prefix="/sessions")
 
@@ -786,8 +787,6 @@ def _session_summary(run_id: str) -> dict:
 async def sessions_list(request: Request):
     import asyncio
 
-    from server import get_market_info, templates
-
     limit = _query_int(request, "limit", 25, lo=1, hi=100)
     offset = _query_int(request, "offset", 0, lo=0)
 
@@ -837,8 +836,6 @@ async def sessions_list(request: Request):
 @router.get("/{run_id}", response_class=HTMLResponse)
 async def session_detail(request: Request, run_id: str):
     import asyncio
-
-    from server import get_market_info, templates
 
     # Security: only allow hex run_id's
     if not all(c in "0123456789abcdef" for c in run_id) or len(run_id) != 8:

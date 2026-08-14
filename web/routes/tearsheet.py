@@ -25,12 +25,12 @@ from fastapi.responses import HTMLResponse
 
 from web.shared import BACKTEST_LOG
 from web.tearsheet import tearsheet_error, tearsheet_view
+from web.templating import templates
 
 router = APIRouter(tags=["tearsheet"])
 
 
 def _render(request: Request, view: dict) -> HTMLResponse:
-    from server import templates
 
     return templates.TemplateResponse(request, "fragments/tearsheet.html", {"ts": view})
 

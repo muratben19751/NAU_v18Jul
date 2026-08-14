@@ -42,6 +42,7 @@ from data import (
     refresh_row,
     write_to_nautilus_catalog,
 )
+from web.templating import get_market_info, templates
 
 router = APIRouter(prefix="/data")
 
@@ -69,7 +70,6 @@ def _invalid_date_range(start: str | None, end: str | None) -> str | None:
 
 def _template_ctx(request, **extra):
     """Standard context that satisfies base.html's topbar."""
-    from server import get_market_info
 
     ctx = {
         "active": "data",
@@ -118,7 +118,6 @@ async def page(
     q: str | None = Query(default=None),
     xq: str | None = Query(default=None),
 ):
-    from server import templates
 
     # H93: heavy synchronous catalog scan in a thread — so the event loop is not blocked.
     cat = await asyncio.to_thread(
@@ -148,7 +147,6 @@ async def refresh_bybit(
     category: str = Form(...),
     interval: str = Form(...),
 ):
-    from server import templates
 
     if symbol not in BYBIT_SYMBOLS:
         raise HTTPException(400, f"unsupported symbol {symbol!r}")
@@ -179,7 +177,6 @@ async def refresh_index(
     end: str | None = Form(default=None),
 ):
     from data import _GRAN_BARSPEC
-    from server import templates
 
     if granularity not in _GRAN_BARSPEC:
         raise HTTPException(
@@ -216,7 +213,6 @@ async def index_discover(request: Request, force: bool = Form(default=False)):
     fragment swapped into ``#discover-result`` (not JSON — the form does
     ``hx-swap="innerHTML"``)."""
     from data import index_root_warning
-    from server import templates
 
     # Kök hiç yoksa taramaya girme: 404'ün gövdesi de panelin gösterdiği
     # cümlenin AYNISI olsun (DeepR 2026-08-11 [ORTA]). Buton bu durumda zaten
@@ -255,7 +251,6 @@ async def catalog_write(
 
     See wiki: [[parquet_data_catalog]], [[data_wranglers]], [[backtest_node]].
     """
-    from server import templates
 
     kw: dict = {}
     if source == "bybit":

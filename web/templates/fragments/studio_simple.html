@@ -287,17 +287,28 @@
   // ── Completion-state sync: buttons, rail locks, progress hints (Bugs 3+5) ──
   function swSyncGating() {
     var running = window.btRunActive ? btRunActive() : false;
+    var lockedWhy = running
+      ? "Wait for the backtest to finish…"
+      : "Run the backtest first — the next steps build on its result";
     var next3 = document.getElementById("sw-next-3");
     if (next3) {
       next3.disabled = !swState.btDone;
-      next3.title = swState.btDone ? "" :
-        (running ? "Wait for the backtest to finish…"
-                 : "Run the backtest first — the next steps build on its result");
+      next3.title = swState.btDone ? "" : lockedWhy;
     }
     // Lock rail steps 4-5 until the backtest completed.
+    //
+    // GEREKÇE de yazılır. Ray düğmeleri yalnız `disabled` ediliyordu, hiçbir
+    // ipucu taşımıyorlardı: kullanıcı tıklıyor, hiçbir şey olmuyor, sebebi
+    // hiçbir yerde yazmıyordu. Yanı başındaki `#sw-next-3` tam da bunun için
+    // bir `title` taşıyor — ray o düzeltmenin dışında kalmıştı. Aynı sınıf,
+    // sol menüdeki "Strategy Builder" ölü bağlantısında da çıkmıştı
+    // (DeepR 2026-08-11 [DÜŞÜK], tarayıcı E2E'si bulundu).
     document.querySelectorAll(".sw-rail-step").forEach(function (b) {
       var bn = parseInt(b.dataset.swStep, 10);
-      if (bn >= 4) b.disabled = !swState.btDone;
+      if (bn >= 4) {
+        b.disabled = !swState.btDone;
+        b.title = swState.btDone ? "" : lockedWhy;
+      }
     });
     var runHint = document.getElementById("sw-run-hint");
     if (runHint) {

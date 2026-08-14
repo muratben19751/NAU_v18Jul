@@ -77,10 +77,22 @@ from urllib.parse import urlsplit as _urlsplit
 from fastapi import FastAPI, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
-from fastapi.templating import Jinja2Templates
-from markupsafe import Markup, escape
 
 from data import load_bybit_bars
+from web import templating as _templating
+from web.templating import (  # noqa: F401  (geriye dönük yeniden dışa verim)
+    BASE_DIR,
+    DEFAULT_CATEGORY,
+    DEFAULT_INTERVAL,
+    DEFAULT_SYMBOL,
+    STATIC_DIR,
+    TEMPLATES_DIR,
+    get_bars,
+    get_market_info,
+    set_market_context,
+    static_version,
+    templates,
+)
 
 _log = _logging.getLogger(__name__)
 
@@ -221,153 +233,33 @@ def _clear_login_failures(ip: str) -> None:
 
 
 # Default instrument shown in the topbar.
-_DEFAULT_SYMBOL = "BTCUSDT"
-_DEFAULT_CATEGORY = "linear"
-_DEFAULT_INTERVAL = "1"  # 1-minute bars
-
-BASE_DIR = Path(__file__).resolve().parent
-TEMPLATES_DIR = BASE_DIR / "web" / "templates"
-STATIC_DIR = BASE_DIR / "web" / "static"
+# Jinja ortamı, statik kökler ve piyasa bağlamı `web/templating.py`'ye taşındı:
+# route'lar onları buradan alıyordu ve `server` da route'ları import ettiği için
+# ortaya çift yönlü bir bağımlılık çıkıyordu (DeepR 2026-08-11 [ORTA], 54 adet
+# fonksiyon-içi `from server import ...`). Adlar burada yeniden dışa veriliyor;
+# `from server import templates` yazan eski kod ve testler çalışmaya devam eder.
+_DEFAULT_SYMBOL = DEFAULT_SYMBOL
+_DEFAULT_CATEGORY = DEFAULT_CATEGORY
+_DEFAULT_INTERVAL = DEFAULT_INTERVAL
+_context = _templating._context
 
 
 def _static_version() -> str:
-    """Cache-busting hash based on chart.js + app.css + app.js content.
-
-    The vendored third-party bundles (htmx, Chart.js — pulled off the CDN and
-    into web/static/ by the DeepR 2026-08-11 [ORTA] fix) are hashed too. They
-    only change when someone deliberately bumps a version, but when that day
-    comes the browser must not keep serving the old bundle from cache: the
-    tag's `?v=` would otherwise be identical across the bump.
-    """
-    try:
-        h = _hashlib.md5()
-        for name in (
-            "chart.js",
-            "app.css",
-            "app.js",
-            "htmx.min.js",
-            "chartjs.umd.min.js",
-        ):
-            p = BASE_DIR / "web" / "static" / name
-            if p.exists():
-                h.update(p.read_bytes())
-        return h.hexdigest()[:8]
-    except Exception:
-        return "0"
+    # İnce sarmalayıcı, yalın takma ad DEĞİL: eski sözleşmede `_static_version`
+    # yolu çağrı anında `server.BASE_DIR`'den çözerdi; testler bu global'i
+    # monkeypatch'leyerek sahte bir statik ağacı hash'letir. Takma ad
+    # (`_static_version = static_version`) fonksiyonu web.templating'in
+    # namespace'inde koşturur ve bu dikişi görünmez kılar.
+    return static_version(BASE_DIR)
 
 
-templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
-templates.env.globals["static_version"] = _static_version()
-
-
-def _loop_running() -> bool:
-    """Live loop status for the sidebar Engine card + Dashboard nav dot."""
-    try:
-        from state import get_state
-
-        _, _, running, _ = get_state().snapshot()
-        return bool(running)
-    except Exception:
-        return False
-
-
-templates.env.globals["loop_running"] = _loop_running
-
-
-def _engine_model_label() -> str:
-    """Sidebar ENGINE card's model line. Was a hardcoded string ('Claude Fable 5')
-    regardless of which model AUTO/SIMPLE/PRO actually ran with — this resolves
-    the same way the AUTO cockpit's own model slot does (agent.model_label),
-    so switching models (or the credit-exhaustion fallback kicking in) is
-    reflected sitewide instead of only where llm_badge() happened to be wired."""
-    try:
-        from agent import model_label
-
-        return model_label()
-    except Exception:
-        return "Claude"
-
-
-templates.env.globals["engine_model_label"] = _engine_model_label
-
-
-def _first_studio_strategy_id() -> str | None:
-    """Nav link target for 'Strategy Builder' — the most recently updated
-    strategy, so a fresh install (no seed_studio.py run) doesn't 404 on a
-    hardcoded demo id."""
-    try:
-        from strategy_studio.store import StrategyStore
-
-        meta = StrategyStore().list_meta()
-        return meta[0].strategy_id if meta else None
-    except Exception:
-        return None
-
-
-templates.env.globals["first_studio_strategy_id"] = _first_studio_strategy_id
-
-
-def _catalog_issues() -> dict | None:
-    """Bozuk (yüklenemeyen) strateji kayıtlarının özeti — yoksa None.
-
-    DeepR 2026-08-11 [YÜKSEK]: `composer.load_catalog` bozuk kayıtları sessizce
-    düşürüyordu; kullanıcı stratejisinin listeden kaybolduğunu görüyor ama
-    sebebini asla öğrenemiyordu. Bunu bir Jinja global'i yapıyoruz çünkü
-    katalog listesini render eden üç ayrı yüzey var (`compose_body`,
-    `save_result` OOB tazelemesi, tekil `/strategy` listesi) ve üçü de farklı
-    route'lardan besleniyor — bandı tek yerden almalarının yolu bu.
-    """
-    try:
-        from composer import last_catalog_load_issues
-
-        return last_catalog_load_issues()
-    except Exception:
-        return None
-
-
-templates.env.globals["catalog_issues"] = _catalog_issues
 # Sidebar only offers a Logout link when the access gate is actually on —
 # NAU_ACCESS_TOKEN unset (local dev default) means auth is a no-op, and a
 # logout link there would just redirect to a login screen with no gate.
+#
+# Bu global burada kayıtlı, `web/templating.py`'de değil: erişim kapısı
+# `server`'ın sorumluluğu ve yaprak modülün ondan haberi olmamalı.
 templates.env.globals["auth_enabled"] = lambda: bool(_ACCESS_TOKEN)
-
-
-def _datetimefmt(unix_ts: int) -> str:
-    from datetime import datetime
-
-    try:
-        dt = datetime.fromtimestamp(int(unix_ts), tz=UTC)
-        return dt.strftime("%m/%d %H:%M")
-    except Exception:
-        return str(unix_ts)
-
-
-templates.env.filters["datetimefmt"] = _datetimefmt
-
-
-def _nl2br(value) -> Markup:
-    return Markup(str(escape(value)).replace("\n", "<br>"))
-
-
-templates.env.filters["nl2br"] = _nl2br
-
-_context: dict = {"bars": None, "market": None}
-
-
-def get_bars():
-    return _context["bars"]
-
-
-def get_market_info() -> dict:
-    return _context["market"] or {
-        "symbol": _DEFAULT_SYMBOL,
-        "venue": _DEFAULT_CATEGORY.upper(),
-        "bars": 0,
-        "start": "—",
-        "end": "—",
-        "last_price": 0.0,
-        "spark": [],
-    }
 
 
 @asynccontextmanager
@@ -407,7 +299,7 @@ async def lifespan(app: FastAPI):
         _startup_err = _e
     else:
         _startup_err = None
-    _context["bars"] = bars
+    set_market_context(bars=bars)
     if bars.empty:
         import warnings
 

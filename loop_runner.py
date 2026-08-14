@@ -47,7 +47,12 @@ def _try_log(
     """Best-effort append to backtest_log.jsonl for the /reports page."""
     try:
         from composer import ComposedStrategySpec
-        from web.routes.backtest import _log_backtest
+
+        # DeepR 2026-08-11 [ORTA]: burası `web.routes.backtest._log_backtest`
+        # idi — çalışma zamanı katmanı, bir HTTP route modülünün ALT ÇİZGİLİ
+        # yüzeyinden fonksiyon çekiyordu. O ad zaten `web.shared.log_backtest`'in
+        # takma adıydı; doğru olan kaynağı çağırmak.
+        from web.shared import log_backtest as _log_backtest
 
         if isinstance(spec_or_name, ComposedStrategySpec):
             spec = spec_or_name

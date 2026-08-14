@@ -47,6 +47,16 @@ studio.db-shm
 # Playwright scratch dir for scripts/check_auto_cockpit.py (screenshots + temp)
 .pwtmp/
 
+# Oturum içi geçici çalışma alanı: pytest scratch dizinleri (.tmp/pytest-*) ve
+# araç raporu dökümleri (.tmp_deepr.json, .tmp_semgrep_report.json…). Koşumdan
+# koşuma yeniden üretilirler; bazıları Windows ACL'i yüzünden okunamaz bile.
+.tmp/
+.tmp_*.json
+
+# pytest çalışma dizini — içindeki .py'ler LLM'in test koşumunda ÜRETTİĞİ blok
+# kodları (agnt_e_*/agnt_x_*); her koşumda yeniden yazılırlar (ruff'ta da dışlı).
+work/
+
 # LLM fine-tuning trainer cache — unrelated to this app, not versioned
 unsloth_compiled_cache/
 

@@ -32,6 +32,7 @@ router = APIRouter(prefix="/reports")
 # with the writer modules). reports.py reads these via its own module globals,
 # so tests can still monkeypatch reports.BACKTEST_LOG / .ROBUSTNESS_LOG.
 from web.shared import BACKTEST_LOG, ROBUSTNESS_LOG, error_html  # noqa: E402
+from web.templating import get_market_info, templates
 
 REPORTS_LAYOUT = Path.home() / ".cache" / "nautilus_web_app" / "reports_layout.json"
 
@@ -587,7 +588,6 @@ def _page_data(
 
 @router.get("", response_class=HTMLResponse)
 async def page(request: Request):
-    from server import get_market_info, templates
 
     runner_filter = request.query_params.get("runner", "")
     symbol_filter = request.query_params.get("symbol", "")
@@ -661,8 +661,6 @@ async def detail(request: Request, ts: str):
     resulting reasoned trade list + price chart is returned as a fragment.
     """
     import asyncio
-
-    from server import templates
 
     if ts in _DETAIL_CACHE:
         return templates.TemplateResponse(

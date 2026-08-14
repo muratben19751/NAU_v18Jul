@@ -1,6 +1,6 @@
 """Eski AUTO oturum günlüklerini yerinde sıkıştır (kayıt kaybı olmadan).
 
-`_thin_curves` (web/routes/agent_backtest.py) eklenmeden ÖNCE yazılan
+`thin_curves` (auto/log_thinning.py) eklenmeden ÖNCE yazılan
 `robustness_result` olayları equity eğrilerini ham hâlde taşıyor: olay başına
 ~3,5 MB (88 WFO penceresi × train/test/naive eğrileri + 50 Monte Carlo örneği
 + 8.605 noktalık OOS eğrisi). Ölçüm 2026-08-10: 111 oturumun 10'u 11,1 GB,
@@ -29,10 +29,14 @@ import json
 import os
 from pathlib import Path
 
-# Yalnız bu iki isim gerekiyor; router ağacını çekmek bir bakım script'i için
-# kabul edilebilir (alternatifi indirgeme kuralını ikinci kez yazmaktı — tam
-# olarak bu ikizleşme yüzünden `robustness_result` yolu ilk seferde atlanmıştı).
-from web.routes.agent_backtest import SESSION_LOG_DIR, _thin_curves
+# DeepR 2026-08-11 [ORTA]: burası eskiden
+# ``from web.routes.agent_backtest import SESSION_LOG_DIR, _thin_curves`` idi —
+# bir CLI aracı, indirgeme kuralını çağırabilmek için tüm FastAPI router
+# ağacını, erişim kapısını ve şablon ortamını import ediyordu; üstelik alt
+# çizgili bir adı başka modülün private yüzeyinden çekerek. Kural artık alan
+# katmanında (`auto/`), günlük kökü de yaprak `web.shared`'da.
+from auto.log_thinning import thin_curves
+from web.shared import SESSION_LOG_DIR
 
 
 def compact_file(path: Path, *, apply: bool) -> tuple[int, int]:
@@ -55,7 +59,7 @@ def compact_file(path: Path, *, apply: bool) -> tuple[int, int]:
                 # diye düşürmek, sıkıştırmanın vaat etmediği bir kayıptır.
                 out = line + "\n"
             else:
-                out = json.dumps(_thin_curves(rec), ensure_ascii=False, default=str)
+                out = json.dumps(thin_curves(rec), ensure_ascii=False, default=str)
                 out += "\n"
             dst.write(out)
             after += len(out.encode("utf-8"))

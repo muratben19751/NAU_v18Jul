@@ -21,6 +21,7 @@ from fastapi import APIRouter, Form, Request, Response
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from agent import propose_composed_strategy
+from block_meta import coerce_params
 from composer import (
     BLOCK_CATALOG,
     BLOCK_REGISTRY,
@@ -32,6 +33,7 @@ from composer import (
 )
 from state import get_state
 from web.shared import (
+    MAX_LLM_TEXT_LEN,
     SESSION_COOKIE,
     ChatStore,
     error_html,
@@ -39,19 +41,21 @@ from web.shared import (
     session_id,
     set_session_cookie,
 )
+from web.templating import templates
 from wiki_helper import read_wiki_page
 
 router = APIRouter(prefix="/strategy")
 
 # label/description only had a non-empty check — nothing capped a pasted
-# multi-MB block against an expensive LLM call. Same bound as
-# backtest.py's _MAX_LLM_TEXT_LEN (kept local: a single shared constant for
-# this doesn't justify a new cross-module import here).
+# multi-MB block against an expensive LLM call.
 #
 # DeepR 2026-08-08 [ORTA]: originally only /blocks/generate enforced this —
 # /suggest, /drafts/chat, and /blocks/chat took the same free-text fields
 # straight to a Claude call with no limit at all. All four now check it.
-_MAX_LLM_TEXT_LEN = 4000
+#
+# DeepR 2026-08-11 [DÜŞÜK]: sabit `web.shared`'a taşındı — AUTO'nun `hint`'i ve
+# Studio'nun `ask`'i de aynı sınıra bağlanınca kopya sayısı dörde çıkıyordu.
+_MAX_LLM_TEXT_LEN = MAX_LLM_TEXT_LEN
 
 
 # Multi-turn "AI ile düzenle" sohbet store'ları (web.shared.ChatStore — backtest'in
@@ -311,7 +315,6 @@ async def page(request: Request):
 
 @router.get("/blocks/form", response_class=HTMLResponse)
 async def block_form(request: Request, type: str):
-    from server import templates
 
     if type not in BLOCK_CATALOG:
         return HTMLResponse(
@@ -326,7 +329,6 @@ async def block_form(request: Request, type: str):
 
 @router.get("/wiki", response_class=HTMLResponse)
 async def wiki_panel(request: Request, type: str):
-    from server import templates
 
     _, html = wiki_html_for(type)
     return templates.TemplateResponse(
@@ -338,7 +340,6 @@ async def wiki_panel(request: Request, type: str):
 
 @router.post("/drafts", response_class=HTMLResponse)
 async def add_draft(request: Request):
-    from server import templates
 
     form = await request.form()
     btype = form.get("type")
@@ -348,23 +349,23 @@ async def add_draft(request: Request):
             "<div class='empty-state'>Unknown block.</div>", status_code=400
         )
 
-    params: dict[str, Any] = {}
-    for pname, pspec in BLOCK_CATALOG[btype]["params"].items():
-        raw = form.get(f"p_{pname}")
-        if raw is None:
-            continue
-        if pspec["type"] == "int":
-            try:
-                params[pname] = int(raw)
-            except (ValueError, TypeError):
-                params[pname] = pspec.get("default", 0)
-        elif pspec["type"] == "float":
-            try:
-                params[pname] = float(raw)
-            except (ValueError, TypeError):
-                params[pname] = pspec.get("default", 0.0)
-        else:
-            params[pname] = raw
+    # Katalogdaki min/max SUNUCU TARAFINDA uygulanır. Burası yalnız
+    # `int()`/`float()` çeviriyordu; sınırlar sadece HTML input attribute'u
+    # olarak vardı, yani tarayıcı dışı her yol (curl, otomasyon) onları
+    # geçiyordu. `p_period=0` + donchian → `max([])`, `p_fast=0` + ma_cross →
+    # ZeroDivisionError; ikisi de `composer._eval_block`'un geniş `except`'i
+    # tarafından yutuluyor ve kullanıcı hata değil, "0 işlemli geçerli görünen
+    # bir backtest" görüyordu. Kural `block_meta.coerce_params`'ta — LLM
+    # önerileri (`agent._coerce_block`) zaten oradan geçiyordu; eksik halka
+    # form yoluydu (DeepR 2026-08-11 [DÜŞÜK]).
+    params: dict[str, Any] = coerce_params(
+        BLOCK_CATALOG[btype],
+        {
+            pname: form.get(f"p_{pname}")
+            for pname in BLOCK_CATALOG[btype]["params"]
+            if form.get(f"p_{pname}") is not None
+        },
+    )
 
     sid = _sid(request)
     session_drafts(sid).append(SignalBlock(type=btype, role=role, params=params))
@@ -386,7 +387,6 @@ async def add_draft(request: Request):
 
 @router.delete("/drafts/{index}", response_class=HTMLResponse)
 async def delete_draft(request: Request, index: int):
-    from server import templates
 
     form = await request.form()
     sid = _sid(request)
@@ -417,7 +417,6 @@ async def suggest(request: Request):
     user typed is never overwritten by Claude's suggestion (only an empty
     field is filled).
     """
-    from server import templates
 
     form = await request.form()
     user_desc = (form.get("description") or "").strip()
@@ -466,7 +465,6 @@ def _blocks_to_dicts(blocks: list[SignalBlock]) -> list[dict]:
 
 
 def _render_drafts_chat(request, conv: dict, conv_id: str, options=None, name=""):
-    from server import templates
 
     working = [
         SignalBlock(type=b["type"], role=b["role"], params=b["params"])
@@ -544,8 +542,6 @@ async def drafts_chat_turn(
     """Draft-düzenleme sohbetine bir tur ekle."""
     import asyncio
 
-    from server import templates
-
     form = await request.form()
     opts = _options_from_form(form)
     name = form.get("name") or ""
@@ -590,7 +586,6 @@ async def drafts_chat_turn(
 @router.post("/drafts/chat/apply", response_class=HTMLResponse)
 async def drafts_chat_apply(request: Request, conv_id: str = Form("")):
     """Sohbette düzenlenen blok listesini gerçek draft'a uygula."""
-    from server import templates
 
     form = await request.form()
     conv = _DRAFTS_CHAT.get(conv_id)
@@ -645,7 +640,6 @@ async def save(
     trend_ema_period: int = Form(50),
     edit_spec_id: str = Form(""),
 ):
-    from server import templates
 
     sid = _sid(request)
     drafts = session_drafts(sid)
@@ -740,7 +734,6 @@ async def generate_custom_block(request: Request):
 
     import custom_block_store as cbs
     from agent import GeneratedCodeError, propose_custom_block
-    from server import templates
 
     form = await request.form()
     label = (form.get("label") or "").strip()
@@ -907,7 +900,6 @@ def _dependent_spec_names(block_name: str) -> list[str]:
 
 def _render_block_chat(request, conv: dict, conv_id: str):
     """block_chat_thread.html'i mevcut sohbet durumuyla render et."""
-    from server import templates
 
     name = conv["name"]
     return templates.TemplateResponse(
@@ -1001,8 +993,6 @@ async def block_chat_turn(
 ):
     """Custom block düzenleme sohbetine bir tur ekle."""
     import asyncio
-
-    from server import templates
 
     msg = (message or "").strip()
     conv = _BLOCK_CHAT.get(conv_id)
@@ -1105,7 +1095,6 @@ async def block_chat_save(request: Request, conv_id: str = Form("")):
 @router.delete("/blocks/custom/{name}", response_class=HTMLResponse)
 async def delete_custom_block(request: Request, name: str):
     import custom_block_store as cbs
-    from server import templates
 
     if name in BLOCK_REGISTRY and BLOCK_REGISTRY[name].get("builtin"):
         return error_html("Built-in block cannot be deleted: {name}", 400, name=name)
@@ -1147,7 +1136,6 @@ async def delete_spec(request: Request, spec_id: str):
     # M634: a lockless load→filter→save was racing with concurrent appends —
     # use the locked mutate_catalog (deletion is atomic).
     from composer import mutate_catalog
-    from server import templates
 
     mutate_catalog(lambda cat: [s for s in cat if s.id != spec_id])
     catalog = load_catalog()
@@ -1170,7 +1158,6 @@ async def edit_spec(request: Request, spec_id: str, mode: str = "overwrite"):
     OOB swaps for name/description/advanced-options/edit-spec-id — mirroring the
     /suggest → suggestion_result.html pattern.
     """
-    from server import templates
 
     spec = next((s for s in load_catalog() if s.id == spec_id), None)
     if spec is None:

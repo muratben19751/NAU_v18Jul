@@ -49,9 +49,12 @@ router = APIRouter(prefix="/backtest")
 # Leaf shared module — keeps the route→shared dependency arrow one-directional.
 from web.shared import (  # noqa: E402
     BACKTEST_LOG,
+    MAX_LLM_TEXT_LEN,
     ChatStore,
     ProgressStore,
+    SessionRunGuard,
     error_html,
+    invalid_date_range,
     safe_html,
     session_id,
 )
@@ -59,6 +62,7 @@ from web.shared import chart_url as _chart_url  # noqa: E402
 from web.shared import load_result_snapshot as _load_result_snapshot  # noqa: E402
 from web.shared import log_backtest as _log_backtest  # noqa: E402
 from web.shared import save_result_snapshot as _save_result_snapshot  # noqa: E402
+from web.templating import templates
 
 
 def catalog_index_symbols() -> list[str]:
@@ -160,12 +164,17 @@ _SWEEP_LOCK = _SWEEP_STORE.lock
 # #result is preserved instead of being reset by a new run. The registry
 # self-clears: the worker's ``finally`` sets the store record's ``done`` flag,
 # and _session_active_kind() treats done/evicted records as inactive.
-_ACTIVE_RUNS: dict[str, tuple[str, str]] = {}  # sid → (kind, run/gen/sweep id)
-_ACTIVE_RUNS_LOCK = threading.Lock()
 # Prune threshold — entries self-clear on the owner's next submit, but sessions
 # that never come back would otherwise accumulate forever. The ProgressStores
 # cap at 50+20+20 records, so past ~90 entries the rest are guaranteed stale.
+#
+# Sınıf `web.shared.SessionRunGuard`: aynı koruma `lab.py` ve `robustness.py`
+# içine de kopyalanmıştı ve o iki kopyaya bu tavan hiç ulaşmamıştı
+# (DeepR 2026-08-11 [DÜŞÜK]).
 _ACTIVE_RUNS_MAX = 500
+_RUN_GUARD = SessionRunGuard(lambda kind: _active_store(kind), _ACTIVE_RUNS_MAX)
+_ACTIVE_RUNS = _RUN_GUARD.raw()  # geriye dönük ad (testler bunu okuyor)
+_ACTIVE_RUNS_LOCK = _RUN_GUARD.lock
 
 _BUSY_LABELS = {
     "run": "backtest",
@@ -180,36 +189,11 @@ def _active_store(kind: str) -> ProgressStore:
 
 def _session_active_kind(sid: str) -> str | None:
     """Return 'run'|'gen'|'sweep' if this session has a live job, else None."""
-    with _ACTIVE_RUNS_LOCK:
-        ent = _ACTIVE_RUNS.get(sid)
-    if ent is None:
-        return None
-    kind, rid = ent
-    raw = _active_store(kind).get(rid)
-    if raw is None or raw.get("done"):
-        # Finished (or evicted/restarted) — drop the stale entry.
-        with _ACTIVE_RUNS_LOCK:
-            if _ACTIVE_RUNS.get(sid) == ent:
-                _ACTIVE_RUNS.pop(sid, None)
-        return None
-    return kind
+    return _RUN_GUARD.active_kind(sid)
 
 
 def _session_set_active(sid: str, kind: str, rid: str) -> None:
-    with _ACTIVE_RUNS_LOCK:
-        over_cap = len(_ACTIVE_RUNS) >= _ACTIVE_RUNS_MAX and sid not in _ACTIVE_RUNS
-        snapshot = list(_ACTIVE_RUNS.items()) if over_cap else []
-        _ACTIVE_RUNS[sid] = (kind, rid)
-    if not over_cap:
-        return
-    # Opportunistic prune of abandoned sessions (store lookups deliberately
-    # OUTSIDE the registry lock — no lock nesting).
-    for other_sid, (other_kind, other_rid) in snapshot:
-        raw = _active_store(other_kind).get(other_rid)
-        if raw is None or raw.get("done"):
-            with _ACTIVE_RUNS_LOCK:
-                if _ACTIVE_RUNS.get(other_sid) == (other_kind, other_rid):
-                    _ACTIVE_RUNS.pop(other_sid, None)
+    _RUN_GUARD.set_active(sid, rid, kind)
 
 
 def _busy_response(kind: str) -> HTMLResponse:
@@ -226,23 +210,9 @@ def _busy_response(kind: str) -> HTMLResponse:
     return resp
 
 
-def _invalid_date_range(start: str, end: str) -> str | None:
-    """Return an error message when a start/end pair is inverted or malformed.
-
-    Blank values are fine (blank = full cache). Only rejects when BOTH are
-    given and start > end, or either fails to parse as YYYY-MM-DD.
-    """
-    s, e = (start or "").strip(), (end or "").strip()
-    if not s and not e:
-        return None
-    try:
-        sd = date.fromisoformat(s) if s else None
-        ed = date.fromisoformat(e) if e else None
-    except ValueError:
-        return "Dates must be in YYYY-MM-DD format."
-    if sd and ed and sd > ed:
-        return "End date cannot be before the start date."
-    return None
+# Kural `web.shared`'a taşındı: `/lab/run` aynı denetimi yapmıyordu ve geçersiz
+# tarihi sessizce varsayılan pencereye çeviriyordu (DeepR 2026-08-11 [DÜŞÜK]).
+_invalid_date_range = invalid_date_range
 
 
 _SPEC_GONE_MSG = (
@@ -351,7 +321,8 @@ _DEFAULT_MAX_BARS = 100_000
 # chars) — nothing stopped a multi-MB paste from going straight into an
 # LLM call. Upper bound is generous (a real strategy description is a
 # paragraph, not a novel) but caps the worst case.
-_MAX_LLM_TEXT_LEN = 4000
+# Sabit `web.shared`'da (DeepR 2026-08-11 [DÜŞÜK]) — dört uç aynı sınırı okur.
+_MAX_LLM_TEXT_LEN = MAX_LLM_TEXT_LEN
 
 # BACKTEST_LOG, _rotate_if_large, _sanitize_floats, _chart_url and _log_backtest
 # now live in web.shared (imported above as re-export aliases) — single source
@@ -562,7 +533,6 @@ def result_snapshot(request: Request, run_id: str):
     persisted at run time, so equity/drawdown/heatmap/price-chart/trades all
     rebuild exactly as they were. Swapped into #result, so the page's existing
     htmx:afterSettle hooks re-init the charts + robustness panel."""
-    from server import templates
 
     last = _load_result_snapshot(run_id)
     if not last:
@@ -668,7 +638,6 @@ async def run(
     trade_size: float = Form(0.0),
 ):
     """Return a progress panel immediately, run the backtest in a daemon thread."""
-    from server import templates
 
     # Boş spec_id, hatalı bir id DEĞİLDİR: #spec-picker'ın varsayılan seçeneği
     # ("— new (describe below) —") tam olarak bunu gönderir. "Spec not found"
@@ -1286,7 +1255,6 @@ async def describe(
     chains at the end into /backtest/sweep (comparison table); if 1, into
     /backtest/run (full result). If empty, falls back to the single ``interval``
     field (old behavior)."""
-    from server import templates
 
     desc = (description or "").strip()
     if len(desc) < 10:
@@ -1558,7 +1526,6 @@ async def describe(
 
 @router.get("/describe/progress/{gen_id}", response_class=HTMLResponse)
 async def describe_progress(request: Request, gen_id: str):
-    from server import templates
 
     state = _gen_state_view(gen_id)
     if state is None:
@@ -1988,8 +1955,6 @@ async def plan_preview(
     """
     import asyncio
 
-    from server import templates
-
     desc = (description or "").strip()
     if len(desc) < 12 or len(desc) > _MAX_LLM_TEXT_LEN:
         return templates.TemplateResponse(
@@ -2207,7 +2172,6 @@ def _collect_chat_context(
 def _render_chat_thread(request: Request, conv: dict, conv_id: str):
     """chat_thread.html fragment'ini konuşma state'inden render et. Sadece user/assistant
     turn'leri gösterilir (context metrikleri ilk user mesajına gömülü, gizli tutulur)."""
-    from server import templates
 
     bubbles = [
         {"role": m["role"], "content": m.get("display", m["content"])}
@@ -2251,8 +2215,6 @@ async def chat_new(
     """Yeni bir sohbet başlat: conv_id üret, ilk user mesajını (metrikler gömülü) gönder,
     ilk asistan turn'ünü store'a yaz, chat_thread fragment'ini döndür."""
     import asyncio
-
-    from server import templates
 
     desc = (description or "").strip()
     if len(desc) < 12 or len(desc) > _MAX_LLM_TEXT_LEN:
@@ -2308,8 +2270,6 @@ async def chat_turn(
     LLM çağrısı lock'suz yapılır (oku-kopyala → çağır → tekrar-al-ve-yaz).
     """
     import asyncio
-
-    from server import templates
 
     msg = (message or "").strip()
     if not msg:
@@ -2424,7 +2384,6 @@ async def sweep(
     Bybit: intervals (1/5/15/60/240/D). Index/Equity: granularity_csv
     (1m/5m/15m/60m/1d) loaded via load_index_bars over the full cache range
     (or explicit start/end dates)."""
-    from server import templates
 
     catalog = load_catalog()
     spec = next((s for s in catalog if s.id == spec_id), None)
@@ -2706,7 +2665,6 @@ async def sweep(
 
 @router.get("/sweep/progress/{sweep_id}", response_class=HTMLResponse)
 async def sweep_progress(request: Request, sweep_id: str):
-    from server import templates
 
     state = _sweep_state_view(sweep_id)
     if state is None:
@@ -2723,7 +2681,6 @@ async def sweep_progress(request: Request, sweep_id: str):
 
 @router.get("/progress/{run_id}", response_class=HTMLResponse)
 async def progress(request: Request, run_id: str):
-    from server import templates
 
     # Snapshot state under lock to avoid torn reads from the worker thread.
     with _RUN_PROGRESS_LOCK:

@@ -29,6 +29,16 @@ python3.12 -m venv .venv && source .venv/bin/activate && pip install -e ".[dev]"
 
 ## Ortam değişkenleri
 
+Tam liste — 77 değişkenin hepsi, amaçları, varsayılanları ve **bu süreçte hangileri ayarlı** — tek komutla:
+
+```bash
+python -m nau_config     # sırlar maskeli
+```
+
+Kaynak `nau_config.py`; `tests/test_env_registry_is_complete.py` iki yönde de sürüklenmeyi kırmızıya çevirir (kodda okunup belgelenmemiş bir düğme de, belgelenip kodda okunmayan ölü bir düğme de testi düşürür). Çoğu değişken **import anında** okunur: değiştirdikten sonra sunucuyu yeniden başlatın.
+
+Aşağıdaki tablo en sık kullanılanların özetidir:
+
 | Değişken | Varsayılan | Ne yapar |
 |---|---|---|
 | `ANTHROPIC_API_KEY` | — | LLM için API anahtarı (yoksa `claude-cli` aboneliği denenir) |
@@ -62,11 +72,21 @@ uvicorn server:app --host 127.0.0.1 --port 8000 --reload \
 > var olan bir dizini recursive dışlar. Uzun üretimler için `--reload`'sız
 > çalıştırın.
 
+Sol menüdeki sayfalar (`web/templates/base.html` ile birebir):
+
 - **`/`** (dashboard) — Otonom legacy döngüyü başlat/durdur; iterasyonlar canlı akar.
-- **`/agent`** — Otonom backtest ajanı (canlı Gantt zaman çizelgesiyle).
-- **`/strategy`** — Görsel strateji composer + Custom Blocks.
-- **`/backtest`** — Stratejiyi doğal dille tarif et → Claude yeni sinyal blok(ları) yazar → seçilen zaman dilimlerinin **hepsinde** backtest (2+ TF → karşılaştırma tablosu, 1 TF → tam sonuç + equity). Sembol yaz-bul (datalist typeahead). Kayıtlı stratejileri `/strategy` composer'da kur.
 - **`/data`** — Instrument catalog (Bybit + US-index + harici NAU_ev kataloğu).
+- **`/studio`** — Strategy Studio: SIMPLE sihirbazı, PRO düzenleyici, AUTO brief'i ve deployment paneli. Menüdeki **Strategy Builder** bağlantısı en son güncellenen stratejinin `/studio/{id}` sayfasına gider (kayıtlı strateji yoksa ölü görünmesin diye ipucu gösterir).
+- **`/lab`** — Strategy Lab: tek cümlelik tarif → spec üretimi → backtest, fazlı ilerleme paneliyle.
+- **`/reports`** — Backtest ve robustness koşularının kaydı + tear sheet'ler.
+- **`/agent`** — Otonom backtest ajanı (canlı Gantt zaman çizelgesiyle).
+- **`/sessions`** — AUTO oturumlarının ham JSONL kayıtları ve token muhasebesi.
+- **`/wiki`** — Proje wiki'si (`nautilus_wiki/`).
+
+Menüde olmayan, doğrudan URL ile erişilen eski yüzeyler (kaldırılmadılar; Studio bunların yerini aldı):
+
+- **`/strategy`** — Görsel strateji composer + Custom Blocks paneli.
+- **`/backtest`** — Stratejiyi doğal dille tarif et → Claude yeni sinyal blok(ları) yazar → seçilen zaman dilimlerinin **hepsinde** backtest. Kayıtlı stratejileri `/strategy` composer'da kur.
 
 ## Sanity check
 
@@ -79,7 +99,9 @@ python .claude/skills/run-nautilus-web-app/driver.py --port 8199   # uçtan uca:
 
 | Modül | Sorumluluk |
 |---|---|
-| `data.py` | yfinance BTC-USD max, parquet cache |
+| `data.py` | Dört veri kaynağı (Bybit klines, US-index tick'leri, harici Nautilus katalogları, ingest edilmiş equity kataloğu) + parquet önbelleği ve kilitleme |
+| `auto/` | AUTO'nun web'den bağımsız motor katmanı (robustluk suite'i) — `web/routes` ve `sandbox` buraya bakar, tersi değil |
+| `web/templating.py` | Jinja ortamı + statik kökler + süreç-ömürlü piyasa bağlamı. Yaprak modül: `server.py` de route'lar da buradan okur (çift yönlü bağımlılığı kıran taşıma) |
 | `strategies.py` | MA crossover + RSI mean-reversion (otonom loop için legacy Strategy'ler) |
 | `composer.py` | `BLOCK_REGISTRY`, `ComposedStrategy` (Nautilus `Strategy` subclass), spec I/O |
 | `custom_block_store.py` | Custom bloklar için disk I/O (`~/.cache/nautilus_web_app/custom_blocks/`) |

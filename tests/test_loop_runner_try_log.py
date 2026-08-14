@@ -6,6 +6,11 @@ bare `except Exception: pass` around _log_backtest, fixed 2026-08-08 (DeepR
 failing log write (disk full, permission error) had no observable symptom
 beyond /reports quietly staying empty.
 
+Patch seam: DeepR 2026-08-11 [ORTA] moved _try_log's call-time import from
+the route-module alias `web.routes.backtest._log_backtest` to the real
+source `web.shared.log_backtest`, so the monkeypatches below target
+`web.shared.log_backtest`.
+
 Wiki References
 ---------------
 See: [[nau_deepr_ucuncu_tur_2026_08_09]]
@@ -46,7 +51,7 @@ def _spec() -> ComposedStrategySpec:
 
 def test_a_log_write_failure_is_logged_not_swallowed_silently(monkeypatch, caplog):
     monkeypatch.setattr(
-        "web.routes.backtest._log_backtest",
+        "web.shared.log_backtest",
         lambda *a, **k: (_ for _ in ()).throw(OSError("disk full")),
     )
 
@@ -59,7 +64,7 @@ def test_a_log_write_failure_is_logged_not_swallowed_silently(monkeypatch, caplo
 
 def test_a_successful_log_write_stays_quiet(monkeypatch, caplog):
     monkeypatch.setattr(
-        "web.routes.backtest._log_backtest", lambda *a, **k: "2026-08-09T00:00:00"
+        "web.shared.log_backtest", lambda *a, **k: "2026-08-09T00:00:00"
     )
     result = _result()
 
@@ -76,7 +81,7 @@ def test_logging_the_failure_itself_never_raises(monkeypatch, caplog, bad_result
     fallback) -- an id that's missing or an unexpected type must not turn
     the failure-logging path into a second, unhandled exception."""
     monkeypatch.setattr(
-        "web.routes.backtest._log_backtest",
+        "web.shared.log_backtest",
         lambda *a, **k: (_ for _ in ()).throw(OSError("disk full")),
     )
     result = _result()

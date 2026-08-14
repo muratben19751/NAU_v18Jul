@@ -97,11 +97,29 @@ from strategy_studio.registry import INDICATOR_REGISTRY, library_by_category
 from strategy_studio.runner import PaperRunner, RunnerError, reconcile_orphans
 from strategy_studio.schema import StrategyDefinition
 from strategy_studio.store import StrategyStore, definition_hash
-from web.shared import safe_html
+from web.shared import MAX_LLM_TEXT_LEN, safe_html
+from web.templating import templates
 
 log = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+def _ask_too_long(ask: str) -> PlainTextResponse | None:
+    """Studio'nun serbest metin `ask` alanı için üst sınır, yoksa None.
+
+    DeepR 2026-08-11 [DÜŞÜK]: uygulamanın diğer LLM uçlarının hepsi 4000
+    karakterde kesiyordu; Studio'nun iki ucu (`ai/suggest` ve `loop/start`)
+    kesmiyordu. `loop/start`'taki daha pahalı: `ask` döngü yapılandırmasına
+    yazılıp her iterasyonda yeniden gönderiliyor.
+    """
+    if len(ask) > MAX_LLM_TEXT_LEN:
+        return PlainTextResponse(
+            f"ask is too long ({len(ask)} characters, max {MAX_LLM_TEXT_LEN})",
+            status_code=422,
+        )
+    return None
+
 
 store = StrategyStore()
 
@@ -183,7 +201,6 @@ def _reconcile_studio_jobs_once() -> None:
 
 def _tpl():
     """Host app's Jinja environment (late import: server imports this module)."""
-    from server import templates
 
     return templates
 
@@ -1424,6 +1441,8 @@ def route_ai_suggest(
 ):
     defn = _load_working(strategy_id)
     scope = block or None
+    if (too_long := _ask_too_long(ask)) is not None:
+        return too_long
     # Validate BEFORE anything is stored. `scope` is copied into the suggestion
     # row verbatim (via model_copy, which skips pydantic validation), so an
     # unchecked value here does not just fail this request — it persists a row
@@ -1567,6 +1586,8 @@ def route_loop_start(
     ask: str = Form(""),
 ):
     _load_working(strategy_id)
+    if (too_long := _ask_too_long(ask)) is not None:
+        return too_long
     # KALICI 422'nin kaynağı buydu: restart sonrası sahipsiz kalan bir 'running'
     # satır, bu stratejide AI loop'u sonsuza dek kilitliyordu. Kapıyı çalmadan
     # önce satırın hâlâ doğru olduğundan emin ol.
