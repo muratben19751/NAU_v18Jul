@@ -99,9 +99,29 @@ Her listenin satırını doğru kayda bağlamak, üç ayrı karar gerektirdi:
   sıralamadan **önce** damgalanmalı. Bunun kazancı: ts damgası yalnız yeni
   koşularda olduğu hâlde **eski oturum dosyaları da** bağlanabilir.
 
+## Buy & hold (2026-08-14)
+
+`stamp_buy_hold_benchmark` bir süredir her koşunun metriklerine benchmark
+alanlarını damgalıyordu (diskteki son 43 log kaydının 39'unda var) ama tear
+sheet o anahtarları düşürüyordu: okuyan kişi "Return −12,76%" görüp aynı
+pencerede piyasanın +45% yaptığını hiç öğrenmiyordu. Return'ün yanına üç kutu
+eklendi — **Buy & Hold** (nötr renk: benchmark bir sonuç değil cetvel), **vs Buy
+& Hold** ve **Alpha (annual)**, farklar işaretli (`+0.40%`; işaretsiz bir fark
+hangi tarafta olduğunu söylemez) — ve **Max Drawdown** kutusuna alt satır olarak
+benchmark'ın düşüşü: buy&hold'u iki katı düşüşle geçmek geçmek değildir, iki
+sayı aynı kutuda olunca bu aritmetik yapmadan görülür.
+
+Notlarda bir maliyet-tabanı uyarısı var ve gerekli: kümülatif **Buy & Hold**
+brüt kapanış-kapanış getirisi, **Return** ise simüle maliyetlere göre nettir —
+ikisi tek tabanda değildir. Aynı tabandaki bacak `Alpha (annual)`. Temettü
+verimi varsayılan 0 olduğu için not, fiyat serisi temettü ayarlı değilse
+buy&hold'un gerçekte daha fazla getirdiğini söyler: fark uydurulmuyor,
+sayılmadığı yazılıyor. Benchmark'ı olmayan kaynak (Strategy Builder) ne kutu ne
+not kazanır — "olmayanı çizgiyle doldurma" davranışı ayrı testle korunuyor.
+
 ## Doğrulama
 
-`tests/test_tearsheet.py` (16 test): render modelinin eğrileri KPI ızgarasından
+`tests/test_tearsheet.py` (24 test): render modelinin eğrileri KPI ızgarasından
 çıkardığı, olmayan metriği tile yapmadığı, tarihsiz eğride aylık haritayı
 kapatıp sebebini yazdığı; üç çözücünün gerçek kayıt şekilleriyle çalıştığı;
 session indeksinin dosyadaki *satır* değil *backtest* sırası olduğu; fragment'in

@@ -30,6 +30,16 @@ _METRICS = {
     "n_losses": 352,
     "commission_total": 1016.0,
     "runner": "BacktestEngine",
+    # stamp_buy_hold_benchmark() writes these into every logged run (39 of the
+    # last 43 records on disk carry them), so the fixture carries them too.
+    "benchmark_return_fraction": 0.4502,
+    "excess_return_fraction": -0.577823,
+    "benchmark_cagr": 0.0387,
+    "strategy_cagr": -0.0072,
+    "annualized_alpha": -0.0459,
+    "benchmark_max_dd": -0.5312,
+    "benchmark_dividend_yield_annual": 0.0,
+    "benchmark_cost_basis": "gross_buy_and_hold_no_costs",
     "equity_curve_realized": [10_000.0, 9_800.0, 8_723.77],
     "equity_curve_mtm": [
         ["2003-09-10T13:30:00+00:00", 10_000.0],
@@ -78,6 +88,71 @@ class TestRenderModel:
     def test_error_view_keeps_the_shell_renderable(self):
         v = tearsheet_error("gone")
         assert v["error"] == "gone" and v["kpis"] == [] and not v["has_equity"]
+
+
+class TestBuyAndHold:
+    """The benchmark the run was already scored against, shown on the sheet.
+
+    ``stamp_buy_hold_benchmark`` has been stamping these fields into every
+    stored run for a while; until now the tear sheet dropped them, so a reader
+    could see "Return -12.76%" without ever learning the market did +45% over
+    the same window.
+    """
+
+    def _tiles(self, metrics: dict) -> dict:
+        return {k["key"]: k for k in tearsheet_view(title="X", metrics=metrics)["kpis"]}
+
+    def test_benchmark_sits_next_to_the_return_it_qualifies(self):
+        keys = [k["key"] for k in tearsheet_view(title="X", metrics=_METRICS)["kpis"]]
+        # Adjacency is the point: two returns a grid apart are not compared.
+        assert keys[keys.index("pnl_pct") + 1] == "benchmark_return_fraction"
+        assert keys[keys.index("pnl_pct") + 2] == "excess_return_fraction"
+
+    def test_values_and_tones(self):
+        t = self._tiles(_METRICS)
+        assert t["benchmark_return_fraction"]["value"] == "45.02%"
+        # The benchmark is the yardstick, not a result to be graded.
+        assert t["benchmark_return_fraction"]["tone"] == ""
+        assert t["excess_return_fraction"]["value"] == "-57.78%"
+        assert t["excess_return_fraction"]["tone"] == "down"
+        assert t["annualized_alpha"]["value"] == "-4.59%"
+
+    def test_a_difference_is_rendered_with_its_sign(self):
+        """ "+0.40%" cannot be misread as the losing side; "0.40%" can."""
+        t = self._tiles({"excess_return_fraction": 0.004, "annualized_alpha": 0.0123})
+        assert t["excess_return_fraction"]["value"] == "+0.40%"
+        assert t["excess_return_fraction"]["tone"] == "up"
+        assert t["annualized_alpha"]["value"] == "+1.23%"
+
+    def test_benchmark_drawdown_rides_on_the_drawdown_tile(self):
+        """Beating buy & hold at twice its drawdown is not beating it."""
+        assert self._tiles(_METRICS)["max_dd"]["sub"] == "buy & hold -53.12%"
+
+    def test_the_note_says_the_two_legs_are_not_one_cost_basis(self):
+        notes = " ".join(tearsheet_view(title="X", metrics=_METRICS)["notes"])
+        assert "net of simulated costs" in notes
+        # Dividend yield defaults to 0, which UNDERCOUNTS buy & hold — the
+        # sheet says so instead of quietly showing the smaller number.
+        assert "dividend-adjusted" in notes
+
+    def test_a_credited_dividend_yield_is_named_not_hidden(self):
+        notes = " ".join(
+            tearsheet_view(
+                title="X",
+                metrics={
+                    "benchmark_return_fraction": 0.45,
+                    "benchmark_dividend_yield_annual": 0.0055,
+                },
+            )["notes"]
+        )
+        assert "0.55% annual dividend" in notes
+
+    def test_a_run_without_a_benchmark_gains_neither_tile_nor_note(self):
+        """Strategy Builder stores no benchmark — it must not grow empty ones."""
+        v = tearsheet_view(title="X", metrics={"pnl_pct": 0.1, "max_dd": -0.2})
+        assert {k["key"] for k in v["kpis"]} == {"pnl_pct", "max_dd"}
+        assert all(not k["sub"] for k in v["kpis"])
+        assert not any("buy & hold" in n for n in v["notes"])
 
 
 @pytest.fixture
@@ -244,3 +319,9 @@ class TestRoute:
         assert 'id="tsh-equity"' in r.text
         assert 'id="equity-single"' not in r.text
         assert 'id="equity-data"' not in r.text
+
+    def test_the_rendered_sheet_carries_the_benchmark(self, client, log_file):
+        """The render model can hold it and the template still drop it."""
+        r = client.get("/tearsheet?src=log&ts=2026-08-02T17:13:48.513747%2B00:00")
+        assert "Buy &amp; Hold" in r.text and "45.02%" in r.text
+        assert "buy &amp; hold -53.12%" in r.text  # sub-line on the drawdown tile

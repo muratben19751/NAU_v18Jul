@@ -39,6 +39,12 @@ from web.viewmodels import fmt_dur, fmt_money, fmt_num, fmt_pct
 _KPI_ROWS: list[tuple[str, str, str, str]] = [
     ("pnl", "Net PnL", "money_signed", "pnl"),
     ("pnl_pct", "Return", "pct", "pnl"),
+    # Buy & hold sits next to Return because that is the only place the two
+    # numbers mean anything: same instrument, same window. Neutral tone — the
+    # benchmark is the yardstick, not a result to be graded.
+    ("benchmark_return_fraction", "Buy & Hold", "pct", ""),
+    ("excess_return_fraction", "vs Buy & Hold", "pct_signed", "pnl"),
+    ("annualized_alpha", "Alpha (annual)", "pct_signed", "pnl"),
     ("sharpe", "Sharpe", "num3", "pnl"),
     ("sortino", "Sortino", "num3", "pnl"),
     ("profit_factor", "Profit Factor", "num2", "pf"),
@@ -55,6 +61,15 @@ _KPI_ROWS: list[tuple[str, str, str, str]] = [
     ("slippage_total", "Slippage", "money", "bad"),
 ]
 
+# The benchmark's own value for a KPI, rendered as a sub-line on that tile:
+# {kpi key: (metrics key, formatter)}. Drawdown is the risk half of the same
+# comparison — a strategy that beats buy & hold by suffering twice the drawdown
+# has not beaten it, and putting the two numbers on one tile is what makes that
+# visible without arithmetic.
+_KPI_SUBS: dict[str, tuple[str, str]] = {
+    "max_dd": ("benchmark_max_dd", "pct"),
+}
+
 
 def _is_num(v: Any) -> bool:
     return isinstance(v, (int, float)) and not (isinstance(v, float) and math.isnan(v))
@@ -69,6 +84,10 @@ def _fmt(kind: str, v: Any) -> str:
         return fmt_money(float(v), signed=True)
     if kind == "pct":
         return fmt_pct(float(v))
+    if kind == "pct_signed":
+        # A difference is unreadable without its sign: "0.40%" beside a
+        # benchmark could be either side of it, "+0.40%" cannot.
+        return ("+" if v > 0 else "") + fmt_pct(float(v))
     if kind == "pct1":
         return fmt_pct(float(v), 1)
     if kind == "num2":
@@ -111,15 +130,48 @@ def _kpis(metrics: dict) -> list[dict]:
         if key not in metrics:
             continue
         v = metrics.get(key)
+        sub = ""
+        bench_key, bench_kind = _KPI_SUBS.get(key, ("", ""))
+        if bench_key and _is_num(metrics.get(bench_key)):
+            sub = f"buy & hold {_fmt(bench_kind, metrics[bench_key])}"
         out.append(
             {
                 "key": key,
                 "label": label,
                 "value": _fmt(kind, v),
                 "tone": _tone(tone, v),
+                "sub": sub,
             }
         )
     return out
+
+
+def _benchmark_note(metrics: dict) -> str:
+    """State what the buy & hold number is, or "" when there is none to state.
+
+    The two legs are NOT the same measurement: ``Buy & Hold`` is a gross
+    close-to-close return while ``Return`` is net of simulated costs, so the
+    cumulative difference flatters the benchmark. ``Alpha (annual)`` is the leg
+    that repairs both flaws (annualised, and the benchmark charged a round
+    trip) — a reader who does not know which is which will read the wrong one.
+    """
+    if not _is_num(metrics.get("benchmark_return_fraction")):
+        return ""
+    note = (
+        "Buy & hold is the gross close-to-close return of the same window; the "
+        "strategy return is net of simulated costs, so the two are not on one "
+        "cost basis. Alpha (annual) is: annualised, with a round trip charged "
+        "to the benchmark"
+    )
+    div = metrics.get("benchmark_dividend_yield_annual")
+    if _is_num(div) and div:
+        return note + f" and a {fmt_pct(float(div))} annual dividend credited to it."
+    # Default 0: an unadjusted price series undercounts buy & hold. Saying so
+    # beats inventing a yield — the reader can price the gap themselves.
+    return (
+        note + " and no dividend credit — if the price series is not "
+        "dividend-adjusted, buy & hold really returned more than shown."
+    )
 
 
 def _wins_losses(metrics: dict) -> str:
@@ -165,6 +217,9 @@ def tearsheet_view(
         metrics.pop(k, None)
 
     notes = list(notes or [])
+    bench_note = _benchmark_note(metrics)
+    if bench_note:
+        notes.append(bench_note)
     dated = bool(equity_mtm) or bool(equity_dates)
     if not dated:
         notes.append(

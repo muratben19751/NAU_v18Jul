@@ -46,6 +46,8 @@
       <span class="tsh-kpi-v {{ kpi.tone }}">{{ kpi.value }}</span>
       {% if kpi.key == "n_trades" and ts.wins_losses %}
       <span class="tsh-kpi-sub">{{ ts.wins_losses }}</span>
+      {% elif kpi.sub %}
+      <span class="tsh-kpi-sub">{{ kpi.sub }}</span>
       {% endif %}
     </div>
     {% endfor %}
