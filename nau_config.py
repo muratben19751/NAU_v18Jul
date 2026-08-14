@@ -215,6 +215,20 @@ _LLM = [
         "Tek bir LLM çağrısının duvar saati tavanı (saniye).",
     ),
     _v(
+        "NAU_LLM_TRANSCRIPT",
+        "bool",
+        "1",
+        "llm_dispatch",
+        "AUTO koşularında prompt/yanıt metnini denetim artifact'ına yaz (0 = kapat).",
+    ),
+    _v(
+        "NAU_LLM_TRANSCRIPT_CHARS",
+        "int",
+        "20000",
+        "llm_dispatch",
+        "Kaydedilen prompt/yanıt başına karakter tavanı; aşan metin ortadan kırpılır.",
+    ),
+    _v(
         "NAUTILUS_CLAUDE_CLI",
         "path",
         "",
@@ -354,6 +368,13 @@ _AGENT = [
         "3",
         "web.routes.agent_backtest",
         "Üst üste kazanansız tur sayısı; aşılınca oturum durur.",
+    ),
+    _v(
+        "NAU_AUTO_HEARTBEAT_SEC",
+        "float",
+        "30",
+        "web.routes.agent_backtest",
+        "Canlı nabız aralığı (sn): olay üretilmeyen anlarda da koşunun tam hâli yazılır.",
     ),
     _v(
         "AGENT_DEFAULT_CONTINUOUS_MAX_HOURS",

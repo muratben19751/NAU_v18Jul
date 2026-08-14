@@ -24,192 +24,25 @@ Wiki References: [[auto_mission_control]], [[webapp_module_map]]
 from __future__ import annotations
 
 import io
-import json
 import statistics
 import sys
-from collections import Counter, defaultdict
-from datetime import datetime
+from collections import Counter
 from pathlib import Path
 
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
-
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from app_constants import DATA_DIR  # noqa: E402
-
-SESSIONS = DATA_DIR / "agent_sessions"
-
-# ── Eşikler ─────────────────────────────────────────────────────────────────
-# Uydurulmadı: `--calibrate` ile 118 oturumluk geçmişten okunan dağılıma göre
-# konuldu. Değiştirirken önce `--calibrate` koştur — eşik, gözlemin yerine
-# geçmemeli.
-TH = {
-    # 118 oturumda medyan 0,54 / p75 0,60 / p90 0,64. İlk denemede 0,55
-    # koymuştum: koşuların YARISINDA alarm çalardı, yani alarm anlamını
-    # yitirirdi. p90'ın üstüne çekildi. Buradaki asıl haber eşik değil ölçümün
-    # kendisi: fikir tekrarı bu sistemde ANOMALİ DEĞİL, NORM (bkz. rapordaki
-    # "sistemik" satırı) — tek koşuya bakarak görülemeyecek bir bulgu.
-    "idea_overlap": 0.65,
-    # Kazanansız koşu da anomali değil: medyan kazanan/koşu = 0. Bu yüzden
-    # "kazanan yok" tek başına alarm değil; ancak maliyet p75'i ($2,86) aşarsa
-    # alarm — yani "para harcandı, çıktı yok".
-    "no_winner_cost_usd": 2.86,
-    "cost_per_winner_usd": 3.0,
-    # KALİBRE EDİLMEDİ: geçmiş loglarda llm_usage olayı yalnız yeni koşularda
-    # var (456 olay / 118 oturum), dolayısıyla dağılım çıkarılamadı. Bu eşik
-    # şimdilik bir tahmindir; birkaç koşu biriktikten sonra --calibrate ile
-    # yeniden bakılmalı.
-    "cache_miss_ratio": 0.5,
-    "min_trades": 30,  # bunun altındaki backtest istatistiksel gürültü
-    "sharpe_suspicious": 2.5,  # robustluktan geçmemiş yüksek Sharpe
-}
-
-SEV = {"kritik": "🔴", "uyari": "⚠", "bilgi": "·"}
-
-
-def _load(path: Path) -> list[dict]:
-    """Oturum logunu oku. `step` olayları hacmin %90'ı ve bize gereksiz."""
-    out = []
-    with open(path, encoding="utf-8", errors="replace") as fh:
-        for line in fh:
-            if '"event": "step"' in line or '"event":"step"' in line:
-                continue
-            try:
-                out.append(json.loads(line))
-            except json.JSONDecodeError:
-                continue
-    return out
-
-
-def _ts(rec: dict) -> float | None:
-    raw = rec.get("ts")
-    if not isinstance(raw, str) or "T" not in raw:
-        return None
-    try:
-        return datetime.fromisoformat(raw).timestamp()
-    except ValueError:
-        return None
-
-
-def _words(text: str) -> set[str]:
-    keep = "".join(c.lower() if c.isalnum() else " " for c in str(text or ""))
-    return {w for w in keep.split() if len(w) > 3}
-
-
-def _overlap(a: set[str], b: set[str]) -> float:
-    if not a or not b:
-        return 0.0
-    return len(a & b) / min(len(a), len(b))
-
-
-def _pct(n: int, d: int) -> str:
-    return f"{100 * n / d:.0f}%" if d else "—"
-
-
-def _fmt_dur(seconds: float) -> str:
-    m, s = divmod(int(seconds), 60)
-    return f"{m}dk {s}sn" if m else f"{s}sn"
-
-
-def analyze(events: list[dict]) -> dict:
-    by = defaultdict(list)
-    for e in events:
-        by[e.get("event")].append(e)
-
-    start = (by["session_start"] or [{}])[-1]
-    end = (by["session_end"] or [{}])[-1]
-    proposals = by["strategy_proposed"]
-    backtests = by["backtest_result"]
-    robust = by["robustness_result"]
-    winners = by["winner"]
-    blocks = by["custom_block_generated"]
-    usage = by["llm_usage"]
-
-    stamps = [t for t in (_ts(e) for e in events) if t]
-    wall = (max(stamps) - min(stamps)) if len(stamps) > 1 else 0.0
-
-    # ── Ekonomi ─────────────────────────────────────────────────────────────
-    tok = Counter()
-    cost = 0.0
-    by_purpose = defaultdict(lambda: Counter())
-    cache_miss = 0
-    for u in usage:
-        d = u.get("usage") or {}
-        p = u.get("purpose") or "?"
-        for k in (
-            "input_tokens",
-            "output_tokens",
-            "cache_read_input_tokens",
-            "cache_creation_input_tokens",
-        ):
-            tok[k] += int(d.get(k) or 0)
-            by_purpose[p][k] += int(d.get(k) or 0)
-        by_purpose[p]["calls"] += 1
-        by_purpose[p]["cost"] += float(d.get("cost_usd") or 0.0)
-        cost += float(d.get("cost_usd") or 0.0)
-        if not int(d.get("cache_read_input_tokens") or 0):
-            cache_miss += 1
-    # token_snapshot daha güvenilir: worker'ın kendi sayacı (llm_usage bazı
-    # çağrılarda purpose'suz gelebiliyor).
-    snap = (by["token_snapshot"] or [{}])[-1]
-    if snap.get("cost_usd"):
-        cost = float(snap["cost_usd"])
-
-    # ── Çeşitlilik ──────────────────────────────────────────────────────────
-    per_round = defaultdict(list)
-    for p in proposals:
-        name = (p.get("spec") or {}).get("name") or ""
-        per_round[p.get("round", 1)].append(name)
-    overlaps = {}
-    for rnd, names in per_round.items():
-        pairs = [
-            _overlap(_words(a), _words(b))
-            for i, a in enumerate(names)
-            for b in names[i + 1 :]
-        ]
-        if pairs:
-            overlaps[rnd] = sum(pairs) / len(pairs)
-
-    block_types = Counter()
-    for b in backtests:
-        for blk in b.get("spec_blocks") or []:
-            block_types[blk.get("type", "?")] += 1
-
-    # ── Zaman dağılımı ──────────────────────────────────────────────────────
-    lane_time = Counter()
-    open_spans = {}
-    for t in by["timeline"]:
-        key, lane, op = t.get("key"), t.get("lane"), t.get("op")
-        stamp = _ts(t)
-        if not (key and stamp):
-            continue
-        if op == "begin":
-            open_spans[key] = (stamp, lane)
-        elif op == "end" and key in open_spans:
-            t0, ln = open_spans.pop(key)
-            lane_time[ln or "?"] += stamp - t0
-
-    return {
-        "start": start,
-        "end": end,
-        "wall": wall,
-        "proposals": proposals,
-        "backtests": backtests,
-        "robust": robust,
-        "winners": winners,
-        "blocks": blocks,
-        "tok": tok,
-        "cost": cost,
-        "by_purpose": by_purpose,
-        "cache_miss": cache_miss,
-        "n_llm": len(usage),
-        "overlaps": overlaps,
-        "block_types": block_types,
-        "lane_time": lane_time,
-        "degraded": by["degraded"],
-        "dedup": by["candidate_deduplicated"],
-        "budget_rejects": by["llm_budget_rejected"],
-        "holdout": by["holdout_result"],
-    }
+# Çözümleme tek yerde: bu script TERMİNAL GÖRÜNÜMÜ, `auto_review` ise belge.
+# İkisinin ayrı `analyze` tutması, eşiklerin sessizce ayrışması demekti.
+from auto_review import (
+    SESSIONS,
+    TH,
+    _fmt_dur,
+    _pct,
+    analyze,
+    load_events,
+)
+from auto_review import (  # noqa: E402
+    SEV_MARK as SEV,
+)
 
 
 def report(a: dict, run_id: str) -> list[str]:
@@ -432,7 +265,7 @@ def calibrate() -> list[str]:
     files = sorted(SESSIONS.glob("*.jsonl"))
     for f in files:
         try:
-            a = analyze(_load(f))
+            a = analyze(*load_events(f))
         except Exception:
             continue
         if not a["start"]:
@@ -492,7 +325,7 @@ def main(argv: list[str]) -> int:
             return 1
         path = files[-1]
 
-    a = analyze(_load(path))
+    a = analyze(*load_events(path))
     if not a["end"] and "--live" not in argv:
         print(
             f"⚠ {path.stem} henüz bitmemiş görünüyor — süren koşu için --live "
@@ -503,4 +336,7 @@ def main(argv: list[str]) -> int:
 
 
 if __name__ == "__main__":
+    # Sarmalama CLI'a özgü: modül olarak import edilirse sunucunun
+    # stdout'unu değiştirmemeli.
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
     raise SystemExit(main(sys.argv[1:]))

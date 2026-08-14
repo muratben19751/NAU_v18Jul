@@ -1422,3 +1422,54 @@ Aynı turda iki kusur daha çıktı ve kapandı (f43aa5d):
 
 Süit: 2226 passed. Kalan: uzlaştırma etkisi ancak bir sonraki kesintide görünür
 (mevcut `.reconcile_watermark` 19:02'de kuruldu, 62 tarihsel log muaf).
+
+## 2026-08-14 — AUTO koşusu 360° review edilebilir hale geldi
+
+Kullanıcı isteği: "auto loglamasını 360 derece her şeyi tıpkı deepr gibi oluştur
+ki sonra review edebileyim". Kayıt zaten genişti (20 olay tipi); eksik olan üç
+şeydi ve üçü de review'ın İLK sorularıydı.
+
+1. **Provenance (`nau_provenance.py` → `run_env` olayı).** Metrikler, promptlar
+   ve kararlar ADSIZ bir build'e karşı kaydediliyordu; iki koşu arasındaki fark
+   bir commit'e bağlanamıyordu. Artık git SHA/branch/kirli-ağaç, 6 paketin
+   sürümü, `NAU_*`/`NAUTILUS_*` ezmeleri, python/platform/host/pid yazılıyor.
+   İki kural teste bağlandı: koşuyu asla düşürmez (git yoksa `available: False`;
+   `git status` başarısızsa `dirty: None` — bilinmeyen "temiz" değildir) ve sır
+   yazmaz (KEY/TOKEN/SECRET/PASSWORD içeren ad `<set>`'e iner).
+
+2. **LLM transkripti (`llm_dispatch._transcript_fields`).** `llm_usage` yalnız
+   SAYAÇ tutuyordu. Postmortem'in en büyük bulgusu "fikir tekrarı bu sistemde
+   norm" idi ve o bulgunun SEBEBİ prompt'ta yaşıyor, sayaçta değil. Metin artık
+   yakalanıyor, `<run_id>_artifacts/` altına gz olarak iniyor, JSONL satırında
+   yalnız kimlik (path+sha256+karakter sayısı+`clipped`) kalıyor. Kırpma baş+son:
+   prompt'un başı sistem yönergesi, sonu o çağrıya özgü istek.
+
+3. **`auto_review.py` — 13 bölümlü markdown, `session_end`'de otomatik.**
+   Postmortem terminale basıyor ve kayboluyordu. İki dürüstlük kuralı testle
+   sabit: **yokluk sıfır olarak çizilmez** ("robustluk HİÇ başlamadı" ≠ "0 aday
+   geçti") ve yargı uydurulmaz. `analyze`/`TH` tek yere indi — iki ayrı kopya,
+   eşiklerin sessizce ayrışması demekti.
+
+İlk gerçek çıktı (d4878a43, geçmiş koşu): 16 backtest koştu, robustluk kapısı
+HİÇ başlamadı, süre %96 LLM'de geçti, cache ıskası %100, 6 fallback. Bu tablo
+tek bir ajan çağrılmadan çıktı.
+
+AÇIK: `/sessions` arayüzü review dosyasına link vermiyor — şimdilik yalnız disk
+ve CLI (`python -m auto_review <run_id>`).
+
+## 2026-08-14 — AUTO çalışırken: sabit aralıklı nabız
+
+Review belgesi bitmiş koşuyu anlatıyordu; koşu SÜRERKEN olay üretilmeyen
+aralıklar hâlâ ölçülemezdi. `run_heartbeat` (vars. 30 sn) o boşluğu doldurur:
+açık işler ve yaşları (`stalled_s`), faz, son adım, bütçe-eşdeğeri kullanım,
+RSS, iş parçacığı sayısı. Süreç ölse bile diskteki son nabız "nerede duruyordu"
+sorusunu en fazla bir aralık hatasıyla cevaplar — bitiş kaydı olmayan koşularda
+review artık "bilinen son hâl" satırını buradan yazıyor.
+
+Yan ürün olarak `run_config` (koşuyu belirleyen tüm env-ezilebilir sabitler) ve
+yığın izleri (`degraded` + hata `session_end`) eklendi.
+
+Yazarken kendi kuralımı çiğnedim ve test yakaladı: `float(sp["t0"] or now)`
+yazmıştım; `0.0` yanlış-değer olduğu için eski bir span "az önce başladı" diye
+raporlanıyordu — takılmayı tam arandığı yerde gizleyen bir kısayol. `_age()`
+ile açık `None` denetimine çevrildi ve teste bağlandı.

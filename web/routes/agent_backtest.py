@@ -80,6 +80,7 @@ from __future__ import annotations
 
 import gzip
 import hashlib
+import itertools
 import json
 import logging
 import math
@@ -87,8 +88,9 @@ import os
 import re
 import threading
 import time
+import traceback
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import NamedTuple
@@ -97,7 +99,7 @@ import pandas as pd
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse
 
-from app_constants import DATA_DIR
+from app_constants import DATA_DIR, env_float
 
 # Robustluk suite'i ve saf yardımcıları artık web'den bağımsız `auto` paketinde
 # (DeepR 2026-08-11 [YÜKSEK]: sandbox child'ı sırf suite için tüm router ağacını
@@ -123,6 +125,7 @@ from auto.robustness import (  # noqa: F401
 )
 from auto.robustness import valid_wfo_windows as _valid_wfo_windows
 from auto.robustness import wfo_test as _wfo_test
+from nau_provenance import process_rss_bytes
 from web.templating import get_market_info, templates
 
 router = APIRouter(prefix="/agent")
@@ -378,6 +381,10 @@ class _WorkerState:
     last_started_round: int = 0
     completed_rounds: int = 0
     retained_block_names: set[str] = field(default_factory=set)
+    # Transkript artifact'larının sıra numarası. `itertools.count` seçildi çünkü
+    # gözlemci worker dışındaki bir iş parçacığından da çağrılabiliyor ve
+    # `next()` CPython'da atomik — kilit kurmadan çakışmasız isim üretir.
+    llm_seq: Iterator[int] = field(default_factory=lambda: itertools.count(1))
 
 
 def _cleanup_generated(run_id: str, wstate: _WorkerState, keep_spec=None) -> None:
@@ -458,9 +465,217 @@ def _make_llm_control(
         usage = event.get("usage")
         if usage:
             _add_tokens(run_id, usage)
-        _session_log(run_id, "llm_usage", **event)
+        _session_log(run_id, "llm_usage", **_offload_transcript(run_id, wstate, event))
 
     return _llm_cancelled, _llm_observer
+
+
+def _effective_run_config() -> dict:
+    """The constants that decided this run's outcomes, as they actually were.
+
+    Not decoration: every one of these is env-overridable, so two runs with
+    identical logs can have applied different gates. Without the snapshot,
+    "why did this candidate pass" is answerable only by reading today's code —
+    which is not the code that ran.
+    """
+    from app_constants import (
+        BENCHMARK_DIVIDEND_YIELD_ANNUAL,
+        BENCHMARK_ROUND_TRIP_COST_FRACTION,
+        STARTING_CASH,
+    )
+
+    return {
+        "min_trades": _MIN_TRADES,
+        "max_passers": _MAX_PASSERS,
+        "winless_round_limit": _WINLESS_ROUND_LIMIT,
+        "equity_pct": AGENT_EQUITY_PCT,
+        "starting_cash": STARTING_CASH,
+        "holdout_days": OOS_HOLDOUT_DAYS,
+        "holdout_warmup_bars": HOLDOUT_WARMUP_BARS,
+        "holdout_min_trades": HOLDOUT_MIN_TRADES,
+        "holdout_requires": {
+            "positive_pnl": HOLDOUT_REQUIRE_POSITIVE_PNL,
+            "positive_sharpe": HOLDOUT_REQUIRE_POSITIVE_SHARPE,
+            "positive_excess": HOLDOUT_REQUIRE_POSITIVE_EXCESS,
+        },
+        "default_continuous_max_hours": DEFAULT_CONTINUOUS_MAX_HOURS,
+        "default_continuous_max_tokens": DEFAULT_CONTINUOUS_MAX_TOKENS,
+        "hard_max_hours": HARD_MAX_AUTO_HOURS,
+        "hard_max_tokens": HARD_MAX_AUTO_TOKENS,
+        # Bütçe sayacının BİRİMİ: ham token değil girdi-eşdeğeri. Ağırlıklar
+        # değişince aynı tavan başka bir koşu uzunluğu demeye başlar.
+        "token_usage_weights": dict(_TOKEN_USAGE_WEIGHTS),
+        "benchmark_round_trip_cost": BENCHMARK_ROUND_TRIP_COST_FRACTION,
+        "benchmark_dividend_yield": BENCHMARK_DIVIDEND_YIELD_ANNUAL,
+        "heartbeat_seconds": _HEARTBEAT_SECONDS,
+    }
+
+
+# ── Canlı nabız ─────────────────────────────────────────────────────────────
+# Olay kaydı bir koşuyu ancak olay ÜRETTİĞİ sürece anlatır. Asıl sessiz arıza
+# tam tersi: hiçbir şey yazılmaması. Takılan bir LLM çağrısı, şişen bir bellek,
+# bütçesini dakikada yakan bir tur — hepsi loga "hiçbir şey" olarak düşer ve
+# sonradan bakan kişi arada ne olduğunu ölçemez, tahmin eder.
+#
+# Nabız bu boşluğu doldurur: sabit aralıkla, olay olsun olmasın, koşunun o anki
+# TAM hâlini yazar. Süreç ölse bile diskte kalan son nabız "nerede duruyordu"
+# sorusunu en fazla bir aralık hatasıyla cevaplar.
+_HEARTBEAT_SECONDS = env_float("NAU_AUTO_HEARTBEAT_SEC", 30.0)
+
+
+def _age(stamp, now: float) -> float:
+    """`now - stamp` saniye; damga yoksa 0.
+
+    `float(stamp or now)` YAZILMAZ: `0.0` yanlış-değerdir ve o kısayol sıfır
+    damgalı bir işi "az önce başladı" diye raporlar — yani takılmayı en çok
+    aradığın yerde gizler.
+    """
+    if stamp is None:
+        return 0.0
+    try:
+        return round(now - float(stamp), 1)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _heartbeat_snapshot(state: dict, wstate: _WorkerState) -> dict:
+    """Koşunun o anki tam hâli. ÇAĞIRAN `_AGENT_LOCK`'u tutuyor olmalı."""
+    now = datetime.now(UTC).timestamp()
+    open_spans = [
+        {
+            "key": sp.get("key"),
+            "lane": sp.get("lane"),
+            "label": str(sp.get("label") or "")[:60],
+            "age_s": _age(sp.get("t0"), now),
+        }
+        for sp in (state.get("timeline") or [])
+        if sp.get("t1") is None
+    ]
+    steps = state.get("steps") or []
+    last = steps[-1] if steps else None
+    cap = int(state.get("max_total_tokens") or 0)
+    used = _token_usage(state)
+    return {
+        "elapsed_s": round(time.monotonic() - wstate.worker_t0, 1),
+        "round_started": wstate.last_started_round,
+        "rounds_completed": wstate.completed_rounds,
+        "phase": next(
+            (
+                f"{p.get('label') or i}: {p.get('detail') or ''}".strip(": ")
+                for i, p in enumerate(state.get("phases") or [])
+                if p.get("status") == "running"
+            ),
+            "",
+        ),
+        "tokens_in": int(state.get("tokens_in") or 0),
+        "tokens_out": int(state.get("tokens_out") or 0),
+        "tokens_cache_read": int(state.get("tokens_cache_read") or 0),
+        "tokens_cache_write": int(state.get("tokens_cache_write") or 0),
+        "budget_used": used,
+        "budget_cap": cap,
+        "budget_pct": round(100 * used / cap, 1) if cap else None,
+        "provider_cost_usd": round(float(state.get("provider_cost_usd") or 0.0), 6),
+        "open_spans": open_spans,
+        # En uzun süredir açık olan iş = koşunun NEREDE beklediği. Tek başına
+        # "takıldı mı" sorusunu cevaplayan alan bu.
+        "stalled_s": max((s["age_s"] for s in open_spans), default=0.0),
+        "last_step": str((last or {}).get("msg") or "")[:120],
+        "last_step_age_s": _age((last or {}).get("ts"), now),
+        "steps_buffered": len(steps),
+        "rss_bytes": process_rss_bytes(),
+        "threads": threading.active_count(),
+        "audit_degraded": bool(state.get("audit_degraded")),
+    }
+
+
+def _start_heartbeat(
+    run_id: str,
+    wstate: _WorkerState,
+    *,
+    continuous_mode: bool,
+    max_hours: float,
+    interval: float | None = None,
+) -> threading.Thread:
+    """Sabit aralıklı nabzı başlat; iş parçacığı koşu bitince KENDİ durur.
+
+    Worker'ın akışına dokunmadan durması bilinçli: `_agent_worker` bir düzine
+    yerden çıkıyor ve her birine bir `stop()` eklemek, biri unutulduğunda
+    sonsuza kadar yazan bir daemon bırakırdı. Nabız bunun yerine ilerleme
+    durumunu okur — koşu bittiğinde son bir nabız yazıp döner. Ayrıca sert bir
+    tavan var: durum hiç güncellenmese bile bütçe süresini aşınca durur.
+    """
+    period = float(interval if interval is not None else _HEARTBEAT_SECONDS)
+    deadline = (max_hours if max_hours > 0 else 24.0) * 3600 + 600
+
+    def _beat() -> None:
+        while True:
+            time.sleep(period)
+            with _AGENT_LOCK:
+                state = _AGENT_PROGRESS.get(run_id)
+                snapshot = _heartbeat_snapshot(state, wstate) if state else None
+            finished = state is None or bool(state.get("continuous_finished"))
+            if not continuous_mode and state is not None and state.get("done"):
+                finished = True
+            if snapshot is not None:
+                if finished:
+                    snapshot["final"] = True
+                _session_log(run_id, "run_heartbeat", **snapshot)
+                if snapshot["elapsed_s"] > deadline:
+                    return
+            if finished:
+                return
+
+    thread = threading.Thread(
+        target=_beat, name=f"auto-heartbeat-{run_id}", daemon=True
+    )
+    thread.start()
+    return thread
+
+
+def _offload_transcript(run_id: str, wstate: _WorkerState, event: dict) -> dict:
+    """Move prompt/completion text out of the JSONL line and into an artifact.
+
+    Inline they would dominate the session log: a single AUTO round makes tens
+    of calls whose prompts run to thousands of characters each, and every
+    reader of the log — the cockpit, the Sessions page, the postmortem — parses
+    every line. The line keeps the *identity* (path, sha256, sizes); the text
+    lands in ``<run_id>_artifacts/`` where only a reviewer who asks pays for it.
+    """
+    if "prompt" not in event and "completion" not in event:
+        return event
+    event = dict(event)
+    payload = {
+        "prompt": event.pop("prompt", ""),
+        "completion": event.pop("completion", ""),
+        "purpose": event.get("purpose"),
+        "model": event.get("model"),
+        "status": event.get("status"),
+        "error": event.get("error"),
+    }
+    prompt_chars = event.pop("prompt_chars", None)
+    completion_chars = event.pop("completion_chars", None)
+    try:
+        seq = next(wstate.llm_seq)
+        purpose = re.sub(r"[^a-zA-Z0-9_-]+", "-", str(payload["purpose"] or "llm"))
+        identity = _write_session_artifact(run_id, f"llm_{seq:04d}_{purpose}", payload)
+    except Exception:
+        # The transcript is evidence about the run, never a part of it.
+        logging.getLogger(__name__).warning(
+            "AUTO transcript artifact failed for %s", run_id, exc_info=True
+        )
+        return event
+    event["transcript"] = {
+        **identity,
+        "prompt_chars": prompt_chars,
+        "completion_chars": completion_chars,
+        # Kırpıldıysa bunu SÖYLE: eksik bir prompt'u tam sanmak, review'da
+        # olmayan bir yönergeyi yok saymak demektir.
+        "clipped": bool(
+            (prompt_chars or 0) > len(payload["prompt"])
+            or (completion_chars or 0) > len(payload["completion"])
+        ),
+    }
+    return event
 
 
 def _json_safe(obj):
@@ -537,6 +752,30 @@ def _session_log(run_id: str, event: str, **kwargs) -> None:
             if state is not None:
                 state["audit_degraded"] = True
                 state["audit_error"] = f"Session audit log unavailable: {exc}"
+    # Outside the try on purpose: a failed *review* is not a failed *audit log*,
+    # and marking the run's audit degraded for it would send the reader looking
+    # for a missing event that is right there on disk.
+    if event == "session_end":
+        _write_run_review(run_id)
+
+
+def _write_run_review(run_id: str) -> None:
+    """Leave a readable review of the finished run next to its raw log.
+
+    Generated here rather than on demand because the question a run has to
+    answer ("was this any good, and what did it cost?") is asked days later,
+    when nobody remembers the run id — and a document that must be requested
+    is a document nobody reads. Deterministic and LLM-free, so it costs the
+    run nothing but a few hundred milliseconds after its last event.
+    """
+    try:
+        from auto_review import write_review
+
+        write_review(run_id, sessions_dir=SESSION_LOG_DIR)
+    except Exception:
+        logging.getLogger(__name__).warning(
+            "AUTO review generation failed for %s", run_id, exc_info=True
+        )
 
 
 def _write_session_artifact(run_id: str, name: str, payload) -> dict:
@@ -689,7 +928,13 @@ def _mark_degraded(run_id: str, reason: str, what: str) -> str:
             reasons = s.setdefault("fallback_reasons", [])
             if reason not in reasons:
                 reasons.append(reason)
-    _session_log(run_id, "degraded", what=what, reason=reason)
+    # `reason` yalnız istisnanın ADI. Aynı ad ("GeneratedCodeError") bir turda
+    # altı kez düşebiliyor ve altısı farklı satırdan gelebiliyor; hangisi
+    # olduğu ancak yığın izinden görülür. Aktif bir istisna yoksa
+    # `format_exc()` "NoneType: None" döner — o durumda alan hiç yazılmaz.
+    stack = traceback.format_exc()
+    extra = {"traceback": stack[-4000:]} if stack.startswith("Traceback") else {}
+    _session_log(run_id, "degraded", what=what, reason=reason, **extra)
     _add_step(run_id, f"  ⚠ degraded · {what} · fallback ({reason})")
     return reason
 
@@ -3064,6 +3309,21 @@ def _agent_worker(
         research_only=research_only,
         data_truncation=data_truncation,
     )
+    # Which code produced this run. Written as its own event rather than more
+    # session_start fields: it is the one record that must survive even when
+    # the run dies in its first second, and it is the first thing a reviewer
+    # needs before trusting any number below it.
+    try:
+        from nau_provenance import run_provenance
+
+        _session_log(run_id, "run_env", **run_provenance())
+        _session_log(run_id, "run_config", **_effective_run_config())
+    except Exception:
+        # Provenance is evidence, not a precondition — a run must not fail
+        # because git is missing on the host.
+        logging.getLogger(__name__).warning(
+            "AUTO provenance capture failed for %s", run_id, exc_info=True
+        )
     if data_truncation:
         _session_log(run_id, "data_segment_truncated", **data_truncation)
         _add_step(
@@ -3071,6 +3331,13 @@ def _agent_worker(
             "⚠ Catalog history gap: using verified continuous tail "
             f"from {data_truncation['effective_start']}",
         )
+
+    # Sabit aralıklı nabız: olay üretilmeyen aralıklar da kayda geçsin.
+    # Progress durumu ZATEN kurulmuş olmalı (route worker'ı başlatmadan önce
+    # kuruyor); kurulmamışsa iş parçacığı ilk turda kendini kapatır.
+    _start_heartbeat(
+        run_id, wstate, continuous_mode=continuous_mode, max_hours=max_hours
+    )
 
     run_number = 0
     # Round count itself is not the budget; continuous mode is bounded by the
@@ -3748,6 +4015,10 @@ def _agent_worker(
                 round=run_number,
                 outcome="error",
                 error=err_str,
+                # `type: message` alone names the symptom; the stack names the
+                # LINE. Without it a round that dies in a helper five frames
+                # down is only ever debuggable while the process is still up.
+                traceback=traceback.format_exc()[-4000:],
                 started_round=wstate.last_started_round,
                 completed_rounds=wstate.completed_rounds,
                 total_rounds=wstate.completed_rounds,

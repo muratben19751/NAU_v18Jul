@@ -11,6 +11,11 @@
       <span class="text-muted mono" style="font-size:11px;">{{ session_start.ts[:19]|replace("T"," ") if session_start.ts is defined else "—" }}</span>
       {% if elapsed %}<span class="text-muted mono" style="font-size:11px;">⏱ {{ elapsed }}</span>{% endif %}
       <span class="text-muted mono" style="font-size:11px;">{{ size_mb }} MB · {{ n_events }} events</span>
+      {# 360° review: built from this log on request, so an interrupted run has
+         one too. See auto_review.py. #}
+      <a href="/sessions/{{ run_id }}/review" target="_blank" class="text-muted mono"
+         style="font-size:11px;text-decoration:none;"
+         title="Bu koşunun 13 bölümlü review belgesi — deterministik, LLM'siz.">🔍 review</a>
       {% if steps_truncated %}
       {# H7: structural events are COMPLETE — only the oldest steps were trimmed #}
       <span class="badge" style="font-size:10px;color:#fb923c;border-color:rgba(251,146,60,0.35);"

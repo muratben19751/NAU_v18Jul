@@ -20,6 +20,7 @@ Geri kalanı app-spesifik; Nautilus kavramı değil.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -32,7 +33,7 @@ from pathlib import Path
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, Response
 
-from web.shared import SESSION_LOG_DIR
+from web.shared import SESSION_LOG_DIR, render_md
 from web.templating import get_market_info, templates
 
 router = APIRouter(prefix="/sessions")
@@ -1158,6 +1159,41 @@ async def session_detail(request: Request, run_id: str):
             "detail_truncated": detail_truncated,
             "n_heavy_skipped": n_heavy_skipped,
             "size_mb": round(path.stat().st_size / 1_048_576, 1),
+        },
+    )
+
+
+@router.get("/{run_id}/review", response_class=HTMLResponse)
+async def get_run_review(request: Request, run_id: str, raw: int = 0):
+    """The run's 360° review document, built fresh from the log on every request.
+
+    Rebuilt rather than served from ``<run_id>_review.md`` on purpose: the
+    stored copy is written at ``session_end``, so a run that was interrupted —
+    or one that predates the review feature entirely — would have no file at
+    all. Generating on demand makes every run in the archive reviewable, and
+    removes the class of bug where a stale document quietly disagrees with the
+    log beside it.
+
+    ``?raw=1`` returns the markdown source, for reading outside the app.
+    """
+    if len(run_id) != 8 or not all(c in "0123456789abcdef" for c in run_id):
+        return Response("Invalid run_id", status_code=400)
+    if not (SESSION_LOG_DIR / f"{run_id}.jsonl").exists():
+        return Response("Not found", status_code=404)
+    from auto_review import build_review
+
+    text = await asyncio.to_thread(build_review, run_id, SESSION_LOG_DIR)
+    if raw:
+        return Response(text, media_type="text/markdown; charset=utf-8")
+    return templates.TemplateResponse(
+        request,
+        "wiki_page.html",
+        {
+            "active": "sessions",
+            "page_title": f"Review {run_id}",
+            "wiki_title": f"AUTO review · {run_id}",
+            "wiki_active": f"{run_id}.jsonl",
+            "wiki_html": render_md(text),
         },
     )
 

@@ -66,6 +66,7 @@ from llm_client import (
     _observe_llm,
     _output_cap_telemetry,
     current_model,
+    llm_observer_installed,
 )
 from openrouter_backend import (
     _build_openrouter_client,
@@ -292,6 +293,88 @@ def _was_truncated(resp) -> bool:
     )
 
 
+# ── Transkript: ne soruldu, ne cevaplandı ───────────────────────────────────
+# `llm_usage` bugüne dek yalnız SAYAÇ tutuyordu (token, süre, model). Bir koşuyu
+# sonradan review ederken asıl kanıt eksikti: modelin fikirleri neden tekrar
+# ettiği ancak PROMPT'a bakılarak anlaşılır, sayaçlara bakarak değil.
+# Yakalama iki kapıyla sınırlı: (1) yalnız bir AUTO gözlemcisi kuruluysa —
+# başka yüzeylerde metni üretmenin alıcısı yok, (2) karakter tavanıyla.
+_TRANSCRIPT_ENABLED = os.environ.get("NAU_LLM_TRANSCRIPT", "1").strip().lower() not in (
+    "0",
+    "false",
+    "off",
+    "no",
+)
+try:
+    _TRANSCRIPT_MAX_CHARS = max(
+        0, int(os.environ.get("NAU_LLM_TRANSCRIPT_CHARS", "20000"))
+    )
+except ValueError:
+    _TRANSCRIPT_MAX_CHARS = 20000
+
+
+def _text_of(content) -> str:
+    """Metni bir mesaj/blok içeriğinden çıkar; şekli bilinmeyeni repr'e düşürme."""
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, (list, tuple)):
+        return "\n".join(_text_of(part) for part in content)
+    if isinstance(content, dict):
+        # {"type": "text", "text": ...} ve {"type":"tool_use", "input": {...}}
+        for key in ("text", "thinking", "content"):
+            if key in content:
+                return _text_of(content[key])
+        return ""
+    text = getattr(content, "text", None)
+    return text if isinstance(text, str) else ""
+
+
+def _clip(text: str) -> tuple[str, int]:
+    """(kırpılmış metin, özgün uzunluk). Kırpma baş+son — ikisi de bilgi taşır.
+
+    Prompt'un BAŞI sistem yönergesi, SONU o çağrıya özgü asıl istek; ortadan
+    kesmek ikisini de korur, baştan kesmek yalnız birini.
+    """
+    n = len(text)
+    if _TRANSCRIPT_MAX_CHARS <= 0 or n <= _TRANSCRIPT_MAX_CHARS:
+        return text, n
+    half = _TRANSCRIPT_MAX_CHARS // 2
+    return f"{text[:half]}\n…[{n - 2 * half} karakter atlandı]…\n{text[-half:]}", n
+
+
+def _transcript_fields(kwargs: dict, response=None) -> dict:
+    """Gözlemciye verilecek prompt/yanıt metni — kapalıysa ya da hata varsa boş.
+
+    Denetim kaydı üretmek asla çağrıyı düşüremez: her şey tek bir except ile
+    sarılı ve başarısızlık sessizce boş sözlüğe dönüşür.
+    """
+    if not (_TRANSCRIPT_ENABLED and llm_observer_installed()):
+        return {}
+    try:
+        parts = []
+        system = kwargs.get("system")
+        if system:
+            parts.append("### system\n" + _text_of(system))
+        for msg in kwargs.get("messages") or []:
+            role = (msg or {}).get("role", "?") if isinstance(msg, dict) else "?"
+            body = (msg or {}).get("content") if isinstance(msg, dict) else msg
+            parts.append(f"### {role}\n" + _text_of(body))
+        prompt, prompt_chars = _clip("\n\n".join(parts))
+        out = {"prompt": prompt, "prompt_chars": prompt_chars}
+        if response is not None:
+            completion, completion_chars = _clip(
+                _text_of(getattr(response, "content", None))
+            )
+            out["completion"] = completion
+            out["completion_chars"] = completion_chars
+        return out
+    except Exception:
+        logging.debug("LLM transkripti çıkarılamadı", exc_info=True)
+        return {}
+
+
 def _create_message(client, _purpose: str = "", **kwargs):
     """``_create_message_once`` + kesilmede tek seferlik büyük-tavan denemesi.
 
@@ -402,6 +485,9 @@ def _create_message_once(client, _purpose: str = "", **kwargs):
                 max_tokens=requested_max_tokens,
                 status="cancelled" if cancelled else "error",
                 error=f"{type(exc).__name__}: {exc}"[:500],
+                # Yanıt yok ama SORU var: başarısız çağrının prompt'u, hatanın
+                # neden çıktığını anlamanın tek kaydı.
+                **_transcript_fields(kwargs),
             )
             if est_usage is not None:
                 # Deftere de geçsin, ama amaç etiketiyle AYRIŞSIN: gerçek
@@ -432,6 +518,7 @@ def _create_message_once(client, _purpose: str = "", **kwargs):
                 requested_max_tokens,
                 provider_enforced=model.startswith("or:"),
             ),
+            **_transcript_fields(kwargs, response),
         )
         _check_llm_cancelled()
         return response

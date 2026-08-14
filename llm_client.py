@@ -412,6 +412,16 @@ def _check_llm_cancelled() -> None:
         raise LLMCallCancelled("AUTO stop requested")
 
 
+def llm_observer_installed() -> bool:
+    """True when this thread belongs to a run that is recording LLM telemetry.
+
+    The transcript capture in ``llm_dispatch`` is gated on this: rendering a
+    prompt to text costs real work on every provider call, and outside an AUTO
+    run there is nobody to hand it to.
+    """
+    return callable(getattr(_LLM_CONTROL, "observer", None))
+
+
 def _observe_llm(**event) -> None:
     usage = event.get("usage") or {}
     if isinstance(usage, dict):
