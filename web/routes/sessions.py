@@ -97,20 +97,23 @@ def _reconcile_session_logs() -> int:
     from web.routes.agent_backtest import live_run_ids
 
     watermark = SESSION_LOG_DIR / _WATERMARK_NAME
-    now = datetime.now().timestamp()
     if not watermark.exists():
         # İlk koşu: mevcut her şey "geçmiş" sayılır, hiçbirine dokunulmaz.
-        watermark.write_text(str(now), encoding="utf-8")
+        watermark.write_text("armed", encoding="utf-8")
         logging.info(
             "session log reconciliation armed; %d existing log(s) grandfathered",
             len(list(SESSION_LOG_DIR.glob("*.jsonl"))),
         )
         return 0
     try:
-        cutoff = float(watermark.read_text(encoding="utf-8").strip())
-    except (OSError, ValueError):
-        # Bozuk su işareti: yeniden kur, yine geçmişe dokunma.
-        watermark.write_text(str(now), encoding="utf-8")
+        # Eşik, su işaretinin KENDİ mtime'ı — içine yazılmış bir duvar saati
+        # değeri DEĞİL. İki damga farklı saat kaynağından gelirse (duvar saati
+        # vs dosya sistemi) aynı an farklı raporlanabilir; Windows'ta sistem
+        # saati ~15,6 ms adımlarla ilerlediği için su işaretiyle aynı tikte
+        # yazılan bir log kalıcı olarak "geçmiş" sayılabiliyordu. Aynı alandan
+        # okuyunca karşılaştırma tutarlı olur.
+        cutoff = watermark.stat().st_mtime
+    except OSError:
         return 0
 
     live = live_run_ids()
@@ -229,7 +232,13 @@ def _read_events(run_id: str, max_lines: int | None = None) -> tuple[list[dict],
     n_steps_seen = 0
     read_failed = False
     try:
-        with path.open() as f:
+        # `encoding` ZORUNLU: yazan taraf UTF-8 yazıyor (`_session_log`), ama
+        # metin modunda okuma yerel kod sayfasına düşer — Windows'ta cp1254.
+        # Log'daki ilk Türkçe karakter (strateji adı, rationale, hata metni)
+        # `UnicodeDecodeError` fırlatıp sayfayı 500'e düşürüyordu.
+        # `errors="replace"`: bozuk tek bayt yüzünden bütün oturum kaybolmasın —
+        # bu bir özet, tam sadakat değil doğruluk-payı gerektirir.
+        with path.open(encoding="utf-8", errors="replace") as f:
             for i, line in enumerate(f):
                 line = line.strip()
                 if not line:
@@ -778,7 +787,10 @@ def _session_summary(run_id: str) -> dict:
     last_ts = ""
 
     try:
-        fh = path.open()
+        # Bkz. `_read_events`: metin modunda `encoding` verilmezse Windows'ta
+        # cp1254'e düşer ve log'daki ilk Türkçe karakter liste sayfasını 500'e
+        # düşürür (25 dosyalık ilk sayfanın 10'u bu durumdaydı).
+        fh = path.open(encoding="utf-8", errors="replace")
     except OSError:
         return {
             "run_id": run_id,

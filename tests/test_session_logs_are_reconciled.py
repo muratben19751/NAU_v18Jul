@@ -49,6 +49,20 @@ def _events(path: Path) -> list[dict]:
     ]
 
 
+def _mark_after_watermark(logdir: Path, p: Path) -> None:
+    """Logu su işaretinden KESİN sonra yazılmış göster.
+
+    Zamanlamaya güvenmek testi kırılgan yapar: su işaretiyle aynı tikte
+    oluşan bir dosya "geçmiş" sayılır ve test yük altında düşer (tam süitte
+    bir kez böyle düştü). Sınırı ölçmek isteyen ayrı bir test var; bu
+    yardımcı, ondan BAĞIMSIZ testlerin sınıra hiç değmemesini sağlar.
+    """
+    import os
+
+    cutoff = (logdir / S._WATERMARK_NAME).stat().st_mtime
+    os.utime(p, (cutoff + 5, cutoff + 5))
+
+
 def _half_finished(run_id: str = "r1") -> list[dict]:
     """Bir `timeline` span'i açıkken kesilmiş koşu — en sık ölüm şekli (%58)."""
     return [
@@ -95,8 +109,32 @@ class TestHistoryIsNeverTouched:
         p = _write_log(logdir, "eski", _half_finished("eski"))
         import os
 
-        cutoff = float((logdir / S._WATERMARK_NAME).read_text(encoding="utf-8"))
+        # Eşik su işaretinin KENDİ mtime'ı — içeriği değil. İçine duvar saati
+        # yazıp onu okumak iki farklı saat kaynağını karşılaştırmak olurdu ve
+        # sınırda yanlış taraf seçilebilirdi (tam süitte bir kez böyle düştü).
+        cutoff = (logdir / S._WATERMARK_NAME).stat().st_mtime
         os.utime(p, (cutoff - 100, cutoff - 100))  # su işaretinden ESKİ
+        before = p.read_text(encoding="utf-8")
+
+        assert S._reconcile_session_logs() == 0
+        assert p.read_text(encoding="utf-8") == before
+
+    def test_the_boundary_favours_leaving_the_log_alone(self, logdir):
+        """Su işaretiyle AYNI anda yazılmış log: dokunma.
+
+        Sınırda bir taraf seçilmek zorunda ve güvenli taraf budur —
+        `interrupted` damgası geri alınamaz bir yazımdır, oysa dokunmamak
+        yalnızca bir sonraki koşuya erteler. Eşiğin ve dosyanın damgası
+        aynı alandan (dosya sistemi) okunduğu için bu karşılaştırma artık
+        tutarlı; iki farklı saat kaynağı kullanıldığında sınırın hangi
+        tarafına düşüleceği yük altında değişiyordu.
+        """
+        S._reconcile_session_logs()
+        p = _write_log(logdir, "sinir", _half_finished("sinir"))
+        import os
+
+        cutoff = (logdir / S._WATERMARK_NAME).stat().st_mtime
+        os.utime(p, (cutoff, cutoff))  # TAM sınırda
         before = p.read_text(encoding="utf-8")
 
         assert S._reconcile_session_logs() == 0
@@ -107,6 +145,7 @@ class TestAnOrphanedLogGetsAnHonestEnding:
     def test_a_log_written_after_the_watermark_is_closed(self, logdir):
         S._reconcile_session_logs()  # su işaretini kur
         p = _write_log(logdir, "yeni", _half_finished("yeni"))
+        _mark_after_watermark(logdir, p)
 
         assert S._reconcile_session_logs() == 1
         last = _events(p)[-1]
@@ -123,6 +162,7 @@ class TestAnOrphanedLogGetsAnHonestEnding:
         """
         S._reconcile_session_logs()
         p = _write_log(logdir, "yeni", _half_finished("yeni"))
+        _mark_after_watermark(logdir, p)
         S._reconcile_session_logs()
 
         last = _events(p)[-1]
@@ -133,6 +173,7 @@ class TestAnOrphanedLogGetsAnHonestEnding:
         """Kesinti bir arıza yargısı DEĞİL — olmamış bir hata raporlanmamalı."""
         S._reconcile_session_logs()
         p = _write_log(logdir, "yeni", _half_finished("yeni"))
+        _mark_after_watermark(logdir, p)
         S._reconcile_session_logs()
 
         last = _events(p)[-1]
@@ -142,6 +183,7 @@ class TestAnOrphanedLogGetsAnHonestEnding:
     def test_reconciling_twice_does_not_append_twice(self, logdir):
         S._reconcile_session_logs()
         p = _write_log(logdir, "yeni", _half_finished("yeni"))
+        _mark_after_watermark(logdir, p)
 
         assert S._reconcile_session_logs() == 1
         assert S._reconcile_session_logs() == 0, (
@@ -155,6 +197,7 @@ class TestALiveRunIsNeverDeclaredDead:
     def test_a_running_run_is_skipped(self, logdir, monkeypatch):
         S._reconcile_session_logs()
         p = _write_log(logdir, "kosuyor", _half_finished("kosuyor"))
+        _mark_after_watermark(logdir, p)
         monkeypatch.setattr(
             "web.routes.agent_backtest.live_run_ids", lambda: {"kosuyor"}
         )

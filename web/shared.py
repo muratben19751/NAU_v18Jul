@@ -616,7 +616,7 @@ def log_backtest(
     }
     with _BACKTEST_LOG_LOCK:
         rotate_if_large(BACKTEST_LOG)
-        with open(BACKTEST_LOG, "a") as f:
+        with open(BACKTEST_LOG, "a", encoding="utf-8") as f:
             f.write(json.dumps(record, default=str) + "\n")
     return record["ts"]
 
@@ -637,7 +637,7 @@ def save_result_snapshot(run_id: str, viewmodel: dict) -> None:
     try:
         _RESULTS_DIR.mkdir(parents=True, exist_ok=True)
         path = _RESULTS_DIR / f"{run_id}.json"
-        with open(path, "w") as f:
+        with open(path, "w", encoding="utf-8") as f:
             f.write(json.dumps(sanitize_floats(viewmodel), default=str))
         # Prune oldest beyond the cap (by mtime).
         snaps = sorted(
@@ -658,7 +658,7 @@ def load_result_snapshot(run_id: str) -> dict | None:
         path = _RESULTS_DIR / f"{run_id}.json"
         if not path.exists():
             return None
-        with open(path) as f:
+        with open(path, encoding="utf-8", errors="replace") as f:
             return json.load(f)
     except (OSError, ValueError):
         return None
@@ -775,7 +775,7 @@ def log_robustness(
         )
         with _ROBUSTNESS_LOG_LOCK:
             rotate_if_large(ROBUSTNESS_LOG)
-            with open(ROBUSTNESS_LOG, "a") as f:
+            with open(ROBUSTNESS_LOG, "a", encoding="utf-8") as f:
                 f.write(json.dumps(record, default=str) + "\n")
     except Exception:
         logging.getLogger(__name__).warning(

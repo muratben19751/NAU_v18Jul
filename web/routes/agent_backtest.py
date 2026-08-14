@@ -516,7 +516,9 @@ def _session_log(run_id: str, event: str, **kwargs) -> None:
         }
         line = json.dumps(_json_safe(record), default=str) + "\n"
         with lock:
-            with (SESSION_LOG_DIR / f"{run_id}.jsonl").open("a") as _f:
+            with (SESSION_LOG_DIR / f"{run_id}.jsonl").open(
+                "a", encoding="utf-8"
+            ) as _f:
                 _f.write(line)
                 # ``session_end`` is the durable completion boundary used by
                 # the Sessions page after a PM2 restart.
