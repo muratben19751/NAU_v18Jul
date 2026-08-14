@@ -1403,3 +1403,22 @@ Bu turda eklenen: 46 test (15 + 15 + 16). Tam suite yeşil.
   (`interrupt_job` + açılışta `_reconcile_studio_jobs`) studio TABLOLARINA
   uygulanmış ama oturum LOGLARINA yayılmamış. Düzeltme kullanıcı onayı bekliyor
   (geçmişe dokunulmaması ve /sessions ilk isteğinde uzlaştırma önerildi).
+
+## 2026-08-14 — Kesinti uzlaştırması KAPANDI (yukarıdaki açık boşluğun cevabı)
+Kullanıcı onayıyla uygulandı (c3d9acc): `_reconcile_session_logs_once()` ilk
+`/sessions` isteğinde koşuyor; sahipsiz log `outcome="interrupted"` ile kapanıyor.
+İki sert kural mutasyonla doğrulandı — geçmişe dokunulmaz (su işareti öncesi
+loglar tarihsel kayıt) ve canlı koşu ölü ilan edilmez (`live_run_ids()`).
+
+Aynı turda iki kusur daha çıktı ve kapandı (f43aa5d):
+- `/sessions` 500 veriyordu: `_read_events`/`_session_summary` metin dosyalarını
+  `encoding` vermeden açıyordu (Windows cp1254 ↔ UTF-8 loglar). ESKİ bir kusurdu,
+  uzlaştırmanın getirdiği değil; liste ilk sayfasındaki 25 dosyanın 10'u
+  okunamıyordu. Okuyucular + aynı ailedeki yazıcılar UTF-8'e alındı; koruma
+  davranış testi değil AST kaynak taraması (kusur POSIX CI'da üremez).
+- Su işaretinde saat-alanı yarışı: duvar saati ↔ dosya mtime karşılaştırması
+  sınırda rastgele taraf seçtiriyordu. Eşik artık su işaretinin kendi mtime'ı;
+  sınırda geri alınabilir taraf (dokunmama) seçiliyor ve bu teste bağlandı.
+
+Süit: 2226 passed. Kalan: uzlaştırma etkisi ancak bir sonraki kesintide görünür
+(mevcut `.reconcile_watermark` 19:02'de kuruldu, 62 tarihsel log muaf).

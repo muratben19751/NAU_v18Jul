@@ -10,6 +10,14 @@ two smells the route modules had grown:
   were cross-imported between route modules (content coupling). They live here
   now as public functions; the route modules keep thin ``_name`` re-export
   aliases for internal use and backward compat with tests.
+
+Wiki References
+---------------
+Bkz: [[webapp_module_map]] (bu modülün rolü; 2026-08-14'te iki değişiklik:
+depolama kökü `app_constants.DATA_DIR`'den türüyor — `NAU_DATA_DIR`
+yönlendirmesi buraya ulaşmıyordu — ve jsonl log I/O'su açıkça UTF-8, çünkü
+kodlamasız metin açılışı Windows'ta cp1254'e düşüp Türkçe içerikte patlıyordu),
+[[crash_only_design]] (log dosyalarının kesinti karşısındaki davranışı).
 """
 
 from __future__ import annotations
