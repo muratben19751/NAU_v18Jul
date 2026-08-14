@@ -26,6 +26,8 @@ from pathlib import Path
 from fastapi.responses import HTMLResponse
 from markupsafe import Markup, escape
 
+from app_constants import DATA_DIR
+
 try:
     import markdown as _md
 
@@ -459,7 +461,14 @@ class ChatStore:
 # Append-only JSONL logs (single source of truth for the paths, which used to
 # be duplicated across the writer modules and reports.py).
 # ---------------------------------------------------------------------------
-_CACHE_DIR = Path.home() / ".cache" / "nautilus_web_app"
+# DeepR 2026-08-14 [YÜKSEK]: kök elle kuruluydu (`Path.home() / ".cache" / ...`),
+# yani `app_constants.DATA_DIR`'in NAU_DATA_DIR yönlendirmesi buraya HİÇ ulaşmıyordu.
+# AUTO'nun kalıcı çıktılarının çoğu (backtest/robustness logu, oturum logları) tam
+# olarak burada tanımlı olduğu için, `nau_config`'in "NAU_DATA_DIR oturum loglarını
+# taşır" belgesi gerçekleşmiyor ve `tests/browser/conftest.py`'nin "gerçek ~/.cache
+# kataloğuna ASLA dokunma" izolasyonu (ayrı süreç: yalnız env ile kurulabiliyor)
+# sessizce deliniyordu.
+_CACHE_DIR = DATA_DIR
 BACKTEST_LOG = _CACHE_DIR / "backtest_log.jsonl"
 ROBUSTNESS_LOG = _CACHE_DIR / "robustness_log.jsonl"
 

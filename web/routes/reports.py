@@ -18,12 +18,12 @@ import json
 import logging
 import re
 from datetime import UTC
-from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 
+from app_constants import DATA_DIR
 from web.viewmodels import fmt_dur, fmt_money, fmt_num, fmt_pct
 
 router = APIRouter(prefix="/reports")
@@ -34,7 +34,7 @@ router = APIRouter(prefix="/reports")
 from web.shared import BACKTEST_LOG, ROBUSTNESS_LOG, error_html  # noqa: E402
 from web.templating import get_market_info, templates
 
-REPORTS_LAYOUT = Path.home() / ".cache" / "nautilus_web_app" / "reports_layout.json"
+REPORTS_LAYOUT = DATA_DIR / "reports_layout.json"
 
 
 def _view_state_fields(data: dict) -> dict:

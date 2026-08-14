@@ -152,7 +152,7 @@
         <label class="field" style="max-width:140px;">
           Max. tokens <span class="text-muted" style="font-weight:400;">(0=∞)</span>
           <input type="number" name="max_total_tokens" min="10000" step="10000" value="250000"
-                 style="font-size:12px;" title="Total LLM token cap; 0 = unlimited">
+                 style="font-size:12px;" title="Total LLM token cap; cache reads count at 0.1x (they are billed at ~10% of input). 0 = unlimited">
         </label>
         <div style="display:flex;gap:8px;align-items:flex-end;padding-bottom:2px;">
           <button class="btn btn-primary" type="submit">🤖 Run</button>

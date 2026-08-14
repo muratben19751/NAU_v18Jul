@@ -244,7 +244,8 @@
           </div>
           <div class="mc-f">
             <label for="mc-tok">MAX TOKENS <span style="color:#5a4f46;">0=∞</span></label>
-            <input type="number" id="mc-tok" name="max_total_tokens" min="10000" step="10000" value="250000">
+            <input type="number" id="mc-tok" name="max_total_tokens" min="10000" step="10000" value="250000"
+                   title="Total LLM token cap; cache reads count at 0.1x (they are billed at ~10% of input). 0 = unlimited">
           </div>
         </div>
 

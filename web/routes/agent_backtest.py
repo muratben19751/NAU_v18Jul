@@ -91,12 +91,13 @@ import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import NamedTuple
 
 import pandas as pd
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse
+
+from app_constants import DATA_DIR
 
 # Robustluk suite'i ve saf yardımcıları artık web'den bağımsız `auto` paketinde
 # (DeepR 2026-08-11 [YÜKSEK]: sandbox child'ı sırf suite için tüm router ağacını
@@ -266,7 +267,7 @@ HARD_MAX_AUTO_TOKENS = max(
 _WINLESS_ROUND_LIMIT = int(os.environ.get("AGENT_WINLESS_ROUND_LIMIT", "3"))
 
 # L26: lightweight best-effort SQLite index of winner + robustness moments.
-_AGENT_INDEX_DB = Path.home() / ".cache" / "nautilus_web_app" / "agent_index.db"
+_AGENT_INDEX_DB = DATA_DIR / "agent_index.db"
 
 # ── Session Logger ────────────────────────────────────────────────────────────
 # SESSION_LOG_DIR moved to web/shared.py (DeepR 2026-08-09 [YÜKSEK]) — the
@@ -916,17 +917,45 @@ def _add_tokens(run_id: str, usage: dict | None) -> None:
                 )
 
 
-_TOKEN_USAGE_FIELDS = (
-    "tokens_in",
-    "tokens_out",
-    "tokens_cache_read",
-    "tokens_cache_write",
-)
+# Bütçe, faturayı sınırlamak için var (bkz. DEFAULT_CONTINUOUS_MAX_TOKENS
+# yorumu: "unbounded bill"). Dolayısıyla sayacın birimi ham token değil,
+# GİRDİ-EŞDEĞERİ token: her kalem kendi fiyat oranıyla toplanır.
+#
+# DeepR 2026-08-14 [YÜKSEK]: dördü de 1:1 toplanıyordu. Cache okuması girdinin
+# ~%10'u kadar fiyatlanır (CLI aboneliğinde hiç faturalanmaz), ama tavana tam
+# fiyattan yazılıyordu. Canlı ölçüm (koşu 65a87244): 235.222/250.000'in %77'si
+# cache kalemiydi ve sağlayıcının bildirdiği gerçek maliyet 2,30 USD'ydi; 4
+# saatlik bir koşu 15. dakikada, hedeflenen paranın ~1/9'unda kesildi. Sonuç
+# yalnız erken bitiş değildi: prompt-cache'i İYİLEŞTİRMEK bile koşuyu
+# uzatmıyordu, çünkü kazanılan her cache-hit tavana ceza olarak yazılıyordu.
+#
+# Düzeltme BİLEREK dar tutuldu: yalnız cache okuması indiriliyor, diğer üç
+# kalem 1,0'da bırakılıyor. Tam fiyat-oranlı bir tavan (çıktı 5x, cache yazımı
+# 1,25x) daha "doğru" bir birim verirdi ama sayacı SIKARDI: aynı canlı koşu
+# 235.222 yerine 388.565 sayardı ve 250.000'lik varsayılan altında daha da
+# erken kesilirdi. Varsayılan tavan (DEFAULT_CONTINUOUS_MAX_TOKENS) bu eski
+# ölçeğe göre kalibre edilmiş; birimi değiştirmek onu da yeniden kalibre
+# etmeyi, yani "bir AUTO koşusuna ne kadar para" sorusuna karar vermeyi
+# gerektirir — o ayrı bir karar. Buradaki değişiklik yalnızca GEVŞETİR:
+# hiçbir koşu bu yüzden erken bitmez.
+_TOKEN_USAGE_WEIGHTS = {
+    "tokens_in": 1.0,
+    "tokens_out": 1.0,
+    "tokens_cache_write": 1.0,
+    "tokens_cache_read": 0.1,
+}
+
+_TOKEN_USAGE_FIELDS = tuple(_TOKEN_USAGE_WEIGHTS)
 
 
 def _token_usage(state: dict) -> int:
-    """Sum the token-usage fields tracked in a run's progress state."""
-    return sum(int(state.get(k) or 0) for k in _TOKEN_USAGE_FIELDS)
+    """Bütçeye sayılan GİRDİ-EŞDEĞERİ token (ham toplam değil).
+
+    Ham kalemleri okumak isteyen (rozet, snapshot, defter) `state`'teki
+    `tokens_*` alanlarını doğrudan okumalı; burası yalnız tavan kıyaslaması
+    içindir.
+    """
+    return int(sum(int(state.get(k) or 0) * w for k, w in _TOKEN_USAGE_WEIGHTS.items()))
 
 
 def _enforce_token_budget(run_id: str) -> None:
@@ -4748,6 +4777,19 @@ async def progress(request: Request, run_id: str):
             "rob_scan_total": raw.get("rob_scan_total", 0),
             "stop_requested": raw.get("stop_requested", False),
             "continuous_mode": raw.get("continuous_mode", False),
+            # DeepR 2026-08-14: bu ikisi snapshot'a KOPYALANMIYORDU, dolayısıyla
+            # aşağıdaki `state.get(...)` okumaları daima None görüyordu.
+            #  · continuous_finished: `is_continuous` hiç False'a dönmüyordu, yani
+            #    kalıcı biten bir continuous koşu terminal fragmanı sonsuza dek
+            #    yeniden render ediyordu (titreme + boşuna CPU/ağ) — tam olarak
+            #    satır 4798'deki yorumun ÖNLEMEYİ amaçladığı davranış.
+            #  · provider_cost_usd: maliyet rozetinin "provider_reported" dalı ölü
+            #    koddu; rozet, sağlayıcı gerçek maliyeti bildirdiğinde bile hep
+            #    fiyat-tablosu TAHMİNİNİ gösteriyordu (oturum logundaki
+            #    token_snapshot ise doğru kaynağı yazıyordu — iki yüzey aynı koşu
+            #    için farklı maliyet gösterebiliyordu).
+            "continuous_finished": raw.get("continuous_finished", False),
+            "provider_cost_usd": raw.get("provider_cost_usd", 0.0),
             "tokens_in": raw.get("tokens_in", 0),
             "tokens_out": raw.get("tokens_out", 0),
             "tokens_cache_read": raw.get("tokens_cache_read", 0),
@@ -4817,6 +4859,18 @@ async def progress(request: Request, run_id: str):
 
         mv = mission_view(state, run_id=run_id, token_info=token_info)
         mv["error"] = state.get("error")
+        # DeepR 2026-08-14 [YÜKSEK]: kokpit continuous modda KALICI donuyordu.
+        # Worker kazananlı her turun sonunda `done=True` yazıp 3 sn uyuyor, sonra
+        # yeni turda `done=False`'a dönüyor. Klasik `/agent` görünümü bu pencereyi
+        # `is_continuous` ile köprülüyordu; kokpit ise ham `state["done"]`i okuyan
+        # `mv["done"]`e bakıyordu ve 1 sn'lik poll aralığı 3 sn'lik pencereye KESİN
+        # denk geldiği için tam o karede poll'u kesiyordu — koşu arkada tur tur
+        # devam ederken operatör donmuş ekrana bakıyordu. `mv["done"]` şablonda iki
+        # yeri sürüyor (poll koşulu ve START/STOP düğmesi) ve ikisinin de doğru
+        # cevabı aynı: continuous koşu KALICI bitene dek "bitmedi". Fragmanın kendi
+        # render modeli (faz şeridi, tur özeti) `mission_view` içinde ham `done` ile
+        # hesaplandığı için etkilenmez — burada yalnız dış sözleşme düzeltiliyor.
+        mv["done"] = bool(state["done"]) and not is_continuous
         return templates.TemplateResponse(
             request, "fragments/auto_mission.html", {"mv": mv}
         )

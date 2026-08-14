@@ -59,6 +59,8 @@ from nautilus_trader.model.enums import (
 )
 from nautilus_trader.trading.strategy import Strategy, StrategyConfig
 
+from app_constants import DATA_DIR
+
 # --------------------------------------------------------------------------
 # Built-in block metadata (was BLOCK_CATALOG; now part of BLOCK_REGISTRY meta)
 # and built-in eval / lookback / on_start functions. Each function takes
@@ -609,7 +611,10 @@ _load_custom_blocks()
 # composer_spec.py, imported back near the top of this file.
 
 
-CATALOG_FILE = Path.home() / ".cache" / "nautilus_web_app" / "strategy_catalog.json"
+# DeepR 2026-08-14 [YÜKSEK]: AUTO kazananının YAYIN hedefi burası
+# (`agent_backtest.append_to_catalog` → `save_catalog`). Kök elle kuruluydu, yani
+# NAU_DATA_DIR ile açılan bir instance kazananı yine gerçek ~/.cache'e yazardı.
+CATALOG_FILE = DATA_DIR / "strategy_catalog.json"
 
 
 def _catalog_block_names(spec: ComposedStrategySpec) -> list[str]:
