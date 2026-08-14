@@ -12,7 +12,7 @@ key_concepts:
 related:
   - wiki/synthesis/webapp_module_map.md
   - wiki/synthesis/strategy_studio.md
-last_updated: 2026-08-04
+last_updated: 2026-08-14
 ---
 
 # AUTO Mission Control kokpiti
@@ -210,6 +210,37 @@ Kokpit iki ek bilgi taşımaya başladı:
 
 Overlay `base.html`'de yaşadığı için saniyede bir dönen `#agent-result` swap'i
 onu yok etmez; kapatınca kokpit kaldığı yerden görünür.
+
+## Continuous modda kokpit donması (2026-08-14, DeepR [YÜKSEK])
+
+"Aynı state'in ikinci sunumu" tasarımının bedeli burada görüldü: iki sunum aynı
+state'i okuyor ama **aynı sözleşmeyi okumuyordu**.
+
+Continuous AUTO, kazanan bulunan HER turun sonunda `done=True` yazıp ~3 saniye
+uyuyor, sonra yeni turda `done=False`'a dönüyor. Yani bu modda `done=True`
+"koşu bitti" değil, "bu turun sonucu hazır" demek. Klasik `/agent` görünümü bu
+pencereyi `is_continuous` (`continuous_mode and not continuous_finished`) ile
+köprülüyordu; kokpit fragmanı ise ham `state["done"]`den türeyen `mv.done`e
+bakıyordu. Kokpit saniyede bir poll ettiği için 3 saniyelik pencereye bir poll
+KESİNLİKLE denk gelir — ve tam o karede poll durur. Sonuç: koşu arkada tur tur
+devam ederken operatör **kalıcı donmuş** bir ekrana bakar; üstelik aynı bayrak
+START/STOP düğmesini de sürdüğünden ekranda "▶ START" görünür, yani arayüz
+koşan bir koşuyu bitmiş gibi gösterir.
+
+Düzeltme dış sözleşmede: `mv["done"]` artık `state["done"] and not
+is_continuous`. Fragmanın kendi render modeli (faz şeridi, tur özeti)
+`mission_view` içinde ham `done` ile hesaplandığı için etkilenmedi.
+
+Aynı turda ortaya çıkan ikinci kusur snapshot'taydı: `/agent/progress`
+`continuous_finished` ve `provider_cost_usd` alanlarını KOPYALAMIYORDU.
+Birincisi `is_continuous`'un hiç `False`'a dönmemesi (kalıcı biten koşu
+terminal fragmanı sonsuza dek yeniden render ediyordu — tam da kodun kendi
+yorumunun önlemeyi amaçladığı davranış), ikincisi maliyet rozetinin
+`provider_reported` dalının ölü kod olması demekti: rozet, sağlayıcı gerçek
+rakamı bildirdiğinde bile fiyat-tablosu TAHMİNİNİ gösteriyordu.
+
+Üçü de `tests/test_mission_cockpit_survives_continuous_rounds.py` ile
+bağlandı; testlerin ısırdığı kasıtlı mutasyonla doğrulandı.
 
 <!-- BACKLINKS:BEGIN -->
 ## Referenced by

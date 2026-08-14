@@ -1386,3 +1386,20 @@ Bu turda eklenen: 46 test (15 + 15 + 16). Tam suite yeşil.
   yönlü oldu)
 - lint: tümü 0 (öksüz kalan devralma sayfasına kavram sayfasından bağ verildi);
   sağlık raporu `lint/2026-08-14_health.md`
+
+## 2026-08-14 — AUTO turu senkronu (bütçe, depolama kökü, kokpit, postmortem)
+- `webapp_module_map`: `scripts/auto_postmortem.py` satırı eklendi (deterministik
+  koşu postmortem'i, LLM'siz); `web/shared.py` satırına tek depolama kökü
+  (NAU_DATA_DIR yönlendirmesinin beş sabite ulaşmaması) notu; `agent_backtest.py`
+  satırına bütçe muhasebesi + snapshot + kokpit köprüsü düzeltmeleri.
+- `auto_mission_control`: yeni bölüm — continuous modda kokpitin kalıcı donması
+  ("aynı state'in iki sunumu" tasarımının iki sunumun aynı SÖZLEŞMEYİ okumaması
+  hâlinde ödediği bedel) + snapshot'ın düşürdüğü iki alan.
+- Ölçüm notu (postmortem `--calibrate`, 118 oturum): fikir örtüşmesi medyanı
+  %54, kazanan/koşu medyanı 0, koşu maliyeti medyanı $1,30. İki alarm eşiği bu
+  yüzden düzeltildi — sezgiyle konan eşik medyana denk gelirse alarm ölür.
+- AÇIK BOŞLUK: 118 oturumun 62'sinde `session_end` yok. `session_end` 12 çağrı
+  yerinde ve hiçbiri dış `finally`'de değil; crash-only uzlaştırma
+  (`interrupt_job` + açılışta `_reconcile_studio_jobs`) studio TABLOLARINA
+  uygulanmış ama oturum LOGLARINA yayılmamış. Düzeltme kullanıcı onayı bekliyor
+  (geçmişe dokunulmaması ve /sessions ilk isteğinde uzlaştırma önerildi).
