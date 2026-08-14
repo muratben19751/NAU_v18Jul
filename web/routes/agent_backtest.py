@@ -165,6 +165,19 @@ def newest_active_run_id() -> str | None:
     return None
 
 
+def live_run_ids() -> set[str]:
+    """Bu SÜREÇTE hâlâ koşan run_id'ler.
+
+    `newest_active_run_id`'nin çoğul kardeşi; aynı gerekçeyle alt tiresiz ve
+    aynı biçimde: kilit burada alınır ve bırakılır, çağıran ona hiç dokunmaz.
+    `web/routes/sessions.py`'nin uzlaştırması kullanıyor — "logu yarım kalmış"
+    ile "hâlâ yazıyor" ayrımını yapmanın tek doğru yolu bellekteki koşu
+    kaydıdır; dosyanın son satırına bakmak canlı bir koşuyu ölü ilan ederdi.
+    """
+    with _AGENT_LOCK:
+        return {rid for rid, st in _AGENT_PROGRESS.items() if not st.get("done")}
+
+
 # AUTO can fan out into LLM, backtest, and robustness workers. Keep the default
 # deliberately small so two browser clicks cannot oversubscribe the host or
 # make token/cost attribution ambiguous. Operators may raise this explicitly

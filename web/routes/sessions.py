@@ -10,7 +10,11 @@ Bkz: [[nau_performans_denetimi]] (2026-08-04 ikinci turu: liste sayfası her
 satırı `json.loads` ettiği için soğuk render 114 sn'ydi; `_session_summary`
 artık olay adını ve `ts`'i satır başından regex ile okur, tam parse yalnız
 gövdesi gereken dört olay için yapılır — kalan maliyet parse değil I/O),
-[[webapp_module_map]] (bu modülün rolü ve tear-sheet indeksi).
+[[webapp_module_map]] (bu modülün rolü ve tear-sheet indeksi),
+[[crash_only_design]] (2026-08-14: sahipsiz oturum loglarının `interrupted` ile
+kapatılması — `session_end` hiçbir dış `finally`'de yazılmadığı için süreç
+ölünce hiç yazılmıyordu; uzlaştırma geçmişe dokunmaz, su işaretinden sonrasını
+kapatır).
 Geri kalanı app-spesifik; Nautilus kavramı değil.
 """
 
@@ -32,6 +36,140 @@ from web.shared import SESSION_LOG_DIR
 from web.templating import get_market_info, templates
 
 router = APIRouter(prefix="/sessions")
+
+# ── Kesinti uzlaştırması ─────────────────────────────────────────────────────
+# `session_end` 12 ayrı çağrı yerinde yazılıyor ve hiçbiri dış bir `finally`
+# içinde değil: süreç ölürse (pm2 restart, çökme, kill) hiçbiri koşmaz. Ölçüm
+# (2026-08-14): 118 oturumun 62'sinde terminal olay yok, %58'i bir `timeline`
+# span'i açıkken kesilmiş.
+#
+# Bedeli kaybolan tek satır değil, o satırın yokluğunu telafi eden kod yollarının
+# ÇOĞALMASI: bu dosya açık span'leri okuma anında `warn` ile kapatıyor,
+# `_terminal_message` logun son satırına bakıp "büyük ihtimalle sunucu yeniden
+# başladı" diye tahmin yürütüyor, sonradan yazılan her analiz aracı (ör.
+# `scripts/auto_postmortem.py`) aynı tahmini bir kez daha yazmak zorunda — ve
+# hiçbiri "çöktü mü, hâlâ koşuyor mu" sorusunu kesin cevaplayamıyor.
+#
+# Crash-only cevabı bu depoda ZATEN var ama yalnız veritabanı tarafında
+# (`StrategyStore.interrupt_job` + `_reconcile_studio_jobs`); oturum loglarına
+# yayılmamıştı. Desen buraya birebir taşınıyor.
+#
+# `interrupted`, `error` DEĞİL: başarısızlık işin kendisi hakkında bir yargıdır
+# ("bu koşu patladı"), kesinti ise iş hakkında hiçbir şey söylemez — yalnızca
+# sonucunu asla öğrenemeyeceğimizi söyler (`store.interrupt_job`'ın gerekçesi).
+_RECONCILE_LOCK = threading.Lock()
+_RECONCILED: set[str] = set()
+
+# Uzlaştırma GEÇMİŞE DOKUNMAZ. İlk koşuda yalnız bir su işareti bırakır; o andan
+# ÖNCE yarım kalmış loglar tarihsel kayıt olarak olduğu gibi durur. Append-only
+# bir günlüğe bugünkü tarihle "şu tarihte kesildi" yazmak kaydı düzeltmek değil
+# bulandırmaktır — 13 Temmuz'da ölen bir koşuya 14 Ağustos damgası vurmak,
+# okuyanı yanıltacak yeni bir yalan üretirdi.
+_WATERMARK_NAME = ".reconcile_watermark"
+
+_INTERRUPT_REASON = (
+    "process died before writing a terminal event "
+    "(server restart / crash); reconciled on the next /sessions visit"
+)
+
+
+def _last_event(path: Path) -> dict | None:
+    """Logun SON olayı — dosyanın tamamını okumadan (kuyruk taraması)."""
+    try:
+        with open(path, "rb") as fh:
+            fh.seek(0, os.SEEK_END)
+            fh.seek(max(0, fh.tell() - 8192))
+            tail = fh.read().decode("utf-8", errors="replace").strip().splitlines()
+    except OSError:
+        return None
+    for line in reversed(tail):
+        try:
+            rec = json.loads(line)
+        except json.JSONDecodeError:
+            continue  # kırpılmış ilk satır olabilir
+        if isinstance(rec, dict) and rec.get("event"):
+            return rec
+    return None
+
+
+def _reconcile_session_logs() -> int:
+    """Sahipsiz oturum loglarını `interrupted` ile kapat; kaç tane olduğunu dön."""
+    from web.routes.agent_backtest import live_run_ids
+
+    watermark = SESSION_LOG_DIR / _WATERMARK_NAME
+    now = datetime.now().timestamp()
+    if not watermark.exists():
+        # İlk koşu: mevcut her şey "geçmiş" sayılır, hiçbirine dokunulmaz.
+        watermark.write_text(str(now), encoding="utf-8")
+        logging.info(
+            "session log reconciliation armed; %d existing log(s) grandfathered",
+            len(list(SESSION_LOG_DIR.glob("*.jsonl"))),
+        )
+        return 0
+    try:
+        cutoff = float(watermark.read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        # Bozuk su işareti: yeniden kur, yine geçmişe dokunma.
+        watermark.write_text(str(now), encoding="utf-8")
+        return 0
+
+    live = live_run_ids()
+    closed = 0
+    for path in SESSION_LOG_DIR.glob("*.jsonl"):
+        try:
+            if path.stat().st_mtime <= cutoff:
+                continue  # su işaretinden eski — tarihsel kayıt
+        except OSError:
+            continue
+        if path.stem in live:
+            continue  # bellekte hâlâ koşuyor
+        last = _last_event(path)
+        if last is None or last.get("event") == "session_end":
+            continue
+        record = {
+            # `ts` KASITLI olarak son olayın zamanı: oturum o an sustu, biz
+            # sonradan fark ettik. Tespit zamanını `ts`'e yazmak, koşuyu saatler
+            # sonra bitmiş gibi gösterip zaman çizgisini bozardı.
+            "ts": last.get("ts"),
+            "event": "session_end",
+            "run_id": path.stem,
+            "outcome": "interrupted",
+            "reason": _INTERRUPT_REASON,
+            "last_event": last.get("event"),
+            "detected_at": datetime.now().isoformat(),
+        }
+        try:
+            with path.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps(record) + "\n")
+                fh.flush()
+                os.fsync(fh.fileno())
+        except OSError:
+            logging.warning(
+                "could not reconcile session log %s", path.name, exc_info=True
+            )
+            continue
+        closed += 1
+    if closed:
+        logging.warning("%d orphaned AUTO session log(s) marked interrupted", closed)
+        _invalidate_detail_cache()
+    return closed
+
+
+def _reconcile_session_logs_once() -> None:
+    """İlk liste isteğinde bir kez koş; kendi arızası sayfayı düşürmesin."""
+    key = str(SESSION_LOG_DIR)
+    with _RECONCILE_LOCK:
+        if key in _RECONCILED:
+            return
+        # Bayrak ÖNCE: uzlaştırma patlarsa her istekte yeniden denenip sayfayı
+        # yavaşlatmasın (`_reconcile_studio_jobs_once` ile aynı gerekçe).
+        _RECONCILED.add(key)
+    try:
+        SESSION_LOG_DIR.mkdir(parents=True, exist_ok=True)
+        _reconcile_session_logs()
+    except Exception:  # noqa: BLE001 — bayat bir satır sayfayı düşürmemeli
+        logging.warning("session log reconciliation failed", exc_info=True)
+
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -789,6 +927,11 @@ async def sessions_list(request: Request):
 
     limit = _query_int(request, "limit", 25, lo=1, hi=100)
     offset = _query_int(request, "offset", 0, lo=0)
+
+    # Sahipsiz logları kapat (süreç başına bir kez). Liste özetleri okunmadan
+    # ÖNCE: aksi hâlde uzlaştırılan oturum bu sayfada bir kez daha terminal
+    # olaysız görünürdü.
+    await asyncio.to_thread(_reconcile_session_logs_once)
 
     if not SESSION_LOG_DIR.exists():
         sessions = []
