@@ -1374,3 +1374,15 @@ Bu turda eklenen: 46 test (15 + 15 + 16). Tam suite yeşil.
   eklendi (öksüzdü)
 
 - 2026-08-13 — DeepR kalan bulgular: `web/templating.py` (server↔routes çift yönlü bağımlılığı, 54 fonksiyon-içi import), `nau_config.py` (77 ortam değişkeninin kataloğu + sürüklenme testi), `auto/log_thinning.py`, `web.shared.SessionRunGuard` / `MAX_LLM_TEXT_LEN` / `invalid_date_range`. Bkz. [[webapp_module_map]].
+
+## 2026-08-14 — Devralma turu senkronu
+- yeni: `wiki/synthesis/nau_devralma_turu_2026_08_14.md` (kopan oturumun
+  transcript'ten devralınması; iki yakalı sınır, 4 onarım kümesi, pm2)
+- yeni: `wiki/concepts/import_aninda_yakalanan_referans.md` — kodun (nau_data,
+  templating, testler) atıf yaptığı kavram sayfası yoktu; üç depodaki vakayla
+  yazıldı (_static_version takma adı, data bölme şartı, ölü patch seam)
+- `webapp_module_map`: `nau_data/` satırı eklendi, `data.py` satırına bölme
+  notu düştü; `web/templating.py`'ye Wiki References bloğu eklendi (köprü iki
+  yönlü oldu)
+- lint: tümü 0 (öksüz kalan devralma sayfasına kavram sayfasından bağ verildi);
+  sağlık raporu `lint/2026-08-14_health.md`

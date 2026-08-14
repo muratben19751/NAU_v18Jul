@@ -25,6 +25,10 @@ içinde AST ile denetleniyor — yorumla korunan katman sınırı çürür.
 `server.py` geriye dönük uyumluluk için adları yeniden dışa veriyor
 (`from server import templates` çalışmaya devam eder), ama yeni kod buradan
 almalı.
+
+Wiki References
+---------------
+Bkz: [[webapp_module_map]], [[import_aninda_yakalanan_referans]]
 """
 
 from __future__ import annotations
