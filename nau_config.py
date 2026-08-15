@@ -398,7 +398,39 @@ _AGENT = [
         "int",
         "250000",
         "web.routes.agent_backtest",
-        "Sürekli mod için varsayılan token bütçesi.",
+        "Sürekli mod için varsayılan token bütçesi. Para tavanı KAPALIYSA "
+        "kullanılır; açıkken token tavanı AGENT_RUNAWAY_MAX_TOKENS ölçeğine çıkar.",
+    ),
+    _v(
+        "AGENT_DEFAULT_MAX_COST_USD",
+        "float",
+        "5",
+        "web.routes.agent_backtest",
+        "PARA tavanı (USD) — faturayı sınırlar. Token tavanından AYRI birim: "
+        "bedava bir uç (yerel model) token yer ama para harcamaz.",
+    ),
+    _v(
+        "AGENT_HARD_MAX_COST_USD",
+        "float",
+        "(varsayılan para tavanı)",
+        "web.routes.agent_backtest",
+        "Kullanıcının aşamayacağı para tavanı.",
+    ),
+    _v(
+        "AGENT_RUNAWAY_MAX_TOKENS",
+        "int",
+        "2000000",
+        "web.routes.agent_backtest",
+        "Kaçak döngü emniyeti — para tavanı devredeyken token tavanı bu ölçeğe "
+        "çıkar (token artık faturanın vekili değil).",
+    ),
+    _v(
+        "AGENT_BLIND_MAX_TOKENS",
+        "int",
+        "(AGENT_DEFAULT_CONTINUOUS_MAX_TOKENS)",
+        "web.routes.agent_backtest",
+        "Maliyet HİÇBİR modelde okunamıyorken geri düşülen sıkı token tavanı: "
+        "para tavanı kör kalırsa gevşek tavan sessizce sınırsız fatura olurdu.",
     ),
     _v(
         "AGENT_HARD_MAX_AUTO_HOURS",

@@ -269,12 +269,60 @@ HARD_MAX_AUTO_HOURS = max(
         os.environ.get("AGENT_HARD_MAX_AUTO_HOURS", str(DEFAULT_CONTINUOUS_MAX_HOURS))
     ),
 )
+# ── İKİ TAVAN, İKİ BİRİM (2026-08-15) ─────────────────────────────────────
+#
+# Token sayısı, TEK sağlayıcı varken faturanın iyi bir vekiliydi ve yukarıdaki
+# tavan o varsayımla kalibre edildi. Amaç-başına model eşlemesi bedava bir uç
+# ekleyince bağ koptu: koşu 0057a0cd'de bütçenin %92'sini (194.375/210.411
+# token) hiç para harcamayan YEREL model yedi, gerçek fatura 1,03 USD'ydi ve
+# tur 28 dakikada tek round kapatamadan `outcome: budget` ile kesildi. Yerele
+# geçmenin gerekçesi "token bedava → daha çok iterasyon"du; bedava model
+# BEDAVA OLDUĞU İÇİN değil SAYILDIĞI İÇİN koşuyu kısalttı.
+#
+# Çözüm iki sayacı ayırmak — amaçları farklı olduğu için birimleri de farklı:
+#   · PARA tavanı  (AGENT_DEFAULT_MAX_COST_USD): faturayı sınırlar.
+#   · TOKEN tavanı (yukarıdaki): artık kaçak döngü/sonsuz koşu emniyeti.
+#
+# KÖRLÜK ŞARTI: para tavanı ancak maliyeti GÖREBİLDİĞİ kadar korur. Fiyatı
+# bilinmeyen paralı bir uçta (`price_table` None döner, sağlayıcı da maliyet
+# bildirmez) para tavanı hiç tetiklenmez. O durumda token tavanı eski
+# para-vekili değerine iner — gevşetme yalnız parayı GÖREBİLDİĞİMİZDE geçerli.
+DEFAULT_MAX_COST_USD = float(os.environ.get("AGENT_DEFAULT_MAX_COST_USD", "5"))
+HARD_MAX_COST_USD = max(
+    0.01, float(os.environ.get("AGENT_HARD_MAX_COST_USD", str(DEFAULT_MAX_COST_USD)))
+)
+# Kaçak-döngü emniyeti: para tavanı çalışırken token tavanı bu ölçeğe çıkar.
+RUNAWAY_MAX_TOKENS = int(os.environ.get("AGENT_RUNAWAY_MAX_TOKENS", "2000000"))
+# Maliyet görünmüyorken geri düşülen sıkı tavan (eski davranış).
+BLIND_MAX_TOKENS = int(
+    os.environ.get("AGENT_BLIND_MAX_TOKENS", str(DEFAULT_CONTINUOUS_MAX_TOKENS))
+)
+
+
+# Token tavanı artık faturanın vekili DEĞİL, kaçak döngü emniyeti — sert tavanı
+# da o ölçekten türer. Operatör AGENT_HARD_MAX_AUTO_TOKENS'ı açıkça verirse
+# elbette ona uyulur.
 HARD_MAX_AUTO_TOKENS = max(
     1,
-    int(
-        os.environ.get("AGENT_HARD_MAX_AUTO_TOKENS", str(DEFAULT_CONTINUOUS_MAX_TOKENS))
-    ),
+    int(os.environ.get("AGENT_HARD_MAX_AUTO_TOKENS", str(RUNAWAY_MAX_TOKENS))),
 )
+
+
+def _default_cost_cap() -> float:
+    """Bu koşuya uygulanacak PARA tavanı (0 = kapalı)."""
+    return min(DEFAULT_MAX_COST_USD, HARD_MAX_COST_USD)
+
+
+def _continuous_token_cap() -> int:
+    """Sürekli modun token tavanı.
+
+    Para tavanı devredeyse token yalnız kaçak döngüye bakar (gevşek); para
+    tavanı kapalıysa token yine faturanın tek vekilidir (eski sıkı değer).
+    """
+    return (
+        RUNAWAY_MAX_TOKENS if _default_cost_cap() > 0 else DEFAULT_CONTINUOUS_MAX_TOKENS
+    )
+
 
 # M22 extra circuit breaker: threshold of consecutive winnerless rounds
 # (continuous mode). Three complete rounds are enough to identify a stalled
@@ -449,10 +497,10 @@ def _make_llm_control(
             state = _AGENT_PROGRESS.get(run_id)
             if state is None or state.get("stop_requested"):
                 return True
-            cap = int(state.get("max_total_tokens") or 0)
-            used = _token_usage(state)
-        if cap > 0 and used >= cap:
-            raise AgentBudgetReached(f"token ceiling ({cap:,}) reached at {used:,}")
+            snapshot = dict(state)
+        breach = _budget_breach(snapshot)
+        if breach:
+            raise AgentBudgetReached(breach)
         # The old wall-clock ceiling was checked only between rounds. A long
         # provider request could therefore begin just before the deadline and
         # continue spending well past it. The LLM wrapper polls this callback,
@@ -500,6 +548,10 @@ def _effective_run_config() -> dict:
         },
         "default_continuous_max_hours": DEFAULT_CONTINUOUS_MAX_HOURS,
         "default_continuous_max_tokens": DEFAULT_CONTINUOUS_MAX_TOKENS,
+        "default_max_cost_usd": DEFAULT_MAX_COST_USD,
+        "hard_max_cost_usd": HARD_MAX_COST_USD,
+        "runaway_max_tokens": RUNAWAY_MAX_TOKENS,
+        "blind_max_tokens": BLIND_MAX_TOKENS,
         "hard_max_hours": HARD_MAX_AUTO_HOURS,
         "hard_max_tokens": HARD_MAX_AUTO_TOKENS,
         # Bütçe sayacının BİRİMİ: ham token değil girdi-eşdeğeri. Ağırlıklar
@@ -1244,15 +1296,40 @@ def _token_usage(state: dict) -> int:
     return int(sum(int(state.get(k) or 0) * w for k, w in _TOKEN_USAGE_WEIGHTS.items()))
 
 
+def _budget_breach(state: dict) -> str | None:
+    """Aşılan tavanın sebebi — hiçbiri aşılmadıysa None.
+
+    İki tavan, iki birim (bkz. DEFAULT_MAX_COST_USD yorumu):
+      · PARA  — faturayı sınırlar, `_run_cost` ile ölçülür.
+      · TOKEN — kaçak döngü emniyeti; para GÖRÜLEBİLİYORSA gevşek
+        (RUNAWAY_MAX_TOKENS), görülemiyorsa eski sıkı değere iner.
+
+    Körlük şartı kasıtlı: maliyet hiçbir modelde okunamıyorsa para tavanı asla
+    tetiklenmez ve tek koruma token tavanıdır — orada gevşemek sessizce
+    sınırsız bir fatura yaratırdı.
+    """
+    cost_cap = float(state.get("max_total_cost_usd") or 0.0)
+    spent = _run_cost(state).get("cost_usd")
+    if cost_cap > 0 and spent is not None and spent >= cost_cap:
+        return f"cost ceiling (${cost_cap:,.2f}) reached at ${spent:,.2f}"
+
+    used = _token_usage(state)
+    cap = int(state.get("max_total_tokens") or 0)
+    if not spent:  # None ya da 0.0 → parayı göremiyoruz
+        cap = min(cap, BLIND_MAX_TOKENS) if cap > 0 else BLIND_MAX_TOKENS
+    if cap > 0 and used >= cap:
+        return f"token ceiling ({cap:,}) reached at {used:,}"
+    return None
+
+
 def _enforce_token_budget(run_id: str) -> None:
     """Stop before another LLM call once the persisted per-run ceiling is hit."""
 
     with _AGENT_LOCK:
-        s = _AGENT_PROGRESS.get(run_id) or {}
-        cap = int(s.get("max_total_tokens") or 0)
-        used = _token_usage(s)
-    if cap > 0 and used >= cap:
-        raise AgentBudgetReached(f"token ceiling ({cap:,}) reached at {used:,}")
+        s = dict(_AGENT_PROGRESS.get(run_id) or {})
+    breach = _budget_breach(s)
+    if breach:
+        raise AgentBudgetReached(breach)
 
 
 def _admit_llm_budget(run_id: str, request: dict) -> None:
@@ -3378,10 +3455,23 @@ def _agent_worker(
     set_thread_random_seed(run_id)
 
     is_external = source == "external"
+    # Para tavanı faturayı, token tavanı kaçak döngüyü sınırlar (iki birim,
+    # bkz. DEFAULT_MAX_COST_USD yorumu). Form bir değer vermiyorsa varsayılan;
+    # verdiyse de sert tavanı aşamaz.
+    max_total_cost_usd = min(DEFAULT_MAX_COST_USD, HARD_MAX_COST_USD)
     if continuous_mode:
         max_hours = max_hours if max_hours > 0 else DEFAULT_CONTINUOUS_MAX_HOURS
+        # Token tavanı artık PARA vekili değil; para tavanı devredeyken kaçak
+        # döngü ölçeğine çıkar. Maliyet görünmüyorsa `_budget_breach` bunu
+        # BLIND_MAX_TOKENS'a geri indirir — koruma kaybolmaz.
         max_total_tokens = (
-            max_total_tokens if max_total_tokens > 0 else DEFAULT_CONTINUOUS_MAX_TOKENS
+            max_total_tokens
+            if max_total_tokens > 0
+            else (
+                RUNAWAY_MAX_TOKENS
+                if max_total_cost_usd > 0
+                else DEFAULT_CONTINUOUS_MAX_TOKENS
+            )
         )
 
     # M22: optional budget ceilings (0 = unlimited) + winnerless-round breaker.
@@ -3488,23 +3578,13 @@ def _agent_worker(
         # M22: budget check at round start — if the time/token ceiling is exceeded, finish gracefully.
         _elapsed_h = (time.monotonic() - wstate.worker_t0) / 3600.0
         with _AGENT_LOCK:
-            _bs = _AGENT_PROGRESS.get(run_id) or {}
-            _tok_total = sum(
-                (_bs.get(k, 0) or 0)
-                for k in (
-                    "tokens_in",
-                    "tokens_out",
-                    "tokens_cache_read",
-                    "tokens_cache_write",
-                )
-            )
+            _bs = dict(_AGENT_PROGRESS.get(run_id) or {})
         _budget_reason = None
         if max_hours and max_hours > 0 and _elapsed_h >= max_hours:
             _budget_reason = f"time ceiling ({max_hours:g} hours) reached"
-        elif (
-            max_total_tokens and max_total_tokens > 0 and _tok_total >= max_total_tokens
-        ):
-            _budget_reason = f"token ceiling ({max_total_tokens:,}) exceeded"
+        else:
+            # Tek sayaç yerine iki tavan — para ve kaçak döngü ayrı ayrı.
+            _budget_reason = _budget_breach(_bs)
         if _budget_reason:
             _add_step(
                 run_id,
@@ -4837,7 +4917,9 @@ async def run(
         # Preserve the existing continuous defaults while the hard caps above
         # protect every run type from oversized hand-crafted form values.
         max_hours = min(max_hours, DEFAULT_CONTINUOUS_MAX_HOURS)
-        max_total_tokens = min(max_total_tokens, DEFAULT_CONTINUOUS_MAX_TOKENS)
+        # Token tavanı para vekili olmaktan çıktı: para tavanı devredeyken
+        # kaçak-döngü ölçeğine çıkar (bkz. _continuous_token_cap).
+        max_total_tokens = min(max_total_tokens, _continuous_token_cap())
     # App-wide convention: a DOTTED id (QQQ.NASDAQ) is an external-catalog
     # instrument — the studio AUTO cockpit posts it through the plain symbol
     # select, so promote it here instead of requiring a separate source field.
@@ -4986,6 +5068,7 @@ async def run(
             "started_at": datetime.now(UTC).timestamp(),
             "max_hours": max_hours,
             "max_total_tokens": max_total_tokens,
+            "max_total_cost_usd": _default_cost_cap(),
             "research_only": research_only,
             # Timeline spans (SVG Gantt — see _tl_begin/_tl_end)
             "timeline": [],
