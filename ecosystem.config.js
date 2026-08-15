@@ -40,11 +40,14 @@ module.exports = {
         // SERT tavanı; blok kodu ayrıca codegate'in AST + rol sözleşmesinden
         // geçmek zorunda. Hacim işi ucuz uçta, sözleşmesi katı iş güvenilir uçta.
         //
-        // `idea` ÖLÇÜLDÜ (2026-08-15, 8 çağrı): yerelde 8/8 başarılı, fazladan
-        // yalnız 2 çağrı (ikisi de tavan tırmanışında, süreç başına bir kerelik)
-        // — bu yüzden eşlemeye ALINMADI, yerelde kalıyor.
-        // `narrative` hâlâ ölçülmedi; şemasız düz metin olduğu için düşük riskli
-        // sayılıyor ama bu bir tahmin. Ölçmeden buraya eklemeyin.
+        // Dört yolun DÖRDÜ de ölçüldü (2026-08-15, yerel Qwen3.8-27B):
+        //   narrative    6/6   3.2-11.3 s   → yerelde
+        //   idea         8/8   28.7-189 s   → yerelde
+        //   composed    10/10  27-222 s     → yerelde
+        //   custom_block 4/8   20-226 s     → CLAUDE'DA (aşağıdaki eşleme)
+        // Desen: çıktının sözleşmesi katılaştıkça (düz metin → JSON → codegate'ten
+        // geçen Python) yerel modelin başarısı düşüyor. Bu liste ölçümdür, tahmin
+        // değil; değiştirmeden önce yeniden ölçün.
         NAUTILUS_MODEL_BY_PURPOSE: "custom_block=claude-fable-5",
         // Genel LLM çağrı deadline'ı (varsayılan 120 s). Ölçüm 2026-08-15:
         // yerel `idea` üretimleri 28.7-189.2 s arasında sürdü ve en uzunu TEK
