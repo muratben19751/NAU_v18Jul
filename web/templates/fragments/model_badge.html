@@ -3,8 +3,12 @@
    SIMPLE ve PRO uygulama varsayılanını kullanır — AUTO'da model koşu başına
    seçildiği için orada rozet ayrı yaşar (#mc-model-slot, studio.html). #}
 {% if llm_model_label %}
-<div class="model-badge" title="{{ llm_model_id }}">
+<div class="model-badge"
+     title="{{ llm_model_id }}{% if llm_model_hybrid %} · hibrit: {{ llm_model_hybrid }}{% endif %}">
   <span class="model-badge-k">MODEL</span>
-  <span class="model-badge-v">⬢ {{ llm_model_label }}</span>
+  {# Amaç-başına eşleme varsa rozet TEK modeli anlatmasın; ayrıntı title'da.
+     Sade metin, stilli span DEĞİL: aynı ek AUTO'da JS'in textContent ile
+     yazdığı slota da giriyor, iki yüzey aynı görünsün. #}
+  <span class="model-badge-v">⬢ {{ llm_model_label }}{% if llm_model_hybrid %} +hibrit{% endif %}</span>
 </div>
 {% endif %}

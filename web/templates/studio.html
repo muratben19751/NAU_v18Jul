@@ -65,7 +65,7 @@
         {# Hangi LLM koşacak/koşuyor. Idle'da picker'ı yansıtır (mcModel), bir
            koşu canlıyken cockpit fragment'i OOB ile koşan modeli yazar. #}
         <span class="mc-model-badge" id="mc-model-slot"
-              title="{{ llm_model_id }}">⬢ {{ llm_model_label }}</span>
+              title="{{ llm_model_id }}{% if llm_model_hybrid %} · hibrit: {{ llm_model_hybrid }}{% endif %}">⬢ {{ llm_model_label }}{% if llm_model_hybrid %} +hibrit{% endif %}</span>
         <span class="htmx-indicator mc-cost" id="agent-spinner">starting loop…</span>
         {# Both slots are refreshed by the cockpit fragment's hx-swap-oob. #}
         <span class="mc-cost" id="mc-cost-slot"></span>
@@ -470,6 +470,10 @@
   window.mcCheck = function (input) {
     input.parentElement.classList.toggle('on', input.checked);
   };
+  // Amaç-başına model eşlemesi (NAUTILUS_MODEL_BY_PURPOSE) — boş string = yok.
+  // `tojson` ile geçiyor: içerik env'den geliyor, şablona ham gömmek XSS yüzeyi
+  // olurdu.
+  var MC_HYBRID = {{ (llm_model_hybrid or "")|tojson }};
   // Model rozeti, drawer'daki picker'ı yansıtır. Bir koşu canlıyken cockpit
   // fragment'i aynı slotu OOB ile ezer (koşan model kazanır) — bu yüzden
   // rozet metni burada picker'ın etiketinden türetilir, sabit yazılmaz.
@@ -479,8 +483,12 @@
     var opt = select.options[select.selectedIndex];
     if (!opt) return;
     // "Fable 5 (varsayılan)" → "Fable 5"; "OR · x/y" olduğu gibi kalır.
-    slot.textContent = '⬢ ' + opt.text.replace(/\s*\(varsayılan\)\s*$/, '');
-    slot.title = opt.value || '{{ llm_model_id }}';
+    // Amaç-başına eşleme devredeyse ek buraya da girmeli: picker'ı yansıtan
+    // rozet, eşlenmiş amacın başka uca gittiğini söylemezse yalan söyler.
+    slot.textContent = '⬢ ' + opt.text.replace(/\s*\(varsayılan\)\s*$/, '')
+      + (MC_HYBRID ? ' +hibrit' : '');
+    slot.title = (opt.value || '{{ llm_model_id }}')
+      + (MC_HYBRID ? ' · hibrit: ' + MC_HYBRID : '');
   };
   // Brief AÇIK açılır ve varsayılanlarıyla dolu gelir: rozet picker'daki
   // modeli gösterir, DATE RANGE seçili sembol+TF'nin tam kapsamıyla dolar.

@@ -317,11 +317,18 @@ def llm_badge() -> dict[str, str]:
 
     Uygulama varsayılanını (kredi fallback'i devredeyse onu) çözer; SIMPLE/PRO
     yüzeyleri her zaman bunu kullanır. Şablonlarda ``llm_model_label`` /
-    ``llm_model_id``.
-    """
-    from agent import model_id, model_label
+    ``llm_model_id`` / ``llm_model_hybrid``.
 
-    return {"llm_model_label": model_label(), "llm_model_id": model_id()}
+    ``llm_model_hybrid`` amaç-başına eşleme devredeyken dolu gelir: tek bir model
+    adı yazmak o durumda yanlış olurdu (bkz. ``llm_client.hybrid_note``).
+    """
+    from agent import hybrid_note, model_id, model_label
+
+    return {
+        "llm_model_label": model_label(),
+        "llm_model_id": model_id(),
+        "llm_model_hybrid": hybrid_note(),
+    }
 
 
 def _mc_external_symbols() -> list[str]:

@@ -1473,3 +1473,18 @@ Yazarken kendi kuralımı çiğnedim ve test yakaladı: `float(sp["t0"] or now)`
 yazmıştım; `0.0` yanlış-değer olduğu için eski bir span "az önce başladı" diye
 raporlanıyordu — takılmayı tam arandığı yerde gizleyen bir kısayol. `_age()`
 ile açık `None` denetimine çevrildi ve teste bağlandı.
+
+## [2026-08-15] sync | Yerel LLM + hibrit: dört yol ölçüldü, anlatı düşüşü sessiz değil
+
+Yeni kaynak: `sources/07_yerel_llm_hibrit_olcumu_2026_08_15.md` (llama.cpp CUDA
+13.3 + Qwen3.8-27B kurulumu, dört LLM yolunun ölçümü, AUTO koşusu 14ff96e7).
+
+Güncellenen sayfalar: `model_secici_ve_gorunurluk` (üretimde 19/19 doğru
+yönlendirme), `kesilme_ve_degrade_gorunurlugu` (anlatı düşüşü + STOP yutulması
+düzeltmesi; tavan tırmanışının duvar saatini zorlaması), `llm_maliyet_kaldiraclari`
+(AÇIK: hibritte maliyet atfı tek modele yazılıyor), `webapp_module_map`
+(llm_client `model_for_purpose`/`hybrid_note`, llm_dispatch iki kullanım yeri).
+
+Açık kalan boşluk: maliyet satırı hibridi bilmiyor — `_llm_cost_usd` tek model
+alıyor, koşu maliyeti pinlenmiş modele atfediliyor (ölçülen vaka: 1,02 USD
+Claude'un custom_block çağrılarının bedeliyken `or:qwen3.8-27b`'ye yazıldı).

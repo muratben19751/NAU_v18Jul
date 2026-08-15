@@ -3,6 +3,7 @@ title: Kesilme (max_tokens) ve degrade görünürlüğü
 type: synthesis
 summary: Yapılandırılmış çıktı isteyen çağrılarda max_tokens bir doğruluk önkoşuludur; Claude'un kısa JSON'una göre ayarlanmış tavanlar reasoning tarzı bir modelde yanıtı kesip hatayı JSONDecodeError kılığına sokuyordu — tavanlar büyütüldü, kesilme kendi tipini kazandı ve fallback'ler artık sayılıp ⚠ ile ekrana taşınıyor.
 sources:
+  - sources/07_yerel_llm_hibrit_olcumu_2026_08_15.md
   - https://github.com/nautechsystems/nautilus_trader
   - https://openrouter.ai/api/v1/models
 key_concepts:
@@ -12,7 +13,7 @@ related:
   - wiki/synthesis/auto_mission_control.md
   - wiki/synthesis/webapp_module_map.md
   - wiki/synthesis/nau_deepr_toplu_sertlestirme_2026_08.md
-last_updated: 2026-08-08
+last_updated: 2026-08-15
 ---
 
 # Kesilme (max_tokens) ve degrade görünürlüğü
@@ -125,6 +126,46 @@ Diğer JSON çağrılarının tavanları (refine 700, chat 1000, breakdown 1500)
 dokunulmadan bırakıldı — ölçülmüş bir kesilmeleri yok ve artık retry ağı
 altlarında duruyor. Kesilirlerse bunu bir kez fazladan çağrıyla telafi ederler;
 kalıcı çözüm tavanı modele göre çözmek olurdu.
+
+## Anlatı düşüşü sessizdi — ve STOP'u yutuyordu (2026-08-15)
+
+Üç anlatı yüzeyi (`backtest._generate_narrative`, `lab._lab_narrative`,
+`agent_backtest._winner_narrative`) aynı deseni taşıyordu:
+`except Exception:` → şablon cümlesi döndür. İki ayrı kusur:
+
+1. **Sessizlik.** LLM hiç konuşmasa bile ekranda normal duran bir cümle çıkıyordu:
+   `degraded` bayrağı yok, log yok. Ölçüm sırasında "LLM mi konuştu, şablon mu"
+   sorusu ancak şablon metnini birebir yeniden üretip karşılaştırarak
+   yanıtlanabildi — yani dışarıdan **ayırt edilemez** durumdaydı.
+2. **STOP'un yutulması (asıl kusur).** `LLMCallCancelled` de bir `Exception`.
+   Koşu iptal edilirken anlatı üretiliyorsa iptal, başarılı görünen bir cümleye
+   dönüşüyordu. `llm_client._raise_if_llm_control_abort`'un docstring'i tam olarak
+   bunu yasaklıyor ("Never disguise STOP/budget control flow as a successful
+   fallback") — **sözleşme vardı, üç yer de çağırmıyordu.**
+
+Düzeltme üçünde aynı: önce `_raise_if_llm_control_abort(e)` (STOP ve
+`llm_control_abort` işaretli bütçe iptalleri yukarı geçer), sonra sebebi ve
+yüzeyi adıyla yazan `logging.warning(..., exc_info=True)`. `llm_client` import'u
+except içinde kendi guard'ında: `agent` import'u patladıysa fallback yine
+çalışsın, düzeltme yeni bir sert hata yüzeyi açmasın.
+
+Ders: bir sözleşmenin var olması her çağrı yerinde uygulandığı anlamına gelmez;
+testle zorunlu kılınmalı. `tests/test_narrative_fallback_is_not_silent.py` üç
+yüzeyi ayrı ayrı parametrize eder (sıradan hata log'a geçer / STOP yutulmaz /
+bütçe iptali yutulmaz).
+
+## Yerel uçta tavan tırmanışı ölçüldü (2026-08-15)
+
+Öğrenilen-tavan mekanizması yerel Qwen3.8-27B'de tam da tasarlandığı gibi
+çalıştı — ve maliyeti **süreç başına bir kerelik** çıktı, çağrı başına değil:
+`idea` 1500 → 6000 → 16000 tırmandıktan sonra 6 üretimin 6'sı tek çağrıda,
+`narrative` 200 → 800'den sonra 5'in 5'i tek çağrıda bitti.
+
+Ama tırmanış yeni bir sınır doğurdu: 16000'lik tavan modelin ~10k token yazmasına
+izin veriyor, ~52 tok/s'de bu ~190 s eder ve `NAUTILUS_LLM_CALL_TIMEOUT`'un 120 s
+varsayılanına çarpar (ölçüm: 8 `idea` üretiminin 1'i). Üretimde 300 s'e çekildi.
+**Bağlı sabit dersi:** bir sabiti kalibre ederken ona bağlı olanı da kalibre et —
+tavan kesilmeyi çözerken duvar saatini zorlar. Ölçüm: [[07_yerel_llm_hibrit_olcumu_2026_08_15]].
 
 <!-- BACKLINKS:BEGIN -->
 ## Referenced by

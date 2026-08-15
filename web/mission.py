@@ -243,6 +243,20 @@ def _model_id(picked: str | None) -> str:
     return model_id(picked)
 
 
+def _model_hybrid() -> str:
+    """Amaç-başına eşleme notu ("" = eşleme yok, rozet tek modeli anlatır).
+
+    AUTO rozeti koşunun PİNİNİ yazıyor; eşleme devredeyken `custom_block` gibi
+    bir amaç başka uca gider ve rozet tek başına yanlış olur. Aynı tembel-import
+    disiplini: bu modül LLM istemcisi kurmadan render edilebilmeli.
+    """
+    try:
+        from agent import hybrid_note
+    except Exception:
+        return ""
+    return hybrid_note()
+
+
 def mission_view(
     state: dict,
     *,
@@ -343,6 +357,9 @@ def mission_view(
         # model adı yazsın diye burada çözülür (agent.model_label).
         "model_label": _model_label(brief.get("model")),
         "model_id": _model_id(brief.get("model")),
+        # Eşleme devredeyken rozet tek modeli anlatmasın: hangi amacın nereye
+        # gittiği yazılsın (boşsa şablon hiçbir şey göstermez).
+        "model_hybrid": _model_hybrid(),
         # Boş effort'u "medium" gibi bir seviyeyle DOLDURMUYORUZ: ucun kendi
         # varsayılanı sürüme göre değişir, uydurulan seviye yanlış bilgi olur.
         "effort_label": (brief.get("effort") or "").strip() or "varsayılan",

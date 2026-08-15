@@ -750,7 +750,26 @@ def _lab_narrative(last_row: dict, state: dict) -> str:
             ],
         )
         return resp.content[0].text.strip()
-    except Exception:
+    except Exception as e:
+        # STOP/bütçe iptali bir ARIZA DEĞİL, kontrol akışıdır: onu şablon
+        # cümlesine çevirmek iptali başarılı bir sonuç gibi gösterirdi
+        # (llm_client._raise_if_llm_control_abort sözleşmesi).
+        try:
+            from llm_client import _raise_if_llm_control_abort
+        except Exception:  # llm_client yoksa LLM yolu zaten hiç çalışmadı
+            pass
+        else:
+            _raise_if_llm_control_abort(e)
+        # Sessiz düşüş, ekranda NORMAL görünen bir cümle üretir: bayrak yok,
+        # log yok, kullanıcı LLM'in hiç konuşmadığını bilmez. En az operatör
+        # bunu görsün.
+        logging.warning(
+            "%s: LLM anlatısı üretilemedi (%s) — şablon metnine düşülüyor: %s",
+            "lab_narrative",
+            type(e).__name__,
+            e,
+            exc_info=True,
+        )
         pnl = last_row.get("pnl", 0) or 0
         return (
             f"This lab run generated and tested the {state['strategy_name']} strategy. "

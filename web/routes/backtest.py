@@ -499,8 +499,26 @@ def _generate_narrative(last_row: dict) -> str:
             messages=[{"role": "user", "content": prompt}],
         )
         return resp.content[0].text.strip()
-    except Exception:
-        pass
+    except Exception as e:
+        # STOP/bütçe iptali bir ARIZA DEĞİL, kontrol akışıdır: onu şablon
+        # cümlesine çevirmek iptali başarılı bir sonuç gibi gösterirdi
+        # (llm_client._raise_if_llm_control_abort sözleşmesi).
+        try:
+            from llm_client import _raise_if_llm_control_abort
+        except Exception:  # llm_client yoksa LLM yolu zaten hiç çalışmadı
+            pass
+        else:
+            _raise_if_llm_control_abort(e)
+        # Sessiz düşüş, ekranda NORMAL görünen bir cümle üretir: bayrak yok,
+        # log yok, kullanıcı LLM'in hiç konuşmadığını bilmez. En az operatör
+        # bunu görsün.
+        logging.warning(
+            "%s: LLM anlatısı üretilemedi (%s) — şablon metnine düşülüyor: %s",
+            "narrative",
+            type(e).__name__,
+            e,
+            exc_info=True,
+        )
     # Fallback template
     pnl_dir = "gained" if (last_row.get("pnl") or 0) >= 0 else "lost"
     return (
