@@ -693,6 +693,7 @@ dependencies = [
     { name = "pandas" },
     { name = "pyarrow" },
     { name = "python-multipart" },
+    { name = "requests" },
     { name = "uvicorn", extra = ["standard"] },
 ]
 
@@ -722,6 +723,7 @@ requires-dist = [
     { name = "pyarrow", specifier = ">=17" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
     { name = "python-multipart", specifier = ">=0.0.9" },
+    { name = "requests", specifier = ">=2.32" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.6" },
     { name = "streamlit", marker = "extra == 'legacy'", specifier = ">=1.36" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.32" },

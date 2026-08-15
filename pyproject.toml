@@ -29,6 +29,12 @@ dependencies = [
     "pandas>=2.2",
     "pyarrow>=17",
     "numpy>=1.26",
+    # `data.py` bunu MODÜL SEVİYESİNDE import eder (Bybit REST istemcisi), yani
+    # `server`/`data`/`stitch_ticker` import zincirindeki her şey buna bağlı.
+    # Beyan edilmediği için `uv sync --locked` onu kurmuyordu ve süit
+    # TOPLANAMADAN ölüyordu (40 collection error) — kurulu geldiği makinelerde
+    # transitif olarak gelmesi bu boşluğu gizlemişti.
+    "requests>=2.32",
     "ddgs>=1.0",
     "fastapi>=0.115",
     "uvicorn[standard]>=0.32",
