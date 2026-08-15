@@ -693,12 +693,14 @@ def test_truncated_response_retries_once_with_a_bigger_cap(monkeypatch):
 
     seen: list[int] = []
     # _create_message/_create_message_once (llm_dispatch.py, Adım 9) read
-    # _ledger_record/current_model as their own bare module globals --
+    # _ledger_record/model_for_purpose as their own bare module globals --
     # patching agent's copies would not reach them. _ledger_record itself
     # is never re-exported (discipline: patch token_ledger.record instead,
     # so a real ledger write is prevented regardless of caller module).
     monkeypatch.setattr("token_ledger.record", lambda *a, **k: None)
-    monkeypatch.setattr(llm_dispatch, "current_model", lambda: "claude-fable-5")
+    monkeypatch.setattr(
+        llm_dispatch, "model_for_purpose", lambda _purpose="": "claude-fable-5"
+    )
     client = _fake_client(["max_tokens", "end_turn"], seen)
 
     resp = agent._create_message(client, "composed", max_tokens=900, messages=[])
@@ -719,7 +721,9 @@ def test_truncation_surviving_the_retry_raises_its_own_type(monkeypatch):
 
     seen: list[int] = []
     monkeypatch.setattr("token_ledger.record", lambda *a, **k: None)
-    monkeypatch.setattr(llm_dispatch, "current_model", lambda: "claude-fable-5")
+    monkeypatch.setattr(
+        llm_dispatch, "model_for_purpose", lambda _purpose="": "claude-fable-5"
+    )
     client = _fake_client(["max_tokens"], seen)
 
     with pytest.raises(agent.TruncatedResponse):
@@ -747,11 +751,13 @@ def test_learned_ceiling_survives_a_concurrent_smaller_write(monkeypatch):
 
     key = ("claude-fable-5", "composed")
     # _create_message (llm_dispatch.py, Adım 9) reads _LEARNED_MAX_TOKENS/
-    # _ledger_record/current_model as its own bare module globals --
+    # _ledger_record/model_for_purpose as its own bare module globals --
     # patching agent's copies would not reach them.
     monkeypatch.setattr(llm_dispatch, "_LEARNED_MAX_TOKENS", {})
     monkeypatch.setattr("token_ledger.record", lambda *a, **k: None)
-    monkeypatch.setattr(llm_dispatch, "current_model", lambda: "claude-fable-5")
+    monkeypatch.setattr(
+        llm_dispatch, "model_for_purpose", lambda _purpose="": "claude-fable-5"
+    )
 
     barrier = threading.Barrier(2)
     results: dict[str, object] = {}

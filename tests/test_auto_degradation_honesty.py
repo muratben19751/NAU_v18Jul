@@ -157,7 +157,9 @@ def test_timeout_reaches_the_budget_observer_but_stop_does_not(monkeypatch):
     monkeypatch.setattr(llm_dispatch, "_observe_llm", lambda **e: seen.append(e))
     monkeypatch.setattr(llm_dispatch, "_admit_llm_request", lambda *a, **k: None)
     monkeypatch.setattr(llm_dispatch, "_check_llm_cancelled", lambda: None)
-    monkeypatch.setattr(llm_dispatch, "current_model", lambda: "claude-test-model")
+    monkeypatch.setattr(
+        llm_dispatch, "model_for_purpose", lambda _purpose="": "claude-test-model"
+    )
     recorded: list[tuple] = []
     monkeypatch.setattr(
         llm_dispatch,

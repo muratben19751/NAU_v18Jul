@@ -1,5 +1,11 @@
-"""LLM client selection: model/effort pins, OpenRouter catalog, control
-plane, Claude Code CLI backend.
+"""LLM client selection: model/effort pins, amaç-başına model eşlemesi,
+OpenRouter catalog, control plane, Claude Code CLI backend.
+
+Model seçimi iki katmanlıdır: `current_model()` koşu/thread pinini çözer,
+`model_for_purpose(purpose)` bunun üstüne `NAUTILUS_MODEL_BY_PURPOSE`
+eşlemesini uygular (hibrit koşu — hacim işi ucuz uçta, sözleşmesi katı iş
+güvenilir uçta). Çağrı yolları ikincisini kullanır; eşleme yoksa ikisi aynı
+cevabı verir.
 
 agent.py decomposition (Adım 2-4, safe-first slice): extracted verbatim from
 agent.py's Domain B (model/effort/OpenRouter-catalog selection, Adım 2),
@@ -370,6 +376,103 @@ def current_model() -> str:
     if _active_model:
         return _active_model
     return pin or MODEL
+
+
+# ── Amaç-başına model (hibrit koşu) ────────────────────────────────────────
+#
+# Model pini KOŞU başınadır (`set_thread_model`): bir turu bir uca bağlarsın ve
+# o turun HER çağrısı oraya gider. Ölçüm (2026-08-15) bunun tek düğme olmasının
+# pahalı olduğunu gösterdi: yerel Qwen3.8-27B `composed` çağrılarında 10/10
+# başarılıyken `custom_block`'ta 4/8'de kaldı — çünkü o yolun tavanı
+# (`AGENT_CUSTOM_BLOCK_MAX_TOKENS`, hi=1_800) terse bir modele göre kalibre.
+# İki uç arasında AMAÇ bazında bölüşmek, koşuyu tek bir uca mahkûm etmekten
+# ölçülebilir biçimde iyi: hacim işi ucuz uçta, sözleşmesi katı olan iş
+# güvenilir uçta.
+#
+# Biçim: "custom_block=claude-fable-5,narrative=or:qwen3.8-27b"
+# Anahtarlar `_create_message(_purpose=...)` etiketleridir: composed, idea,
+# custom_block, narrative, lab_idea. Etiketsiz çağrılar "llm" sayılır.
+_PURPOSE_MODEL_ENV = "NAUTILUS_MODEL_BY_PURPOSE"
+_purpose_models: tuple[str, dict[str, str]] | None = None
+_purpose_models_lock = threading.Lock()
+
+
+def _valid_model_value(model: str) -> bool:
+    """`set_thread_model`'in kabul ettiği değer kümesi — tek doğruluk kaynağı."""
+    return model in SELECTABLE_MODELS or (model.startswith("or:") and len(model) > 3)
+
+
+def purpose_model_map() -> dict[str, str]:
+    """`NAUTILUS_MODEL_BY_PURPOSE` eşlemesi (geçersiz girdiler atılmış).
+
+    Ham env metnine göre cache'lenir: değer değişince yeniden ayrıştırılır, aynı
+    kalınca her LLM çağrısında string parse edilmez.
+
+    Geçersiz bir model değeri SESSİZCE atlanmaz, log'a düşer — yanlış yazılmış
+    bir id'nin cezası, o amacın sessizce yanlış uca gitmesi olurdu.
+    """
+    global _purpose_models
+    raw = os.environ.get(_PURPOSE_MODEL_ENV, "").strip()
+    cached = _purpose_models
+    if cached is not None and cached[0] == raw:
+        return cached[1]
+
+    parsed: dict[str, str] = {}
+    for part in raw.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        purpose, sep, model = part.partition("=")
+        purpose, model = purpose.strip(), model.strip()
+        if not sep or not purpose or not model:
+            logging.warning(
+                "%s: %r 'amaç=model' biçiminde değil — atlandı",
+                _PURPOSE_MODEL_ENV,
+                part,
+            )
+            continue
+        if not _valid_model_value(model):
+            logging.warning(
+                "%s: %r için %r geçerli bir model değeri değil — atlandı "
+                "(seçilebilirler: %s veya 'or:<id>')",
+                _PURPOSE_MODEL_ENV,
+                purpose,
+                model,
+                ", ".join(SELECTABLE_MODELS),
+            )
+            continue
+        parsed[purpose] = model
+
+    with _purpose_models_lock:
+        if parsed:
+            logging.info(
+                "amaç-başına model eşlemesi: %s",
+                ", ".join(f"{k} → {v}" for k, v in sorted(parsed.items())),
+            )
+        _purpose_models = (raw, parsed)
+    return parsed
+
+
+def model_for_purpose(purpose: str) -> str:
+    """Bu amaç için GERÇEKTEN koşacak model.
+
+    Eşleme yoksa `current_model()` ile aynı cevabı verir — yani bu fonksiyon
+    her çağrı yolunda `current_model()`'in yerine geçebilir.
+
+    Kredi kuralı `current_model()` ile AYNI ve aynı gerekçeyle: kredi tükenmesi
+    bir fatura gerçeğidir, tercihi ezer — ama yalnız kendi fatura alanında.
+    `or:` bir başka hesaptır; Claude kredisinin bitmesi onu etkilemez, yoksa
+    "Claude'un kredisi bitti, yereline geç" senaryosu tam ihtiyaç anında
+    çalışmazdı.
+    """
+    mapped = purpose_model_map().get((purpose or "").strip())
+    if not mapped:
+        return current_model()
+    if mapped.startswith("or:"):
+        return mapped
+    if _active_model:
+        return _active_model
+    return mapped
 
 
 # ── Control plane: cancellation / telemetry / budget-admission / degradation

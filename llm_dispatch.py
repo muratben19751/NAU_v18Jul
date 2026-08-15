@@ -65,8 +65,8 @@ from llm_client import (
     _llm_request_token_bound,
     _observe_llm,
     _output_cap_telemetry,
-    current_model,
     llm_observer_installed,
+    model_for_purpose,
 )
 from openrouter_backend import (
     _build_openrouter_client,
@@ -391,7 +391,12 @@ def _create_message(client, _purpose: str = "", **kwargs):
     """
     _check_llm_cancelled()
     base = int(kwargs.get("max_tokens") or 0)
-    key = (current_model(), _purpose or "llm")
+    # Öğrenilen tavan (model, amaç) çiftine yazılır ve model artık amaca göre
+    # değişebiliyor — anahtar da EFEKTİF modeli kullanmalı. `current_model()`
+    # kalsaydı yerel uçta öğrenilen 7200'lük tavan, aynı turda Claude'a giden
+    # `custom_block` çağrısına da uygulanırdı: her çağrı gereksiz büyük bütçeyle
+    # başlar, üstelik o tavanı hiç doğrulamamış bir uçta.
+    key = (model_for_purpose(_purpose or "llm"), _purpose or "llm")
     with _LEARNED_MAX_TOKENS_LOCK:
         learned = _LEARNED_MAX_TOKENS.get(key, 0)
     if learned > base:
@@ -456,7 +461,9 @@ def _create_message_once(client, _purpose: str = "", **kwargs):
         kwargs.setdefault(
             "timeout", float(os.environ.get("NAUTILUS_LLM_CALL_TIMEOUT", "120"))
         )
-    model = current_model()
+    # Amaç-başına eşleme varsa bu çağrı koşunun pinine DEĞİL ona gider; eşleme
+    # yoksa `current_model()` ile birebir aynı sonuç (bkz. model_for_purpose).
+    model = model_for_purpose(_purpose or "llm")
 
     requested_max_tokens = int(kwargs.get("max_tokens") or 0)
 

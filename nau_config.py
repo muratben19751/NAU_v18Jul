@@ -208,6 +208,16 @@ _LLM = [
         "Muhakeme eforu ipucu (destekleyen modellerde).",
     ),
     _v(
+        "NAUTILUS_MODEL_BY_PURPOSE",
+        "str",
+        "",
+        "llm_client",
+        "Amaç-başına model eşlemesi — koşu pinini AMAÇ bazında ezer. Biçim: "
+        "'custom_block=claude-fable-5,narrative=or:qwen3.8-27b'. Amaçlar: "
+        "composed, idea, custom_block, narrative, lab_idea. Hibrit koşu için: "
+        "hacim işini ucuz uca, sözleşmesi katı işi güvenilir uca ver.",
+    ),
+    _v(
         "NAUTILUS_LLM_CALL_TIMEOUT",
         "int",
         "120",

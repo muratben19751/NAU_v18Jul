@@ -15,6 +15,35 @@ module.exports = {
       autorestart: true,
       env: {
         PYTHONUNBUFFERED: "1",
+        // Yerel LLM ucu (llama-server, Qwen3.8-27B). Varsayılan backend
+        // DEĞİŞMİYOR — Claude yolu olduğu gibi duruyor; bu üçlü yalnız model
+        // seçicisine "OR · qwen3.8-27b" satırını ekler ve o satır seçilince
+        // koşu localhost'a pinlenir (set_thread_model → "or:<id>").
+        //
+        // DİKKAT: OPENROUTER_BASE_URL localhost'a bakarken GERÇEK openrouter.ai
+        // uçları erişilemez olur — ikisi aynı anda kullanılamaz.
+        OPENROUTER_BASE_URL: "http://127.0.0.1:8080/v1",
+        OPENROUTER_API_KEY: "local", // llama-server anahtar doğrulamıyor, boş olamıyor
+        // Pin listenin YERİNE geçer: ağa çıkmaz, ücretsiz filtresinden muaftır.
+        NAUTILUS_OPENROUTER_MODELS: "qwen3.8-27b",
+        // custom_block yolunun kendi deadline'ı; varsayılan 75 s, izin verilen
+        // tavan 120 s (agent.py `_call_claude_for_block`). Ölçüldü 2026-08-15:
+        // yerel Qwen3.8-27B'de custom_block başarısı 75 s'de 2/8, 120 s'de 4/8.
+        // Sebep AGENT_CUSTOM_BLOCK_MAX_TOKENS'ın 1800'lük SERT tavanı (hi=1_800):
+        // düşünen model onu her çağrıda aşıyor, kesilme 7200'e retry doğuruyor,
+        // retry de deadline'ı yiyor. Claude'a etkisi yok — o 75 s'in çok altında
+        // bitiriyor; bu yalnız yavaş sağlayıcıda hata tespitini geciktirir.
+        AGENT_CUSTOM_BLOCK_TIMEOUT: "120",
+        // HİBRİT: koşu yerel uca pinlense bile `custom_block` Claude'da kalır.
+        // Ölçüm 2026-08-15 — yerel Qwen3.8-27B: composed 10/10, custom_block
+        // 4/8. Sebep o yolun terse bir modele göre kalibre edilmiş 1800'lük
+        // SERT tavanı; blok kodu ayrıca codegate'in AST + rol sözleşmesinden
+        // geçmek zorunda. Hacim işi ucuz uçta, sözleşmesi katı iş güvenilir uçta.
+        //
+        // `idea` ve `narrative` bilerek eşlenmedi: ölçülmediler. idea kısa JSON,
+        // narrative şemasız düz metin — ikisi de düşük riskli, ama bu bir tahmin.
+        // Ölçmeden buraya eklemeyin.
+        NAUTILUS_MODEL_BY_PURPOSE: "custom_block=claude-fable-5",
       },
     },
   ],

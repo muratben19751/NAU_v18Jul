@@ -12,7 +12,7 @@ related:
   - wiki/synthesis/auto_mission_control.md
   - wiki/synthesis/tear_sheet_overlay.md
   - wiki/synthesis/kesilme_ve_degrade_gorunurlugu.md
-last_updated: 2026-08-03
+last_updated: 2026-08-15
 ---
 
 # Model seçici ve model görünürlüğü
@@ -264,6 +264,44 @@ bağlantı hatası kullanıcıya bakacağı yeri göstermiyordu; (3)
 Eskiden aynı `ANTHROPIC_API_KEY` iki farklı uca gidiyordu (biri yerel proxy,
 öbürü `api.anthropic.com`), yani bir proxy anahtarı üçüncü tarafa
 gönderilebiliyordu. Testler: `tests/test_llm_endpoint_default.py`.
+
+## Amaç-başına model (hibrit koşu) — 2026-08-15
+
+Model pini KOŞU başınaydı (`set_thread_model`): bir turu bir uca bağlıyordun ve o
+turun her çağrısı oraya gidiyordu. Yerel bir uç (llama-server + Qwen3.8-27B)
+ölçüldüğünde bunun tek düğme olmasının pahalı olduğu görüldü:
+
+| yol | yerel uçta sonuç |
+|---|---|
+| `composed` ×10 | **10/10** |
+| `custom_block` ×8 | **4/8** (75 s deadline'da 2/8) |
+
+Sebep modelin genel kalitesi değil: `custom_block` yolunun kendi tavanı
+(`AGENT_CUSTOM_BLOCK_MAX_TOKENS`, varsayılan **ve** üst sınırı 1800) terse bir
+modele göre kalibre; düşünen bir model onu her çağrıda aşıyor, kesilme retry
+doğuruyor, retry de `AGENT_CUSTOM_BLOCK_TIMEOUT`'u yiyor. Üstelik blok kodu
+ayrıca codegate'in AST + rol sözleşmesinden geçmek zorunda.
+
+Çözüm düğmeyi bölmek: `NAUTILUS_MODEL_BY_PURPOSE`, biçim
+`custom_block=claude-fable-5,narrative=or:qwen3.8-27b`. Anahtarlar
+`_create_message(_purpose=...)` etiketleri. `llm_client.model_for_purpose(purpose)`
+eşleme yoksa `current_model()` ile birebir aynı cevabı verir, yani çağrı
+yollarında onun yerine geçebilir (`llm_dispatch` iki yerde kullanıyor:
+sağlayıcıya giden model ve öğrenilen tavanın anahtarı).
+
+Kredi kuralı `current_model()` ile aynı: kredi tükenmesi tercihi ezer ama yalnız
+kendi fatura alanında — `or:` başka bir hesap, Claude kredisinin bitmesi onu
+etkilemez. Testler: `tests/test_model_by_purpose.py`.
+
+### AÇIK KALAN GÖRÜNÜRLÜK BOŞLUĞU
+
+Bu sayfanın başlığındaki iddia — "hangi LLM'in koştuğu her ekranda yazılır" —
+eşleme devredeyken **kısmen yanlış**: rozet koşunun PİNİNİ gösterir, oysa eşlenmiş
+amaç başka uca gitmiştir. Muhasebe doğru (token defteri çağrı başına gerçek
+modeli yazar, `_ledger_record(resp, called_model, purpose)`), ama ekran değil.
+Sayfanın kendi ilkesine göre bu kapatılmalı: rozet ya efektif model kümesini
+göstermeli ya da "hibrit" olduğunu söylemeli. Şimdilik eşleme yalnız açılış
+log'unda görünür (`amaç-başına model eşlemesi: ...`).
 
 <!-- BACKLINKS:BEGIN -->
 ## Referenced by
