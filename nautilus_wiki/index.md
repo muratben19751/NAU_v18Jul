@@ -9,6 +9,7 @@ Bu sayfa `tools/wiki_tools.py index` tarafından her sayfanın frontmatter'ında
 - [[04_backtesting_docs|04 Backtesting Docs]]  (`sources\04_backtesting_docs.md`)
 - [[05_latest_docs_research|05 Latest Docs Research]]  (`sources\05_latest_docs_research.md`)
 - [[06_concepts_docs_v1230|06 Concepts Docs V1230]]  (`sources\06_concepts_docs_v1230.md`)
+- [[07_yerel_llm_hibrit_olcumu_2026_08_15|07 Yerel Llm Hibrit Olcumu 2026 08 15]]  (`sources\07_yerel_llm_hibrit_olcumu_2026_08_15.md`)
 
 ## Entities (somut bileşenler)
 - [[adapters|Adapters]] — 17+ hazır entegrasyon (Binance, IB, Databento, Betfair vb.) ports-and-adapters mimarisi ile core motoru değiştirmeden REST+WebSocket üzerinden bağlanır.  (`wiki\entities\adapters.md`)

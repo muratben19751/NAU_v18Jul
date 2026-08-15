@@ -3,6 +3,7 @@ title: LLM maliyet kaldıraçları — AUTO ve Studio token tüketimi
 type: synthesis
 summary: 10 günlük defter denetimi — 21,5M token / ~$346 nominal, %99'u fable-5'te; fatura output ($103) + cache yazımı ($234, 1h TTL ×2). Ölçülen kaldıraçlar sırayla model (sonnet-5 −61%), effort (ek −52%), cache prefix sabitliği; max_tokens CLI yolunda ölü; --effort 2026-08-04'te bağlandı (seçenek var, üretim ölçümü yok); kokpit maliyeti OpenRouter koşularında 3,33× şişik (thread-local model pini), çağrıların %92'si etiketsiz.
 sources:
+  - sources/07_yerel_llm_hibrit_olcumu_2026_08_15.md
   - https://github.com/muratben19751/NAU_v18Jul
   - https://platform.claude.com/docs/en/pricing
 key_concepts:
@@ -13,7 +14,7 @@ related:
   - wiki/synthesis/auto_mission_control.md
   - wiki/synthesis/webapp_module_map.md
   - wiki/synthesis/nau_performans_denetimi.md
-last_updated: 2026-08-04
+last_updated: 2026-08-15
 ---
 
 # LLM maliyet kaldıraçları
@@ -188,9 +189,31 @@ Deftere 8 sentetik `custom_block` satırı düşmüş (fable-5; `in=10 out=5`, `
    birlikte gözden geçir. Effort ile ÇARPILIR: ölçülen bileşik −81%.
 4. `composed`/`idea` prefix'ini sabitle (`custom_block`'ta uygulanan desen).
 
+## Hibritte maliyet ATFI yanlış modele yazılıyor (2026-08-15, AÇIK)
+
+Amaç-başına model eşlemesi (`NAUTILUS_MODEL_BY_PURPOSE`) geldikten sonra bir
+koşuda birden fazla model para harcayabiliyor. Maliyet satırı bunu bilmiyor:
+`web/routes/agent_backtest._llm_cost_usd(ti, to, tcr, tcw, model)` TEK bir model
+alıyor ve `token_snapshot` bütün turu ona yazıyor.
+
+Ölçülen vaka (koşu `14ff96e7`): `pricing_model: 'or:qwen3.8-27b'`,
+`cost_usd: 1.019011`, `cost_source: 'provider_reported'`. **Sayı doğru, etiket
+yanlış** — o 1,02 USD tamamen Claude'un 7 `custom_block` çağrısının bedeli
+(14.050 çıktı token'ı, Claude CLI `total_cost_usd` bildiriyor). Yerel model
+bedava; ekranda ise "yerel Qwen 1 dolar yaktı" gibi görünüyor.
+
+Zararı sıradan bir etiket hatasından büyük: bu satır tam da "yerel model bedava"
+olan kararı çürütür gibi duruyor. Rozet tarafındaki aynı boşluk kapatıldı
+([[model_secici_ve_gorunurluk]], `hybrid_note`), maliyet tarafı **açık**.
+
+Veri zaten var: defter her çağrıyı gerçek modeliyle yazıyor
+(`_ledger_record(resp, called_model, purpose)`). Yanlış olan toplama — maliyet
+amaç/model bazında kırılmalı. Ölçüm: [[07_yerel_llm_hibrit_olcumu_2026_08_15]].
+
 <!-- BACKLINKS:BEGIN -->
 ## Referenced by
 
 - [[auto_mission_control]]
+- [[model_secici_ve_gorunurluk]]
 - [[webapp_module_map]]
 <!-- BACKLINKS:END -->

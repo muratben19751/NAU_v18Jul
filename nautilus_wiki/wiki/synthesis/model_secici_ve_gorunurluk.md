@@ -3,6 +3,7 @@ title: Model seçici ve model görünürlüğü
 type: synthesis
 summary: Hangi LLM'in koştuğu her ekranda çözülmüş adıyla yazılır; OpenRouter listesi openrouter.ai kataloğundan canlı gelir, varsayılanda ücretsiz uçlarla sınırlıdır ve çekim başarısızsa statik yedeğe düşer — asla uydurma ya da sürpriz-faturalı id'ye.
 sources:
+  - sources/07_yerel_llm_hibrit_olcumu_2026_08_15.md
   - https://github.com/nautechsystems/nautilus_trader
   - https://openrouter.ai/api/v1/models
 key_concepts:
@@ -313,6 +314,16 @@ slotu `textContent` ile ezdiği için oraya konan bir `<span>` ilk seçimde yok
 olurdu; aynı ek JS tarafında da üretilir, eşleme metni şablona `|tojson` ile
 geçer. Testler: `tests/test_model_badge_is_hybrid_aware.py` (8) — üç yüzey ayrı
 ayrı, hem eşlemeli hem eşlemesiz. Tarayıcıda da doğrulandı.
+
+## Üretimde doğrulandı (koşu 14ff96e7, 2026-08-15)
+
+Hibrit ilk gerçek AUTO koşusunda **19 LLM çağrısının 19'unu** doğru uca yolladı:
+`composed` ×8 + `idea` ×4 → yerel `qwen3.8-27b`, `custom_block` ×7 →
+`claude-fable-5`. 7 strateji önerildi, hiçbiri `degraded` değil; hata/timeout 0.
+
+Aynı koşu, kapanmamış kardeş boşluğu da gösterdi: rozet artık hibridi yazıyor ama
+**maliyet satırı yazmıyor** — bütün tur maliyeti koşunun pinlenmiş modeline
+atfediliyor. Bkz. [[llm_maliyet_kaldiraclari]].
 
 <!-- BACKLINKS:BEGIN -->
 ## Referenced by
