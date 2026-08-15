@@ -366,6 +366,15 @@ _AGENT = [
         "Bir sonucun aday sayılması için gereken asgari işlem sayısı.",
     ),
     _v(
+        "AGENT_BENCHMARK_GATE",
+        "str",
+        "risk_adjusted",
+        "web.routes.agent_backtest",
+        "Benchmark kapısının ölçüsü: 'risk_adjusted' (Calmar üstünlüğü asıl ölçü, "
+        "alfa şart değil ama CAGR>0 tabanı var) | 'absolute' (yıllık alfa pozitif "
+        "OLMALI — eski davranış).",
+    ),
+    _v(
         "AGENT_HOLDOUT_MIN_TRADES",
         "int",
         "20",

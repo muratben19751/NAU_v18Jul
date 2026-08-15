@@ -251,6 +251,27 @@ HOLDOUT_REQUIRE_POSITIVE_PNL = True
 HOLDOUT_REQUIRE_POSITIVE_SHARPE = True
 HOLDOUT_REQUIRE_POSITIVE_EXCESS = True
 
+# Benchmark kapısının ÖLÇÜSÜ (kullanıcı kararı, 2026-08-15).
+#
+# "absolute"      — yıllık alfa POZİTİF olmalı (buy&hold'u mutlak getiride geç)
+#                   VE Calmar'ı da geç. Eski davranış.
+# "risk_adjusted" — ASIL ölçü Calmar üstünlüğü; alfanın pozitif olması ŞART
+#                   DEĞİL, ama strateji para kazanıyor olmalı (CAGR > 0).
+#
+# Gerekçe ölçümden: koşu 1fa9870e'de en iyi aday (LRC Dip DMI ATR OBV, 1-HOUR)
+# 784 işlemde +%442 yaptı, düşüşü −%26'da tuttu ve Calmar'da buy&hold'u GEÇTİ
+# (0,292 vs 0,269) — ama yıllık alfası −%6,8 olduğu için elendi. QQQ 22,7 yılda
+# yılda %14,5 yapmış; long-only bir strateji piyasadan zaman zaman çıktığı için
+# mutlak getiride kaybeder. Ölçüldü: pencereyi kısaltmak da kurtarmıyor, QQQ'nun
+# HER penceresinde CAGR %14-24 arası (3 yılda %24,2 ile daha da zor).
+#
+# Takas açık: bu mod "daha az getiri + çok daha az düşüş" stratejilerini kataloğa
+# alır. Sermayeyi korumak öncelikse doğru; mutlak getiri kovalanıyorsa "absolute"
+# moduna dönülmeli.
+BENCHMARK_GATE_MODE = (
+    os.environ.get("AGENT_BENCHMARK_GATE", "risk_adjusted").strip().lower()
+)
+
 # Continuous AUTO is bounded by default. Operators can choose other positive
 # values through the form/env; an explicit zero no longer creates an accidental
 # unbounded bill/worker loop.
@@ -1779,9 +1800,32 @@ def _benchmark_rejection(m: dict, legacy_excess: float | None) -> str | None:
         alpha = float(alpha)
     except (TypeError, ValueError):
         return "no_metrics"
-    if not math.isfinite(alpha) or alpha <= 0:
-        return "negative_alpha"
     strat_calmar, bench_calmar = m.get("strategy_calmar"), m.get("benchmark_calmar")
+    if BENCHMARK_GATE_MODE == "risk_adjusted":
+        # Alfanın POZİTİF olması şart değil — ölçü Calmar üstünlüğü (aşağıdaki
+        # ORTAK blokta, mod fark etmeksizin uygulanır). Burada yalnız TABAN
+        # var: para kaybeden bir strateji, düşüşü küçük diye geçemez.
+        try:
+            cagr = float(m.get("strategy_cagr"))
+        except (TypeError, ValueError):
+            cagr = None
+        if strat_calmar is None or bench_calmar is None:
+            # Bu modun ÖLÇÜSÜ Calmar üstünlüğü ve o ölçülemedi → eski mutlak
+            # kurala düş. Ölçülemeyen bir üstünlük, üstünlük sayılmaz.
+            if not math.isfinite(alpha) or alpha <= 0:
+                return "negative_alpha"
+        elif cagr is not None:
+            if not math.isfinite(cagr) or cagr <= 0:
+                return "not_profitable"
+        elif not math.isfinite(alpha) or alpha <= 0:
+            # Kârlılık ölçülemedi, taban yok → alfaya geri dön (fail-closed).
+            return "negative_alpha"
+        # DİKKAT: burada erken dönme YOK. Calmar karşılaştırması aşağıdaki
+        # ORTAK blokta yapılır. Bir önceki sürümde buradan `return None`
+        # ediliyordu ve Calmar bacağı atlanıyordu — kapıyı zayıflatan sessiz
+        # bir delik (test_alpha_gate_calibration yakaladı).
+    elif not math.isfinite(alpha) or alpha <= 0:
+        return "negative_alpha"
     if strat_calmar is None or bench_calmar is None:
         # Alfa pozitif ama risk bacağı ölçülemedi: kapıyı alfa ile geçir,
         # uydurulmuş bir risk karşılaştırmasıyla değil.
@@ -2300,7 +2344,7 @@ def _run_promotion_gate(
                     "measured": _n >= HOLDOUT_MIN_TRADES,
                 }
                 promotion_passed, promotion_reason = _holdout_promotion_verdict(
-                    _n, _pnl_fr, _sharpe, _excess_fr
+                    _n, _pnl_fr, _sharpe, _excess_fr, metrics=_hm
                 )
                 if _n < HOLDOUT_MIN_TRADES:
                     _add_step(
@@ -3136,6 +3180,7 @@ def _holdout_promotion_verdict(
     pnl_pct: float,
     sharpe: float | None,
     excess_pnl_pct: float,
+    metrics: dict | None = None,
 ) -> tuple[bool, str]:
     """Single publication policy for sealed holdout results — pass/fail AND why.
 
@@ -3149,8 +3194,18 @@ def _holdout_promotion_verdict(
         return False, "sealed holdout PnL is not positive"
     if HOLDOUT_REQUIRE_POSITIVE_SHARPE and (sharpe is None or sharpe <= 0):
         return False, "sealed holdout Sharpe is not positive"
-    if HOLDOUT_REQUIRE_POSITIVE_EXCESS and excess_pnl_pct <= 0:
-        return False, "sealed holdout did not beat buy-and-hold"
+    # Mühürlü pencere kapısı, alfa kapısıyla AYNI ölçüyü kullanmalı: ikisi
+    # ıraksarsa bir aday sıralamayı geçip yayımda takılır ve kullanıcı iki
+    # farklı "buy&hold'u geçti mi" cevabı görür. `metrics` verildiğinde ölçü
+    # `_benchmark_rejection` (risk-ayarlı mod dahil); verilmediğinde eski
+    # kümülatif kural — çağıranı kırmadan geçiş.
+    if HOLDOUT_REQUIRE_POSITIVE_EXCESS:
+        if metrics:
+            rej = _benchmark_rejection(metrics, excess_pnl_pct)
+            if rej is not None:
+                return False, f"sealed holdout benchmark leg: {rej}"
+        elif excess_pnl_pct <= 0:
+            return False, "sealed holdout did not beat buy-and-hold"
     return True, "passed"
 
 
