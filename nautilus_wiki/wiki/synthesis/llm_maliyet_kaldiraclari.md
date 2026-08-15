@@ -189,7 +189,7 @@ Deftere 8 sentetik `custom_block` satırı düşmüş (fable-5; `in=10 out=5`, `
    birlikte gözden geçir. Effort ile ÇARPILIR: ölçülen bileşik −81%.
 4. `composed`/`idea` prefix'ini sabitle (`custom_block`'ta uygulanan desen).
 
-## Hibritte maliyet ATFI yanlış modele yazılıyor (2026-08-15, AÇIK)
+## Hibritte maliyet ATFI yanlış modele yazılıyordu (2026-08-15, KAPANDI)
 
 Amaç-başına model eşlemesi (`NAUTILUS_MODEL_BY_PURPOSE`) geldikten sonra bir
 koşuda birden fazla model para harcayabiliyor. Maliyet satırı bunu bilmiyor:
@@ -206,9 +206,24 @@ Zararı sıradan bir etiket hatasından büyük: bu satır tam da "yerel model b
 olan kararı çürütür gibi duruyor. Rozet tarafındaki aynı boşluk kapatıldı
 ([[model_secici_ve_gorunurluk]], `hybrid_note`), maliyet tarafı **açık**.
 
-Veri zaten var: defter her çağrıyı gerçek modeliyle yazıyor
-(`_ledger_record(resp, called_model, purpose)`). Yanlış olan toplama — maliyet
-amaç/model bazında kırılmalı. Ölçüm: [[07_yerel_llm_hibrit_olcumu_2026_08_15]].
+Veri zaten vardı: defter her çağrıyı gerçek modeliyle yazıyor
+(`_ledger_record(resp, called_model, purpose)`). Yanlış olan toplamaydı.
+
+**Düzeltme (aynı gün):** `_add_tokens(run_id, usage, model)` artık kırılımı da
+tutuyor (`state["by_model"]` — çağrı sayısı, dört token kalemi, sağlayıcı
+maliyeti); telemetri gözlemcisi modeli iletiyor. Yeni `_run_cost(state,
+fallback_model)` her modelin dilimini KENDİ fiyatıyla değerliyor (o dilim için
+sağlayıcı bildirdiyse o, yoksa fiyat tablosu) ve toplamı veriyor. `pricing_model`
+tek harcayan varsa onun adı, birden fazlaysa `"hibrit (N model)"` — tek bir ad
+yazmak yalan olurdu. Kırılım `cost_by_model` olarak hem `token_snapshot`'a hem
+kokpitin `token_info`'suna giriyor; bedava model 0 maliyetle listede kalıyor
+(0 da bir bilgidir).
+
+İki çağrı yeri (oturum logu + kokpit) artık AYNI hesabı paylaşıyor — daha önce
+ayrı hesaplandıkları için aynı koşuya farklı maliyet gösterebiliyorlardı.
+Kırılım yoksa (eski kayıtlar) eski tek-model yoluna düşülür, davranış korunur.
+Testler: `tests/test_run_cost_is_per_model.py`.
+Ölçüm: [[07_yerel_llm_hibrit_olcumu_2026_08_15]].
 
 <!-- BACKLINKS:BEGIN -->
 ## Referenced by

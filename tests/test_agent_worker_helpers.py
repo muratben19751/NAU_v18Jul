@@ -304,13 +304,18 @@ class TestMakeLlmControl:
         monkeypatch.setattr(ab, "SESSION_LOG_DIR", tmp_path)
         run_id = "run-observe"
         recorded = {}
+        # Model de iletilmeli: hibritte (amaç-başına eşleme) maliyeti HARCAYAN
+        # modele yazabilmenin tek yolu bu — bkz. _run_cost.
         monkeypatch.setattr(
-            ab, "_add_tokens", lambda rid, usage: recorded.setdefault("usage", usage)
+            ab,
+            "_add_tokens",
+            lambda rid, usage, model="": recorded.update(usage=usage, model=model),
         )
         _, observer = ab._make_llm_control(run_id, 0.0, ab._WorkerState())
         observer({"usage": {"input_tokens": 10}, "model": "x"})
 
         assert recorded["usage"] == {"input_tokens": 10}
+        assert recorded["model"] == "x"
         import json
 
         lines = (tmp_path / f"{run_id}.jsonl").read_text().strip().splitlines()

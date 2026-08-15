@@ -464,7 +464,7 @@ def _make_llm_control(
     def _llm_observer(event: dict) -> None:
         usage = event.get("usage")
         if usage:
-            _add_tokens(run_id, usage)
+            _add_tokens(run_id, usage, str(event.get("model") or ""))
         _session_log(run_id, "llm_usage", **_offload_transcript(run_id, wstate, event))
 
     return _llm_cancelled, _llm_observer
@@ -1155,13 +1155,39 @@ def _make_rob_progress(run_id: str, cand_idx: int, round_num: int):
     return progress
 
 
-def _add_tokens(run_id: str, usage: dict | None) -> None:
-    """Accumulate token counters from the Claude API usage dict."""
+def _add_tokens(run_id: str, usage: dict | None, model: str = "") -> None:
+    """Accumulate token counters from the Claude API usage dict.
+
+    ``model`` — bu çağrının GERÇEKTEN gittiği model. Amaç-başına eşleme
+    (`NAUTILUS_MODEL_BY_PURPOSE`) bir koşuda birden fazla modelin para
+    harcamasına izin verdiği için toplamlar tek başına "kim harcadı"yı
+    söyleyemez; kırılım `state["by_model"]`'de tutulur ve maliyet oradan
+    hesaplanır (bkz. ``_run_cost``). Boş bırakılırsa "?" kovasına yazılır —
+    uydurma bir model adına yazmaktansa bilinmezliği göstermek yeğdir.
+    """
     if not usage:
         return
     with _AGENT_LOCK:
         s = _AGENT_PROGRESS.get(run_id)
         if s is not None:
+            _slot = s.setdefault("by_model", {}).setdefault(
+                (model or "").strip() or "?",
+                {
+                    "calls": 0,
+                    "input": 0,
+                    "output": 0,
+                    "cache_read": 0,
+                    "cache_write": 0,
+                    "provider_cost_usd": 0.0,
+                },
+            )
+            _slot["calls"] += 1
+            _slot["input"] += usage.get("input_tokens") or 0
+            _slot["output"] += usage.get("output_tokens") or 0
+            _slot["cache_read"] += usage.get("cache_read_input_tokens") or 0
+            _slot["cache_write"] += usage.get("cache_creation_input_tokens") or 0
+            if usage.get("cost_usd") is not None:
+                _slot["provider_cost_usd"] += float(usage["cost_usd"])
             s["tokens_in"] = s.get("tokens_in", 0) + (usage.get("input_tokens") or 0)
             s["tokens_out"] = s.get("tokens_out", 0) + (usage.get("output_tokens") or 0)
             s["tokens_cache_read"] = s.get("tokens_cache_read", 0) + (
@@ -3222,6 +3248,90 @@ def _llm_cost_usd(
     )
 
 
+def _run_cost(state: dict, fallback_model: str = "") -> dict:
+    """Koşunun maliyeti — MODEL BAZINDA kırılmış.
+
+    Amaç-başına model eşlemesi (`NAUTILUS_MODEL_BY_PURPOSE`, 2026-08-15) bir
+    koşuda birden fazla modelin para harcamasına izin veriyor. Maliyet satırı
+    bunu bilmiyordu: toplam token'lar TEK bir modelle fiyatlanıp o modele
+    yazılıyordu.
+
+    Ölçülen vaka (koşu 14ff96e7): `pricing_model: 'or:qwen3.8-27b'`,
+    `cost_usd: 1.019011`. Sayı doğruydu, etiket yanlıştı — o 1,02 USD tamamen
+    Claude'un 7 `custom_block` çağrısının bedeliydi; yerel model bedava. Ekranda
+    ise "yerel Qwen 1 dolar yaktı" gibi görünüyordu, yani satır tam da "yerel
+    model bedava" olan kararı çürütür gibi duruyordu.
+
+    Burada her modelin dilimi KENDİ fiyatıyla değerlenir: o dilim için sağlayıcı
+    maliyet bildirdiyse o kullanılır, yoksa fiyat tablosu. `pricing_model` tek
+    model harcadıysa onun adı, birden fazlaysa ``"hibrit (N model)"`` — tek bir
+    ad yazmak yalan olurdu.
+
+    Kırılım yoksa (eski koşu kaydı, ya da hiç `by_model` biriktirmemiş bir
+    durum) eski tek-model yoluna düşülür: davranış aynen korunur.
+    """
+    by = state.get("by_model") or {}
+    ti = int(state.get("tokens_in") or 0)
+    to = int(state.get("tokens_out") or 0)
+    tcr = int(state.get("tokens_cache_read") or 0)
+    tcw = int(state.get("tokens_cache_write") or 0)
+    provider_total = float(state.get("provider_cost_usd") or 0.0)
+
+    if not by:
+        model, estimated = _llm_cost_usd(ti, to, tcr, tcw, model=fallback_model)
+        cost = provider_total if provider_total > 0 else estimated
+        return {
+            "pricing_model": model,
+            "cost_usd": cost,
+            "cost_source": "provider_reported" if provider_total > 0 else "price_table",
+            "by_model": {},
+        }
+
+    import token_ledger
+
+    breakdown: dict[str, dict] = {}
+    total = 0.0
+    any_reported = False
+    for name, sl in by.items():
+        reported = float(sl.get("provider_cost_usd") or 0.0)
+        if reported > 0:
+            cost, source = reported, "provider_reported"
+            any_reported = True
+        else:
+            cost = token_ledger.cost_usd(
+                {
+                    "input": sl.get("input", 0),
+                    "output": sl.get("output", 0),
+                    "cache_read": sl.get("cache_read", 0),
+                    "cache_write": sl.get("cache_write", 0),
+                },
+                name,
+            )
+            source = "price_table"
+        breakdown[name] = {
+            **{k: sl.get(k, 0) for k in ("calls", "input", "output", "cache_read", "cache_write")},
+            "cost_usd": round(cost, 6) if cost is not None else None,
+            "cost_source": source,
+        }
+        if cost:
+            total += float(cost)
+
+    spenders = [n for n, b in breakdown.items() if (b.get("cost_usd") or 0) > 0]
+    if len(spenders) == 1:
+        label = spenders[0]
+    elif len(spenders) > 1:
+        label = f"hibrit ({len(spenders)} model)"
+    else:
+        # Kimse para harcamadıysa (ör. hepsi yerel/bedava) modeli yine de söyle.
+        label = next(iter(breakdown), fallback_model or "?")
+    return {
+        "pricing_model": label,
+        "cost_usd": total if breakdown else None,
+        "cost_source": "provider_reported" if any_reported else "price_table",
+        "by_model": breakdown,
+    }
+
+
 # ── Worker ────────────────────────────────────────────────────────────────────
 
 
@@ -4051,12 +4161,13 @@ def _agent_worker(
             _to = s.get("tokens_out", 0) or 0
             _tcr = s.get("tokens_cache_read", 0) or 0
             _tcw = s.get("tokens_cache_write", 0) or 0
-            _provider_cost = float(s.get("provider_cost_usd") or 0.0)
-            # OpenRouter returns billed usage cost. Prefer it over a local price
-            # table; fall back to notional pricing for providers that omit cost.
-            _model, _estimated_cost = _llm_cost_usd(_ti, _to, _tcr, _tcw, model=model)
-            _cost_usd = _provider_cost if _provider_cost > 0 else _estimated_cost
-            _cost_source = "provider_reported" if _provider_cost > 0 else "price_table"
+            # Maliyet MODEL BAZINDA kırılır: hibritte (amaç-başına eşleme) bir
+            # koşuda birden fazla model harcar ve toplamı tek bir modele yazmak
+            # yanlış atıf üretir — bkz. _run_cost.
+            _cost = _run_cost(s, fallback_model=model)
+            _model = _cost["pricing_model"]
+            _cost_usd = _cost["cost_usd"]
+            _cost_source = _cost["cost_source"]
             _session_log(
                 run_id,
                 "token_snapshot",
@@ -4066,6 +4177,7 @@ def _agent_worker(
                 cache_read=_tcr,
                 cache_write=_tcw,
                 pricing_model=_model,
+                cost_by_model=_cost["by_model"],
                 cost_source=_cost_source if _cost_usd is not None else None,
                 cost_usd=round(_cost_usd, 6) if _cost_usd is not None else None,
                 cost_eur=round(_cost_usd * 0.91, 6) if _cost_usd is not None else None,
@@ -5124,10 +5236,13 @@ async def progress(request: Request, run_id: str):
     _to = state.get("tokens_out", 0) or 0
     _tcr = state.get("tokens_cache_read", 0) or 0
     _tcw = state.get("tokens_cache_write", 0) or 0
-    _provider_cost = float(state.get("provider_cost_usd") or 0.0)
     _pricing_model = str((raw.get("brief") or {}).get("model") or "")
-    _model, _estimated_cost = _llm_cost_usd(_ti, _to, _tcr, _tcw, model=_pricing_model)
-    _cost_usd = _provider_cost if _provider_cost > 0 else _estimated_cost
+    # Oturum logundaki token_snapshot ile AYNI hesap: iki yüzey aynı koşu için
+    # farklı maliyet göstermesin (bu daha önce bir kez yaşandı, bkz. 5065
+    # civarındaki DeepR notu).
+    _cost = _run_cost(state, fallback_model=_pricing_model)
+    _model = _cost["pricing_model"]
+    _cost_usd = _cost["cost_usd"]
     token_info = {
         "input": _ti,
         "output": _to,
@@ -5135,7 +5250,8 @@ async def progress(request: Request, run_id: str):
         "cache_write": _tcw,
         "total": _ti + _to + _tcr + _tcw,
         "pricing_model": _model,
-        "cost_source": ("provider_reported" if _provider_cost > 0 else "price_table"),
+        "cost_by_model": _cost["by_model"],
+        "cost_source": _cost["cost_source"],
         "cost_usd": round(_cost_usd, 4) if _cost_usd is not None else None,
         "cost_eur": round(_cost_usd * _USD_EUR, 4) if _cost_usd is not None else None,
     }
