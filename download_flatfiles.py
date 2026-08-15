@@ -66,9 +66,12 @@ def _log(m: str) -> None:
 
 
 def make_client(endpoint: str = DEFAULT_ENDPOINT, workers: int = DEFAULT_WORKERS):
-    import boto3
-    from botocore.config import Config
-
+    # Kimlik kontrolü boto3 import'undan ÖNCE gelir, bilerek: `boto3` beyan
+    # edilmemiş bir bağımlılık (bu yol opsiyonel bir ETL script'i, çekirdek
+    # uygulama değil), yani kurulu olmayabilir. Sıra tersken kimliği eksik olan
+    # operatör "MASSIVE_S3_KEY yok" yerine `ModuleNotFoundError: boto3`
+    # görüyordu — kendi hatasını gösteren mesaj, kurulum kazasının altında
+    # kalıyordu. Eksikliğini öğrenmek için ayrıca bir paket kurmak gerekmemeli.
     key = os.environ.get("MASSIVE_S3_KEY", "").strip()
     secret = os.environ.get("MASSIVE_S3_SECRET", "").strip()
     if not (key and secret):
@@ -77,6 +80,14 @@ def make_client(endpoint: str = DEFAULT_ENDPOINT, workers: int = DEFAULT_WORKERS
             "$env:MASSIVE_S3_KEY = '<access key id>'; $env:MASSIVE_S3_SECRET = '<secret>' "
             "(https://massive.com/dashboard — Flat Files bölümü)"
         )
+    try:
+        import boto3
+        from botocore.config import Config
+    except ImportError as exc:
+        raise FlatFileError(
+            "Flat-file indirmesi `boto3` gerektirir (beyan edilmemiş, opsiyonel "
+            "bağımlılık): pip install boto3"
+        ) from exc
     return boto3.client(
         "s3",
         endpoint_url=endpoint,
