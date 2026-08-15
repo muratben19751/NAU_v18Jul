@@ -293,15 +293,26 @@ Kredi kuralı `current_model()` ile aynı: kredi tükenmesi tercihi ezer ama yal
 kendi fatura alanında — `or:` başka bir hesap, Claude kredisinin bitmesi onu
 etkilemez. Testler: `tests/test_model_by_purpose.py`.
 
-### AÇIK KALAN GÖRÜNÜRLÜK BOŞLUĞU
+### Görünürlük boşluğu kapandı (aynı gün)
 
-Bu sayfanın başlığındaki iddia — "hangi LLM'in koştuğu her ekranda yazılır" —
-eşleme devredeyken **kısmen yanlış**: rozet koşunun PİNİNİ gösterir, oysa eşlenmiş
-amaç başka uca gitmiştir. Muhasebe doğru (token defteri çağrı başına gerçek
-modeli yazar, `_ledger_record(resp, called_model, purpose)`), ama ekran değil.
-Sayfanın kendi ilkesine göre bu kapatılmalı: rozet ya efektif model kümesini
-göstermeli ya da "hibrit" olduğunu söylemeli. Şimdilik eşleme yalnız açılış
-log'unda görünür (`amaç-başına model eşlemesi: ...`).
+Eşleme ilk eklendiğinde muhasebe doğruydu (token defteri çağrı başına gerçek
+modeli yazar, `_ledger_record(resp, called_model, purpose)`) ama EKRAN değildi:
+rozet koşunun PİNİNİ gösteriyor, eşlenmiş amaç başka uca gidiyordu — yani bu
+sayfanın kendi iddiası kısmen yanlış hâle gelmişti.
+
+Kapatıldı: `llm_client.hybrid_note()` eşlemeyi okunur adlarla verir
+("custom_block → Fable 5") ve üç yüzeyin üçü de onu taşır — SIMPLE/PRO rozeti
+(`routes/studio.llm_badge()`), AUTO kokpiti (`mission.mission_view()`, hem rozet
+hem brief satırı) ve sidebar ENGINE kartı (`templating._engine_model_label()`).
+
+Ana etiket DEĞİŞMEZ: koşan model kendi adıyla görünür, yanına ` +hibrit` eklenir,
+hangi amacın nereye gittiği `title`'da durur. Hibrit pini gizlemez, tamamlar.
+
+Stilli span değil düz metin — `studio.html`'deki `mcModel()` picker değişiminde
+slotu `textContent` ile ezdiği için oraya konan bir `<span>` ilk seçimde yok
+olurdu; aynı ek JS tarafında da üretilir, eşleme metni şablona `|tojson` ile
+geçer. Testler: `tests/test_model_badge_is_hybrid_aware.py` (8) — üç yüzey ayrı
+ayrı, hem eşlemeli hem eşlemesiz. Tarayıcıda da doğrulandı.
 
 <!-- BACKLINKS:BEGIN -->
 ## Referenced by
