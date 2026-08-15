@@ -46,5 +46,33 @@ module.exports = {
         NAUTILUS_MODEL_BY_PURPOSE: "custom_block=claude-fable-5",
       },
     },
+    // X (Twitter) anahtar kelime izleyicisi — `nau-web`'ten AYRI süreç, bilerek:
+    // sunucu yeniden başlatıldığında izleme kesilmesin, izleyici çöktüğünde de
+    // web ayakta kalsın. Ayrıntı: x_watch.py docstring'i.
+    //
+    // SIR YOK: bu dosya git'te. NAU_XWATCH_SMTP_PASSWORD (ve isteğe bağlı
+    // NAU_XWATCH_X_PASSWORD) Windows ortamına konur, pm2 miras alır:
+    //   setx NAU_XWATCH_SMTP_PASSWORD "<gmail uygulama şifresi>"
+    // ardından YENİ bir terminalden `pm2 restart nau-xwatch --update-env`.
+    {
+      name: "nau-xwatch",
+      script: "C:\\Users\\MYDESK\\AppData\\Local\\Programs\\Python\\Python312\\python.exe",
+      args: "x_watch.py",
+      cwd: "C:\\myAI_Projects\\NAU_v18Jul",
+      interpreter: "none",
+      autorestart: true,
+      // Playwright'ı her çökmede yeniden başlatmak ucuz değil; art arda hızlı
+      // ölüyorsa (ör. oturum düşmüş, exit 2) pm2 geri çekilsin.
+      restart_delay: 30000,
+      max_restarts: 20,
+      env: {
+        PYTHONUNBUFFERED: "1",
+        NAU_XWATCH_QUERY: "ttkom",
+        NAU_XWATCH_INTERVAL_S: "300",
+        // Alıcıyı burada tutmak sır değil ve tek yerden görünür olması iyi.
+        NAU_XWATCH_MAIL_TO: "muratben@gmail.com",
+        NAU_XWATCH_SMTP_USER: "muratben@gmail.com",
+      },
+    },
   ],
 };

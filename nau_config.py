@@ -658,6 +658,90 @@ _ETL = [
     ),
 ]
 
+# ── X (Twitter) izleyicisi ───────────────────────────────────────────────────
+# `x_watch.py`, PM2 altında `nau-web`'ten AYRI koşan bir süreçtir; bu düğmeler
+# yalnız onu ayarlar. Parolalar burada DEĞİL, işletim sistemi ortamında durur
+# (`ecosystem.config.js` git'te olduğu için oraya sır yazılmaz).
+_XWATCH = [
+    _v(
+        "NAU_XWATCH_QUERY",
+        "str",
+        "ttkom",
+        "x_watch",
+        "X'te izlenecek anahtar kelime (arama `f=live` akışında yapılır).",
+    ),
+    _v(
+        "NAU_XWATCH_INTERVAL_S",
+        "int",
+        "300",
+        "x_watch",
+        "İki yoklama arası saniye; gerçek bekleme ±%15 jitter'lıdır.",
+    ),
+    _v(
+        "NAU_XWATCH_HEADLESS",
+        "bool",
+        "1",
+        "x_watch",
+        "Playwright başsız mı koşsun; hata ayıklarken 0 yapılır.",
+    ),
+    _v(
+        "NAU_XWATCH_MAIL_TO",
+        "str",
+        "",
+        "x_watch",
+        "Özet e-postasının alıcısı; boşsa mail kapalıdır, yalnız konsol/defter.",
+    ),
+    _v(
+        "NAU_XWATCH_MAIL_MIN_S",
+        "int",
+        "900",
+        "x_watch",
+        "İki özet e-postası arası asgari süre; arada bulunanlar biriktirilir.",
+    ),
+    _v(
+        "NAU_XWATCH_SMTP_HOST",
+        "str",
+        "smtp.gmail.com",
+        "x_watch",
+        "Özet e-postasının gönderileceği SMTP sunucusu.",
+    ),
+    _v(
+        "NAU_XWATCH_SMTP_PORT",
+        "int",
+        "465",
+        "x_watch",
+        "SMTP portu; 465 ise SSL, değilse STARTTLS kullanılır.",
+    ),
+    _v(
+        "NAU_XWATCH_SMTP_USER",
+        "str",
+        "",
+        "x_watch",
+        "SMTP kullanıcı adı ve e-postanın gönderen adresi.",
+    ),
+    _v(
+        "NAU_XWATCH_SMTP_PASSWORD",
+        SECRET,
+        "",
+        "x_watch",
+        "SMTP parolası; Gmail'de hesap parolası değil UYGULAMA ŞİFRESİ olmalı.",
+    ),
+    _v(
+        "NAU_XWATCH_X_USER",
+        "str",
+        "",
+        "x_watch",
+        "Oturum düştüğünde otomatik yeniden giriş için X kullanıcı adı (isteğe bağlı).",
+    ),
+    _v(
+        "NAU_XWATCH_X_PASSWORD",
+        SECRET,
+        "",
+        "x_watch",
+        "Otomatik yeniden giriş parolası; boşsa oturum düşünce durulup mail atılır.",
+    ),
+]
+
 ENV_VARS: tuple[EnvVar, ...] = tuple(
     _STORAGE
     + _HTTP
@@ -669,6 +753,7 @@ ENV_VARS: tuple[EnvVar, ...] = tuple(
     + _ENGINE
     + _SESSIONS
     + _ETL
+    + _XWATCH
 )
 
 BY_NAME: dict[str, EnvVar] = {v.name: v for v in ENV_VARS}
@@ -684,6 +769,7 @@ GROUPS: tuple[tuple[str, tuple[EnvVar, ...]], ...] = (
     ("Backtest / WFO / paralellik", tuple(_ENGINE)),
     ("/sessions paneli", tuple(_SESSIONS)),
     ("Veri indirme (ETL)", tuple(_ETL)),
+    ("X (Twitter) izleyicisi", tuple(_XWATCH)),
 )
 
 

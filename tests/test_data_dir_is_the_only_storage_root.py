@@ -52,6 +52,12 @@ _PERSISTENT_PATHS = [
     ("custom_block_store", "STORE_DIR"),
     ("custom_block_store", "REGISTRY_FILE"),
     ("token_ledger", "LEDGER_PATH"),
+    # X izleyicisi ayrı bir süreçtir ama kalıcı çıktıları aynı köke bağlı olmalı:
+    # oturum çerezi (`x_storage_state.json`) repo ağacına düşerse hesaba erişim
+    # versiyonlanabilir hâle gelir.
+    ("x_watch", "LEDGER_PATH"),
+    ("x_watch", "STATE_PATH"),
+    ("x_watch", "STORAGE_STATE_PATH"),
 ]
 
 _PROBE = """
