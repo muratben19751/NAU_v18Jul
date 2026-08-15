@@ -360,6 +360,23 @@ def model_id(model: str | None = None) -> str:
     return (model or "").strip() or current_model()
 
 
+def hybrid_note() -> str:
+    """Rozetin "bu koşu tek uçta değil" notu — eşleme yoksa "".
+
+    `NAUTILUS_MODEL_BY_PURPOSE` devredeyken rozet TEK BAŞINA yalan söyler: koşunun
+    pinini yazar, oysa eşlenmiş amaç başka uca gitmiştir. Muhasebe zaten doğruydu
+    (defter çağrı başına gerçek modeli yazar) ama ekran değildi; bu fonksiyon o
+    farkı kapatır.
+
+    Okunur ad döner ("custom_block → Fable 5"), ham id değil: rozetin yanında
+    duracak metin bu, `model_label` ile aynı sözlükten geçmeli.
+    """
+    return ", ".join(
+        f"{purpose} → {model_label(model)}"
+        for purpose, model in sorted(purpose_model_map().items())
+    )
+
+
 def current_model() -> str:
     """The model currently in use (FALLBACK_MODEL if fallback has kicked in).
 

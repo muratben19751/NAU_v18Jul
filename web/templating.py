@@ -106,11 +106,16 @@ def _engine_model_label() -> str:
     regardless of which model AUTO/SIMPLE/PRO actually ran with — this resolves
     the same way the AUTO cockpit's own model slot does (agent.model_label),
     so switching models (or the credit-exhaustion fallback kicking in) is
-    reflected sitewide instead of only where llm_badge() happened to be wired."""
-    try:
-        from agent import model_label
+    reflected sitewide instead of only where llm_badge() happened to be wired.
 
-        return model_label()
+    Amaç-başına eşleme (`NAUTILUS_MODEL_BY_PURPOSE`) devredeyse tek bir ad
+    yazmak yine yanlış olurdu — aynı sebeple ` +hibrit` eklenir; ayrıntı
+    kokpit/badge title'larında.
+    """
+    try:
+        from agent import hybrid_note, model_label
+
+        return model_label() + (" +hibrit" if hybrid_note() else "")
     except Exception:
         return "Claude"
 
