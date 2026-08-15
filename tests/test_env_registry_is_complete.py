@@ -34,6 +34,14 @@ ROOT = Path(__file__).resolve().parent.parent
 # Ürün kodu olmayan ağaçlar: LLM'in ürettiği blok kodları, tek seferlik debug
 # script'leri, vendored eğitim önbelleği, eski kod. `ruff` da bunları dışlıyor.
 _SKIP_DIRS = {
+    # `uv sync` sanal ortamı repo köküne kurar (.venv). Üçüncü parti paketler
+    # kendi ANTHROPIC_*/NAUTILUS_* değişkenlerini okur ve tarama onları
+    # "uygulamanın belgelenmemiş düğmesi" sanıyordu — katalog onları belgeleyemez,
+    # çünkü uygulamanın ayar yüzeyi değiller. Kardeş kural
+    # `test_data_dir_is_the_only_storage_root` bu dizini zaten dışlıyordu.
+    ".venv",
+    "venv",
+    "site-packages",
     "work",
     "debug",
     "legacy",
