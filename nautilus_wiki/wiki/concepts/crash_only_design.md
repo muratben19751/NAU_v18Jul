@@ -37,5 +37,4 @@ Aşağıdaki durumlar panic veya error döner:
 - [[order_emulator]]
 - [[single_threaded_core]]
 - [[webapp_module_map]]
-- [[x_watch_izleyici]]
 <!-- BACKLINKS:END -->

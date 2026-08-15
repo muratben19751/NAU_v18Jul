@@ -5,10 +5,8 @@ gelir ve yalnız aradaki fark yenidir. Dolayısıyla tekilleştirme bir optimiza
 değil, ürünün kendisidir — bozulursa operatör her 5 dakikada bir aynı tweetlerin
 e-postasını alır.
 
-`token_ledger`'ın sözleşmesi burada da geçerli: defter I/O'su çağrı yoluna hata
-sızdırmaz ve eşzamanlı append'in yırttığı satır okumayı öldürmez, atlanır.
-
-Wiki References: [[x_watch_izleyici]], [[crash_only_design]]
+Defterin sözleşmesi: I/O'su çağrı yoluna hata sızdırmaz ve eşzamanlı append'in
+yırttığı satır okumayı öldürmez, atlanır.
 """
 
 from __future__ import annotations
@@ -16,7 +14,6 @@ from __future__ import annotations
 import json
 
 import pytest
-
 import x_watch
 from x_watch import Config, append_tweets, load_seen_ids, run_once
 

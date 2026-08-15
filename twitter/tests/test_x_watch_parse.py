@@ -5,10 +5,6 @@ bozulma SESSİZDİR (boş liste, "bugün tweet yok"tan ayırt edilemez). Bu dosy
 sessizliği kırar — sözleşme kaydedilmiş bir sayfa üzerinde yazılıdır, ağa
 çıkılmaz, ve gerçek sayfanın parser'ı zorlayan özellikleri (alıntı kartı, emoji
 `<img>`, metinsiz tweet, tweet DIŞI /status/ linkleri) fixture'da temsil edilir.
-
-Kardeş dosyalar: [[test_x_watch_dedupe]], [[test_x_watch_mail_throttle]].
-
-Wiki References: [[x_watch_izleyici]]
 """
 
 from __future__ import annotations
@@ -16,7 +12,6 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-
 from x_watch import parse_tweets
 
 FIXTURE = Path(__file__).parent / "fixtures" / "x_search_ttkom.html"

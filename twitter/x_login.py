@@ -7,14 +7,14 @@ dosyayı yükleyip aramayı giriş yapmış hâlde yapar.
 
 Parola ne sorulur ne saklanır: tarayıcıya operatör yazar, biz yalnız sonuçtaki
 çerezleri alırız. (Tamamen otomatik yeniden giriş isteniyorsa `x_watch.relogin`
-+ `NAU_XWATCH_X_USER`/`NAU_XWATCH_X_PASSWORD` yolu var; 2FA açıkken çalışmaz.)
++ `XWATCH_X_USER`/`XWATCH_X_PASSWORD` yolu var; 2FA açıkken çalışmaz.)
 
 Kullanım::
 
     pip install playwright && playwright install chromium
-    python scripts/x_login.py
+    python x_login.py
 
-Wiki References: [[x_watch_izleyici]], [[webapp_module_map]]
+Ayrıntı: `twitter/README.md`.
 """
 
 from __future__ import annotations
@@ -22,7 +22,9 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+# Betik `twitter/` içinden ya da depo kökünden çağrılabilsin diye kendi
+# dizinini yola ekler — `x_watch` bunun yanındaki modüldür.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from x_watch import (  # noqa: E402
     _UA,

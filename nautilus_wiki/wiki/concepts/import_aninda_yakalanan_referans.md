@@ -57,5 +57,4 @@ alt pakete sızmadığını AST ile denetler.
 
 - [[nau_devralma_turu_2026_08_14]]
 - [[webapp_module_map]]
-- [[x_watch_izleyici]]
 <!-- BACKLINKS:END -->

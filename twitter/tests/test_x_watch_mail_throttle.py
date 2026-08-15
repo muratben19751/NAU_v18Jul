@@ -9,14 +9,11 @@ bildirim, bildirim değildir. Kısma bu yüzden ürünün parçası.
      süreci habersiz yeniden başlatır, bellekte tutulsa sessizce kaybolurlardı.
   2. Gönderim başarısız olursa bekleyenler TEMİZLENMEZ; aksi hâlde SMTP'nin
      kötü bir günü, tweetleri hiç görülmeden yutardı.
-
-Wiki References: [[x_watch_izleyici]]
 """
 
 from __future__ import annotations
 
 import pytest
-
 import x_watch
 from x_watch import Config, format_digest, run_once
 

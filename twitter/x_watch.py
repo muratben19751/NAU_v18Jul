@@ -3,9 +3,15 @@
 Kullanıcının kendi X hesabıyla `ttkom` (Türk Telekom, BIST) gibi bir anahtar
 kelimeyi `f=live` arama sayfasından yoklar, YENİ tweetleri append-only bir JSONL
 defterine yazar, konsola tek satır özet basar ve (ayarlıysa) toplu e-posta
-gönderir. PM2 altında `nau-web`'ten AYRI bir süreç olarak koşar; web katmanına
-hiç bağlanmaz (`web.*` import edilmez), böylece sunucu yeniden başlasa da
-izleyici etkilenmez.
+gönderir.
+
+## Bu klasör bağımsızdır
+
+`twitter/` aynı depoda durur ama Nautilus uygulamasının parçası DEĞİLDİR: ondan
+hiçbir modül import etmez, onun `NAU_*` ortam değişkenlerini ve veri kökünü
+kullanmaz, onun test süitine ve PM2 girdisine karışmaz. Tek bağımlılığı
+Playwright'tır ve o da tembel import edilir. Buradaki bir hata Nautilus'u,
+oradaki bir değişiklik burayı etkilemez — ayrı çalıştırılır, ayrı test edilir.
 
 ## Neden API değil
 
@@ -25,15 +31,14 @@ olması gerekir:
 
 ## Tasarım sözleşmesi
 
-- `run_once` çağrı yoluna ASLA exception sızdırmaz (`token_ledger.record` ile
-  aynı duruş) — tek bir kötü döngü izleyiciyi öldüremez.
-- Playwright TEMBEL import edilir (`web_research.py`'deki `ddgs`, `strategy_studio/ai.py`
-  içindeki `httpx` kalıbı): modül import etmek tarayıcı gerektirmez, testler
-  ağa çıkmadan `parse_tweets`/defter/throttle mantığını sınayabilir.
-- Kalıcı her yol `app_constants.DATA_DIR`'den türer
-  (`tests/test_data_dir_is_the_only_storage_root.py`).
+- `run_once` çağrı yoluna ASLA exception sızdırmaz — tek bir kötü döngü
+  izleyiciyi öldüremez.
+- Playwright TEMBEL import edilir: modülü import etmek tarayıcı gerektirmez,
+  testler ağa çıkmadan `parse_tweets`/defter/throttle mantığını sınayabilir.
+- Kalıcı her yol `DATA_DIR`'den türer (`XWATCH_DATA_DIR` ile taşınabilir);
+  varsayılan `~/.cache/x_watch`.
 
-Wiki References: [[webapp_module_map]], [[crash_only_design]]
+Ayrıntı: `twitter/README.md`.
 """
 
 from __future__ import annotations
@@ -57,18 +62,43 @@ from html.parser import HTMLParser
 from pathlib import Path
 from urllib.parse import quote
 
-from app_constants import DATA_DIR, env_int
-
 log = logging.getLogger(__name__)
 
-# ── Kalıcı yollar (kök: app_constants.DATA_DIR) ──────────────────────────────
+
+def _env_int(
+    name: str, default: int, *, lo: int | None = None, hi: int | None = None
+) -> int:
+    """Ortam değişkenini int'e çevir; bozuk/boş değerde ``default`` (+ kırpma)."""
+    try:
+        v = int(os.environ.get(name, "") or default)
+    except ValueError:
+        v = int(default)
+    if lo is not None:
+        v = max(lo, v)
+    if hi is not None:
+        v = min(hi, v)
+    return v
+
+
+def data_dir() -> Path:
+    """Kalıcı veri kökü — ``XWATCH_DATA_DIR`` ile taşınabilir.
+
+    Repo ağacının DIŞINDA: defter büyür, oturum çerezi ise hesaba tam erişim
+    demektir; ikisinin de versiyonlanabilir bir dizinde işi yok.
+    """
+    raw = (os.environ.get("XWATCH_DATA_DIR") or "").strip()
+    return Path(raw).expanduser() if raw else Path.home() / ".cache" / "x_watch"
+
+
+# Import anında çözülür; testler modül-global'lerini değil `Config` alanlarını
+# geçersiz kılar (bkz. `Config.ledger_path` ve arkadaşları).
+DATA_DIR = data_dir()
+
 LEDGER_PATH = DATA_DIR / "x_watch.jsonl"
 STATE_PATH = DATA_DIR / "x_watch_state.json"
 STORAGE_STATE_PATH = DATA_DIR / "x_storage_state.json"
 
-# Defter 20 MB'ı geçince tek kuşaklık arşive devredilir — `web/shared.py`'deki
-# `rotate_if_large` ile aynı eşik ve aynı davranış, ama o modülü (dolayısıyla
-# fastapi/jinja'yı) bu başına buyruk sürece sokmadan.
+# Defter bu eşiği geçince tek kuşaklık arşive (`<ad>.jsonl.1`) devredilir.
 LOG_ROTATE_BYTES = 20 * 1024 * 1024
 
 # Açılışta `seen` kümesini kurmak için defterin SONUNDAN okunacak bayt miktarı.
@@ -93,7 +123,7 @@ class XWatchError(RuntimeError):
 
 
 class LoginRequired(XWatchError):
-    """Oturum yok ya da düşmüş — `scripts/x_login.py` yeniden koşmalı."""
+    """Oturum yok ya da düşmüş — `x_login.py` yeniden koşmalı."""
 
 
 class RateLimited(XWatchError):
@@ -126,20 +156,18 @@ class Config:
         """Ortamdan oku. Çağrı anında okunur (import anında değil) ki testler
         `monkeypatch.setenv` ile davranışı değiştirebilsin."""
         cfg = cls(
-            query=(os.environ.get("NAU_XWATCH_QUERY") or "ttkom").strip(),
-            interval_s=env_int("NAU_XWATCH_INTERVAL_S", 300, lo=30),
-            headless=(os.environ.get("NAU_XWATCH_HEADLESS") or "1").strip()
+            query=(os.environ.get("XWATCH_QUERY") or "ttkom").strip(),
+            interval_s=_env_int("XWATCH_INTERVAL_S", 300, lo=30),
+            headless=(os.environ.get("XWATCH_HEADLESS") or "1").strip()
             not in {"0", "false", "no"},
-            mail_to=(os.environ.get("NAU_XWATCH_MAIL_TO") or "").strip(),
-            mail_min_s=env_int("NAU_XWATCH_MAIL_MIN_S", 900, lo=0),
-            smtp_host=(
-                os.environ.get("NAU_XWATCH_SMTP_HOST") or "smtp.gmail.com"
-            ).strip(),
-            smtp_port=env_int("NAU_XWATCH_SMTP_PORT", 465, lo=1, hi=65535),
-            smtp_user=(os.environ.get("NAU_XWATCH_SMTP_USER") or "").strip(),
-            smtp_password=os.environ.get("NAU_XWATCH_SMTP_PASSWORD") or "",
-            x_user=(os.environ.get("NAU_XWATCH_X_USER") or "").strip(),
-            x_password=os.environ.get("NAU_XWATCH_X_PASSWORD") or "",
+            mail_to=(os.environ.get("XWATCH_MAIL_TO") or "").strip(),
+            mail_min_s=_env_int("XWATCH_MAIL_MIN_S", 900, lo=0),
+            smtp_host=(os.environ.get("XWATCH_SMTP_HOST") or "smtp.gmail.com").strip(),
+            smtp_port=_env_int("XWATCH_SMTP_PORT", 465, lo=1, hi=65535),
+            smtp_user=(os.environ.get("XWATCH_SMTP_USER") or "").strip(),
+            smtp_password=os.environ.get("XWATCH_SMTP_PASSWORD") or "",
+            x_user=(os.environ.get("XWATCH_X_USER") or "").strip(),
+            x_password=os.environ.get("XWATCH_X_PASSWORD") or "",
         )
         return cls(**{**cfg.__dict__, **overrides}) if overrides else cfg
 
@@ -438,8 +466,8 @@ def send_mail(subject: str, body: str, cfg: Config) -> bool:
         return False
     if not (cfg.smtp_user and cfg.smtp_password):
         log.warning(
-            "x_watch: NAU_XWATCH_MAIL_TO ayarlı ama NAU_XWATCH_SMTP_USER/"
-            "NAU_XWATCH_SMTP_PASSWORD eksik — mail gönderilemiyor."
+            "x_watch: XWATCH_MAIL_TO ayarlı ama XWATCH_SMTP_USER/"
+            "XWATCH_SMTP_PASSWORD eksik — mail gönderilemiyor."
         )
         return False
     msg = EmailMessage()
@@ -495,12 +523,12 @@ def _raise_if_blocked(html: str, final_url: str) -> None:
     if "/i/flow/login" in final_url or "/login" in final_url:
         raise LoginRequired(
             "X giriş sayfasına yönlendirildi — oturum düşmüş. "
-            "`python scripts/x_login.py` ile yeniden giriş yapın."
+            "`python x_login.py` ile yeniden giriş yapın."
         )
     if any(m in html for m in _LOGIN_MARKERS):
         raise LoginRequired(
             "Sayfada giriş duvarı var — oturum çerezi geçersiz. "
-            "`python scripts/x_login.py` ile yeniden giriş yapın."
+            "`python x_login.py` ile yeniden giriş yapın."
         )
     if any(m in html for m in _LIMIT_MARKERS) and 'data-testid="tweet"' not in html:
         raise RateLimited("X hız sınırı / geçici hata sayfası döndü.")
@@ -516,7 +544,7 @@ def fetch_search_html(query: str, cfg: Config | None = None) -> str:
     if not cfg.storage_state_path.exists():
         raise LoginRequired(
             f"Oturum dosyası yok ({cfg.storage_state_path.name}). "
-            "Önce `python scripts/x_login.py` çalıştırın."
+            "Önce `python x_login.py` çalıştırın."
         )
     sync_playwright = _sync_playwright()
     url = f"https://x.com/search?q={quote(query)}&f=live"
@@ -548,7 +576,7 @@ def fetch_search_html(query: str, cfg: Config | None = None) -> str:
 def relogin(cfg: Config | None = None) -> bool:
     """Kimlik bilgileri ayarlıysa headless yeniden giriş dener, oturumu tazeler.
 
-    Varsayılan kurulumda parola SAKLANMAZ (`NAU_XWATCH_X_PASSWORD` boştur) ve bu
+    Varsayılan kurulumda parola SAKLANMAZ (`XWATCH_X_PASSWORD` boştur) ve bu
     fonksiyon False döner — çağıran o zaman operatöre "elle giriş gerekiyor"
     e-postası atar. 2FA açık bir hesapta otomatik giriş zaten tamamlanamaz.
     """
@@ -760,7 +788,7 @@ def _sleep_seconds(cfg: Config, backoff: int) -> float:
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="X (Twitter) anahtar kelime izleyicisi")
     ap.add_argument("--once", action="store_true", help="tek tur koş ve çık")
-    ap.add_argument("--query", default=None, help="NAU_XWATCH_QUERY yerine geçer")
+    ap.add_argument("--query", default=None, help="XWATCH_QUERY yerine geçer")
     ap.add_argument("--html", default=None, help="ağa çıkma, bu HTML dosyasını işle")
     ap.add_argument(
         "--dry-run",
@@ -813,8 +841,8 @@ def main(argv: list[str] | None = None) -> int:
             send_mail(
                 "[x_watch] yeniden giriş gerekiyor",
                 "X oturumu düştü ve otomatik yeniden giriş yapılamadı "
-                "(NAU_XWATCH_X_USER/PASSWORD ayarlı değil ya da 2FA var).\n\n"
-                "Kendi makinenizde `python scripts/x_login.py` çalıştırıp "
+                "(XWATCH_X_USER/PASSWORD ayarlı değil ya da 2FA var).\n\n"
+                "Kendi makinenizde `python x_login.py` çalıştırıp "
                 "`pm2 restart nau-xwatch` deyin.",
                 cfg,
             )
