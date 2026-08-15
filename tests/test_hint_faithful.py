@@ -24,6 +24,14 @@ class TestHintIndicators:
         assert _hint_indicators("") == []
         assert _hint_indicators("kârlı bir şey bul") == []
 
+    def test_detects_regression_channel(self):
+        # The channel family was outside the whitelist: the hint fell to the
+        # "pick a DIFFERENT indicator family" branch, i.e. the OPPOSITE of the ask.
+        canon = "Linear Regression Channel"
+        assert canon in _hint_indicators("regression channel ile alttan al üstten sat")
+        assert canon in _hint_indicators("regresyon kanalı stratejisi")
+        assert canon in _hint_indicators("linreg slope filtresi")
+
     def test_no_false_positive_substring(self):
         # 'ma' must not falsely match in words that do not contain RSI/ADX
         assert _hint_indicators("maksimum kar minimum drawdown") == []
@@ -39,6 +47,11 @@ class TestExplorationDirective:
         # directive to add a creative complementary indicator
         assert "CREATIVE" in d and "COMPLEMENTARY" in d
         # there should be NO directive to REPLACE the set with a DIFFERENT family
+        assert "pick a DIFFERENT indicator family" not in d
+
+    def test_faithful_for_regression_channel(self):
+        d = _exploration_directive("regression channel ile alttan al ve üstten sat")
+        assert "Linear Regression Channel" in d
         assert "pick a DIFFERENT indicator family" not in d
 
     def test_diverse_when_no_indicators(self):

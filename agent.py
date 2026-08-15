@@ -2285,6 +2285,9 @@ Rule: Usable data = FULL OHLCV. closes (close) + indicators["highs"] (high)
 + indicators["lows"] (low) + indicators["volumes"] (volume) — all four are float lists,
 aligned with closes, oldest to newest. Since high/low are AVAILABLE, real OHLC indicators
 can be computed: ATR, ADX/DMI, Stochastic, Donchian/Keltner channel, WaveTrend, SuperTrend.
+A linear regression channel is also a real indicator here: least-squares line fitted over the
+last N closes, plus/minus k x the standard deviation of the residuals (its slope is a trend
+filter). Do NOT substitute SMA +/- std (that is Bollinger) for it.
 Volume-based ideas (volume spike, OBV, volume confirmation) are also valid. If the user hint
 contains one of these indicators, use its REAL formula (do not fall back to a crude proxy).
 If the user asked for multi-indicator confluence (e.g. "RSI AND ADX AND ATR"), produce an idea
@@ -2319,6 +2322,7 @@ _HINT_INDICATORS: dict[str, list[str]] = {
     "WaveTrend": ["wavetrend", "wave trend", r"\bwt\b"],
     "Donchian": ["donchian"],
     "Keltner": ["keltner"],
+    "Linear Regression Channel": ["regression", "regresyon", r"\blinreg\b"],
     "CCI": [r"\bcci\b"],
     "Williams %R": ["williams", "%r"],
     "OBV": [r"\bobv\b"],
