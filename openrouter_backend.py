@@ -184,11 +184,26 @@ class _ORResponse:
 
 
 class _OpenRouterProcessError(RuntimeError):
-    """Serializable OpenRouter child-process failure."""
+    """Serializable OpenRouter child-process failure.
 
-    def __init__(self, message: str, *, status_code: int | None = None) -> None:
+    ``error_type`` çocuğun gördüğü SOMUT istisna adıdır (``type(exc).__name__``).
+    Mesajın başına da yazılır ama orada bir metin parçasıdır; çağıranın karar
+    vermek için metin ayrıştırması gerekmesin diye ayrı alanda durur.
+    Bütçe muhasebesi buna bakıyor: ``APIConnectionError`` (uca hiç bağlanılamadı)
+    ile ``APITimeoutError`` (istek gitti, sunucu üretiyor olabilir) ayrımı
+    harcamanın sayılıp sayılmayacağını belirler — bkz. llm_dispatch.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        status_code: int | None = None,
+        error_type: str | None = None,
+    ) -> None:
         super().__init__(message)
         self.status_code = status_code
+        self.error_type = error_type
 
 
 def _openrouter_usage_payload(usage: Any) -> dict[str, int | float | None]:
@@ -289,6 +304,7 @@ def _run_openrouter_killable(request: dict, config: dict, timeout: float) -> dic
                     f"{payload.get('type', 'OpenRouterError')}: "
                     f"{payload.get('message', 'provider call failed')}",
                     status_code=payload.get("status_code"),
+                    error_type=payload.get("type"),
                 )
             return payload
         if not proc.is_alive():

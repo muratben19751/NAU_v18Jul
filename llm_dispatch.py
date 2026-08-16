@@ -72,6 +72,7 @@ from openrouter_backend import (
     _build_openrouter_client,
     _get_openrouter_client,
     _OpenRouterClient,
+    _OpenRouterProcessError,
     _or_create_with_backoff,
 )
 
@@ -216,6 +217,42 @@ def _ledger_record_usage(usage: dict, model: str, purpose: str) -> None:
 # abartır. Harcama tahmininde bu bölen kullanılır. Tahmin asla gerçek
 # faturayla karıştırılmaz — kayda `estimated: True` düşer.
 _BYTES_PER_TOKEN_EST = 4
+
+
+# ... AMA yukarıdaki gerekçe "prompt gitti" varsayımına dayanır ve o varsayım
+# her hatada doğru DEĞİLDİR. Bağlantı hiç kurulamadıysa (uç kapalı, port yanlış,
+# DNS yok) sağlayıcıya bir bayt bile gitmemiştir: orada tahmini girdi yazmak,
+# harcanmamış bir şeyi bütçeden düşmek olur.
+#
+# Ölçüldü 2026-08-16, koşu f38273f2: llama-server 8080'de kapalıyken 45 çağrının
+# 45'i ~2,9 sn'de `APIConnectionError` verdi, `total_output` 0 kaldı ve buna
+# rağmen 252.459 tahmini girdi tokenı yazıldı — 250.000'lik sürekli-mod tavanı
+# 4 dakika 51 saniyede doldu ve koşu "budget" gerekçesiyle kendini kapattı.
+# Kullanıcı hiçbir şey almadan tüm bütçesini kaybetti; üstelik ekranda görünen
+# sebep gerçek sebebi (ölü uç) değil, bütçeyi gösteriyordu.
+#
+# Ayrım SOMUT istisna adıyla yapılır, üst sınıfla değil: her iki SDK'da da
+# `APITimeoutError`, `APIConnectionError`'dan TÜREİR — `isinstance` ile bakmak
+# timeout'u da muaf tutar ve yukarıdaki ölçümün kapattığı deliği geri açardı.
+# Timeout tam olarak "istek gitti, sunucu üretiyor ve faturalıyor" hâlidir.
+#
+# Şüphede kalırsan SAY: bilinmeyen bir hata tipini muaf tutmak tavanı körletir,
+# fazladan saymak yalnız erken bitirir. Muafiyet yalnız kanıtlanmış "hiç gitmedi".
+_NEVER_SENT_ERROR_TYPES = frozenset({"APIConnectionError"})
+
+
+def _never_reached_provider(exc: BaseException) -> bool:
+    """Bu hata, istek sağlayıcıya HİÇ ulaşmadan mı oluştu?
+
+    Doğruysa harcama yazılmaz. Yanlış ya da bilinmiyorsa yazılır (bkz. yukarı).
+    """
+    if isinstance(exc, _OpenRouterProcessError):
+        # Çocuk süreç somut adı taşır; eski kayıtlar için mesaj başına da bakılır.
+        name = exc.error_type or str(exc).split(":", 1)[0].strip()
+        return name in _NEVER_SENT_ERROR_TYPES
+    return type(exc).__name__ in _NEVER_SENT_ERROR_TYPES and isinstance(
+        exc, APIConnectionError
+    )
 
 
 def _estimated_error_usage(kwargs: dict, model: str, purpose: str) -> dict | None:
@@ -488,10 +525,12 @@ def _create_message_once(client, _purpose: str = "", **kwargs):
         except Exception as exc:
             cancelled = isinstance(exc, LLMCallCancelled)
             # STOP'ta tahmin yazmıyoruz: iptal çağrı sınırında da yakalanabilir,
-            # yani prompt hiç gitmemiş olabilir. Timeout/hata yolunda ise gitti.
+            # yani prompt hiç gitmemiş olabilir. Aynı gerekçe bağlantı kurulamayan
+            # çağrılar için de geçerli (bkz. `_never_reached_provider`); geri kalan
+            # hata/timeout yolunda prompt gitti ve faturalanıyor olabilir.
             est_usage = (
                 None
-                if cancelled
+                if cancelled or _never_reached_provider(exc)
                 else _estimated_error_usage(kwargs, called_model, _purpose or "llm")
             )
             _observe_llm(

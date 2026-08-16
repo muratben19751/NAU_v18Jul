@@ -204,6 +204,97 @@ def test_timeout_reaches_the_budget_observer_but_stop_does_not(monkeypatch):
     assert not recorded
 
 
+def test_connection_error_spends_nothing(monkeypatch):
+    """Uca hiç bağlanılamadıysa bütçeden bir şey düşülmez.
+
+    Ölçüldü 2026-08-16 (koşu f38273f2): yerel uç kapalıyken 45 çağrının 45'i
+    `APIConnectionError` verdi, hiç çıktı üretilmedi, ama tahmini girdi yazıldığı
+    için 250.000'lik tavan 4 dk 51 sn'de doldu ve koşu "budget" diye kapandı.
+    Harcanmayan bir şeyin bütçeyi bitirmesi hem yanlış hem de gerçek sebebi
+    (ölü uç) ekrandan siliyordu.
+    """
+    import httpx
+    from anthropic import APIConnectionError
+
+    seen: list[dict] = []
+    recorded: list[tuple] = []
+    monkeypatch.setattr(llm_dispatch, "_observe_llm", lambda **e: seen.append(e))
+    monkeypatch.setattr(llm_dispatch, "_admit_llm_request", lambda *a, **k: None)
+    monkeypatch.setattr(llm_dispatch, "_check_llm_cancelled", lambda: None)
+    monkeypatch.setattr(
+        llm_dispatch, "model_for_purpose", lambda _purpose="": "claude-test-model"
+    )
+    monkeypatch.setattr(
+        llm_dispatch,
+        "_ledger_record_usage",
+        lambda usage, model, purpose: recorded.append((usage, model, purpose)),
+    )
+
+    kwargs = {
+        "system": "s" * 4000,
+        "messages": [{"role": "user", "content": "u" * 4000}],
+        "max_tokens": 500,
+    }
+
+    class _Unreachable:
+        class messages:  # noqa: N801 - taklit edilen SDK yüzeyi
+            @staticmethod
+            def create(**_):
+                raise APIConnectionError(
+                    request=httpx.Request("POST", "http://127.0.0.1:8080/v1")
+                )
+
+    with pytest.raises(Exception):
+        llm_dispatch._create_message_once(_Unreachable(), "composed", **kwargs)
+
+    assert seen[-1]["status"] == "error"
+    assert seen[-1]["usage"] is None, "bağlanılamayan çağrı bütçeye yazıldı"
+    assert not recorded, "harcanmamış token deftere geçti"
+
+
+def test_timeout_still_spends_because_the_prompt_was_delivered():
+    """Muafiyet timeout'a SIZMAMALI — orada istek gitti ve faturalanıyor.
+
+    Her iki SDK'da da `APITimeoutError`, `APIConnectionError`'dan türer; ayrımı
+    `isinstance` ile yapmak timeout'u da muaf tutar ve tahmini-harcama ölçümünün
+    kapattığı deliği (52 çağrının 13'ü, ~94k sayılmayan token) geri açardı.
+    """
+    from anthropic import APITimeoutError
+
+    assert issubclass(APITimeoutError, llm_dispatch.APIConnectionError), (
+        "SDK hiyerarşisi değişti — muafiyetin somut-ad temeli gözden geçirilmeli"
+    )
+
+    class _Timeout(APITimeoutError):
+        def __init__(self):  # SDK'nın request argümanını taklit etmeden
+            Exception.__init__(self, "timed out")
+
+    assert llm_dispatch._never_reached_provider(_Timeout()) is False
+
+
+def test_openrouter_child_error_type_decides_spending():
+    """Çocuk süreç hatasında karar SOMUT ada bakar, mesaj metnine değil."""
+    from openrouter_backend import _OpenRouterProcessError
+
+    conn = _OpenRouterProcessError(
+        "APIConnectionError: Connection error.", error_type="APIConnectionError"
+    )
+    assert llm_dispatch._never_reached_provider(conn) is True
+
+    timeout = _OpenRouterProcessError(
+        "APITimeoutError: Request timed out.", error_type="APITimeoutError"
+    )
+    assert llm_dispatch._never_reached_provider(timeout) is False
+
+    # Bilinmeyen tip ŞÜPHEDE SAYILIR: muaf tutmak tavanı körletirdi.
+    unknown = _OpenRouterProcessError("InternalServerError: 500", error_type="Boom")
+    assert llm_dispatch._never_reached_provider(unknown) is False
+
+    # error_type taşımayan eski/ara kayıtlarda mesaj başına düşülür.
+    legacy = _OpenRouterProcessError("APIConnectionError: Connection error.")
+    assert llm_dispatch._never_reached_provider(legacy) is True
+
+
 # ── İki sessiz yol artık sayaca giriyor ──────────────────────────────────────
 #
 # Bu ikisi davranışsal olarak ancak tam bir AUTO iterasyonu kurularak
