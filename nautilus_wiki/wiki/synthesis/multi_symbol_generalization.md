@@ -71,11 +71,27 @@ geçişe dönüşmemeli.
 `peer_is_superior` (2026-08-16, kullanıcı kararı). Varsayılan `risk_adjusted`
 modunda asıl ölçü **Calmar üstünlüğü**; alfanın pozitif olması şart değil, ama
 **taban** durur: `strategy_cagr > 0` — para kaybeden bir strateji, düşüşü küçük
-diye üstün sayılmaz. Calmar iki taraf için de ölçülemezse eski mutlak kurala
-(`excess > 0`) düşülür: ölçülemeyen bir üstünlük üstünlük değildir. Anahtar ana
-kapıyla ortaktır — `AGENT_BENCHMARK_GATE` (`risk_adjusted` | `absolute`) — ve
-sabit route modülünden ithal edilmez (`agent_backtest` zaten bu modülü içeri
-alıyor; ters yön döngü olurdu).
+diye üstün sayılmaz. Anahtar ana kapıyla ortaktır: `AGENT_BENCHMARK_GATE`
+(`risk_adjusted` | `absolute`).
+
+**Kural artık TEK KOPYA** — `app_constants.benchmark_rejection` (kod incelemesi,
+2026-08-16). Bu kural iki kez kopyalandı ve iki kez ıraksadı. Önce **ölçüt**: ana
+kapı 2026-08-15'te risk-ayarlıya çekilirken çok-sembol kapısı terk edilen mutlak
+kuralda kaldı. Sonra, ölçüt hizalandığında, **geri düşme basamağı**: Calmar
+ölçülemediğinde ana kapı `annualized_alpha`'ya düşerken çok-sembol kapısı
+`excess_return_fraction`'a düşüyordu — damgalayıcısının "karar ölçütü olamaz"
+dediği sayı (büyüklüğü pencere uzunluğuna bağlı, brüt al-tut'a karşı net
+strateji). Sonuç: aynı geçişte bir peer kümülatif farkla, kardeşi Calmar'la
+yargılanıp tek bir `pass_rate` paydasında toplanabiliyordu.
+
+Bağımlılık yönü paylaşımı yaprak modüle zorladı: `agent_backtest` zaten
+`backtest_robustness`'ı içeri alıyor, ters yön döngü olurdu — ikisinin de içeri
+aldığı `app_constants` doğal ev. Mod da orada ve **çağrı anında** okunuyor;
+import-anı bir sabit, "birini yeniden yükle, diğerini yükleme" gibi sessiz bir
+ıraksama yüzeyiydi. Ölçü basamakları (yukarıdan aşağı): Calmar üstünlüğü +
+kârlılık tabanı → yıllık alfa → (yıllıklandırma hiç yoksa) kümülatif fark.
+Testte `test_both_gates_return_the_same_verdict_for_the_same_metrics` iki kapıyı
+aynı sözlükle karşılaştırır: ikinci bir kopya açılırsa orada kırılır.
 
 Neden değişti: ana kapı 2026-08-15'te risk-ayarlıya çekilmişti, çok-sembol kapısı
 o değişikliğin dışında kalmıştı. Bedeli ölçüldü — koşular `392287b2` ve
@@ -86,9 +102,11 @@ getiride kaybeder. `38bdfeff` tur 1'de IWM'de strateji **+1.202 kazandı, Sharpe
 0,69** — al-tut %48,2 yaptığı için "başarısız" yazıldı.
 
 Sonuç satırları bu yüzden `strategy_calmar` / `benchmark_calmar` / `strategy_cagr`
-**taşır**: kararı veren fonksiyon yalnız satırı görüyor, alanlar taşınmasa kapı
-sessizce mutlak kurala düşer ve düzeltme hiçbir yerde hata vermeden etkisiz
-kalırdı. İlerleme satırındaki `✓/✗` ikonu da kapının gerçek ölçütünü gösterir —
+/ `annualized_alpha` **taşır**: kararı veren fonksiyon yalnız satırı görüyor,
+alanlar taşınmasa kapı sessizce bir alt basamağa düşer ve düzeltme hiçbir yerde
+hata vermeden etkisiz kalırdı. `annualized_alpha` tam olarak o geri düşme
+basamağı — damgalayıcıda Calmar'DAN ÖNCE yazıldığı için gerçek bir satırda
+"Calmar var ama alfa yok" hâli oluşamaz. İlerleme satırındaki `✓/✗` ikonu da kapının gerçek ölçütünü gösterir —
 eskiden excess'e bakıyordu, yani kapı değiştikten sonra ekranda "✗" yazan bir peer
 skorda geçmiş olabilirdi.
 

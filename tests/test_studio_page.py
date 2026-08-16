@@ -160,6 +160,50 @@ def test_auto_brief_model_falls_back_to_the_app_default_when_unlisted(stub_catal
         assert selected(_client().get("/studio").text) == [""]
 
 
+def test_symbol_default_and_picker_share_one_catalog_scan(stub_catalog):
+    """Dış katalog taraması sayfa başına BİR kez koşmalı, iki kez değil.
+
+    `list_external_instruments` önbelleksiz bir dizin taraması; varsayılanı ayrı
+    çözmek onu sessizce ikinci kez çağırıyordu. Sayı kadar önemlisi: iki çağrı
+    iki AYRI görüntü demek — picker'ın listelemediği bir id "seçili" gelebilir.
+    """
+    import re
+
+    import web.routes.studio as studio
+
+    calls = []
+    catalog = ["BBB.NASDAQ", studio.AUTO_DEFAULT_SYMBOL]
+
+    def counting_scan():
+        calls.append(1)
+        return list(catalog)
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(studio, "_mc_external_symbols", counting_scan)
+        html = _client().get("/studio").text
+
+    assert len(calls) == 1, f"katalog taraması {len(calls)} kez koştu"
+    block = re.search(r'name="symbol"(.*?)</select>', html, re.S)
+    assert block is not None, "SYMBOL seçicisi hiç render edilmedi"
+    assert re.findall(r'value="([^"]*)"[^>]*selected', block.group(1)) == [
+        studio.AUTO_DEFAULT_SYMBOL
+    ]
+
+
+def test_symbol_default_falls_back_when_the_catalog_lacks_it(stub_catalog):
+    """İstenen id o an taranan katalogda yoksa formun ilk satırı seçili kalır."""
+    import re
+
+    import web.routes.studio as studio
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(studio, "_mc_external_symbols", lambda: ["BBB.NASDAQ"])
+        html = _client().get("/studio").text
+
+    block = re.search(r'name="symbol"(.*?)</select>', html, re.S)
+    assert re.findall(r'value="([^"]*)"[^>]*selected', block.group(1)) == ["BTCUSDT"]
+
+
 def test_studio_page_sets_the_draft_session_cookie_when_missing(stub_catalog):
     resp = _client().get("/studio")
 

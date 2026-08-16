@@ -1541,3 +1541,26 @@ tarama yanlış pozitif üretmiyor; tüm dosyayı taramak Python liste literalle
 İki iş öneriliyor: (1) lint'e kod dosyalarını tarayan bir kol eklemek (yanlış
 pozitifleri ayıklamak için yalnız `Wiki References` bloğuna bakmalı), (2) yukarıdaki
 sayfaları yazmak. İkisi de bu senkronun kapsamı dışında bırakıldı.
+
+## [2026-08-16] kod incelemesi — kapının tek kopyası, muafiyetin kapsamı
+
+`99a2560..6991f44` incelendi (7 commit, 12 dosya). Beş bulgu, hepsi düzeltildi.
+
+- **Kapı iki kez kopyalanmış, iki kez ıraksamıştı.** Önce ölçüt (2026-08-15 →
+  2026-08-16 arası çok-sembol kapısı terk edilen mutlak kuralda kaldı), sonra
+  ölçüt hizalandığında GERİ DÜŞME basamağı: ana kapı `annualized_alpha`'ya,
+  çok-sembol kapısı `excess_return_fraction`'a düşüyordu. Kural
+  `app_constants.benchmark_rejection`'a taşındı — tek kopya. Bekçi:
+  `test_both_gates_return_the_same_verdict_for_the_same_metrics`.
+- **Muafiyet tek SDK'ya bağlıydı.** `openai.APIConnectionError` ≠
+  `anthropic.APIConnectionError`; süreç-içi OpenRouter dalında aynı sıfır-bayt
+  çağrı faturalanıyordu. Ayrım hâlâ somut ada bağlı (timeout muafiyeti açılmadı).
+- Negatif bütçe değeri 400 yerine sessizce SERT TAVANA açıyordu; studio dış
+  katalog taraması sayfa başına iki kez koşuyordu; `resolve_peer_ids` aynı
+  ticker iki venue'daysa son-yazan kazanıyordu (artık: sepetteki tam id > katalog
+  sırasında ilk).
+
+Süit: 2350 passed / 2 skipped. Ruff temiz.
+
+**Açık boşluk (değişmedi):** Wiki References bloklarında 40 bağdan 4'ü hâlâ
+kırık; lint bu bloklara bakmıyor.

@@ -7,19 +7,19 @@ Wiki References
 ---------------
 See: [[backtesting_guide]], [[backtest_node]],
 [[multi_symbol_generalization]] (peer seçimi + üstünlük ölçütü — `peer_is_superior`
-burada tanımlı), [[auto_kapi_ve_geri_bildirim]] (kapının felsefesi ve ortak anahtar)
+burada, KARARI VEREN kural app_constants.benchmark_rejection'da: iki kapı tek kopya),
+[[auto_kapi_ve_geri_bildirim]] (kapının felsefesi ve ortak anahtar)
 """
 
 from __future__ import annotations
 
 import hashlib
-import math
-import os
 from datetime import UTC, timedelta
 
 import numpy as np
 import pandas as pd
 
+from app_constants import benchmark_rejection
 from app_constants import env_float as _env_float
 
 # Embargo (purge) gap, in days (M28), placed between train and test (and between
@@ -49,59 +49,26 @@ WFO_BATCH_TIMEOUT_S = _env_float("NAUTILUS_WFO_BATCH_TIMEOUT_S", 600.0)
 # Same family as the Calmar floor in agent_backtest._score.
 IS_SHARPE_MIN = _env_float("NAUTILUS_IS_SHARPE_MIN", 0.05)
 
-# Çok-sembol kapısının ölçütü ANA KAPIYLA aynı anahtara bağlı: bir koşuda iki
-# kapının farklı felsefeyle çalışması, ana kapının 2026-08-15'te terk ettiği
-# mutlak-getiri ölçütünün ikinci bir yerde yaşamaya devam etmesi demekti
-# (ölçüldü 2026-08-16, koşular 392287b2 ve 38bdfeff: dokuz adayın dokuzu da
-# ortalama Sharpe'ı POZİTİFKEN 0/N ile elendi — çünkü peer'ların al-tut getirisi
-# %23-118 arasıydı ve long-only bir strateji nakitte geçirdiği zaman yüzünden
-# mutlak getiride kaybeder).
-#
-# Anahtar route modülünden İTHAL EDİLMİYOR (bağımlılık yönü ters olurdu:
-# agent_backtest bu modülü içeri alıyor); aynı ortam değişkeni doğrudan okunuyor,
-# yani operatör için tek düğme.
-MULTI_SYMBOL_GATE_MODE = (
-    os.environ.get("AGENT_BENCHMARK_GATE", "risk_adjusted").strip().lower()
-)
-
 
 def peer_is_superior(r: dict) -> bool:
-    """Bu peer'da strateji al-tut'a ÜSTÜN mü — ana kapıyla aynı kural.
+    """Bu peer'da strateji al-tut'a ÜSTÜN mü — ana kapının TA KENDİSİ.
 
-    ``risk_adjusted`` (varsayılan): asıl ölçü Calmar üstünlüğü, alfanın pozitif
-    olması şart DEĞİL; ama bir TABAN var — para kaybeden bir strateji, düşüşü
-    küçük diye üstün sayılmaz. ``absolute``: eski davranış (excess > 0).
+    Karar `app_constants.benchmark_rejection`'a devredilir; burada ikinci bir
+    kopya YOK. Bir peer satırı ile bir aday koşusunun metrikleri aynı
+    damgalayıcıdan geçtiği için aynı alanları taşır, yani aynı fonksiyon iki
+    bağlamda da doğru cevabı verir.
 
-    Calmar iki taraf için de ölçülemediyse mutlak kurala düşülür: ölçülemeyen
-    bir üstünlük üstünlük sayılmaz (fail-closed, ana kapıdaki gerekçenin aynısı).
+    Neden devir: bu kural iki kez kopyalandı ve iki kez ıraksadı. Önce ölçüt —
+    ana kapı 2026-08-15'te risk-ayarlıya çekilirken çok-sembol kapısı terk
+    edilen mutlak kuralı uygulamaya devam etti (ölçüldü 2026-08-16, koşular
+    392287b2 ve 38bdfeff: dokuz adayın dokuzu ortalama Sharpe'ı POZİTİFKEN 0/N
+    ile elendi). Sonra, ölçüt hizalandığında, GERİ DÜŞME basamağı: ana kapı
+    ölçülemeyen Calmar'da yıllık alfaya düşerken bu kapı kümülatif farka
+    düşüyordu — damgalayıcısının "karar ölçütü olamaz" dediği metriğe. Aynı
+    geçişte bir peer kümülatif farkla, kardeşi Calmar'la yargılanıp tek bir
+    `pass_rate` paydasında toplanabiliyordu.
     """
-    excess = r.get("excess_return_fraction")
-    legacy = excess is not None and excess > 0
-    if MULTI_SYMBOL_GATE_MODE != "risk_adjusted":
-        return legacy
-    strat, bench = r.get("strategy_calmar"), r.get("benchmark_calmar")
-    if strat is None or bench is None:
-        return legacy
-    try:
-        strat, bench = float(strat), float(bench)
-    except (TypeError, ValueError):
-        return legacy
-    if not math.isfinite(strat):
-        return legacy
-    cagr = r.get("strategy_cagr")
-    try:
-        cagr = float(cagr)
-    except (TypeError, ValueError):
-        cagr = None
-    # Taban: kârlılık ölçülebiliyorsa pozitif olmalı; ölçülemiyorsa mutlak
-    # kurala geri dön — tabansız bir Calmar karşılaştırması, zarar eden bir
-    # stratejiyi "düşüşü küçük" diye geçirebilirdi.
-    if cagr is None:
-        if not legacy:
-            return False
-    elif not math.isfinite(cagr) or cagr <= 0:
-        return False
-    return strat > bench
+    return benchmark_rejection(r, r.get("excess_return_fraction")) is None
 
 
 def _run_many_kw(run_many):
@@ -1203,9 +1170,13 @@ def run_multi_symbol(
         excess = m.get("excess_return_fraction")
         sharpe_str = f"{sharpe:.2f}" if sharpe is not None else "—"
         excess_str = f"{100 * excess:+.1f}%" if excess is not None else "—"
-        # Risk bacağı ana kapıyla aynı alanlardan gelir; satırda TAŞINMASI şart,
-        # çünkü kararı veren `peer_is_superior` yalnız bu sözlüğü görüyor ve
-        # artefakt/log okuyanın da kararın neye dayandığını görmesi gerekiyor.
+        # Karar alanları ana kapıyla aynı damgalayıcıdan gelir; satırda TAŞINMASI
+        # şart, çünkü kararı veren `benchmark_rejection` yalnız bu sözlüğü görüyor
+        # ve artefakt/log okuyanın da kararın neye dayandığını görmesi gerekiyor.
+        # `annualized_alpha` GERİ DÜŞME basamağı: Calmar ölçülemediğinde kapı ona
+        # bakar. Taşınmazsa kapı sessizce kümülatif farka düşerdi — pencere
+        # uzunluğuna bağlı, üstelik brüt benchmark'a karşı net strateji ölçen bir
+        # sayıya (bkz. app_constants._stamp_annualized_comparison).
         row = {
             "symbol": sym,
             "pnl": round(pnl, 2),
@@ -1218,6 +1189,7 @@ def run_multi_symbol(
             "strategy_calmar": m.get("strategy_calmar"),
             "benchmark_calmar": m.get("benchmark_calmar"),
             "strategy_cagr": m.get("strategy_cagr"),
+            "annualized_alpha": m.get("annualized_alpha"),
             "n_trades": n_trades,
             "error": error,
         }

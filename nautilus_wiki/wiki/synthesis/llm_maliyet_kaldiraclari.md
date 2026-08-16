@@ -254,6 +254,16 @@ Sahada doğrulandı (`ed8ba569`): `APIConnectionError` → `usage=None`;
 düştü. Testler: `tests/test_auto_degradation_honesty.py`; biri SDK hiyerarşisi
 değişirse uyarır. Ölçüm: [[09_baglam_ve_butce_olcumu_2026_08_16]].
 
+**Muafiyet OLGUYA bağlıdır, tek bir SDK'nın sınıfına değil** (kod incelemesi
+2026-08-16). İlk sürüm `isinstance(exc, anthropic.APIConnectionError)` istiyordu;
+OpenRouter çağrılarının **iki taşıması** var — iptal edilebilir çocuk süreç ve
+süreç-İÇİ istemci (`_process_config` yoksa ya da çağıran thread'de `cancel_check`
+kayıtlı değilse). İkincisinde ham `openai.APIConnectionError` fırlıyor ve bu ayrı
+bir hiyerarşi olduğu için muafiyet oraya hiç uğramıyordu: aynı sıfır-bayt çağrı,
+hangi taşımadan geçtiğine göre ya muaf ya faturalıydı. Ayrımı yapan hâlâ **somut
+ad** (yani alt sınıf `APITimeoutError` adla eleniyor); `isinstance` yalnız
+"tanıdığımız bir SDK mı" diye bakar ve artık iki SDK'yı da tanır.
+
 <!-- BACKLINKS:BEGIN -->
 ## Referenced by
 

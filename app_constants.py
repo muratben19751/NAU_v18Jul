@@ -8,6 +8,14 @@
   benchmark/excess-return formula, shared so backtest_robustness.py,
   parallel_exec.py, and web/routes/agent_backtest.py can't independently
   re-derive it into three (or four) silently-drifting copies.
+- ``benchmark_gate_mode``/``benchmark_rejection``: kabul kapısının TEK kuralı.
+  Ana kapı (web/routes/agent_backtest.py) ile çok-sembol kapısı
+  (backtest_robustness.py) aynı felsefeyi iki ayrı kopyada uyguluyordu ve
+  kopyalar ıraksadı: ana kapı 2026-08-15'te risk-ayarlıya çekilirken çok-sembol
+  kapısı terk edilen mutlak kuralı uygulamaya devam etti, sonra hizalandığında
+  bu kez GERİ DÜŞME basamakları ayrı kaldı (biri yıllık alfaya, diğeri kümülatif
+  farka düşüyordu). Bağımlılık yönü paylaşımı buraya zorluyor: route modülü
+  robustness'ı içeri alıyor, ters yön döngü olurdu.
 - ``env_float``/``env_int``: env-override parsing (DeepR 2026-08-09 [ORTA]),
   character-for-character identical in backtest_robustness.py,
   parallel_exec.py, and wfo_optimizer.py before this — a bugfix to one would
@@ -17,6 +25,14 @@
   ve hiçbirinde ortam değişkeniyle yeniden yönlendirme yoktu (DeepR 2026-08-11
   [ORTA]); veri dizinini taşımak ya da ikinci bir instance koşturmak için sekiz
   dosyayı ayrı ayrı yamamak gerekiyordu.
+
+Buraya bir şey eklerken kural: yalnız stdlib'e dayan, hiçbir uygulama modülünü
+içeri alma. Modülün tek değeri döngü riski olmadan HER yerden okunabilmesi.
+
+Wiki References
+---------------
+See: [[multi_symbol_generalization]] (kapının iki kez ıraksama tarihi),
+[[auto_kapi_ve_geri_bildirim]] (kapının felsefesi), [[webapp_module_map]]
 """
 
 from __future__ import annotations
@@ -266,3 +282,120 @@ def _stamp_annualized_comparison(
         return
     if math.isfinite(strat_dd):
         metrics["strategy_calmar"] = strat_cagr / max(abs(strat_dd), 0.01)
+
+
+# ---------------------------------------------------------------------------
+# Kabul kapısı — yukarıdaki alanları OKUYAN tek kural (bkz. modül docstring'i)
+# ---------------------------------------------------------------------------
+
+
+def benchmark_gate_mode() -> str:
+    """Kapının ölçüsü: ``risk_adjusted`` (varsayılan) | ``absolute``.
+
+    Kullanıcı kararı (2026-08-15).
+
+    * ``absolute`` — yıllık alfa POZİTİF olmalı (buy&hold'u mutlak getiride geç)
+      VE Calmar'ı da geç. Eski davranış.
+    * ``risk_adjusted`` — ASIL ölçü Calmar üstünlüğü; alfanın pozitif olması ŞART
+      DEĞİL, ama strateji para kazanıyor olmalı (CAGR > 0).
+
+    Gerekçe ölçümden: koşu 1fa9870e'de en iyi aday (LRC Dip DMI ATR OBV, 1-HOUR)
+    784 işlemde +%442 yaptı, düşüşü −%26'da tuttu ve Calmar'da buy&hold'u GEÇTİ
+    (0,292 vs 0,269) — ama yıllık alfası −%6,8 olduğu için elendi. QQQ 22,7 yılda
+    yılda %14,5 yapmış; long-only bir strateji piyasadan zaman zaman çıktığı için
+    mutlak getiride kaybeder. Pencereyi kısaltmak da kurtarmıyor: QQQ'nun HER
+    penceresinde CAGR %14-24 arası (3 yılda %24,2 ile daha da zor).
+
+    Takas açık: bu mod "daha az getiri + çok daha az düşüş" stratejilerini
+    kataloğa alır. Sermayeyi korumak öncelikse doğru; mutlak getiri
+    kovalanıyorsa ``absolute`` moduna dönülmeli.
+
+    Değer ÇAĞRI ANINDA okunur, import anında değil. İki kapı iki ayrı modülde
+    yaşıyor; import-anı bir sabit, birini yeniden yükleyip diğerini yüklememek
+    gibi sessiz bir ıraksama yüzeyi açardı (testlerin ``importlib.reload``
+    numarasına ihtiyacı da bu yüzden kalktı).
+    """
+    return os.environ.get("AGENT_BENCHMARK_GATE", "risk_adjusted").strip().lower()
+
+
+def benchmark_rejection(m: dict, legacy_excess: float | None) -> str | None:
+    """Benchmark bacağı: yıllık alfa + risk-ayarlı üstünlük (yoksa eski kural).
+
+    Ret gerekçesini döndürür; ``None`` = bu bacaktan geçti.
+
+    Eski kural KÜMÜLATİF farktı ve bu bir araştırma kararı değil, veri
+    penceresinin yan etkisiydi: QQQC'nin 23 yıllık serisinde buy&hold %2093
+    yaptığı için eşik fiilen aşılamaz oldu. Ölçüm (koşu 44cb54e2, 2026-08-10):
+    12 adayın 9'u kârlı, en iyisi Sharpe 0,79 / +196.880 USD — ve HİÇBİRİ
+    geçemedi. Aynı arama 1 yıllık bir katalogda kolayca kazanan bulurdu; yani
+    kapı stratejiyi değil, veri derinliğini ölçüyordu.
+
+    Yerine iki koşul:
+
+    * ``annualized_alpha > 0`` — yıllıklandırılmış, iki taraf da net (buy&hold
+      gidiş-dönüş maliyeti düşülür, biliniyorsa temettü eklenir). Pencere
+      uzunluğundan bağımsız.
+    * risk-ayarlı üstünlük — stratejinin Calmar'ı buy&hold'unkini geçmeli.
+      Getiriyi tek başına aşmak yetmez: aynı getiriyi yarı düşüşle üretmek de
+      bir üstünlüktür, iki katı düşüşle üretmek değildir.
+
+    Yıllıklandırma alanları yoksa (zaman damgasız pencere, eski kayıt) eski
+    kümülatif kurala düşülür — sessizce kapıyı AÇMAK, kapatmaktan kötüdür.
+
+    ``m`` bir aday koşusunun metrikleri de olabilir, çok-sembol testindeki tek
+    bir peer'ın satırı da: ikisi de aynı damgalayıcıdan (bkz.
+    ``_stamp_annualized_comparison``) geçtiği için aynı alanları taşır. Kural
+    burada TEK kopya — iki kapının ıraksama tarihi için modül docstring'ine bak.
+    """
+    alpha = m.get("annualized_alpha")
+    if alpha is None:
+        try:
+            excess = float(legacy_excess)
+        except (TypeError, ValueError):
+            # Ne yıllık alfa ne kümülatif fark var: benchmark bacağı hiç
+            # ölçülmemiş. Kapı fail-closed — ölçülmemiş bir üstünlük yoktur.
+            return "no_benchmark"
+        if not math.isfinite(excess) or excess <= 0:
+            return "below_benchmark"
+        return None
+    try:
+        alpha = float(alpha)
+    except (TypeError, ValueError):
+        return "no_metrics"
+    strat_calmar, bench_calmar = m.get("strategy_calmar"), m.get("benchmark_calmar")
+    if benchmark_gate_mode() == "risk_adjusted":
+        # Alfanın POZİTİF olması şart değil — ölçü Calmar üstünlüğü (aşağıdaki
+        # ORTAK blokta, mod fark etmeksizin uygulanır). Burada yalnız TABAN
+        # var: para kaybeden bir strateji, düşüşü küçük diye geçemez.
+        try:
+            cagr = float(m.get("strategy_cagr"))
+        except (TypeError, ValueError):
+            cagr = None
+        if strat_calmar is None or bench_calmar is None:
+            # Bu modun ÖLÇÜSÜ Calmar üstünlüğü ve o ölçülemedi → eski mutlak
+            # kurala düş. Ölçülemeyen bir üstünlük, üstünlük sayılmaz.
+            if not math.isfinite(alpha) or alpha <= 0:
+                return "negative_alpha"
+        elif cagr is not None:
+            if not math.isfinite(cagr) or cagr <= 0:
+                return "not_profitable"
+        elif not math.isfinite(alpha) or alpha <= 0:
+            # Kârlılık ölçülemedi, taban yok → alfaya geri dön (fail-closed).
+            return "negative_alpha"
+        # DİKKAT: burada erken dönme YOK. Calmar karşılaştırması aşağıdaki
+        # ORTAK blokta yapılır. Bir önceki sürümde buradan `return None`
+        # ediliyordu ve Calmar bacağı atlanıyordu — kapıyı zayıflatan sessiz
+        # bir delik (test_alpha_gate_calibration yakaladı).
+    elif not math.isfinite(alpha) or alpha <= 0:
+        return "negative_alpha"
+    if strat_calmar is None or bench_calmar is None:
+        # Alfa pozitif ama risk bacağı ölçülemedi: kapıyı alfa ile geçir,
+        # uydurulmuş bir risk karşılaştırmasıyla değil.
+        return None
+    try:
+        strat_calmar, bench_calmar = float(strat_calmar), float(bench_calmar)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(strat_calmar) or strat_calmar <= bench_calmar:
+        return "worse_risk_adjusted"
+    return None

@@ -287,6 +287,29 @@ def test_peer_ids_resolve_to_the_venue_the_catalog_actually_uses(monkeypatch):
     assert resolve_peer_ids(["ZZZZ.XETRA"]) == ["ZZZZ.XETRA"]
 
 
+def test_peer_resolution_is_deterministic_when_a_ticker_has_two_venues(monkeypatch):
+    """Aynı ticker iki venue'da varsa seçim TAHMİNE bırakılmaz.
+
+    Sözlük kurma yönü sessiz bir tercih yapıyordu (son gören kazanıyordu). Bu
+    fonksiyonun varlık sebebi sessiz eşleşmeyi bitirmekti; kendi içinde sessiz
+    bir tercih bırakmak aynı hatanın küçük hâli olurdu.
+    """
+    from auto.robustness import resolve_peer_ids
+
+    monkeypatch.setattr(
+        "data.list_external_instruments",
+        lambda: [
+            {"instrument_id": "SPY.NASDAQ"},
+            {"instrument_id": "SPY.ARCA"},
+        ],
+    )
+
+    # Sepette yazılı id'nin KENDİSİ katalogdaysa o kazanır — yazarın açık tercihi.
+    assert resolve_peer_ids(["SPY.ARCA"]) == ["SPY.ARCA"]
+    # Değilse katalog sırasında ilk gören kazanır (sabit, son-yazan değil).
+    assert resolve_peer_ids(["SPY.XETRA"]) == ["SPY.NASDAQ"]
+
+
 def test_peer_resolution_survives_an_unreadable_catalog(monkeypatch):
     """Katalog okunamazsa sepet değişmeden döner — robustness traceback etmez."""
     from auto.robustness import resolve_peer_ids
@@ -327,8 +350,13 @@ def test_basket_still_yields_a_full_sample_after_an_exclusion():
 
 
 def _peer(**kw) -> dict:
+    # `annualized_alpha` damgalayıcıda Calmar'DAN ÖNCE yazılır (bkz.
+    # app_constants._stamp_annualized_comparison), yani gerçek bir satırda
+    # "Calmar var ama alfa yok" hâli oluşamaz. Fixture bunu yansıtmazsa geri
+    # düşme basamağı test edilmemiş kalır.
     row = {
         "excess_return_fraction": -0.30,
+        "annualized_alpha": -0.068,
         "strategy_calmar": 0.40,
         "benchmark_calmar": 0.25,
         "strategy_cagr": 0.08,
@@ -358,30 +386,85 @@ def test_losing_strategy_cannot_pass_on_a_small_drawdown():
     assert peer_is_superior(_peer(strategy_calmar=0.10)) is False
 
 
-def test_unmeasured_risk_leg_falls_back_to_the_absolute_rule():
-    """Ölçülemeyen bir üstünlük üstünlük sayılmaz — fail-closed.
+def test_unmeasured_risk_leg_falls_back_to_annualized_alpha():
+    """Calmar ölçülemezse ana kapının düştüğü basamağa düşülür: YILLIK ALFA.
 
-    Ana kapıdaki gerekçenin aynısı: Calmar yoksa eski mutlak kurala düşülür,
-    uydurulmuş bir risk karşılaştırmasına değil.
+    Bu, kapının ikinci ıraksamasıydı: ölçüt hizalandıktan sonra bile geri düşme
+    basamakları ayrı kalmıştı — ana kapı alfaya, çok-sembol kapısı kümülatif
+    farka düşüyordu. Kümülatif fark, kendi damgalayıcısının "karar ölçütü
+    olamaz" dediği sayı: büyüklüğü pencere uzunluğuna bağlı ve iki bacağı farklı
+    maliyet tabanında (brüt al-tut, net strateji). Sonuç: aynı geçişte bir peer
+    kümülatif farkla, kardeşi Calmar'la yargılanıp tek paydada toplanıyordu.
     """
     from backtest_robustness import peer_is_superior
 
     assert peer_is_superior(_peer(strategy_calmar=None)) is False
     assert peer_is_superior(_peer(benchmark_calmar=None)) is False
-    # Aynı satır pozitif excess ile mutlak kuraldan geçer.
-    assert peer_is_superior(_peer(strategy_calmar=None, excess_return_fraction=0.05))
-    # Kârlılık ölçülemiyorsa taban da mutlak kurala döner.
+    # Pozitif kümülatif fark ARTIK tek başına kurtarmıyor — alfa hâlâ negatif.
+    assert (
+        peer_is_superior(_peer(strategy_calmar=None, excess_return_fraction=0.05))
+        is False
+    )
+    # Alfa pozitifse risk bacağı olmadan da geçer (uydurulmuş bir Calmar yerine).
+    assert peer_is_superior(_peer(strategy_calmar=None, annualized_alpha=0.05)) is True
+    # Kârlılık ölçülemiyorsa taban da alfaya döner.
     assert peer_is_superior(_peer(strategy_cagr=None)) is False
-    assert peer_is_superior(_peer(strategy_cagr=None, excess_return_fraction=0.05))
+    assert peer_is_superior(_peer(strategy_cagr=None, annualized_alpha=0.05)) is True
 
 
-def test_absolute_mode_keeps_the_old_criterion(monkeypatch):
-    """Operatör eski davranışa dönebilir — anahtar ana kapıyla ORTAK."""
+def test_no_annualized_leg_at_all_falls_back_to_cumulative_excess():
+    """Yıllıklandırma HİÇ yoksa (zaman damgasız pencere) eski kümülatif kural.
+
+    Son basamak; burada başka ölçü kalmıyor. Fail-closed: ölçülmemiş bir
+    üstünlük üstünlük sayılmaz.
+    """
+    from backtest_robustness import peer_is_superior
+
+    bare = {"excess_return_fraction": 0.05, "annualized_alpha": None}
+    assert peer_is_superior(bare) is True
+    assert peer_is_superior({**bare, "excess_return_fraction": -0.05}) is False
+    assert peer_is_superior({**bare, "excess_return_fraction": None}) is False
+
+
+def test_absolute_mode_is_the_main_gates_absolute_mode(monkeypatch):
+    """Operatör eski politikaya dönebilir — ve döndüğü şey ANA KAPININ politikası.
+
+    Eskiden bu mod çok-sembol kapısında "kümülatif excess > 0" demekti, ana
+    kapıda ise "yıllık alfa > 0 VE Calmar'ı geç". Aynı anahtarın iki modülde iki
+    farklı anlama gelmesi, ıraksamanın ta kendisiydi.
+    """
     import backtest_robustness as br
 
-    monkeypatch.setattr(br, "MULTI_SYMBOL_GATE_MODE", "absolute")
+    monkeypatch.setenv("AGENT_BENCHMARK_GATE", "absolute")
+    # Ölçülen aday: Calmar üstün ama yıllık alfa negatif → mutlak modda elenir.
     assert br.peer_is_superior(_peer()) is False
-    assert br.peer_is_superior(_peer(excess_return_fraction=0.05)) is True
+    # Pozitif kümülatif fark tek başına yetmez; ölçü yıllık alfa.
+    assert br.peer_is_superior(_peer(excess_return_fraction=0.05)) is False
+    assert br.peer_is_superior(_peer(annualized_alpha=0.05)) is True
+
+
+def test_both_gates_return_the_same_verdict_for_the_same_metrics():
+    """Iraksamanın bekçisi: iki kapı aynı sözlüğe aynı cevabı vermeli.
+
+    Kural artık tek kopya (app_constants.benchmark_rejection) ve bu test o
+    tekliğin kanıtı — ikinci bir kopya açılırsa burada kırılır.
+    """
+    import web.routes.agent_backtest as ab
+    from backtest_robustness import peer_is_superior
+
+    for row in (
+        _peer(),
+        _peer(strategy_cagr=-0.02),
+        _peer(strategy_calmar=0.10),
+        _peer(strategy_calmar=None),
+        _peer(strategy_calmar=None, annualized_alpha=0.05),
+        _peer(annualized_alpha=None),
+    ):
+        main_gate_passes = (
+            ab._benchmark_rejection(row, row.get("excess_return_fraction")) is None
+        )
+
+        assert peer_is_superior(row) is main_gate_passes, row
 
 
 def test_result_rows_carry_the_risk_leg_so_the_gate_can_read_it():
@@ -394,6 +477,7 @@ def test_result_rows_carry_the_risk_leg_so_the_gate_can_read_it():
         {
             "AAA": _payload(
                 excess_return_fraction=-0.30,
+                annualized_alpha=-0.068,
                 strategy_calmar=0.40,
                 benchmark_calmar=0.25,
                 strategy_cagr=0.08,
@@ -405,6 +489,8 @@ def test_result_rows_carry_the_risk_leg_so_the_gate_can_read_it():
     assert row["strategy_calmar"] == 0.40
     assert row["benchmark_calmar"] == 0.25
     assert row["strategy_cagr"] == 0.08
+    # Geri düşme basamağı da taşınmalı: Calmar ölçülemediğinde kapı buna bakar.
+    assert row["annualized_alpha"] == -0.068
     # Ve kapı bunu okuyup adayı GEÇİRİYOR — excess negatif olmasına rağmen.
     assert out["symbols_positive"] == 1
     assert out["generalization_label"] == "✓ Generalizable"

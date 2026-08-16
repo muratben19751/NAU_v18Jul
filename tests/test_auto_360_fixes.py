@@ -1394,6 +1394,44 @@ def test_blank_budget_boxes_behave_like_zero(monkeypatch):
     assert "invalid budget" in bad.text
 
 
+def test_negative_budget_is_rejected_not_silently_maximized(monkeypatch):
+    """NEGATİF de bozuktur — ve sessiz sonucu tam olarak korkulan şeydi.
+
+    `float("-1")` istisna atmaz, "0 = güvenli azami" yolu ise `> 0` diye bakar:
+    negatif bir değer kullanıcının yazdığı tavanı kaldırıp koşuyu SERT TAVANA
+    kadar açıyordu. Tarayıcı `min=` ile engelliyor ama bu kapı zaten elle
+    kurulmuş istekler için var.
+    """
+    from fastapi.testclient import TestClient
+
+    import web.routes.agent_backtest as ab
+    from server import app
+
+    started = []
+
+    class ImmediateThread:
+        def __init__(self, *, target, kwargs, daemon):
+            started.append(kwargs)
+
+        def start(self):
+            return None
+
+    monkeypatch.setattr(ab.threading, "Thread", ImmediateThread)
+    monkeypatch.setattr(
+        ab,
+        "_AUTO_RUN_SLOTS",
+        ab.threading.BoundedSemaphore(ab._MAX_CONCURRENT_AUTO_RUNS),
+    )
+    client = TestClient(app)
+
+    for payload in ({"max_hours": "-1"}, {"max_total_tokens": "-5000"}):
+        bad = client.post("/agent/run", data=payload)
+
+        assert bad.status_code == 400, payload
+        assert "invalid budget" in bad.text
+    assert not started, "reddedilen bütçeyle koşu başlatıldı"
+
+
 def test_known_unadjusted_external_data_is_rejected(monkeypatch):
     from fastapi.testclient import TestClient
 

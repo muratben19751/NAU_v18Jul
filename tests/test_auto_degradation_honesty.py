@@ -295,6 +295,47 @@ def test_openrouter_child_error_type_decides_spending():
     assert llm_dispatch._never_reached_provider(legacy) is True
 
 
+def test_exemption_covers_the_in_process_openrouter_branch_too():
+    """Muafiyet OLGUYA bağlı olmalı, tek bir SDK'nın sınıfına değil.
+
+    OpenRouter çağrılarının iki taşıması var: iptal edilebilir çocuk süreç
+    (yukarıdaki test) ve süreç-İÇİ istemci — `_process_config` yoksa ya da
+    çağıran thread'de `cancel_check` kayıtlı değilse bu dal seçilir (bkz.
+    openrouter_backend `_OpenRouterClient.create`). İkincisinde ham
+    `openai.APIConnectionError` fırlar ve `anthropic.APIConnectionError` ile
+    AYRI hiyerarşi olduğu için `isinstance` ile daraltılmış bir muafiyet oraya
+    hiç uğramıyordu: aynı sıfır-bayt çağrı, hangi taşımadan geçtiğine göre ya
+    muaf ya faturalı oluyordu.
+    """
+    import httpx
+    import openai
+
+    assert not issubclass(openai.APIConnectionError, llm_dispatch.APIConnectionError), (
+        "SDK'lar birleşmiş — muafiyetin iki-sınıflı temeli gözden geçirilmeli"
+    )
+
+    req = httpx.Request("POST", "http://127.0.0.1:8080/v1/chat/completions")
+    assert llm_dispatch._never_reached_provider(openai.APIConnectionError(request=req))
+    # Ve alt sınıf hâlâ SAYILIYOR: ayrımı yapan somut ad, üst sınıf değil.
+    assert (
+        llm_dispatch._never_reached_provider(openai.APITimeoutError(request=req))
+        is False
+    )
+
+
+def test_a_lookalike_class_from_nowhere_still_spends():
+    """Muafiyet "adı APIConnectionError olan her şey" değil.
+
+    Ad, bilinen SDK'ların hatalarını AYIRT etmek için; tanımadığımız bir
+    kütüphanenin aynı adlı sınıfını muaf tutmak tavanı körletirdi.
+    """
+
+    class APIConnectionError(Exception):  # noqa: N818 — taklit kasıtlı
+        pass
+
+    assert llm_dispatch._never_reached_provider(APIConnectionError("nope")) is False
+
+
 # ── İki sessiz yol artık sayaca giriyor ──────────────────────────────────────
 #
 # Bu ikisi davranışsal olarak ancak tam bir AUTO iterasyonu kurularak

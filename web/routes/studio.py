@@ -180,6 +180,11 @@ def page(request: Request):
     # de sihirbazın sembol→kategori haritası aynı görüntüden türesin.
     _symbol_rows = _bybit_symbols()
 
+    # Dış katalog da ÖNBELLEKSİZ bir dizin taraması: picker listesi ile brief'in
+    # varsayılan seçimi aynı görüntüden türesin, tarama sayfa başına iki kez
+    # koşmasın (varsayılanı ayrı çözerken sessizce ikinci taramaya dönmüştü).
+    _ext_symbols = _mc_external_symbols()
+
     # Backtest tab: session-scoped last result (Faz 3).
     slot = last_result_get(sid)
     last_row = None
@@ -252,8 +257,8 @@ def page(request: Request):
         # AUTO brief SYMBOL seçicisi: noktalı id'ler dış katalogdan CANLI gelir
         # (elle yazılı tek satır QQQ.NASDAQ, ingest edilen diğer hisseleri
         # görünmez kılıyordu).
-        "mc_external_symbols": _mc_external_symbols(),
-        "mc_default_symbol": _mc_default_symbol(),
+        "mc_external_symbols": _ext_symbols,
+        "mc_default_symbol": _mc_default_symbol(_ext_symbols),
         # ── AUTO kokpiti: effort (düşünme bütçesi) seçici ──
         "llm_efforts": _llm_efforts(),
         "mc_default_effort": AUTO_DEFAULT_EFFORT,
@@ -339,17 +344,15 @@ def llm_badge() -> dict[str, str]:
     }
 
 
-def _mc_default_symbol() -> str:
+def _mc_default_symbol(symbols: list[str]) -> str:
     """AUTO brief'i açılırken SYMBOL kutusunda seçili gelecek enstrüman.
 
     ``_mc_default_model`` ile aynı gerekçe: liste canlı, istenen id o an
     taranan katalogda yoksa formun kendi ilk satırına (BTCUSDT) düşülür.
+    Liste PARAMETRE olarak alınır — picker'ın gördüğü görüntünün AYNISI
+    olduğu garanti olsun ve disk taraması sayfa başına bir kez koşsun.
     """
-    return (
-        AUTO_DEFAULT_SYMBOL
-        if AUTO_DEFAULT_SYMBOL in _mc_external_symbols()
-        else "BTCUSDT"
-    )
+    return AUTO_DEFAULT_SYMBOL if AUTO_DEFAULT_SYMBOL in symbols else "BTCUSDT"
 
 
 def _mc_external_symbols() -> list[str]:

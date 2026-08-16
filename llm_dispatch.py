@@ -241,6 +241,32 @@ _BYTES_PER_TOKEN_EST = 4
 _NEVER_SENT_ERROR_TYPES = frozenset({"APIConnectionError"})
 
 
+def _connection_error_classes() -> tuple[type, ...]:
+    """Muafiyetin tanıdığı SDK sınıfları — anthropic VE openai.
+
+    İkisi AYRI hiyerarşi: `isinstance(openai_exc, anthropic.APIConnectionError)`
+    False döner. Muafiyet tek SDK'ya bağlıyken aynı olgu (uca hiç bağlanılamadı)
+    hangi taşımadan geçtiğine göre ya muaf ya faturalı oluyordu — OpenRouter
+    çağrıları iki dallı: iptal edilebilir çocuk süreç (`_OpenRouterProcessError`,
+    yukarıdaki dal) ve süreç-İÇİ istemci (bkz. openrouter_backend
+    `_OpenRouterClient.create`; `_process_config` yoksa ya da çağıran thread'de
+    `cancel_check` kayıtlı değilse bu dal seçilir). İkincisinde ham
+    `openai.APIConnectionError` fırlıyor ve ölçüm gösterdi ki muafiyet oraya
+    hiç uğramıyordu (kod incelemesi 2026-08-16).
+
+    openai kurulu olmayabilir varsayımıyla korunuyor: bulunamazsa yalnız
+    anthropic sınıfıyla çalışır, muafiyet daralır ama hata vermez.
+    """
+    classes: list[type] = [APIConnectionError]
+    try:
+        from openai import APIConnectionError as _OpenAIConnectionError
+    except Exception:  # pragma: no cover — openai her kurulumda olmayabilir
+        return tuple(classes)
+    if _OpenAIConnectionError not in classes:
+        classes.append(_OpenAIConnectionError)
+    return tuple(classes)
+
+
 def _never_reached_provider(exc: BaseException) -> bool:
     """Bu hata, istek sağlayıcıya HİÇ ulaşmadan mı oluştu?
 
@@ -250,8 +276,11 @@ def _never_reached_provider(exc: BaseException) -> bool:
         # Çocuk süreç somut adı taşır; eski kayıtlar için mesaj başına da bakılır.
         name = exc.error_type or str(exc).split(":", 1)[0].strip()
         return name in _NEVER_SENT_ERROR_TYPES
+    # Ayrımı yapan SOMUT AD; `isinstance` yalnız "tanıdığımız bir SDK'nın hatası
+    # mı" diye bakar. Alt sınıflar (APITimeoutError) adla zaten eleniyor, yani
+    # bu koşulu genişletmek timeout muafiyeti açmaz.
     return type(exc).__name__ in _NEVER_SENT_ERROR_TYPES and isinstance(
-        exc, APIConnectionError
+        exc, _connection_error_classes()
     )
 
 

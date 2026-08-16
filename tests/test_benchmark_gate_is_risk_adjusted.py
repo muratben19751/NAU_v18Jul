@@ -21,11 +21,10 @@ See: [[auto_kapi_ve_geri_bildirim]], [[auto_arama_ekonomisi]].
 
 from __future__ import annotations
 
-import importlib
-
 import pytest
 
 import web.routes.agent_backtest as ab
+from app_constants import benchmark_gate_mode
 
 # Koşu 1fa9870e'nin en iyi adayının GERÇEK metrikleri.
 REAL_BEST = {
@@ -38,17 +37,20 @@ REAL_BEST = {
 
 @pytest.fixture
 def absolute_mode(monkeypatch):
+    """Mod ÇAĞRI ANINDA okunuyor — modülü yeniden yüklemek gerekmiyor.
+
+    Eskiden `importlib.reload(ab)` gerekiyordu çünkü mod import-anı bir sabitti.
+    Kural app_constants'a taşınınca (iki kapı tek kopya) o sabit de kalktı; süit
+    ortasında bir route modülünü yeniden yüklemek zaten kırılgan bir numaraydı.
+    """
     monkeypatch.setenv("AGENT_BENCHMARK_GATE", "absolute")
-    importlib.reload(ab)
-    yield ab
-    monkeypatch.delenv("AGENT_BENCHMARK_GATE", raising=False)
-    importlib.reload(ab)
+    return ab
 
 
 class TestRiskAdjustedMode:
     def test_the_real_candidate_now_passes(self):
         """Çıpa: bu tam olarak elenen adaydı."""
-        assert ab.BENCHMARK_GATE_MODE == "risk_adjusted"
+        assert benchmark_gate_mode() == "risk_adjusted"
         assert ab._benchmark_rejection(REAL_BEST, -16.5) is None
 
     def test_negative_alpha_alone_no_longer_rejects(self):
@@ -81,7 +83,7 @@ class TestRiskAdjustedMode:
 class TestAbsoluteModeStillAvailable:
     def test_same_candidate_is_rejected_on_alpha(self, absolute_mode):
         """Eski politika bir env ile geri gelmeli — karar geri alınabilir olsun."""
-        assert absolute_mode.BENCHMARK_GATE_MODE == "absolute"
+        assert benchmark_gate_mode() == "absolute"
         assert absolute_mode._benchmark_rejection(REAL_BEST, -16.5) == "negative_alpha"
 
 

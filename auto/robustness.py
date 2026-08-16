@@ -90,8 +90,15 @@ def resolve_peer_ids(basket: list[str]) -> list[str]:
         catalog = [r["instrument_id"] for r in list_external_instruments()]
     except Exception:
         return list(basket)
-    by_ticker = {bare_ticker(cid): cid for cid in catalog}
-    return [by_ticker.get(bare_ticker(p), p) for p in basket]
+    known = set(catalog)
+    # İlk gören kazanır: aynı ticker iki venue'da varsa (ör. hem .NASDAQ hem
+    # .ARCA ingest edilmişse) sözlük kurma yönü sessiz bir tercih yapar. Katalog
+    # sırası en azından SABİT; sepette yazılı id'nin kendisi katalogdaysa da o
+    # kazanır — yazarın açık tercihini tahmine bırakmayalım.
+    by_ticker: dict[str, str] = {}
+    for cid in catalog:
+        by_ticker.setdefault(bare_ticker(cid), cid)
+    return [p if p in known else by_ticker.get(bare_ticker(p), p) for p in basket]
 
 
 def peer_exclusions(instrument_id: str) -> set[str]:
