@@ -254,6 +254,69 @@ def test_peer_exclusions_degrade_to_self_when_manifest_unreadable(monkeypatch):
     assert ab._peer_exclusions("QQQC.NASDAQ") == {"QQQC"}
 
 
+# ── Peer sepeti: venue eki bağlayıcı değil ───────────────────────────────────
+
+
+def test_peer_ids_resolve_to_the_venue_the_catalog_actually_uses(monkeypatch):
+    """Sepet gerçek dünyanın venue'sunu yazar; katalog başka damga kullanabilir.
+
+    Sepet uzun süre "SPY.ARCA"/"IWM.ARCA" yazdı — piyasa gerçeği doğru (ikisi de
+    NYSE Arca'da listeli) ama ingest bu kutuda her enstrümanı `.NASDAQ` ile
+    yazıyor. Eşleşmeyen id `_external_bar_dir` filtresinden SESSİZCE düşüyordu:
+    beş peer'lık sepet üçle, QQQC koşusunda ikiyle karar veriyordu ve hiçbir
+    uyarı yoktu (koşu 392287b2). Eşleştirme bu yüzden bare ticker üzerinden.
+    """
+    from auto.robustness import resolve_peer_ids
+
+    monkeypatch.setattr(
+        "data.list_external_instruments",
+        lambda: [
+            {"instrument_id": "SPY.NASDAQ"},
+            {"instrument_id": "IWM.NASDAQ"},
+            {"instrument_id": "AAPL.NASDAQ"},
+        ],
+    )
+
+    assert resolve_peer_ids(["SPY.ARCA", "IWM.ARCA", "AAPL.NASDAQ"]) == [
+        "SPY.NASDAQ",
+        "IWM.NASDAQ",
+        "AAPL.NASDAQ",
+    ]
+    # Katalogda karşılığı olmayan girdi KIRPILMAZ: veri filtresi zaten eler ama
+    # sepette kalması "neden N peer?" sorusunun izini korur.
+    assert resolve_peer_ids(["ZZZZ.XETRA"]) == ["ZZZZ.XETRA"]
+
+
+def test_peer_resolution_survives_an_unreadable_catalog(monkeypatch):
+    """Katalog okunamazsa sepet değişmeden döner — robustness traceback etmez."""
+    from auto.robustness import resolve_peer_ids
+
+    def boom():
+        raise OSError("catalog root gone")
+
+    monkeypatch.setattr("data.list_external_instruments", boom)
+    assert resolve_peer_ids(["SPY.ARCA"]) == ["SPY.ARCA"]
+
+
+def test_basket_still_yields_a_full_sample_after_an_exclusion():
+    """Sepet, bir dışlamadan sonra bile PEER_SAMPLE_SIZE peer bırakacak kadar geniş.
+
+    Eşik `pass_rate >= 0.7`: 2 peer'da bu pratikte 2/2 zorunlu demekti ve ara
+    bant tek sembollük gürültüyle belirleniyordu. Örneklem küçüldükçe kapı
+    sertleşmiyor, KARARSIZLAŞIYOR — bu yüzden sepet yedekli tutulur.
+    """
+    from auto.robustness import (
+        EXTERNAL_PEER_BASKET,
+        PEER_SAMPLE_SIZE,
+        bare_ticker,
+    )
+
+    tickers = [bare_ticker(p) for p in EXTERNAL_PEER_BASKET]
+    assert len(set(tickers)) == len(tickers), "sepette yinelenen ticker var"
+    # QQQC gibi dikilmiş bir seri üç ticker'ı birden dışlayabiliyor (QQQC/QQQ/QQQQ).
+    assert len(EXTERNAL_PEER_BASKET) >= PEER_SAMPLE_SIZE + 2
+
+
 # ── Sonuç satırlarının şekli ─────────────────────────────────────────────────
 
 

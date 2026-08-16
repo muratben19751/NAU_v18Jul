@@ -241,8 +241,27 @@ istiyor (bkz. yukarıdaki risk-ayarlı kapı tartışması — orada kabul edile
 Asıl gözden geçirilecek yer eşiğin ÇÖZÜNÜRLÜĞÜ: `pass_rate >= 0.7` ama yalnız **2**
 sembol test ediliyor. İki sembolle olası değerler 0 / %50 / %100, yani 0,7 pratikte
 **2/2 zorunlu** demek ve ara bant ("⚠ Limited") tek sembollük gürültüyle belirleniyor.
-Tek zayıf akran adayı komple eliyor. Havuzu büyütmek kapıyı hem daha bilgilendirici
-hem istatistiksel olarak daha adil yapar. Ölçüm: [[09_baglam_ve_butce_olcumu_2026_08_16]].
+Tek zayıf akran adayı komple eliyor. Ölçüm: [[09_baglam_ve_butce_olcumu_2026_08_16]].
+
+**Düzeltildi — ve altından sessiz bir kusur çıktı.** Havuz 5'e çıkarılmak istenince
+sınırın (`[:3]`) bağlayıcı olmadığı görüldü: uygun peer sayısı zaten 2'ydi. Sebep
+`EXTERNAL_PEER_BASKET`'in venue ekiydi — sepet `SPY.ARCA` / `IWM.ARCA` yazıyordu
+(piyasa gerçeği doğru, ikisi de NYSE Arca'da listeli) ama ingest bu kutuda 16
+enstrümanın 16'sını `.NASDAQ` damgasıyla yazmış. Eşleşmeyen id `_external_bar_dir`
+filtresinden **sessizce** düşüyordu: beş peer'lık sepet fiilen üçle, QQQC koşusunda
+ikiyle karar veriyordu ve hiçbir yerde uyarı yoktu.
+
+Üç değişiklik: (1) `resolve_peer_ids` peer'ı venue'ya değil **bare ticker**'a göre
+katalogla eşliyor — sabit venue yazmak kırılgan, katalog değişince aynı sessiz düşme
+tekrarlar; (2) sepet 7 girdiye çıktı (3 endeks ETF + 4 mega-cap) ki QQQC gibi üç
+ticker'ı birden dışlayan dikilmiş bir seride bile 5 peer kalsın;
+(3) `PEER_SAMPLE_SIZE = 5`, ve havuz hedefin altında kalırsa koşu logu bunu **yazıyor**
+— sessiz daralma bu kapının 5 peer sanılırken 2 ile karar vermesine yol açmıştı.
+
+Etki: QQQC.NASDAQ için test edilen peer 2 → **5** (SPY, IWM, AAPL, MSFT, NVDA).
+Eşik değişmedi; 4/5 geçer, 3/5 "⚠ Limited" olur — kapı aynı sertlikte ama kararı
+artık tek bir zayıf akrana bağlı değil. Testler:
+`tests/test_multi_symbol_generalization.py`.
 
 <!-- BACKLINKS:BEGIN -->
 ## Referenced by

@@ -36,14 +36,30 @@ MC_DD_LIMIT = -25.0
 MC_DD_TAIL_LIMIT = -35.0
 
 # Liquid peer basket for multi-symbol robustness on external (US equity) runs.
-# Real instrument ids from the catalog — SPY/IWM are on the ARCA venue, not NASDAQ.
+# Üç endeks ETF'i + dört mega-cap: birincil enstrüman bunlardan birini dışlasa
+# bile (bkz. peer_exclusions) geriye PEER_SAMPLE_SIZE kadarı kalsın diye yedekli.
+#
+# Venue eki BURADA BAĞLAYICI DEĞİL — bkz. resolve_peer_ids. Sepet uzun süre
+# "SPY.ARCA"/"IWM.ARCA" yazdı (gerçek dünyada doğru: ikisi de NYSE Arca'da
+# listeli) ama ingest her enstrümanı kendi damgasıyla yazıyor ve bu kutuda 16
+# enstrümanın 16'sı `.NASDAQ`. Eşleşmeyen id aşağıdaki veri filtresinden
+# SESSİZCE düşüyordu: beş peer'lık sepet fiilen üçle, QQQC koşusunda ikiyle
+# çalışıyordu ve hiçbir yerde uyarı yoktu (ölçüldü 2026-08-16, koşu 392287b2).
 EXTERNAL_PEER_BASKET = [
-    "SPY.ARCA",
+    "SPY.NASDAQ",
     "QQQ.NASDAQ",
-    "IWM.ARCA",
+    "IWM.NASDAQ",
     "AAPL.NASDAQ",
     "MSFT.NASDAQ",
+    "NVDA.NASDAQ",
+    "GOOGL.NASDAQ",
 ]
+
+# Kaç peer'a kadar test edilir. 3 iken eşik çözünürlüğü sorunluydu: geçme kuralı
+# `pass_rate >= 0.7`, yani 2 peer'da pratikte 2/2 zorunlu ve ara bant
+# ("⚠ Limited") tek sembollük gürültüyle belirleniyordu. 5'te 4/5 geçer, 3/5
+# "Limited" olur — kapı aynı sertlikte ama kararı tek bir zayıf akrana bağlı değil.
+PEER_SAMPLE_SIZE = 5
 
 
 def bare_ticker(instrument_id: str) -> str:
@@ -54,6 +70,28 @@ def bare_ticker(instrument_id: str) -> str:
     kaybettirdi (M1260) — aynı hatayı ikinci kez yazmayalım.
     """
     return (instrument_id or "").rsplit(".", 1)[0].strip().upper()
+
+
+def resolve_peer_ids(basket: list[str]) -> list[str]:
+    """Sepet id'lerini KATALOĞUN kullandığı venue'ya çevirir.
+
+    Eşleştirme bare ticker üzerinden yapılır çünkü venue eki ingest'e göre
+    değişiyor ve sabit yazmak sessiz düşmeye yol açıyor (bkz. sepetin yorumu).
+    Katalogda karşılığı olmayan girdi olduğu gibi bırakılır — aşağıdaki veri
+    filtresi zaten eleyecek, ama sepeti burada kırpmak "neden 2 peer?" sorusunun
+    izini siler.
+
+    Katalog okunamazsa sepet değişmeden döner: bir peer listesi uğruna
+    robustness koşusu traceback etmez.
+    """
+    from data import list_external_instruments
+
+    try:
+        catalog = [r["instrument_id"] for r in list_external_instruments()]
+    except Exception:
+        return list(basket)
+    by_ticker = {bare_ticker(cid): cid for cid in catalog}
+    return [by_ticker.get(bare_ticker(p), p) for p in basket]
 
 
 def peer_exclusions(instrument_id: str) -> set[str]:
@@ -262,17 +300,30 @@ def run_full_robustness(
             from data import _external_bar_dir
 
             # First filter peers that HAVE data at this granularity, THEN clip to
-            # 3 (scoring is already tolerant). The reverse order used to never try
-            # the 4th/5th peer if the first 3 peers had no data.
+            # PEER_SAMPLE_SIZE (scoring is already tolerant). The reverse order
+            # used to never try the 4th/5th peer if the first 3 peers had no data.
             # Dışlama dikiş-farkındalıklı: QQQC = stitch:QQQ+QQQQ olduğu için
             # düz `p != symbol` QQQ'yu peer sanıyordu (bkz. peer_exclusions).
+            # Venue çözümü filtreden ÖNCE: sepet gerçek dünyanın venue'sunu
+            # yazarken katalog başka damga kullanabiliyor (bkz. resolve_peer_ids).
             excluded = peer_exclusions(symbol)
-            other_symbols = [
+            resolved = resolve_peer_ids(EXTERNAL_PEER_BASKET)
+            eligible = [
                 p
-                for p in EXTERNAL_PEER_BASKET
+                for p in resolved
                 if bare_ticker(p) not in excluded
                 and _external_bar_dir(p, interval) is not None
-            ][:3]
+            ]
+            other_symbols = eligible[:PEER_SAMPLE_SIZE]
+            # Havuz hedefin altında kaldıysa SÖYLE. Sessiz düşme tam olarak bu
+            # kapının 5 peer sanılırken 2 ile karar vermesine yol açmıştı.
+            if len(other_symbols) < PEER_SAMPLE_SIZE:
+                pf(
+                    f"  ⚠ Multi-Symbol havuzu {len(other_symbols)}/"
+                    f"{PEER_SAMPLE_SIZE} peer — {interval} için veri bulunan ve "
+                    f"dışlanmayan başka enstrüman yok; kapı bu daralmış "
+                    f"örneklemle karar verecek."
+                )
             # 365 calendar days ≈ 252 equity bars — too few for the _MIN_TRADES threshold; use 730.
             ms_days = 730
         else:
