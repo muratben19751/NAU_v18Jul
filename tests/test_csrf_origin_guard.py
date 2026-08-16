@@ -4,7 +4,7 @@ DeepR 2026-08-11 [ORTA]: uygulamada CSRF token / origin-referer kontrolü
 hiçbir yerde yoktu. Tek dolaylı savunma `nau_auth` çerezinin `samesite="lax"`
 olmasıydı — ve NAU_ACCESS_TOKEN boşken (uzun süre öyleydi) çerez hiç
 gerekmediği için o savunma da yoktu. Operatörün tarayıcısında açılan kötücül
-bir sayfa `POST /agent/run` (para harcatan LLM turu), `/loop/start`,
+bir sayfa `POST /agent/run` (para harcatan LLM turu), `/agent/stop/{id}`,
 `/strategy/blocks/save-custom`, `/studio/{id}/deploy` çağırabiliyordu;
 127.0.0.1'e bağlı olmak bunu engellemez, çünkü isteği atan kurbanın kendi
 tarayıcısıdır.
@@ -28,12 +28,22 @@ import server
 # Durum değiştiren, gerçekten pahalı/yıkıcı olan uçlar. Hepsi POST ve hepsi
 # bulguda tek tek adı geçenler.
 STATE_CHANGING = [
-    ("POST", "/loop/start"),
-    ("POST", "/loop/stop"),
     ("POST", "/agent/run"),
+    ("POST", "/agent/stop/csrf-probe"),
     ("POST", "/strategy/blocks/save-custom"),
     ("POST", "/reports/layout"),
 ]
+
+# Tek hedef gereken testlerin ucu. Kriter: KALICI (silinme adayı olmayan),
+# POST, ve reddedilmediğinde ZARARSIZ — testin kendisi bir yan etki üretmesin.
+# `/agent/stop/<bilinmeyen>` ikisini de karşılıyor; `/agent/run` karşılamazdı,
+# çünkü koruma bir gün gerilerse süit gerçek (para harcatan) AUTO turları
+# başlatırdı.
+#
+# Eskiden burası `/loop/stop`'tu. Loop sayfası emekliye ayrılıyor (kullanıcı
+# kararı 2026-08-17) ve o uç gidince CSRF kapsamı SESSİZCE daralırdı: bu
+# testler loop'u değil, korumanın kendisini sınıyor.
+PROBE = "/agent/stop/csrf-probe"
 
 
 @pytest.fixture()
@@ -63,19 +73,19 @@ class TestCrossOriginWritesAreRefused:
 
     def test_null_origin_is_refused(self, client):
         """referrer-policy `Origin`'i `null`'a indirebilir — o da yabancıdır."""
-        r = client.post("/loop/stop", headers={"Origin": "null"})
+        r = client.post(PROBE, headers={"Origin": "null"})
 
         assert r.status_code == 403
 
     def test_lookalike_host_suffix_is_refused(self, client):
         """`testserver.evil.example` bizim host'umuz DEĞİL (ön-ek eşleşmesi yok)."""
-        r = client.post("/loop/stop", headers={"Origin": "http://testserver.evil.com"})
+        r = client.post(PROBE, headers={"Origin": "http://testserver.evil.com"})
 
         assert r.status_code == 403
 
     def test_refusal_body_is_not_html(self, client):
         """403 gövdesi htmx tarafından DOM'a basılsa bile zararsız kalmalı."""
-        r = client.post("/loop/stop", headers={"Origin": "https://evil.example"})
+        r = client.post(PROBE, headers={"Origin": "https://evil.example"})
 
         assert r.headers["content-type"].startswith("text/plain")
         assert "<" not in r.text
@@ -83,7 +93,7 @@ class TestCrossOriginWritesAreRefused:
 
 class TestLegitimateTrafficStillWorks:
     def test_same_origin_write_passes(self, client):
-        r = client.post("/loop/stop", headers={"Origin": "http://testserver"})
+        r = client.post(PROBE, headers={"Origin": "http://testserver"})
 
         assert r.status_code != 403
 
@@ -91,12 +101,12 @@ class TestLegitimateTrafficStillWorks:
         """Tünel arkasında tarayıcı https görür, uygulama düz http dinler.
 
         Şema karşılaştırılsaydı her POST 403 olurdu — eşleşme HOST üzerinden."""
-        r = client.post("/loop/stop", headers={"Origin": "https://testserver"})
+        r = client.post(PROBE, headers={"Origin": "https://testserver"})
 
         assert r.status_code != 403
 
     def test_same_origin_referer_passes(self, client):
-        r = client.post("/loop/stop", headers={"Referer": "http://testserver/studio"})
+        r = client.post(PROBE, headers={"Referer": "http://testserver/studio"})
 
         assert r.status_code != 403
 
@@ -128,7 +138,7 @@ class TestLegitimateTrafficStillWorks:
         olmayan çağıran zaten kendi adına istek atıyor. Modern tarayıcılar
         GET/HEAD dışındaki her istekte `Origin` gönderdiği için bu boşluk bir
         tarayıcı tarafından ZORLANAMAZ."""
-        r = client.post("/loop/stop")
+        r = client.post(PROBE)
 
         assert r.status_code != 403
 
@@ -136,7 +146,7 @@ class TestLegitimateTrafficStillWorks:
         """Sadece tarayıcıdan erişilen kurulumlar boşluğu kapatabilsin."""
         monkeypatch.setenv("NAU_CSRF_REQUIRE_ORIGIN", "1")
 
-        r = client.post("/loop/stop")
+        r = client.post(PROBE)
 
         assert r.status_code == 403
 
@@ -146,15 +156,13 @@ class TestAllowedOriginsOverride:
         """Tünel `Host`'u yeniden yazarsa operatörün elinde bir kol olmalı."""
         monkeypatch.setenv("NAU_ALLOWED_ORIGINS", "https://nautilus.muratben.com")
 
-        r = client.post(
-            "/loop/stop", headers={"Origin": "https://nautilus.muratben.com"}
-        )
+        r = client.post(PROBE, headers={"Origin": "https://nautilus.muratben.com"})
 
         assert r.status_code != 403
 
     def test_x_forwarded_host_is_accepted(self, client):
         r = client.post(
-            "/loop/stop",
+            PROBE,
             headers={
                 "Origin": "https://nautilus.muratben.com",
                 "X-Forwarded-Host": "nautilus.muratben.com",

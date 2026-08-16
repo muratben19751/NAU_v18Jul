@@ -78,6 +78,22 @@ from fastapi import FastAPI, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 
+# `sandbox` BURADA, uygulamanın giriş noktasında ve AÇIKÇA import ediliyor —
+# kullanılan bir ad için değil, import anındaki SÜREÇ-GLOBAL yan etkisi için:
+# `mp.set_executable(pythonw.exe)` (PM2_HOME ayarlıyken).
+#
+# Neden burada: `openrouter_backend`'in LLM çağrıları `multiprocessing.Process()`
+# ile çocuk açıyor ve `Process()`in `creationflags` kolu YOK; pm2 gibi konsolsuz
+# bir ebeveyn altında konsol-alt sistemli bir çocuk donuyor (bir kez yaşandı,
+# py-spy ile teşhis edildi: "backtest asılı ama logda satır yok"). Tek koruma
+# yukarıdaki set_executable.
+#
+# Bu satırdan önce koruma yalnız TESADÜFEN geliyordu:
+# server → web/routes/loop.py → loop_runner.py → sandbox. `loop_runner` legacy
+# ve silinmeye aday; zinciri kıran biri korumayı sildiğini bilemezdi ve hiçbir
+# çalışma-zamanı testi yakalayamazdı (PM2_HOME pytest'te tanımsız, arıza CI'da
+# hiç üremiyor). Sahipsiz bir koruma, ilgisiz bir temizlikte kaybolur.
+import sandbox as _sandbox  # noqa: F401  (import-time side effect, not a name)
 from data import load_bybit_bars
 from web import templating as _templating
 from web.templating import (  # noqa: F401  (geriye dönük yeniden dışa verim)
