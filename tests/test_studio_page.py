@@ -98,6 +98,68 @@ def test_auto_brief_opens_with_the_operators_working_defaults(stub_catalog):
     assert f'<option value="{expected}" selected>' in html
 
 
+def test_auto_brief_model_default_matches_the_id_the_deployed_picker_shows():
+    """AUTO_DEFAULT_MODEL, pm2'nin pinlediği uç id'siyle BİREBİR aynı olmalı.
+
+    Picker'ın içeriği ortama bağlı: ecosystem.config.js
+    ``NAUTILUS_OPENROUTER_MODELS`` pin'ini verdiği için canlı uygulamada liste
+    ağdan değil o pin'den doğuyor ve satır ``or:<pin>`` oluyor — satıcı öneki
+    YOK. Sabit bununla uyuşmazsa `_mc_default_model` sessizce ""e düşer: kutu
+    boş açılır, kimse hata görmez, START kullanıcının seçmediği bir uçla koşar.
+
+    Bu tam olarak 2026-08-16'da yaşandı: sabit ağdan gelen listeye (satıcı
+    önekli `or:qwen/...`) bakılarak "düzeltilmek" üzereydi, oysa canlı listeyi
+    pin belirliyordu. Ölçümü pm2'nin env'i olmadan almak yanıltıyor — bu yüzden
+    kaynak env değil, deploy dosyasının kendisi.
+    """
+    import re
+    from pathlib import Path
+
+    import web.routes.studio as studio
+
+    ecosystem = Path(__file__).resolve().parents[1] / "ecosystem.config.js"
+    if not ecosystem.exists():
+        pytest.skip("pm2 giriş dosyası bu makinede yok")
+    pin = re.search(
+        r'NAUTILUS_OPENROUTER_MODELS:\s*"([^"]*)"', ecosystem.read_text("utf-8")
+    )
+    if pin is None or not pin.group(1).strip():
+        pytest.skip("deploy bir model pin'i vermiyor; liste ağdan geliyor")
+
+    pinned = [s.strip() for s in pin.group(1).split(",") if s.strip()]
+    assert studio.AUTO_DEFAULT_MODEL in [f"or:{mid}" for mid in pinned]
+
+
+def test_auto_brief_model_falls_back_to_the_app_default_when_unlisted(stub_catalog):
+    """Sabit picker'da yoksa kutu BOŞA düşer — işaretsiz bir seçenek kalmaz.
+
+    Geri düşme kasıtlı (bkz. `_mc_default_model`), ama sessiz: kullanıcı brief'i
+    açtığında farkı ancak MODEL kutusuna bakarsa görür. İki yönü de sabitliyoruz
+    ki geri düşme bir gün "seçili hiçbir şey yok"a dönüşmesin.
+    """
+    import re
+
+    import web.routes.studio as studio
+
+    def selected(html: str) -> list[str]:
+        block = re.search(r'name="model"(.*?)</select>', html, re.S)
+        assert block is not None, "MODEL seçicisi hiç render edilmedi"
+        return re.findall(r'value="([^"]*)"[^>]*selected', block.group(1))
+
+    listed = [("", "varsayılan"), (studio.AUTO_DEFAULT_MODEL, "OR · pinli uç")]
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(studio, "_llm_models", lambda: listed)
+        assert selected(_client().get("/studio").text) == [studio.AUTO_DEFAULT_MODEL]
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(
+            studio,
+            "_llm_models",
+            lambda: [("", "varsayılan"), ("claude-opus-5", "Opus")],
+        )
+        assert selected(_client().get("/studio").text) == [""]
+
+
 def test_studio_page_sets_the_draft_session_cookie_when_missing(stub_catalog):
     resp = _client().get("/studio")
 

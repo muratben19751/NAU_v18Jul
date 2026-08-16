@@ -14,7 +14,7 @@ related:
   - wiki/synthesis/auto_mission_control.md
   - wiki/synthesis/tear_sheet_overlay.md
   - wiki/synthesis/kesilme_ve_degrade_gorunurlugu.md
-last_updated: 2026-08-15
+last_updated: 2026-08-16
 ---
 
 # Model seçici ve model görünürlüğü
@@ -347,6 +347,29 @@ Düzeltme koşulu hedefe bağladı: `model.startswith("or:") or not isinstance(.
 model karardan ÖNCE çözülür. Ölçüm ortamı bunu göstermemişti çünkü probe'lar
 doğrudan OpenRouter istemcisi kuruyordu — kusur yalnız "varsayılan CLI + or: pin"
 bileşiminde görünür. Testler: `tests/test_call_timeout_reaches_openrouter.py`.
+
+## Brief'in açılış modeli pin'e bağlıdır — ölçümü ortamsız alma (2026-08-16)
+
+AUTO brief'i MODEL kutusunu `AUTO_DEFAULT_MODEL` ile açar; `_mc_default_model`
+bu id picker'da YOKSA sessizce `""`e (Claude) düşer. Geri düşme kasıtlı — işareti
+olmayan bir kutu, kullanıcının görmediği bir uçla START'a basardı — ama sessiz
+olduğu için sabitin doğruluğu ancak picker'ın **o ortamdaki** içeriğiyle birlikte
+anlamlıdır.
+
+Üretimde picker ağdan gelmiyor: `ecosystem.config.js`
+`NAUTILUS_OPENROUTER_MODELS: "qwen3.8-27b"` **pin**'ini veriyor, pin listenin
+yerine geçiyor ve satır `or:<pin>` olarak — yani **satıcı öneki olmadan** —
+üretiliyor. Doğru sabit bu yüzden `or:qwen3.8-27b`; `or:qwen/qwen3.8-27b` (canlı
+katalogdaki gerçek id) pinli listede bulunmaz ve kutuyu boşaltır.
+
+Tuzak şuydu: aynı kontrol pm2'nin env'i olmayan bir kabukta koşturulunca gerçek
+openrouter.ai'nin 25 satırlık ücretsiz listesi görünür, sabit "listede yok" çıkar
+ve sabit yanlış yöne "düzeltilmek" istenir. **Model seçicisiyle ilgili her ölçüm,
+uygulamanın koştuğu ortam değişkenleriyle alınmalıdır.**
+
+Test bunu ortamdan bağımsız bağlar: `tests/test_studio_page.py` sabiti env'e değil
+`ecosystem.config.js`'teki pin'e karşı doğrular, ayrıca geri düşmenin iki yönünü
+de (listede var → seçili, yok → `""`) sabitler.
 
 <!-- BACKLINKS:BEGIN -->
 ## Referenced by
