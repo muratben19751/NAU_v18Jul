@@ -707,11 +707,9 @@ def _start_stall_watchdog(run_id: str) -> threading.Thread:
             try:
                 SESSION_LOG_DIR.mkdir(parents=True, exist_ok=True)
                 with dump_path.open("a", encoding="utf-8") as fh:
-                    header = "===== STALL DUMP #%d run=%s idle=%.0fs at %s =====" % (
-                        dumps,
-                        run_id,
-                        idle,
-                        datetime.now(UTC).isoformat(),
+                    header = (
+                        f"===== STALL DUMP #{dumps} run={run_id} "
+                        f"idle={idle:.0f}s at {datetime.now(UTC).isoformat()} ====="
                     )
                     fh.write(os.linesep + header + os.linesep)
                     fh.flush()
