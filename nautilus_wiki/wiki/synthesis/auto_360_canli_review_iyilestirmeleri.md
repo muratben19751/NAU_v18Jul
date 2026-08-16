@@ -7,6 +7,7 @@ key_concepts:
   - auto_kapi_ve_geri_bildirim
   - auto_arama_ekonomisi
 sources:
+  - sources/08_hibrit_kosu_olcumleri_2026_08_16.md
   - https://github.com/muratben19751/NAU_v18Jul
 related:
   - wiki/synthesis/auto_kapi_ve_geri_bildirim.md
@@ -14,7 +15,7 @@ related:
   - wiki/synthesis/llm_maliyet_kaldiraclari.md
   - wiki/synthesis/nau_performans_denetimi.md
   - wiki/synthesis/nau_deepr_toplu_sertlestirme_2026_08.md
-last_updated: 2026-08-08
+last_updated: 2026-08-16
 ---
 
 # AUTO 360° canlı inceleme ve güvenilirlik iyileştirmeleri
@@ -544,6 +545,27 @@ ve maliyet muhasebesini degistirmez.
   `advisory_cli` yalniz gercek CLI cagrilari icindir.
 - Bu duzeltme `tests/test_auto_360_fixes.py` paketiyle 58 test ve Ruff ile
   dogrulandi. Nautilus yeniden baslatildi; `/studio` HTTP 200.
+
+## Postmortem `sharpe: None`'da çöküyordu (2026-08-15, düzeltildi)
+
+`auto_review.render_markdown` üç yerde `.get("sharpe", 0)` yazıyordu. O varsayılan
+yalnız anahtar YOKKEN devreye girer; anahtar var ve değeri None ise None döner ve
+hem `f"{None:.2f}"` hem `None > eşik` TypeError verir.
+
+`sharpe`'ın None olması NORMAL: per-trade Sharpe standart sapma ister, tek
+işlemli bir sonuçta sapma yoktur. Yani postmortem **tam da anormal koşularda**
+çöküyordu — raporun en çok gerektiği anda. Canlı kanıt: koşu `1fa9870e`'nin
+postmortem'i pm2 error log'unda `TypeError: unsupported format string passed to
+NoneType.__format__` ile düştü.
+
+Üç yer vardı, ikisi henüz patlamamıştı (mühürlü holdout sharpe'ı ve "şüpheli
+sharpe" karşılaştırması). Doğru deyim `(... or 0)` — dosya bunu zaten bir satır
+aşağıda `pnl_pct` için kullanıyordu. 0,00 yazmak "ölçülemedi"nin dürüst
+karşılığı; uydurma sayı yok.
+
+Ders: `dict.get(k, default)` ile `dict.get(k) or default` FARKLI sözleşmelerdir
+ve bu kod tabanında yan yana duruyorlardı.
+Testler: `tests/test_review_survives_none_sharpe.py`.
 
 <!-- BACKLINKS:BEGIN -->
 ## Referenced by

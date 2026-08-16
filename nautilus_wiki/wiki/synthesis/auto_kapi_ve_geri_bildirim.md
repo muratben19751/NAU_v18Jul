@@ -6,12 +6,13 @@ key_concepts:
   - auto_mission_control
   - auto_arama_ekonomisi
 sources:
+  - sources/08_hibrit_kosu_olcumleri_2026_08_16.md
   - https://github.com/muratben19751/NAU_v18Jul
 related:
   - wiki/synthesis/auto_arama_ekonomisi.md
   - wiki/synthesis/auto_mission_control.md
   - wiki/synthesis/webapp_module_map.md
-last_updated: 2026-08-04
+last_updated: 2026-08-16
 ---
 
 # AUTO'nun kapısı ve geri bildirimi
@@ -180,6 +181,41 @@ TF'de bir kez sınanır ve sıralama (strateji × TF) çiftlerini tek listede
 karşılaştırır. Artık en azından spec hedef TF bilinerek üretiliyor, ama bir
 fikrin mi yoksa zaman diliminin mi elendiğini ayırmak için `n_iterations`'ı TF
 sayısının katı seçmek gerekir.
+
+## Benchmark kapısı risk-ayarlıya çevrildi (2026-08-15, `AGENT_BENCHMARK_GATE`)
+
+Kapı "buy&hold'u MUTLAK getiride geç" diyordu ve bu, stratejiyi değil
+ENSTRÜMANI eliyordu. Koşu `1fa9870e`'nin en iyi adayı Calmar'da buy&hold'u
+GEÇİYORDU (0,292 vs 0,269) ama yıllık alfası −%6,8 olduğu için elendi — QQQ
+22,7 yılda yılda %14,5 yapmış ve long-only bir strateji piyasadan zaman zaman
+çıktığı için mutlak getiride kaybediyor.
+
+Pencereyi kısaltmak kurtarmıyor; ölçüldü: QQQ'nun HER penceresinde buy&hold CAGR
+%14-24 arası, 3 yıllıkta %24,2 ile daha da zor. Mevcut 22,7 yıllık pencere zaten
+en yumuşaklardan biri.
+
+`AGENT_BENCHMARK_GATE` (varsayılan `risk_adjusted`): asıl ölçü **Calmar
+üstünlüğü**, alfanın pozitif olması şart değil, ama **CAGR > 0 tabanı** var —
+para kaybeden bir strateji düşüşü küçük diye geçemez. Calmar ölçülemezse eski
+mutlak kurala düşülür (ölçülemeyen üstünlük üstünlük sayılmaz). `absolute` ile
+karar geri alınabilir.
+
+Mühürlü holdout kapısı da AYNI ölçüye bağlandı: ikisi ıraksarsa bir aday
+sıralamayı geçip yayımda takılır ve kullanıcı "buy&hold'u geçti mi" sorusuna iki
+farklı cevap görür.
+
+### Kapının seçtiği strateji SINIFI (üç bağımsız koşu, tutarlı)
+
+| aday | CAGR (piyasa %14,6) | MaxDD (piyasa −%54) | Calmar (piyasa 0,27) |
+|---|---|---|---|
+| `Williams %R Reclaim` [1H] | %8,63 | −%27,3 | 0,316 |
+| `ADX ATR Trend Edge` [4H] | %8,63 | −%24,6 | 0,350 |
+| `DMI ATR Regression` [4H] | %5,20 | −%17,7 | 0,294 |
+
+Üçü de piyasadan AZ kazanıp düşüşü yarıya/üçte bire indiriyor. Kapı "piyasayı
+yenen" değil "sarsıntısı düşük" bir sınıf seçiyor — kabul edilen takas bu.
+`5e89d42a`'da 27 adayın 2'si geçti (%7,4), yani gevşetme lastik damgaya
+dönüşmedi. Testler: `tests/test_benchmark_gate_is_risk_adjusted.py`.
 
 <!-- BACKLINKS:BEGIN -->
 ## Referenced by

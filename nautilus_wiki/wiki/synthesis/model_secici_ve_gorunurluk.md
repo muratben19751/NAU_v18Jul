@@ -3,6 +3,7 @@ title: Model seçici ve model görünürlüğü
 type: synthesis
 summary: Hangi LLM'in koştuğu her ekranda çözülmüş adıyla yazılır; OpenRouter listesi openrouter.ai kataloğundan canlı gelir, varsayılanda ücretsiz uçlarla sınırlıdır ve çekim başarısızsa statik yedeğe düşer — asla uydurma ya da sürpriz-faturalı id'ye.
 sources:
+  - sources/08_hibrit_kosu_olcumleri_2026_08_16.md
   - sources/07_yerel_llm_hibrit_olcumu_2026_08_15.md
   - https://github.com/nautechsystems/nautilus_trader
   - https://openrouter.ai/api/v1/models
@@ -325,6 +326,27 @@ Aynı koşu kardeş boşluğu da gösterdi ve o da kapatıldı: maliyet satırı
 koşunun pinlenmiş modeline atfediyordu. Artık model bazında kırılıyor
 (`_run_cost`); tek harcayan varsa adı, birden fazlaysa "hibrit (N model)" yazılır.
 Bkz. [[llm_maliyet_kaldiraclari]].
+
+## Zamanaşımı ayarı yerel uca HİÇ ulaşmıyordu (2026-08-15, düzeltildi)
+
+`_create_message_once` zamanaşımını `if not isinstance(client, _ClaudeCLIClient)`
+koşuluyla enjekte ediyordu. Gerekçe doğruydu (CLI'ın kendi 300 s tavanı var, kısa
+bir değerle ezme) ama karar VARSAYILAN istemciye bakıyordu. Uygulamanın varsayılan
+backend'i Claude CLI iken `or:` pinli bir çağrı yine OpenRouter'a/yerel uca gider
+ve o dalda kwargs'a zamanaşımı hiç konmadığı için `_run_openrouter_killable` kendi
+120 s'lik varsayılanına düşüyordu.
+
+Sonuç: `NAUTILUS_LLM_CALL_TIMEOUT=300` yerel uç için SESSİZCE ÖLÜYDÜ. Env
+doğruydu, `pm2 env` doğruluyordu, davranış eskiydi — koşu `0057a0cd`'de iki çağrı
+`OpenRouter call exceeded 120s hard deadline` ile düştü.
+
+**Teşhisi veren şey hata metnindeki SAYI oldu:** 300 ayarlayıp 120 görmek. Bir
+ayarın yürürlükte olduğunu doğrulamak (env var mı) yürütmeyi doğrulamaz.
+
+Düzeltme koşulu hedefe bağladı: `model.startswith("or:") or not isinstance(...)`,
+model karardan ÖNCE çözülür. Ölçüm ortamı bunu göstermemişti çünkü probe'lar
+doğrudan OpenRouter istemcisi kuruyordu — kusur yalnız "varsayılan CLI + or: pin"
+bileşiminde görünür. Testler: `tests/test_call_timeout_reaches_openrouter.py`.
 
 <!-- BACKLINKS:BEGIN -->
 ## Referenced by

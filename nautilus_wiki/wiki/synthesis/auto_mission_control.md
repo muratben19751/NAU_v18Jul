@@ -3,6 +3,7 @@ title: AUTO Mission Control kokpiti
 type: synthesis
 summary: Strategy Studio'nun AUTO sekmesi; uzun dikey akıştan tek ekranlık, kaydırmayan kokpite geçiş. Aynı ajan state'inin ikinci sunumu (?view=mission), eşleme web/mission.py'de izole ve testlerle kilitli.
 sources:
+  - sources/08_hibrit_kosu_olcumleri_2026_08_16.md
   - https://github.com/nautechsystems/nautilus_trader
   - sources/02_architecture_docs.md
 key_concepts:
@@ -12,7 +13,7 @@ key_concepts:
 related:
   - wiki/synthesis/webapp_module_map.md
   - wiki/synthesis/strategy_studio.md
-last_updated: 2026-08-14
+last_updated: 2026-08-16
 ---
 
 # AUTO Mission Control kokpiti
@@ -241,6 +242,33 @@ rakamı bildirdiğinde bile fiyat-tablosu TAHMİNİNİ gösteriyordu.
 
 Üçü de `tests/test_mission_cockpit_survives_continuous_rounds.py` ile
 bağlandı; testlerin ısırdığı kasıtlı mutasyonla doğrulandı.
+
+## Takılan koşu için thread dökümü (2026-08-16, stall watchdog)
+
+Üç AUTO koşusu sonuçsuz durdu (`b3dbd2b0`, `71b90408`, `50170b68`): süreç AYAKTA
+kaldı (pm2 restart sayacı değişmedi, PID aynı), `session_end` hiç yazılmadı,
+deadline hiç tetiklenmedi. Nerede takıldıklarını gösteren TEK bir kayıt yoktu.
+
+`_session_log` artık her başarılı yazımda `_LAST_LOG_AT[run_id]`'yi damgalıyor;
+ayrı bir watchdog thread'i damga `NAU_AUTO_STALL_DUMP_SEC` (300 s) kadar
+eskiyince `faulthandler.dump_traceback(all_threads=True)` ile TÜM thread'leri
+`<run_id>.stall.txt`'e döküyor. Nabız 30 s'de bir yazdığı için 300 s sessizlik
+nabzın da durduğu anlamına gelir — normal uzun backtest tetiklemez.
+
+Watchdog nabızdan AYRI: `50170b68`'de susan şey nabzın kendisiydi. Koşuyu
+etkilemez (yalnız okur), en fazla 3 döküm alır ve her dökümden sonra damgayı
+ilerletir — "aynı yerde mi duruyor" sorusu da yanıtlanabilsin.
+
+**Neden yama değil araç:** hipotez `_run_openrouter_killable`'ın `proc.start()`
+asılmasıydı (`sandbox.py` aynı sınıfı `pythonw.exe`/`set_executable()` ile
+çözmüş, OpenRouter yolunda o koruma yok) ama nabız worker'dan AYRI bir thread
+olduğu için `50170b68`'in profili bununla uyuşmuyordu. Üç hipotez, sıfır ayırt
+edici kanıt. Aynı oturumda ölçüm ortamının üretimi temsil etmediği İKİ kez
+görüldüğü için üçüncü kez tahminle yama yapmak yanlış yeri tamir etme riskiydi.
+
+Arıza henüz tekrarlamadı, yani watchdog gerçek bir asılmada SINANMADI — ve
+asılmanın çözüldüğü de iddia edilemez, hiçbir şey düzeltilmedi.
+Testler: `tests/test_stall_watchdog.py`.
 
 <!-- BACKLINKS:BEGIN -->
 ## Referenced by

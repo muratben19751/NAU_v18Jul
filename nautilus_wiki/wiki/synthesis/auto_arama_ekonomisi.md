@@ -6,12 +6,13 @@ key_concepts:
   - auto_mission_control
   - backtesting_guide
 sources:
+  - sources/08_hibrit_kosu_olcumleri_2026_08_16.md
   - https://github.com/muratben19751/NAU_v18Jul
 related:
   - wiki/synthesis/auto_mission_control.md
   - wiki/synthesis/webapp_module_map.md
   - wiki/synthesis/nau_performans_denetimi.md
-last_updated: 2026-08-04
+last_updated: 2026-08-16
 ---
 
 # AUTO aramasının ekonomisi
@@ -125,6 +126,32 @@ bitiren tamamen komisyon tabanı. Bu bilgi artık modele de gidiyor
 `calmar = pnl_pct / max(|max_dd|, 0.01)` — taban %1. Drawdown'ı %0,3 olan bir
 aday Calmar 1,4 yerine 0,42 alır: **düşük riskli strateji, düşük riskli olduğu
 için** düşük skorlanır. Açık, düzeltilmemiş bulgu.
+
+## Bütçe artık İKİ tavan, iki birim (2026-08-15)
+
+Token sayısı TEK sağlayıcı varken faturanın iyi bir vekiliydi. Amaç-başına model
+eşlemesi bedava bir uç ekleyince bağ koptu: koşu `0057a0cd`'de bütçenin **%92'sini**
+(194.375/210.411 token) hiç para harcamayan YEREL model yedi, gerçek fatura
+1,03 USD'ydi ve tur 28 dakikada tek round kapatamadan `outcome: budget` ile
+kesildi. Yerele geçmenin gerekçesi "token bedava → daha çok iterasyon"du; bedava
+model BEDAVA OLDUĞU İÇİN değil SAYILDIĞI İÇİN koşuyu kısalttı.
+
+  · **PARA** — `AGENT_DEFAULT_MAX_COST_USD` (5 → 20 USD), `_run_cost` ile ölçülür.
+  · **TOKEN** — `AGENT_RUNAWAY_MAX_TOKENS` (2M), artık kaçak döngü emniyeti.
+
+**Körlük şartı** tasarımın kilit taşı: para tavanı ancak maliyeti GÖREBİLDİĞİ
+kadar korur. Fiyatı bilinmeyen paralı bir uçta hiç tetiklenmez — orada token
+tavanı `AGENT_BLIND_MAX_TOKENS`'a (250k) iner. Gevşeme yalnız parayı gördüğümüzde.
+
+Uygulama tuzağı kayda değer: route, token tavanını worker'a ULAŞMADAN
+`DEFAULT_CONTINUOUS_MAX_TOKENS`'a kelepçeliyordu ve `HARD_MAX_AUTO_TOKENS`'ın
+varsayılanı da o eski sabitten türüyordu. Üçü birden değişmeden davranış
+değişmiyor — bir düğmeyi çevirmek, o düğmenin yolundaki HER kelepçeyi görmeyi
+gerektirir.
+
+Ölçülen etki: `5e89d42a` 66 dakikada **2 tur** tamamladı (eski tavanla 0-1) ve
+para tavanında temiz kapandı. 20 USD ≈ 4,4 saat, yani bağlayıcı tavan artık SÜRE.
+Testler: `tests/test_budget_has_two_ceilings.py`.
 
 <!-- BACKLINKS:BEGIN -->
 ## Referenced by

@@ -1488,3 +1488,18 @@ düzeltmesi; tavan tırmanışının duvar saatini zorlaması), `llm_maliyet_kal
 Açık kalan boşluk: maliyet satırı hibridi bilmiyor — `_llm_cost_usd` tek model
 alıyor, koşu maliyeti pinlenmiş modele atfediliyor (ölçülen vaka: 1,02 USD
 Claude'un custom_block çağrılarının bedeliyken `or:qwen3.8-27b`'ye yazıldı).
+
+## [2026-08-16] sync | Hibrit koşu ölçümleri: iki tavan, risk-ayarlı kapı, stall watchdog
+
+Yeni kaynak: `sources/08_hibrit_kosu_olcumleri_2026_08_16.md` — altı AUTO
+koşusunun ölçümü (üçü asıldı, üçü sonuç verdi), pencere/benchmark tablosu,
+geçen üç adayın profili.
+
+Güncellenen sayfalar: `auto_arama_ekonomisi` (iki tavan + körlük şartı),
+`auto_kapi_ve_geri_bildirim` (risk-ayarlı benchmark kapısı + seçtiği strateji
+sınıfı), `auto_mission_control` (stall watchdog ve neden yama değil araç),
+`auto_360_canli_review_iyilestirmeleri` (postmortem None çökmesi),
+`model_secici_ve_gorunurluk` (zamanaşımı ayarının sessizce ölü olması).
+
+Açık kalan: asılmaların kök nedeni bilinmiyor (watchdog henüz tetiklenmedi);
+`backup/macos-portability` dalının eksik özellikleri main'e taşınmadı.
