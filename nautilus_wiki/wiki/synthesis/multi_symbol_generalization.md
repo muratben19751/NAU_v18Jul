@@ -110,6 +110,32 @@ basamağı — damgalayıcıda Calmar'DAN ÖNCE yazıldığı için gerçek bir 
 eskiden excess'e bakıyordu, yani kapı değiştikten sonra ekranda "✗" yazan bir peer
 skorda geçmiş olabilirdi.
 
+## Sahada doğrulandı — kapı sonucu DEĞİŞTİRDİ
+
+Koşu `da461e3e` (2026-08-16, commit `57077c5`, QQQC.NASDAQ, 4-HOUR), tur 1'in
+en iyi adayı `QQQ Channel Breakout`. Beş peer'ın **beşinde de excess NEGATİF**:
+
+| peer | excess | Sharpe | Calmar (str/bench) | işlem | ikon |
+|---|---|---|---|---|---|
+| SPY | −%21,3 | 1,15 | 1,36 / 1,16 | 2 | ✓ |
+| IWM | −%32,6 | 0,59 | 0,68 / 0,77 | 8 | ✗ |
+| AAPL | −%27,7 | 0,65 | 0,75 / 0,66 | 7 | ✓ |
+| MSFT | −%14,8 | 0,39 | 0,34 / 0,31 | 11 | ✓ |
+| NVDA | −%80,4 | 0,97 | 0,89 / 1,26 | 14 | ✗ |
+
+Eski ölçütle (`excess > 0`) bu tablo **0/4 → ✗ Symbol specific** olurdu ve
+`multi_symbol_definitive_failure` ("✗" arar) IS/OOS + WFO + MC'yi hiç
+çalıştırmazdı. Risk-ayarlı ölçütle **2/4 → ⚠ Limited**: kesin ret değil, zincir
+devam etti ve aday IS/OOS'tan **✓ Robust** ile çıktı. Yayım yine olmadı ama
+sebebi başka ve meşru: mühürlü holdout'ta 0 işlem (20 gerekiyor) — kapı
+stratejinin kanıtını istedi, veri penceresinin yan etkisini değil.
+
+**Açık tutarsızlık (ekran):** SPY satırı ✓ yazıyor ama 2 işlemle `n_trades >= 5`
+geçerlilik süzgecinden düştüğü için paydaya girmiyor — okuyan ekranda üç ✓
+sayıyor, özette "2/4" görüyor ve ikisini bağdaştıramıyor. İkon "bu peer üstün
+mü", sayaç "geçerli peer'ların kaçı üstün" sorusuna cevap veriyor; ikisi de tek
+başına doğru, birlikte yanıltıcı. Satır elenirken bunu söylemeli.
+
 Testler: `tests/test_multi_symbol_generalization.py` — etiket eşikleri, dikiş
 dışlama, venue çözümlemesi, sepet yedekliliği, ve üstünlük ölçütünün dört hâli
 (negatif excess'e rağmen Calmar geçişi, kârlılık tabanı, fail-closed geri düşme,
