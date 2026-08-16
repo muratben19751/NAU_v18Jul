@@ -141,6 +141,19 @@ python twitter/x_watch.py --dry-run --html twitter/tests/fixtures/x_search_ttkom
 |---|---|
 | `Oturum dosyası yok` | `python x_login.py` hiç koşulmamış |
 | `X giriş sayfasına yönlendirildi` | Çerez düşmüş — `x_login.py`'yi tekrar koşun |
+| `X sayfayı oturumsuz döndürdü (isLoggedIn=false)` | Aynısı. X bu durumda HTTP 200 + normal görünümlü bir sayfa döndürür, hata kodu değil |
 | `parse=FAILED` logda | X'in HTML'i değişmiş olabilir; `parse_tweets` gözden geçirilmeli |
 | Mail gelmiyor | `XWATCH_MAIL_TO` boş, ya da SMTP kullanıcı/şifre eksik (log uyarır) |
-| `playwright kurulu değil` | `pip install playwright && playwright install chromium` |
+| `playwright kurulu değil` | `pip install playwright` |
+| `Chromium başlatılamadı` | `playwright install chromium` — paket kurulu olsa da tarayıcı ikilisi ayrı bir adım, ve playwright yükseltilince beklenen sürüm de değişir |
+
+### Oturum düştüğünü nasıl anlarsınız
+
+X, oturumsuz bir isteğe **hata kodu döndürmez**: HTTP 200 ve dolu görünen bir
+sayfa gelir, içinde ne tweet ne de giriş formu vardır. Ayırt edici tek güvenilir
+işaret X'in kendi alanı olan `"isLoggedIn":false`'dır — izleyici buna bakar.
+
+Bu ayrım kritik, çünkü kurtarma yolunu belirler: oturum sorunu döngüyü
+**durdurur** ve size mail atar; hız sınırı ise geri çekilip **devam eder**.
+İkisi karışırsa izleyici saatlerce sessizce döner ve haber vermez
+(ölçüldü ve düzeltildi 2026-08-15 — `tests/test_x_watch_blocked_detection.py`).

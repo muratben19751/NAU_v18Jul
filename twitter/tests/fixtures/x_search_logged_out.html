@@ -1,0 +1,26 @@
+<!doctype html>
+<!--
+  GERCEK yakalama: curl ile x.com arama sayfasi, 2026-08-15, OTURUM YOK.
+  Tam sayfa 276 KB'lik bir JS kabuguydu; burada karar icin gereken uc gercek
+  dilim var (kisaltildi, markup aynen korundu):
+
+    1. head/meta blogunun basi
+    2. X'in kendi oturum durumu alani  <-- tek kesin sinyal
+    3. Oturumsuz aramada RENDER EDILEN hata metni
+
+  Sayfada OLMAYANLAR da sozlesmenin parcasi ve testler bunu baglar: hicbir
+  tweet karti yok, hicbir giris-dugmesi isaretcisi yok, ve URL giris akisina
+  YONLENDIRMIYOR - HTTP 200 donuyor. Bu yuzden "giris yapilmamis" hali eski
+  isaretci listesiyle taninamiyor, render edilen hata metni yuzunden HIZ
+  SINIRI saniliyordu. Bu dosyadaki metinlere yeni isaretci dizgisi EKLEMEYIN;
+  testler tam da bu dizgilerin yoklugunu olcuyor.
+-->
+<html lang="en">
+<!DOCTYPE html><html dir="ltr" lang="en"><head><meta charset="utf-8" /><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=0,viewport-fit=cover" /><link rel="preconnect" href="//abs.twimg.com" /><link rel="preconnect" href="//api.x.com" /><link rel="preconnect" href="//pbs.twimg.com" /><link rel="preload" as="font" type="font/woff2" crossorigin fetchpriority="high" href="https://abs.twimg.com/responsive-web/client-web/Chirp-Regular.80fda27a.woff2" /><link rel="preload" as="font" type="font/woff2" crossorigin fetchpriority="high" href="https://abs.twimg.com/responsive-web/client-web/Chirp-Bold.ebb56aba.woff2" /><link rel="preload" as="font" type="font/woff2" crossorigin fetchpriority="high" href="https://abs.twimg.com/responsive-web/client-web/Chirp-Medium.f8e2739a.woff2" /><link nonce="ZTAxYTJhODMtZTc4Mi00ZTAwLTllYTItOTVjNTVjNTFiZjI5" rel="preload" as="script" crossorigin="anonymous" fetchpriority="high" href="https://abs.twimg.com/responsive-web/client-web/vendor.0ba7ab8a.js" /><link nonce="ZTAxYTJhODMtZTc4Mi00ZTAwLTllYTItOTVjNTVjNTFiZjI5" rel="preload" as="script" crossorigin="anonymous" fetchpriority="high" href="https://abs.twimg.com/
+
+<!-- oturum durumu -->
+tus":"none"},"dataSaver":{"dataSaverMode":false},"transient":{"loginPromptShown":false,"lastViewedDmInboxPath":"/messages","themeFocus":null,"notificationsType":null}},"devices":{"browserPush":{"fetchStatus":"none","pushNotificationsPrompt":{"dismissed":false,"fetchStatus":"none"},"subscribed":false,"supported":null},"devices":{"data":{"emails":[],"phone_numbers":[]},"fetchStatus":"none"},"notificationSettings":{"push_settings":{"error":null,"fetchStatus":"none"},"push_settings_template":{"template":{"settings":[]}},"checkin_time":null}},"session":{"country":"US","guestId":"178687523989727091","hasCommunityMemberships":false,"isActiveCreator":false,"isLoaded":false,"isRestrictedSession":false,"language":"en","ssoInitTokens":{}},"developer":{"dtabBarInfo":{"hide":false}},"snoozedTags":{}};window.__META_DATA__={"env":"prod","isCanary":false,"sha":"7f196bb9d305c3d2881309574b312f43aaf009be","isLoggedIn":false,"isTwoffice":false,"hasMultiAccountCookie":false,"uaParserTags":["m2","rweb","msw"],"serverDate":1786875239987,"cookies":{"version":"1661819456366","fetchedTime":1661971138705,"categories":{"2":["Authorization","DECLINED_DATE","LAST_INVITATION_VIEW","NEW_SUBSCRIPTION_ACCOUNT","SUBMITTED_DATE","_ep_sess","_mb_tk","_sl","_support_session","_ttc_session","_twitter_sess","aa_u","ab_decider","ads_prefs","aem-lang-preference","app_shell_visited","att","auth_multi","auth_token","backendDataInSessionFlag","bouncer_reset_cookie","cd_user_id","client_token","cms-csp-nonce","co","connect.sid","cookies_enabled","csrf_id","csrf_same_site","csrf_same_site_set","csrftoken","ct0","d_prefs","daa","dnt","dtab_local","email_read_only","email_uid","eu_cn","fm","form-lead-gen","gscr","gt","guest_id","kampyleInvitePresented","kampyleSessionPageCounter","kampyleUserPercentile","kampyleUserSessionCount","kampy
+
+<!-- oturumsuz aramada render edilen hata -->
+ r-lrvibr r-m6rgpd r-1p0dtai r-1nao33i r-wy61xf r-zchlnj r-1d2f490 r-ywje51 r-u8s1d r-ipm5af r-1blnp2b"><g><path d="M21.742 21.75l-7.563-11.179 7.056-8.321h-2.456l-5.691 6.714-4.54-6.714H2.359l7.29 10.776L2.25 21.75h2.456l6.035-7.118 4.818 7.118h6.191-.008zM7.739 3.818L18.81 20.182h-2.447L5.29 3.818h2.447z"></path></g></svg></div><div class="css-g5y9jx r-hvic4v r-zchlnj r-1d2f490 r-1xcajam r-1ykxob0" id="ScriptLoadFailure"><form action="" method="GET"><div class="css-g5y9jx r-1awozwy r-q4m81j"><div dir="ltr" class="css-146c3p1 r-bcqeeo r-1ttztb7 r-qvutc0 r-1qd0xha r-a023e6 r-rjixqe r-16dba41" style="color:rgba(231,233,234,1.00)"><span class="css-1jxf684 r-bcqeeo r-1ttztb7 r-qvutc0 r-poiln3">Something went wrong, but don’t fret — let’s give it another shot.</span></div><br/><input name="failedScript" type="hidden" value=""/><button style="min-width:36px;min-height:36px;padding-left:16px;padding-right:16px;border-radius:9999px;border-style:solid;border-width:1px;user-select:none;cursor:pointer;background-color:#EFF3F4;border-color:transparent;color:#0F1419" type="submit"><div dir="ltr" class="css-146c3p1 r-bcqeeo r-qvutc0 r-1qd0xha r-q4m81j r-a023e6 r-rjixqe r-b88u0q" style="color:rgba(15,20,25,1.00)"><
+</html>

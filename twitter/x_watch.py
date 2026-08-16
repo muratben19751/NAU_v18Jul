@@ -511,18 +511,49 @@ def _sync_playwright():
     return sync_playwright
 
 
+# X'in kendi makine-okur oturum durumu. Ölçüm 2026-08-15: oturumsuz çekilen
+# arama sayfası HTTP 200 ve 276 KB dönüyor, `/i/flow/login`'e YÖNLENDİRMİYOR ve
+# aşağıdaki HTML işaretçilerinin HİÇBİRİNİ içermiyor — ama `"isLoggedIn":false`
+# alanını içeriyor. Tespitin dayanağı bu; İngilizce hata metni değil.
+_LOGGED_OUT_MARKER = '"isLoggedIn":false'
+_LOGGED_IN_MARKER = '"isLoggedIn":true'
+
+# Yardımcı işaretçiler: gerçek giriş FORMU render edildiğinde görünürler.
+# Tek başlarına yetmezler (yukarıdaki ölçüm), o yüzden ikincil sıradalar.
 _LOGIN_MARKERS = (
     'data-testid="loginButton"',
     "/i/flow/login",
     'name="session[username_or_email]"',
 )
-_LIMIT_MARKERS = ("Rate limit exceeded", "Try again later", "Something went wrong")
+
+# DİKKAT — buraya "Something went wrong" EKLEMEYİN. O metin X'in oturumsuz
+# arama sayfasında render ediliyor ("Something went wrong, but don't fret…") ve
+# bir zamanlar bu listedeydi: sonucu, çerez düştüğünde izleyicinin durumu
+# `RateLimited` sanması, 1 saate kadar üstel geri çekilmeyle SONSUZA DEK dönmesi
+# ve "yeniden giriş gerekiyor" e-postasını hiç atmamasıydı. Tasarımın en önemli
+# güvenlik davranışı tam da bu yüzden sessizce ölüydü (bulundu 2026-08-15,
+# gerçek yakalama: tests/fixtures/x_search_logged_out.html).
+_LIMIT_MARKERS = ("Rate limit exceeded", "Too Many Requests", "rate limit exceeded")
+
+_TWEET_CARD_MARKER = 'data-testid="tweet"'
 
 
 def _raise_if_blocked(html: str, final_url: str) -> None:
+    """Sayfa kullanılabilir mi? Değilse SEBEBİNE göre ayrı istisna at.
+
+    Ayrım kozmetik değil, kurtarma yolunu belirliyor: `LoginRequired` döngüyü
+    durdurup operatöre haber verir, `RateLimited` ise geri çekilip devam eder.
+    Birini diğeri sanmak, izleyiciyi ya gereksiz durdurur ya da sonsuza dek
+    sessiz bırakır.
+    """
     if "/i/flow/login" in final_url or "/login" in final_url:
         raise LoginRequired(
             "X giriş sayfasına yönlendirildi — oturum düşmüş. "
+            "`python x_login.py` ile yeniden giriş yapın."
+        )
+    if _LOGGED_OUT_MARKER in html:
+        raise LoginRequired(
+            "X sayfayı oturumsuz döndürdü (isLoggedIn=false) — çerez düşmüş. "
             "`python x_login.py` ile yeniden giriş yapın."
         )
     if any(m in html for m in _LOGIN_MARKERS):
@@ -530,8 +561,8 @@ def _raise_if_blocked(html: str, final_url: str) -> None:
             "Sayfada giriş duvarı var — oturum çerezi geçersiz. "
             "`python x_login.py` ile yeniden giriş yapın."
         )
-    if any(m in html for m in _LIMIT_MARKERS) and 'data-testid="tweet"' not in html:
-        raise RateLimited("X hız sınırı / geçici hata sayfası döndü.")
+    if any(m in html for m in _LIMIT_MARKERS) and _TWEET_CARD_MARKER not in html:
+        raise RateLimited("X hız sınırı döndürdü.")
 
 
 def fetch_search_html(query: str, cfg: Config | None = None) -> str:
@@ -549,7 +580,20 @@ def fetch_search_html(query: str, cfg: Config | None = None) -> str:
     sync_playwright = _sync_playwright()
     url = f"https://x.com/search?q={quote(query)}&f=live"
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=cfg.headless)
+        try:
+            browser = p.chromium.launch(headless=cfg.headless)
+        except Exception as exc:
+            # Paketin kurulu olması tarayıcının da kurulu olduğu anlamına gelmez;
+            # playwright yükseltilince beklediği chromium BUILD numarası da
+            # değişir ve eskisi artık kabul edilmez. Ham Playwright hatası
+            # `run_once`'ın genel yutucusuna düşüp tek satırlık bir log oluyordu;
+            # operatör "ne kurmam gerek" sorusunun cevabını göremiyordu.
+            raise XWatchError(
+                "Chromium başlatılamadı — tarayıcı ikilisi eksik ya da "
+                "playwright sürümüyle uyumsuz. Çözüm:\n"
+                "  playwright install chromium\n"
+                f"(ham hata: {str(exc).splitlines()[0][:160]})"
+            ) from exc
         try:
             ctx = browser.new_context(
                 storage_state=str(cfg.storage_state_path),
@@ -560,7 +604,7 @@ def fetch_search_html(query: str, cfg: Config | None = None) -> str:
             page = ctx.new_page()
             page.goto(url, wait_until="domcontentloaded", timeout=cfg.nav_timeout_ms)
             try:
-                page.wait_for_selector('article[data-testid="tweet"]', timeout=15_000)
+                page.wait_for_selector(f"article[{_TWEET_CARD_MARKER}]", timeout=15_000)
             except Exception:
                 # Gerçekten sıfır sonuç da olabilir, login duvarı da — ayrımı
                 # aşağıdaki `_raise_if_blocked` yapar, burada yutulur.
@@ -696,7 +740,7 @@ def run_once(
     # "Sayfa geldi ama hiç kart yok" → parser bozulmuş OLABİLİR. Gerçekten sonuç
     # yoksa X yine de boş-durum kabuğunu döndürür, o yüzden bu bir kesinlik değil
     # sinyaldir; ardışık tekrarı anlamlı kılar (bkz. PARSE_FAIL_ALERT_AFTER).
-    res.parse_failed = not rows and 'data-testid="tweet"' not in page_html
+    res.parse_failed = not rows and _TWEET_CARD_MARKER not in page_html
 
     if seen is None:
         seen = load_seen_ids(cfg.ledger_path)
