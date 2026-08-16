@@ -7,6 +7,7 @@ key_concepts:
   - auto_arama_ekonomisi
 sources:
   - sources/08_hibrit_kosu_olcumleri_2026_08_16.md
+  - sources/09_baglam_ve_butce_olcumu_2026_08_16.md
   - https://github.com/muratben19751/NAU_v18Jul
 related:
   - wiki/synthesis/auto_arama_ekonomisi.md
@@ -216,6 +217,32 @@ farklı cevap görür.
 yenen" değil "sarsıntısı düşük" bir sınıf seçiyor — kabul edilen takas bu.
 `5e89d42a`'da 27 adayın 2'si geçti (%7,4), yani gevşetme lastik damgaya
 dönüşmedi. Testler: `tests/test_benchmark_gate_is_risk_adjusted.py`.
+
+## Çok-sembol kapısı alfa ölçüyor — ve 2 sembolde eşik 2/2 demek (2026-08-16)
+
+Koşu `392287b2` (`QQQC.NASDAQ`, hint "adx") `winless_limit` ile kapandı: 5 adayın
+5'i de `short_circuit: multi_symbol` ile, hepsi **0/2**, skorlar -6,3 ile -7,0
+arasında yatay. Altyapıda tek bir kusur yoktu (102 LLM çağrısı, 0 hata, 0 kesilme,
+`fallback_count: 0`), yani sonuç aramanın kendisine ait.
+
+Kapı kârı değil **alfayı** sayıyor (`backtest_robustness.py`):
+
+```python
+positive = [r for r in valid if (r.get("excess_return_fraction") or 0) > 0]
+```
+
+Bu ayrım tur 1'in en iyi adayında somut: AAPL.NASDAQ'ta strateji **+%22,8 kazandı**,
+Sharpe 0,58, 35 işlem — ama al-tut %48,6 yaptığı için excess -%25,8 ve "positive"
+sayılmadı. MSFT'de zaten -%11,1. Mega-cap'lerin %23-49 yükseldiği bir pencerede
+breakout/trend ailesinden alfa istemek çok yüksek bir çıta; kapı bunu bilerek
+istiyor (bkz. yukarıdaki risk-ayarlı kapı tartışması — orada kabul edilen takas
+"piyasayı yenen değil sarsıntısı düşük" idi, burada ölçüt yine excess).
+
+Asıl gözden geçirilecek yer eşiğin ÇÖZÜNÜRLÜĞÜ: `pass_rate >= 0.7` ama yalnız **2**
+sembol test ediliyor. İki sembolle olası değerler 0 / %50 / %100, yani 0,7 pratikte
+**2/2 zorunlu** demek ve ara bant ("⚠ Limited") tek sembollük gürültüyle belirleniyor.
+Tek zayıf akran adayı komple eliyor. Havuzu büyütmek kapıyı hem daha bilgilendirici
+hem istatistiksel olarak daha adil yapar. Ölçüm: [[09_baglam_ve_butce_olcumu_2026_08_16]].
 
 <!-- BACKLINKS:BEGIN -->
 ## Referenced by

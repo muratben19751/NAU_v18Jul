@@ -4,6 +4,7 @@ type: synthesis
 summary: 10 günlük defter denetimi — 21,5M token / ~$346 nominal, %99'u fable-5'te; fatura output ($103) + cache yazımı ($234, 1h TTL ×2). Ölçülen kaldıraçlar sırayla model (sonnet-5 −61%), effort (ek −52%), cache prefix sabitliği; max_tokens CLI yolunda ölü; --effort 2026-08-04'te bağlandı (seçenek var, üretim ölçümü yok); kokpit maliyeti OpenRouter koşularında 3,33× şişik (thread-local model pini), çağrıların %92'si etiketsiz.
 sources:
   - sources/07_yerel_llm_hibrit_olcumu_2026_08_15.md
+  - sources/09_baglam_ve_butce_olcumu_2026_08_16.md
   - https://github.com/muratben19751/NAU_v18Jul
   - https://platform.claude.com/docs/en/pricing
 key_concepts:
@@ -14,7 +15,7 @@ related:
   - wiki/synthesis/auto_mission_control.md
   - wiki/synthesis/webapp_module_map.md
   - wiki/synthesis/nau_performans_denetimi.md
-last_updated: 2026-08-15
+last_updated: 2026-08-16
 ---
 
 # LLM maliyet kaldıraçları
@@ -224,6 +225,34 @@ ayrı hesaplandıkları için aynı koşuya farklı maliyet gösterebiliyorlard�
 Kırılım yoksa (eski kayıtlar) eski tek-model yoluna düşülür, davranış korunur.
 Testler: `tests/test_run_cost_is_per_model.py`.
 Ölçüm: [[07_yerel_llm_hibrit_olcumu_2026_08_15]].
+
+## Harcanmayan token bütçeyi yememeli (2026-08-16)
+
+Yanıtsız çağrıya tahmini girdi yazmak kasıtlıydı ve ölçüme dayanıyordu: istemci
+deadline'ında child öldürülse de üretim sunucuda sürüyor ve faturalanıyor, sıfır
+saymak tavanı körletiyordu. Ama o gerekçe **"prompt gitti" varsayımına** dayanır ve
+bağlantı hiç kurulamadıysa yanlıştır.
+
+Koşu `f38273f2`: yerel uç kapalıyken 45 çağrının 45'i `APIConnectionError` verdi,
+çıktı 0 kaldı, buna rağmen 252.459 tahmini girdi tokenı yazıldı. Koşu **4 dk 51
+sn**'de "budget" gerekçesiyle kendini kapattı — kullanıcı hiçbir şey almadan
+bütçesinin tamamını kaybetti ve ekranda gerçek sebep (ölü uç) yerine bütçe göründü.
+
+Neden 250.000? Tavan tek değil, **iki**: maliyet görünürken
+`RUNAWAY_MAX_TOKENS = 2.000.000`, görünmüyorken `BLIND_MAX_TOKENS = 250.000`. Hiçbir
+çağrı başarılı olmayınca maliyet hiç gözlenmedi, koşu "kör" sayıldı ve sıkı tavana
+düştü. İki kusur birbirini besledi: şişirilmiş tahmin, kör tavanı hızla doldurdu.
+
+Muafiyet dar ve **somut istisna adına** bağlı, üst sınıfa değil: her iki SDK'da da
+`APITimeoutError`, `APIConnectionError`'dan türer — `isinstance` ile bakmak timeout'u
+da muaf tutar ve yukarıdaki tahmini-harcama ölçümünün kapattığı deliği geri açardı.
+Bilinmeyen tip **şüphede sayılır**: muaf tutmak tavanı körletir, fazladan saymak
+yalnız erken bitirir.
+
+Sahada doğrulandı (`ed8ba569`): `APIConnectionError` → `usage=None`;
+`InternalServerError` → tahmin yazıldı, çünkü istek sunucuya ULAŞTI ve sunucu sonra
+düştü. Testler: `tests/test_auto_degradation_honesty.py`; biri SDK hiyerarşisi
+değişirse uyarır. Ölçüm: [[09_baglam_ve_butce_olcumu_2026_08_16]].
 
 <!-- BACKLINKS:BEGIN -->
 ## Referenced by
