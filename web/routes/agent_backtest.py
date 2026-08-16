@@ -661,6 +661,81 @@ def _heartbeat_snapshot(state: dict, wstate: _WorkerState) -> dict:
     }
 
 
+# run_id → son başarılı `_session_log` yazımının monotonic zamanı.
+_LAST_LOG_AT: dict[str, float] = {}
+
+# Kaç saniye sessizlikten sonra thread dökümü alınır. Nabız 30 s'de bir yazar,
+# yani 300 s sessizlik nabzın da durduğu anlamına gelir.
+_STALL_DUMP_SEC = env_float("NAU_AUTO_STALL_DUMP_SEC", 300.0)
+
+
+def _start_stall_watchdog(run_id: str) -> threading.Thread:
+    """Koşu susarsa TÜM thread'lerin yığın izini dosyaya dök.
+
+    Neden var: 2026-08-15/16'da üç AUTO koşusu sonuçsuz durdu — süreç ayakta
+    kaldı (pm2 restart sayacı değişmedi), `session_end` hiç yazılmadı, nabız
+    kesildi. Nerede takıldıklarını gösteren TEK bir kayıt yoktu, dolayısıyla
+    teşhis hipoteze kalıyordu: `_run_openrouter_killable`'ın `proc.start()`'ı mı,
+    nabız thread'inin sessiz ölümü mü, başka bir şey mi. Üç ayrı tahmin, sıfır
+    kanıt.
+
+    `faulthandler.dump_traceback` TÜM thread'leri döker (worker, nabız, uvicorn)
+    — takılan thread'in tam satırı ilk dökümde görünür. Döküm koşuyu
+    ETKİLEMEZ: yalnız okur, hiçbir şeyi öldürmez; asılma sürüyorsa bir sonraki
+    dökümle karşılaştırıp "aynı yerde mi duruyor" sorusu da yanıtlanır.
+
+    Döküm dosyası oturum logunun yanına: `<run_id>.stall.txt`.
+    """
+    started = time.monotonic()
+    _LAST_LOG_AT.setdefault(run_id, started)
+    dump_path = SESSION_LOG_DIR / f"{run_id}.stall.txt"
+
+    def _watch() -> None:
+        import faulthandler
+
+        dumps = 0
+        while dumps < 3:
+            time.sleep(min(60.0, max(5.0, _STALL_DUMP_SEC / 5.0)))
+            with _AGENT_LOCK:
+                state = _AGENT_PROGRESS.get(run_id)
+            if state is None or state.get("continuous_finished") or state.get("done"):
+                return
+            idle = time.monotonic() - _LAST_LOG_AT.get(run_id, started)
+            if idle < _STALL_DUMP_SEC:
+                continue
+            dumps += 1
+            try:
+                SESSION_LOG_DIR.mkdir(parents=True, exist_ok=True)
+                with dump_path.open("a", encoding="utf-8") as fh:
+                    header = "===== STALL DUMP #%d run=%s idle=%.0fs at %s =====" % (
+                        dumps,
+                        run_id,
+                        idle,
+                        datetime.now(UTC).isoformat(),
+                    )
+                    fh.write(os.linesep + header + os.linesep)
+                    fh.flush()
+                    faulthandler.dump_traceback(file=fh, all_threads=True)
+                logging.warning(
+                    "AUTO %s: %.0f sn'dir hiçbir oturum logu yazılmadı — thread "
+                    "dökümü #%d alındı: %s",
+                    run_id,
+                    idle,
+                    dumps,
+                    dump_path,
+                )
+            except Exception:
+                logging.warning("AUTO %s: stall dump alınamadı", run_id, exc_info=True)
+                return
+            # Sonraki dökümü beklemek için damgayı ilerlet: aksi hâlde üç döküm
+            # arka arkaya alınır ve "aynı yerde mi kaldı" sorusu yanıtsız kalır.
+            _LAST_LOG_AT[run_id] = time.monotonic()
+
+    thread = threading.Thread(target=_watch, name=f"auto-stall-{run_id}", daemon=True)
+    thread.start()
+    return thread
+
+
 def _start_heartbeat(
     run_id: str,
     wstate: _WorkerState,
@@ -825,6 +900,10 @@ def _session_log(run_id: str, event: str, **kwargs) -> None:
             if state is not None:
                 state["audit_degraded"] = True
                 state["audit_error"] = f"Session audit log unavailable: {exc}"
+    # Takılma teşhisi: son BAŞARILI oturum-logu yazımının zamanı. Nabız 30 s'de
+    # bir yazdığı için bu damganın uzun süre eskimesi "koşuda hiçbir thread iş
+    # yapmıyor" demektir (bkz. _start_stall_watchdog).
+    _LAST_LOG_AT[run_id] = time.monotonic()
     # Outside the try on purpose: a failed *review* is not a failed *audit log*,
     # and marking the run's audit degraded for it would send the reader looking
     # for a missing event that is right there on disk.
@@ -3441,7 +3520,10 @@ def _run_cost(state: dict, fallback_model: str = "") -> dict:
             )
             source = "price_table"
         breakdown[name] = {
-            **{k: sl.get(k, 0) for k in ("calls", "input", "output", "cache_read", "cache_write")},
+            **{
+                k: sl.get(k, 0)
+                for k in ("calls", "input", "output", "cache_read", "cache_write")
+            },
             "cost_usd": round(cost, 6) if cost is not None else None,
             "cost_source": source,
         }
@@ -3593,6 +3675,9 @@ def _agent_worker(
     _start_heartbeat(
         run_id, wstate, continuous_mode=continuous_mode, max_hours=max_hours
     )
+    # Nabız "koşu yaşıyor" der; bu ise "yaşamıyorsa NEREDE öldü" der. İkisi ayrı
+    # thread — nabzın kendisi sustuğunda da döküm alınabilsin diye.
+    _start_stall_watchdog(run_id)
 
     run_number = 0
     # Round count itself is not the budget; continuous mode is bounded by the

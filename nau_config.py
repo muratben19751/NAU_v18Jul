@@ -366,6 +366,14 @@ _AGENT = [
         "Bir sonucun aday sayılması için gereken asgari işlem sayısı.",
     ),
     _v(
+        "NAU_AUTO_STALL_DUMP_SEC",
+        "float",
+        "300",
+        "web.routes.agent_backtest",
+        "Koşu bu kadar saniye hiçbir oturum logu yazmazsa TÜM thread'lerin yığın "
+        "izi `<run_id>.stall.txt`'e dökülür (teşhis; koşuyu etkilemez).",
+    ),
+    _v(
         "AGENT_BENCHMARK_GATE",
         "str",
         "risk_adjusted",
