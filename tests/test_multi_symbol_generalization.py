@@ -317,6 +317,99 @@ def test_basket_still_yields_a_full_sample_after_an_exclusion():
     assert len(EXTERNAL_PEER_BASKET) >= PEER_SAMPLE_SIZE + 2
 
 
+# ── Üstünlük ölçütü: ana kapıyla aynı ────────────────────────────────────────
+#
+# Ölçüldü 2026-08-16 (koşular 392287b2, 38bdfeff): dokuz adayın dokuzu da
+# ortalama Sharpe'ı POZİTİFKEN 0/N ile elendi. Peer'ların al-tut getirisi
+# %23-118 arasıydı; long-only bir strateji nakitte geçirdiği zaman yüzünden
+# mutlak getiride kaybeder. Ana kapı bu yüzden 2026-08-15'te risk-ayarlıya
+# çekilmişti, çok-sembol kapısı eski ölçütte kalmıştı.
+
+
+def _peer(**kw) -> dict:
+    row = {
+        "excess_return_fraction": -0.30,
+        "strategy_calmar": 0.40,
+        "benchmark_calmar": 0.25,
+        "strategy_cagr": 0.08,
+    }
+    row.update(kw)
+    return row
+
+
+def test_calmar_superiority_passes_despite_negative_excess():
+    """Asıl ölçü Calmar üstünlüğü; alfanın pozitif olması ŞART değil.
+
+    Ölçülen vaka (38bdfeff, IWM.NASDAQ): strateji +1.202 kazandı, Sharpe 0,69 —
+    al-tut %48,2 yaptığı için excess -%36,1 ve eski kural bunu "başarısız"
+    yazıyordu.
+    """
+    from backtest_robustness import peer_is_superior
+
+    assert peer_is_superior(_peer()) is True
+
+
+def test_losing_strategy_cannot_pass_on_a_small_drawdown():
+    """TABAN: para kaybeden bir strateji, düşüşü küçük diye üstün sayılmaz."""
+    from backtest_robustness import peer_is_superior
+
+    assert peer_is_superior(_peer(strategy_cagr=-0.02)) is False
+    # Calmar üstünlüğü olmadan da geçemez — iki bacak da gerekli.
+    assert peer_is_superior(_peer(strategy_calmar=0.10)) is False
+
+
+def test_unmeasured_risk_leg_falls_back_to_the_absolute_rule():
+    """Ölçülemeyen bir üstünlük üstünlük sayılmaz — fail-closed.
+
+    Ana kapıdaki gerekçenin aynısı: Calmar yoksa eski mutlak kurala düşülür,
+    uydurulmuş bir risk karşılaştırmasına değil.
+    """
+    from backtest_robustness import peer_is_superior
+
+    assert peer_is_superior(_peer(strategy_calmar=None)) is False
+    assert peer_is_superior(_peer(benchmark_calmar=None)) is False
+    # Aynı satır pozitif excess ile mutlak kuraldan geçer.
+    assert peer_is_superior(_peer(strategy_calmar=None, excess_return_fraction=0.05))
+    # Kârlılık ölçülemiyorsa taban da mutlak kurala döner.
+    assert peer_is_superior(_peer(strategy_cagr=None)) is False
+    assert peer_is_superior(_peer(strategy_cagr=None, excess_return_fraction=0.05))
+
+
+def test_absolute_mode_keeps_the_old_criterion(monkeypatch):
+    """Operatör eski davranışa dönebilir — anahtar ana kapıyla ORTAK."""
+    import backtest_robustness as br
+
+    monkeypatch.setattr(br, "MULTI_SYMBOL_GATE_MODE", "absolute")
+    assert br.peer_is_superior(_peer()) is False
+    assert br.peer_is_superior(_peer(excess_return_fraction=0.05)) is True
+
+
+def test_result_rows_carry_the_risk_leg_so_the_gate_can_read_it():
+    """Karar `peer_is_superior`'a gidiyor ve o YALNIZ satırı görüyor.
+
+    Alanlar satıra taşınmazsa kapı sessizce mutlak kurala düşerdi — düzeltmeyi
+    etkisiz kılan, ama hiçbir yerde hata vermeyen bir gerileme.
+    """
+    out = _run(
+        {
+            "AAA": _payload(
+                excess_return_fraction=-0.30,
+                strategy_calmar=0.40,
+                benchmark_calmar=0.25,
+                strategy_cagr=0.08,
+            )
+        }
+    )
+
+    row = out["results"][0]
+    assert row["strategy_calmar"] == 0.40
+    assert row["benchmark_calmar"] == 0.25
+    assert row["strategy_cagr"] == 0.08
+    # Ve kapı bunu okuyup adayı GEÇİRİYOR — excess negatif olmasına rağmen.
+    assert out["symbols_positive"] == 1
+    assert out["generalization_label"] == "✓ Generalizable"
+
+
 # ── Sonuç satırlarının şekli ─────────────────────────────────────────────────
 
 

@@ -11,6 +11,8 @@ See: [[backtesting_guide]], [[backtest_node]]
 from __future__ import annotations
 
 import hashlib
+import math
+import os
 from datetime import UTC, timedelta
 
 import numpy as np
@@ -44,6 +46,60 @@ WFO_BATCH_TIMEOUT_S = _env_float("NAUTILUS_WFO_BATCH_TIMEOUT_S", 600.0)
 # (a floor on the denominator would keep manufacturing a verdict out of noise).
 # Same family as the Calmar floor in agent_backtest._score.
 IS_SHARPE_MIN = _env_float("NAUTILUS_IS_SHARPE_MIN", 0.05)
+
+# Çok-sembol kapısının ölçütü ANA KAPIYLA aynı anahtara bağlı: bir koşuda iki
+# kapının farklı felsefeyle çalışması, ana kapının 2026-08-15'te terk ettiği
+# mutlak-getiri ölçütünün ikinci bir yerde yaşamaya devam etmesi demekti
+# (ölçüldü 2026-08-16, koşular 392287b2 ve 38bdfeff: dokuz adayın dokuzu da
+# ortalama Sharpe'ı POZİTİFKEN 0/N ile elendi — çünkü peer'ların al-tut getirisi
+# %23-118 arasıydı ve long-only bir strateji nakitte geçirdiği zaman yüzünden
+# mutlak getiride kaybeder).
+#
+# Anahtar route modülünden İTHAL EDİLMİYOR (bağımlılık yönü ters olurdu:
+# agent_backtest bu modülü içeri alıyor); aynı ortam değişkeni doğrudan okunuyor,
+# yani operatör için tek düğme.
+MULTI_SYMBOL_GATE_MODE = (
+    os.environ.get("AGENT_BENCHMARK_GATE", "risk_adjusted").strip().lower()
+)
+
+
+def peer_is_superior(r: dict) -> bool:
+    """Bu peer'da strateji al-tut'a ÜSTÜN mü — ana kapıyla aynı kural.
+
+    ``risk_adjusted`` (varsayılan): asıl ölçü Calmar üstünlüğü, alfanın pozitif
+    olması şart DEĞİL; ama bir TABAN var — para kaybeden bir strateji, düşüşü
+    küçük diye üstün sayılmaz. ``absolute``: eski davranış (excess > 0).
+
+    Calmar iki taraf için de ölçülemediyse mutlak kurala düşülür: ölçülemeyen
+    bir üstünlük üstünlük sayılmaz (fail-closed, ana kapıdaki gerekçenin aynısı).
+    """
+    excess = r.get("excess_return_fraction")
+    legacy = excess is not None and excess > 0
+    if MULTI_SYMBOL_GATE_MODE != "risk_adjusted":
+        return legacy
+    strat, bench = r.get("strategy_calmar"), r.get("benchmark_calmar")
+    if strat is None or bench is None:
+        return legacy
+    try:
+        strat, bench = float(strat), float(bench)
+    except (TypeError, ValueError):
+        return legacy
+    if not math.isfinite(strat):
+        return legacy
+    cagr = r.get("strategy_cagr")
+    try:
+        cagr = float(cagr)
+    except (TypeError, ValueError):
+        cagr = None
+    # Taban: kârlılık ölçülebiliyorsa pozitif olmalı; ölçülemiyorsa mutlak
+    # kurala geri dön — tabansız bir Calmar karşılaştırması, zarar eden bir
+    # stratejiyi "düşüşü küçük" diye geçirebilirdi.
+    if cagr is None:
+        if not legacy:
+            return False
+    elif not math.isfinite(cagr) or cagr <= 0:
+        return False
+    return strat > bench
 
 
 def _run_many_kw(run_many):
@@ -1089,9 +1145,13 @@ def run_multi_symbol(
     """Measures generalizability by testing the strategy on multiple symbols.
 
     Runs the same spec over the same time range in a backtest for each symbol.
-    Results: how many symbols beat their own buy-and-hold baseline, average
-    Sharpe, and per-symbol detail. Absolute profit in a bull market is not
-    evidence of generalizable alpha.
+    Results: how many symbols the strategy is SUPERIOR on, average Sharpe, and
+    per-symbol detail. Absolute profit in a bull market is not evidence of
+    generalizable alpha.
+
+    "Üstünlük" ana kapıyla aynı anlama gelir (bkz. ``peer_is_superior``):
+    varsayılan ``risk_adjusted`` modunda Calmar üstünlüğü + kârlılık tabanı,
+    ``absolute`` modunda eski ``excess > 0``.
 
     ``source="external"``: symbols are external-catalog instrument ids
     (e.g. "SPY.ARCA"), ``interval`` is the catalog DSL (e.g. "1-DAY"), and the
@@ -1099,7 +1159,7 @@ def run_multi_symbol(
 
     Returns: {
         symbols_tested: int,
-        symbols_positive: int,          # those with excess return > 0
+        symbols_positive: int,          # those the strategy is superior on
         pass_rate: float,               # alpha-positive / total
         generalization_label: str,      # "✓ Generalizable" / "⚠ Limited" / "✗ Symbol specific"
         primary_symbol: str,
@@ -1139,14 +1199,12 @@ def run_multi_symbol(
         pnl_pct = m.get("pnl_pct", pnl / STARTING_CASH)
         benchmark = m.get("benchmark_return_fraction")
         excess = m.get("excess_return_fraction")
-        icon = "✓" if excess is not None and excess > 0 else "✗"
         sharpe_str = f"{sharpe:.2f}" if sharpe is not None else "—"
         excess_str = f"{100 * excess:+.1f}%" if excess is not None else "—"
-        _p(
-            f"  [{sym}] {icon} PnL={pnl:+.2f} {cur} ({100 * pnl_pct:+.1f}%) · "
-            f"Excess={excess_str} · Sharpe={sharpe_str} · {n_trades} trade"
-        )
-        return {
+        # Risk bacağı ana kapıyla aynı alanlardan gelir; satırda TAŞINMASI şart,
+        # çünkü kararı veren `peer_is_superior` yalnız bu sözlüğü görüyor ve
+        # artefakt/log okuyanın da kararın neye dayandığını görmesi gerekiyor.
+        row = {
             "symbol": sym,
             "pnl": round(pnl, 2),
             "pnl_pct": round(pnl_pct, 6),
@@ -1155,9 +1213,27 @@ def run_multi_symbol(
             else None,
             "excess_return_fraction": round(excess, 6) if excess is not None else None,
             "sharpe": round(sharpe, 2) if sharpe is not None else None,
+            "strategy_calmar": m.get("strategy_calmar"),
+            "benchmark_calmar": m.get("benchmark_calmar"),
+            "strategy_cagr": m.get("strategy_cagr"),
             "n_trades": n_trades,
             "error": error,
         }
+        # İkon kapının GERÇEK ölçütünü göstersin: eski hâli excess'e bakıyordu,
+        # yani kapı Calmar'a geçtikten sonra ekranda "✗" yazan bir peer skorda
+        # geçmiş olabilirdi — okuyanı kapının kendisi hakkında yanıltan bir satır.
+        icon = "✓" if peer_is_superior(row) else "✗"
+        calmar_str = (
+            f" · Calmar={row['strategy_calmar']:.2f}/{row['benchmark_calmar']:.2f}"
+            if row["strategy_calmar"] is not None
+            and row["benchmark_calmar"] is not None
+            else ""
+        )
+        _p(
+            f"  [{sym}] {icon} PnL={pnl:+.2f} {cur} ({100 * pnl_pct:+.1f}%) · "
+            f"Excess={excess_str} · Sharpe={sharpe_str}{calmar_str} · {n_trades} trade"
+        )
+        return row
 
     def _no_data_result(sym: str) -> dict:
         _p(f"  [{sym}] ⚠ No data — skipping")
@@ -1300,7 +1376,10 @@ def run_multi_symbol(
         and (r.get("n_trades") or 0) >= 5
         and r.get("excess_return_fraction") is not None
     ]  # 3→5
-    positive = [r for r in valid if (r.get("excess_return_fraction") or 0) > 0]
+    # Üstünlük ölçütü ANA KAPIYLA aynı (bkz. peer_is_superior /
+    # MULTI_SYMBOL_GATE_MODE): varsayılanda Calmar üstünlüğü + kârlılık tabanı,
+    # "absolute" modunda eski excess > 0.
+    positive = [r for r in valid if peer_is_superior(r)]
     n_valid = len(valid)
     n_positive = len(positive)
     pass_rate = n_positive / n_valid if n_valid > 0 else 0.0

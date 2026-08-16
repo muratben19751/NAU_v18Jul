@@ -263,6 +263,44 @@ Eşik değişmedi; 4/5 geçer, 3/5 "⚠ Limited" olur — kapı aynı sertlikte 
 artık tek bir zayıf akrana bağlı değil. Testler:
 `tests/test_multi_symbol_generalization.py`.
 
+**Geniş örneklem sonucu çürütmedi, sebebini değiştirdi.** 5 peer'lı koşu
+(`38bdfeff`, EMA/MACD ailesi — dünkü ADX'ten farklı) yine `winless_limit` ile
+kapandı ve dört adayın dördünde de tablo aynıydı: **ortalama Sharpe pozitif
+(+0,21 … +0,59), üstünlük 0/5.** Yani sorun ne stratejilerin kalitesi ne dar
+örneklem; ölçütün kendisi.
+
+Peer başına ölçülen rakamlar bunu somutlaştırıyor (tur 1, `MACD EMA RSI`):
+
+| sembol | pnl | sharpe | işlem | benchmark | excess |
+|---|---:|---:|---:|---:|---:|
+| SPY | +268 | 0,27 | 10 | +%48,8 | -%46,1 |
+| IWM | +1.202 | 0,69 | 8 | +%48,2 | -%36,1 |
+| AAPL | +355 | 0,21 | 7 | +%48,6 | -%45,1 |
+| MSFT | -684 | -0,75 | 4 | +%23,3 | -%30,2 |
+| NVDA | -317 | -0,03 | 11 | +%117,9 | -%121,1 |
+
+Üç sembolde para kazanılmış ve Sharpe pozitif; hepsi sıfır yazılmış. Bu, ana
+kapının 2026-08-15'te **tam olarak bu gerekçeyle** terk ettiği ölçüt.
+
+## Çok-sembol kapısı da risk-ayarlı (2026-08-16)
+
+Kullanıcı kararı. `peer_is_superior` artık ana kapıyla aynı kuralı uyguluyor:
+asıl ölçü **Calmar üstünlüğü**, alfanın pozitif olması şart değil, ama **taban**
+duruyor — `strategy_cagr > 0`, yani para kaybeden bir strateji düşüşü küçük diye
+üstün sayılmaz. Calmar iki taraf için de ölçülemezse eski mutlak kurala düşülür
+(fail-closed: ölçülemeyen bir üstünlük üstünlük değildir).
+
+Anahtar ana kapıyla **ortak**: `AGENT_BENCHMARK_GATE` (`risk_adjusted` |
+`absolute`). Sabit route modülünden ithal edilmiyor — `agent_backtest` zaten
+`backtest_robustness`'ı içeri alıyor, ters yön döngü olurdu; aynı ortam değişkeni
+doğrudan okunuyor, operatör için tek düğme.
+
+İki yan detay: sembol satırları artık `strategy_calmar` / `benchmark_calmar` /
+`strategy_cagr` taşıyor (karar yalnız satırı gören bir fonksiyonda verildiği için
+şart; taşınmasaydı kapı sessizce mutlak kurala düşerdi), ve ilerleme satırındaki
+`✓/✗` ikonu artık kapının GERÇEK ölçütünü gösteriyor — eskiden excess'e bakıyordu,
+yani kapı değiştikten sonra ekranda "✗" yazan bir peer skorda geçmiş olabilirdi.
+
 <!-- BACKLINKS:BEGIN -->
 ## Referenced by
 
