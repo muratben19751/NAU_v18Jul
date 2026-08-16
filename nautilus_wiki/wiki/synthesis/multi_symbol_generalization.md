@@ -130,11 +130,23 @@ devam etti ve aday IS/OOS'tan **✓ Robust** ile çıktı. Yayım yine olmadı a
 sebebi başka ve meşru: mühürlü holdout'ta 0 işlem (20 gerekiyor) — kapı
 stratejinin kanıtını istedi, veri penceresinin yan etkisini değil.
 
-**Açık tutarsızlık (ekran):** SPY satırı ✓ yazıyor ama 2 işlemle `n_trades >= 5`
-geçerlilik süzgecinden düştüğü için paydaya girmiyor — okuyan ekranda üç ✓
-sayıyor, özette "2/4" görüyor ve ikisini bağdaştıramıyor. İkon "bu peer üstün
-mü", sayaç "geçerli peer'ların kaçı üstün" sorusuna cevap veriyor; ikisi de tek
-başına doğru, birlikte yanıltıcı. Satır elenirken bunu söylemeli.
+**Ekranla sayacın çeliştiği yer kapatıldı.** Bu tabloda SPY ✓ yazıyor ama 2
+işlemle `n_trades >= 5` süzgecinden düştüğü için paydaya girmiyordu: okuyan
+ekranda üç ✓ sayıyor, özette "2/4" görüyor ve ikisini bağdaştıramıyordu. İkon
+"bu peer üstün mü", sayaç "GEÇERLİ peer'ların kaçı üstün" sorusuna cevap
+veriyor — ikisi de tek başına doğru, sebep yazılmayınca birlikte yanıltıcı.
+Artık elenen satır sebebini taşıyor ve özet paydayı açıklıyor:
+
+```
+[SPY.NASDAQ] ✓ … · Calmar=1.36/1.16 · 2 trade ⊘ sayılmadı: 2 işlem < 5
+Multi-symbol completed · 2/4 symbols positive alpha · pass_rate=50% · ⚠ Limited · 1 sayılmadı
+```
+
+Geçerlilik ölçütü de tek kopya oldu (`peer_exclusion_reason`): ekrana basılan
+sebep ile `valid` süzgeci aynı fonksiyondan okuyor. İkiye ayrıldığı an ekran ile
+sayaç yeniden ıraksardı — bu satırın var oluş sebebi zaten o ıraksamaydı.
+Artefakt da `symbols_excluded` taşıyor, yani `tested − valid` farkı sessiz bir
+eksiltme değil ölçülmüş bir eleme.
 
 Testler: `tests/test_multi_symbol_generalization.py` — etiket eşikleri, dikiş
 dışlama, venue çözümlemesi, sepet yedekliliği, ve üstünlük ölçütünün dört hâli

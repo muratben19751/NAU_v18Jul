@@ -52,8 +52,12 @@ def _payload(**metrics) -> dict:
     return {"metrics": m}
 
 
-def _run(per_symbol: dict[str, dict]) -> dict:
-    """`per_symbol`: {sembol: payload} — payload'ı olduğu gibi run_many döndürür."""
+def _run(per_symbol: dict[str, dict], sink: list[str] | None = None) -> dict:
+    """`per_symbol`: {sembol: payload} — payload'ı olduğu gibi run_many döndürür.
+
+    ``sink`` verilirse ilerleme satırları oraya toplanır (operatörün EKRANDA
+    gördüğü metin; kararla tutarlı olup olmadığı ayrı bir denetim konusu).
+    """
     symbols = list(per_symbol)
 
     def fake_run_many(units, **kw):
@@ -66,6 +70,7 @@ def _run(per_symbol: dict[str, dict]) -> dict:
         symbols=symbols,
         interval="60",
         run_many=fake_run_many,
+        progress_fn=(sink.append if sink is not None else None),
     )
 
 
@@ -441,6 +446,68 @@ def test_absolute_mode_is_the_main_gates_absolute_mode(monkeypatch):
     # Pozitif kümülatif fark tek başına yetmez; ölçü yıllık alfa.
     assert br.peer_is_superior(_peer(excess_return_fraction=0.05)) is False
     assert br.peer_is_superior(_peer(annualized_alpha=0.05)) is True
+
+
+def test_an_excluded_row_says_why_it_was_excluded():
+    """ "✓ ama sayılmadı" ekranla özeti çelişkiye düşürmemeli.
+
+    Ölçülen vaka (koşu da461e3e, 4-HOUR): SPY iki işlemle geçerlilik
+    süzgecinden düştü ama satırı ✓ ile basıldı. Ekranda ÜÇ ✓ görünüyordu, özet
+    "2/4" diyordu ve ikisi bağdaşmıyordu — okuyan farkı kapıya değil kendi
+    dikkatine yorar. İkon "bu peer üstün mü", sayaç "GEÇERLİ peer'ların kaçı
+    üstün" sorusuna cevap veriyor; ikisi de doğru, sebep yazılmayınca yanıltıcı.
+    """
+    printed: list[str] = []
+    out = _run(
+        {
+            # Üstün AMA iki işlem → paydaya girmez.
+            "SPY": _payload(
+                n_trades=2,
+                excess_return_fraction=-0.213,
+                annualized_alpha=-0.068,
+                strategy_calmar=1.36,
+                benchmark_calmar=1.16,
+                strategy_cagr=0.08,
+            ),
+            "AAPL": _payload(
+                n_trades=7,
+                excess_return_fraction=-0.277,
+                annualized_alpha=-0.068,
+                strategy_calmar=0.75,
+                benchmark_calmar=0.66,
+                strategy_cagr=0.08,
+            ),
+        },
+        printed,
+    )
+
+    assert out["symbols_tested"] == 2
+    assert out["symbols_valid"] == 1
+    assert out["symbols_excluded"] == 1
+    # Elenen satır SEBEBİNİ yazıyor…
+    spy_line = next(ln for ln in printed if "[SPY]" in ln)
+    assert "⊘" in spy_line and "2 işlem < 5" in spy_line
+    # …ve üstünlük hükmü hâlâ görünüyor (bilgi kaybı değil, bağlam kazancı).
+    assert "✓" in spy_line
+    # Sayılan satırda böyle bir not YOK.
+    assert "⊘" not in next(ln for ln in printed if "[AAPL]" in ln)
+    # Özet de paydayı açıklıyor.
+    assert "1 sayılmadı" in next(ln for ln in printed if "Multi-symbol completed" in ln)
+
+
+def test_exclusion_reason_is_the_only_copy_of_the_validity_rule():
+    """Süzgeç ile ekrandaki sebep AYNI fonksiyondan gelmeli.
+
+    İkiye ayrıldığı an ekran ile sayaç yeniden ıraksar — bu satırın var oluş
+    sebebi zaten o ıraksamaydı.
+    """
+    from backtest_robustness import MIN_PEER_TRADES, peer_exclusion_reason
+
+    ok = {"n_trades": MIN_PEER_TRADES, "excess_return_fraction": -0.1}
+    assert peer_exclusion_reason(ok) is None
+    assert "işlem" in peer_exclusion_reason({**ok, "n_trades": MIN_PEER_TRADES - 1})
+    assert "bacağı" in peer_exclusion_reason({**ok, "excess_return_fraction": None})
+    assert "boom" in peer_exclusion_reason({**ok, "error": "boom"})
 
 
 def test_both_gates_return_the_same_verdict_for_the_same_metrics():

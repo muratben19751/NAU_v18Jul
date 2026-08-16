@@ -71,6 +71,30 @@ def peer_is_superior(r: dict) -> bool:
     return benchmark_rejection(r, r.get("excess_return_fraction")) is None
 
 
+# Bir peer'ın pass_rate paydasına girmesi için gereken en az işlem. Eksik piyasa
+# verisi, geniş bir ralli sırasında nominal kâr edildi diye sessizce geçişe
+# dönüşmemeli — ama eleme de sessiz olmamalı (bkz. peer_exclusion_reason).
+MIN_PEER_TRADES = 5
+
+
+def peer_exclusion_reason(r: dict) -> str | None:
+    """Bu satır paydaya neden GİRMİYOR — giriyorsa ``None``.
+
+    Ölçüt tek kopya: hem ekrana basılan satır hem `valid` süzgeci buradan
+    okur. İkiye ayrıldığında ekranda "✓" yazan bir peer sayaçta görünmüyordu
+    (ölçüldü, koşu da461e3e: üç ✓ satırı, özette "2/4") — okuyan kişi farkı
+    kapıya değil kendi dikkatine yorar.
+    """
+    if r.get("error"):
+        return f"sayılmadı: {r['error']}"
+    n = int(r.get("n_trades") or 0)
+    if n < MIN_PEER_TRADES:
+        return f"sayılmadı: {n} işlem < {MIN_PEER_TRADES}"
+    if r.get("excess_return_fraction") is None:
+        return "sayılmadı: karşılaştırma bacağı ölçülmedi"
+    return None
+
+
 def _run_many_kw(run_many):
     """Pass timeout_s if run_many supports it (parallel_exec.run_units); silently
     skip for old-signature callables (tests)."""
@@ -1203,9 +1227,17 @@ def run_multi_symbol(
             and row["benchmark_calmar"] is not None
             else ""
         )
+        # Satır paydaya girmiyorsa BUNU SÖYLE. Ölçüldü (koşu da461e3e): SPY iki
+        # işlemle geçerlilik süzgecinden düştüğü hâlde ✓ ile basıldı; ekranda üç
+        # ✓ görünürken özet "2/4" diyordu ve ikisi bağdaşmıyordu. İkon "bu peer
+        # üstün mü", sayaç "GEÇERLİ peer'ların kaçı üstün" sorusuna cevap
+        # veriyor — ikisi de doğru, sebep yazılmayınca birlikte yanıltıcı.
+        excluded = peer_exclusion_reason(row)
+        excluded_str = f" ⊘ {excluded}" if excluded else ""
         _p(
             f"  [{sym}] {icon} PnL={pnl:+.2f} {cur} ({100 * pnl_pct:+.1f}%) · "
-            f"Excess={excess_str} · Sharpe={sharpe_str}{calmar_str} · {n_trades} trade"
+            f"Excess={excess_str} · Sharpe={sharpe_str}{calmar_str} · "
+            f"{n_trades} trade{excluded_str}"
         )
         return row
 
@@ -1340,19 +1372,16 @@ def run_multi_symbol(
             except Exception as e:
                 results.append(_error_result(sym, e))
 
-    # Results with enough trades and an actually measured alpha. Missing market
-    # data must not silently become a pass merely because the strategy made
-    # nominal PnL during a broad rally.
-    valid = [
-        r
-        for r in results
-        if not r.get("error")
-        and (r.get("n_trades") or 0) >= 5
-        and r.get("excess_return_fraction") is not None
-    ]  # 3→5
-    # Üstünlük ölçütü ANA KAPIYLA aynı (bkz. peer_is_superior /
-    # MULTI_SYMBOL_GATE_MODE): varsayılanda Calmar üstünlüğü + kârlılık tabanı,
-    # "absolute" modunda eski excess > 0.
+    # Yeterli işlemi ve GERÇEKTEN ölçülmüş bir karşılaştırma bacağı olan satırlar.
+    # Eksik piyasa verisi, geniş bir ralli sırasında nominal kâr edildi diye
+    # sessizce geçişe dönüşmemeli. Ölçüt `peer_exclusion_reason`'da tek kopya —
+    # ekrana basılan satır da oradan okuyor, yoksa "✓ ama sayılmadı" ikilisi
+    # ekranla özeti çelişkiye düşürüyordu.
+    valid = [r for r in results if peer_exclusion_reason(r) is None]
+    excluded_n = len(results) - len(valid)
+    # Üstünlük ölçütü ANA KAPIYLA aynı (bkz. peer_is_superior →
+    # app_constants.benchmark_rejection): varsayılanda Calmar üstünlüğü +
+    # kârlılık tabanı, "absolute" modunda yıllık alfa + Calmar.
     positive = [r for r in valid if peer_is_superior(r)]
     n_valid = len(valid)
     n_positive = len(positive)
@@ -1370,14 +1399,20 @@ def run_multi_symbol(
     sharpes = [r["sharpe"] for r in valid if r.get("sharpe") is not None]
     avg_sharpe = round(sum(sharpes) / len(sharpes), 2) if sharpes else None
 
+    # Payda neden bu: elenen satır sayısı özette de görünsün ki "5 sembol test
+    # edildi ama 2/4 yazıyor" sorusu ekranda cevaplansın.
+    excluded_note = f" · {excluded_n} sayılmadı" if excluded_n else ""
     _p(
         f"Multi-symbol completed · {n_positive}/{n_valid} symbols positive alpha · "
-        f"pass_rate={pass_rate:.0%} · {label}"
+        f"pass_rate={pass_rate:.0%} · {label}{excluded_note}"
     )
 
     return {
         "symbols_tested": len(symbols),
         "symbols_valid": n_valid,
+        # Artefaktı okuyan da aradaki farkı görsün: `tested - valid` sessiz bir
+        # eksiltme değil, ölçülmüş bir eleme.
+        "symbols_excluded": excluded_n,
         "symbols_positive": n_positive,
         "pass_rate": round(pass_rate, 2),
         "generalization_label": label,
