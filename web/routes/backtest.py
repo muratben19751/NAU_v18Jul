@@ -1597,7 +1597,7 @@ _INDICATOR_TO_BUILTIN: dict[str, str] = {
     "WaveTrend": "wave_trend_cross",
     "Donchian": "donchian_channel",
     "Momentum/ROC": "momentum",
-    "Hacim": "volume_spike",
+    "Volume": "volume_spike",
 }
 
 

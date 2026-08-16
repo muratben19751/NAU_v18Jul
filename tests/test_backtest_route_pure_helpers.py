@@ -33,6 +33,37 @@ import pytest
 import web.routes.backtest as bt
 
 
+class TestMatchBuiltin:
+    """`_INDICATOR_TO_BUILTIN`'in anahtarları `agent._HINT_INDICATORS`'ın kanonik
+    adları OLMAK ZORUNDA — aksi halde `_match_builtin` sessizce None döner ve
+    kullanıcıya var olan builtin yerine 'yeni custom blok yazılacak' denir.
+    (Regresyon: hacim ailesinin anahtarı `"Hacim"` yazılmıştı, kanonik ad `"Volume"`.)
+    """
+
+    def test_volume_condition_matches_volume_spike_builtin(self):
+        m = bt._match_builtin("entry", "Hacim patlaması", "volume spike üzerine giriş")
+        assert m is not None
+        assert m["type"] == "volume_spike"
+
+    def test_every_key_is_a_canonical_hint_indicator_name(self):
+        from agent import _HINT_INDICATORS
+
+        unknown = set(bt._INDICATOR_TO_BUILTIN) - set(_HINT_INDICATORS)
+        assert not unknown, f"kanonik olmayan anahtar(lar): {sorted(unknown)}"
+
+    def test_every_value_is_a_real_builtin_block(self):
+        unknown = set(bt._INDICATOR_TO_BUILTIN.values()) - set(bt.BLOCK_CATALOG)
+        assert not unknown, f"katalogda olmayan blok tip(ler)i: {sorted(unknown)}"
+
+    def test_atr_stop_is_exit_only(self):
+        assert bt._match_builtin("entry", "ATR stop", "ATR tabanlı çıkış") is None
+        m = bt._match_builtin("exit", "ATR stop", "ATR tabanlı çıkış")
+        assert m is not None and m["type"] == "atr_stop"
+
+    def test_no_recognized_indicator_returns_none(self):
+        assert bt._match_builtin("entry", "Bir şey", "kârlı bir giriş") is None
+
+
 class TestIsEquityTarget:
     def test_all_empty_bybit_is_not_equity(self):
         assert bt._is_equity_target("bybit", "linear", "", "") is False
