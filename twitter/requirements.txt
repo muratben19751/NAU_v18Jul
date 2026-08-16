@@ -1,8 +1,0 @@
-# X (Twitter) izleyicisinin TÜM çalışma zamanı bağımlılığı. Geri kalan her şey
-# standart kütüphaneden gelir (html.parser, smtplib, json, argparse…) — bu
-# bilinçli: bir kazıyıcı için bs4/lxml, kazandığı kolaylıktan pahalı olurdu.
-#
-# Tarayıcı ikilisi ayrı bir adımdır:  playwright install chromium
-playwright>=1.49
-
-# Testler için:  pip install pytest   ·  koşum:  pytest twitter/tests

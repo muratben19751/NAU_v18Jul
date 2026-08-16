@@ -62,8 +62,3 @@ unsloth_compiled_cache/
 
 # Manual scratch/debug scripts (one-off fix scripts, browser-driven E2E probes)
 debug/
-
-# X (Twitter) izleyicisinin oturum çerezi. Varsayılanı `DATA_DIR` altındadır
-# (repo dışı), ama NAU_DATA_DIR repo içine bakarsa bu dosya hesaba TAM ERİŞİM
-# demektir — hiçbir koşulda versiyonlanmamalı.
-x_storage_state.json
