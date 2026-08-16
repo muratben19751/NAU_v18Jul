@@ -588,8 +588,7 @@ def render_markdown(a: dict, run_id: str) -> str:
         risky = [
             b
             for b in bt
-            if ((b.get("metrics") or {}).get("sharpe") or 0)
-            > TH["sharpe_suspicious"]
+            if ((b.get("metrics") or {}).get("sharpe") or 0) > TH["sharpe_suspicious"]
             and (b.get("n_trades") or 0) < TH["min_trades"]
         ]
         if risky:
