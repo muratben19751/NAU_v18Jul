@@ -622,8 +622,22 @@ _BUDGET_PREAMBLE = (
 
 
 class _LoopBudgetInjector(ast.NodeTransformer):
-    """Adds a budget tick to every While/For body and comprehension element,
-    and a counter reset at the start of every function."""
+    """Adds a budget tick to every While/For body, every comprehension ELEMENT
+    ve her comprehension FİLTRESİNE, ve her fonksiyonun başına bir sayaç sıfırlaması.
+
+    Filtreler neden ayrıca tikleniyor: bir comprehension'ın `elt`'i yalnız
+    `if` süzgecinden GEÇEN öğeler için değerlendirilir. Süzgeç her şeyi elerse
+    element hiç çalışmaz ve döngü tek tik atmadan döner — bütçe sessizce devre
+    dışı kalır. Ölçüldü (2026-08-17):
+
+        [i for i in range(10**7)]           → bütçe tetiklendi (5.000.000 adım)
+        [i for i in range(10**7) if i < 0]  → 0,14 sn, bütçe HİÇ tetiklenmedi
+        [i for i in range(10**7) if (n:=n+1) < 0] → n = 10.000.000 tiksiz adım
+
+    While/For'da böyle bir delik yok: guard'lar GÖVDEYE konuyor ve gövde her
+    iterasyonda çalışıyor. Delik yalnız "iterasyon" ile "element" ayrımının
+    olduğu yerde — comprehension. Aynı aile: bir denetim işlemi düğüm tipiyle
+    yakalarsa, aynı işlemin ikinci sözdizimi denetimden kaçar."""
 
     def _reset_stmt(self) -> ast.stmt:
         # __budget[0] = N — subscript assignment (no global declaration needed).
@@ -682,9 +696,20 @@ class _LoopBudgetInjector(ast.NodeTransformer):
         node.body = guards + node.body
         return node
 
+    def _tick_comp_filters(self, node) -> None:
+        """Her `if` koşulunu tikle — süzgeç, elemenin ÖLÇÜLDÜĞÜ tek yer.
+
+        Koşul başına bir tik, o generator'ın iterasyon sayısıyla birebir örtüşür
+        (koşul her aday öğe için değerlendirilir). `__budget_tick` değeri
+        değiştirmeden döndürdüğü için doğruluk değeri korunur.
+        """
+        for gen in node.generators:
+            gen.ifs = [self._wrap_tick(cond) for cond in gen.ifs]
+
     def _visit_comp(self, node):
         self.generic_visit(node)
         node.elt = self._wrap_tick(node.elt)
+        self._tick_comp_filters(node)
         return node
 
     visit_ListComp = _visit_comp
@@ -695,6 +720,8 @@ class _LoopBudgetInjector(ast.NodeTransformer):
         self.generic_visit(node)
         # key and value are separate; wrap the tick around value (once per element).
         node.value = self._wrap_tick(node.value)
+        # Süzgeç aynı delikti: `value` yalnız geçen öğeler için değerlendirilir.
+        self._tick_comp_filters(node)
         return node
 
 

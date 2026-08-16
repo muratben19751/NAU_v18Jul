@@ -120,6 +120,53 @@ class TestLoopBudgetInjector:
             with pytest.raises(RuntimeError, match="operation budget exceeded"):
                 ns["evaluate"]()
 
+    @pytest.mark.parametrize(
+        "expr",
+        [
+            # Liste: `elt` yalnız süzgeçten GEÇEN öğe için değerlendirilir.
+            "[x for x in range(10_000_000) if x < 0]",
+            "{x for x in range(10_000_000) if x < 0}",
+            "{x: x for x in range(10_000_000) if x < 0}",
+            "sum(1 for x in range(10_000_000) if x < 0)",
+            # İç içe generator: iç süzgeç dıştaki her öğe için yeniden koşar.
+            "[x for x in range(10_000) for y in range(10_000) if y < 0]",
+        ],
+    )
+    def test_a_comprehension_filter_that_rejects_everything_still_ticks(self, expr):
+        """Süzgeç her şeyi elerse `elt` HİÇ çalışmaz — tik oradan gelemez.
+
+        Bütçe yalnız elemente bağlıyken bu bir kaçış yoluydu: ölçüldü
+        (2026-08-17), `[i for i in range(10**7) if i < 0]` 0,14 saniyede,
+        `(n:=n+1)` sayacıyla ON MİLYON adım atarak, bütçe hiç tetiklenmeden
+        tamamlanıyordu. While/For'da böyle bir delik yok (guard'lar gövdede);
+        delik yalnız "iterasyon" ile "element"in ayrıştığı yerde.
+        """
+        with _small_budget(20):
+            ns = _run(f"def evaluate():\n    return {expr}\n")
+            with pytest.raises(RuntimeError, match="operation budget exceeded"):
+                ns["evaluate"]()
+
+    @pytest.mark.parametrize(
+        "expr,expected",
+        [
+            ("[i for i in range(20) if i % 2 == 0]", list(range(0, 20, 2))),
+            ("{i: i * 2 for i in range(5) if i > 2}", {3: 6, 4: 8}),
+            ("sorted({i % 3 for i in range(10) if i != 4})", [0, 1, 2]),
+            ("sum(i for i in range(10) if i > 7)", 17),
+            ("[x * y for x in range(3) if x for y in range(3) if y]", [1, 2, 2, 4]),
+        ],
+    )
+    def test_ticking_the_filter_does_not_change_what_it_filters(self, expr, expected):
+        """`__budget_tick` değeri olduğu gibi döndürür — doğruluk değeri korunur.
+
+        Süzgeci sarmalamak sonucu değiştirseydi, düzeltme bütçeyi kapatıp
+        stratejinin mantığını bozardı; sessiz bir yanlış, gürültülü bir
+        aşımdan kötüdür.
+        """
+        ns = _run(f"def evaluate():\n    return {expr}\n")
+
+        assert ns["evaluate"]() == expected
+
     def test_budget_resets_between_evaluate_calls(self):
         # Regression guard for the documented invariant (see visit_FunctionDef):
         # the counter resets at every evaluate() ENTRY — so a small budget that
