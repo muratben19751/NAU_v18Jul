@@ -293,6 +293,12 @@ def _table(header: list[str], rows: list[list[str]]) -> list[str]:
     ]
 
 
+# `.get("alan", 0)` varsayılanı yalnız anahtar YOKKEN devreye girer. Anahtar var
+# ve değeri None ise None döner — ve `f"{None:.2f}"` ile `None > eşik` ikisi de
+# TypeError'dır. `sharpe`'ın None olması bu uygulamada NORMAL: per-trade Sharpe
+# standart sapma ister, tek işlemli bir sonuçta sapma yoktur (bkz. HOLDOUT_MIN_TRADES
+# yorumu). Yani postmortem tam da ANORMAL koşularda çöküyordu — raporun en çok
+# gerektiği anda. Doğru deyim `(... or 0)`; dosya zaten pnl_pct'de onu kullanıyordu.
 def render_markdown(a: dict, run_id: str) -> str:
     """13 boyutlu review belgesi. Her bölüm ya veri ya da 'kayıt yok' der."""
     s, e = a["start"], a["end"]
@@ -541,7 +547,7 @@ def render_markdown(a: dict, run_id: str) -> str:
         decided = True
         h = a["holdout"][-1]
         add(
-            f"**Mühürlü holdout**: sharpe {h.get('sharpe', 0):.2f} · "
+            f"**Mühürlü holdout**: sharpe {h.get('sharpe') or 0:.2f} · "
             f"{h.get('n_trades', 0)} işlem · {h.get('days', 0)} gün."
         )
         add("")
@@ -568,7 +574,7 @@ def render_markdown(a: dict, run_id: str) -> str:
                         [
                             _short(b.get("spec_name"), 30),
                             f"{b.get('score') or 0:.3f}",
-                            f"{(b.get('metrics') or {}).get('sharpe', 0):.2f}",
+                            f"{(b.get('metrics') or {}).get('sharpe') or 0:.2f}",
                             f"{100 * ((b.get('metrics') or {}).get('pnl_pct') or 0):.1f}%",
                             str(b.get("n_trades", 0)),
                             _short(b.get("interval"), 12),
@@ -582,7 +588,8 @@ def render_markdown(a: dict, run_id: str) -> str:
         risky = [
             b
             for b in bt
-            if (b.get("metrics") or {}).get("sharpe", 0) > TH["sharpe_suspicious"]
+            if ((b.get("metrics") or {}).get("sharpe") or 0)
+            > TH["sharpe_suspicious"]
             and (b.get("n_trades") or 0) < TH["min_trades"]
         ]
         if risky:

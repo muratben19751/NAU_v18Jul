@@ -1340,7 +1340,14 @@ def test_continuous_form_applies_finite_default_budgets(monkeypatch):
     )
     assert response.status_code == 200
     assert captured["max_hours"] == ab.DEFAULT_CONTINUOUS_MAX_HOURS
-    assert captured["max_total_tokens"] == ab.DEFAULT_CONTINUOUS_MAX_TOKENS
+    # Testin amacı "0 gönderince SONSUZ bütçe oluşmasın" — değer değişti, amaç
+    # değil. 2026-08-15'ten beri iki tavan var: token artık faturanın vekili
+    # değil kaçak-döngü emniyeti, parayı ayrı bir tavan sınırlıyor. Sayıyı
+    # sabitlemek yerine sözleşmeyi sabitliyoruz.
+    assert captured["max_total_tokens"] == ab._continuous_token_cap()
+    assert 0 < captured["max_total_tokens"] < float("inf")
+    # Asıl fatura koruması: para tavanı gerçekten devrede olmalı.
+    assert ab._default_cost_cap() > 0
 
 
 def test_known_unadjusted_external_data_is_rejected(monkeypatch):

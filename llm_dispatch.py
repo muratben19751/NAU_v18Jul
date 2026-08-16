@@ -452,18 +452,28 @@ def _create_message_once(client, _purpose: str = "", **kwargs):
     """
     _check_llm_cancelled()
     kwargs = dict(kwargs)
-    if not isinstance(client, _ClaudeCLIClient):
-        # The CLI backend has its own ceiling (NAUTILUS_CLI_TIMEOUT, default
-        # 300s — a subprocess with real thinking time, not a bare HTTP call)
-        # applied in _ClaudeCLIMessages.create. Injecting this shorter
-        # cross-backend safety net into its kwargs too would silently cap
-        # slow high-effort CLI calls that used to fit comfortably under 300s.
+    # Amaç-başına eşleme varsa bu çağrı koşunun pinine DEĞİL ona gider; eşleme
+    # yoksa `current_model()` ile birebir aynı sonuç (bkz. model_for_purpose).
+    # Zamanaşımı kararından ÖNCE çözülmeli: hedef backend'i bu belirler.
+    model = model_for_purpose(_purpose or "llm")
+    # The CLI backend has its own ceiling (NAUTILUS_CLI_TIMEOUT, default
+    # 300s — a subprocess with real thinking time, not a bare HTTP call)
+    # applied in _ClaudeCLIMessages.create. Injecting this shorter
+    # cross-backend safety net into its kwargs too would silently cap
+    # slow high-effort CLI calls that used to fit comfortably under 300s.
+    #
+    # AMA karar VARSAYILAN istemciye değil, çağrının GERÇEKTEN gittiği yere
+    # bakmalı. `or:` pinli bir çağrı OpenRouter'a/yerel uca gider — varsayılan
+    # backend CLI olsa bile. Eski koşul (`not isinstance(client, _ClaudeCLIClient)`)
+    # o durumda zamanaşımını hiç enjekte etmiyordu ve
+    # `_run_openrouter_killable` kendi 120 s'lik varsayılanına düşüyordu:
+    # `NAUTILUS_LLM_CALL_TIMEOUT` ayarı yerel uç için SESSİZCE ÖLÜYDÜ.
+    # Canlı ölçüm (koşu 0057a0cd): 300'e ayarlıyken bir `composed` çağrısı
+    # "OpenRouter call exceeded 120s hard deadline" ile düştü.
+    if model.startswith("or:") or not isinstance(client, _ClaudeCLIClient):
         kwargs.setdefault(
             "timeout", float(os.environ.get("NAUTILUS_LLM_CALL_TIMEOUT", "120"))
         )
-    # Amaç-başına eşleme varsa bu çağrı koşunun pinine DEĞİL ona gider; eşleme
-    # yoksa `current_model()` ile birebir aynı sonuç (bkz. model_for_purpose).
-    model = model_for_purpose(_purpose or "llm")
 
     requested_max_tokens = int(kwargs.get("max_tokens") or 0)
 

@@ -63,6 +63,18 @@ module.exports = {
         // 300 s'de fark edilir. Claude bu promptları 30 s'nin altında bitirdiği
         // için normal koşuda hiçbir şey değişmez — fark yalnız arıza anında.
         NAUTILUS_LLM_CALL_TIMEOUT: "300",
+        // AUTO koşusunun PARA tavanı (varsayılan 5). Ölçüm 2026-08-16, koşu
+        // 5e89d42a: 5 USD 66 dakika ve 2 tam tur aldı — turun sonuna kadar
+        // gidemeden kesildi, mühürlü holdout'a hiç ulaşılamadı.
+        //
+        // 20 USD ≈ 4,4 saat demek, yani bağlayıcı tavan artık PARA değil SÜRE
+        // (max_hours=4) olur. Kasıtlı: koşu ayrılan süreyi kullanır, para da
+        // arkada emniyet olarak durur. Faturanın tamamını `custom_block`
+        // (Claude) yolu harcıyor — yerel modelin çağrıları 0 USD.
+        //
+        // HARD_MAX_COST_USD bunu varsayılan olarak izler, yani sert tavan da
+        // 20'ye çıkar. Düşürmek için AGENT_HARD_MAX_COST_USD'yi ayrıca ver.
+        AGENT_DEFAULT_MAX_COST_USD: "20",
       },
     },
   ],

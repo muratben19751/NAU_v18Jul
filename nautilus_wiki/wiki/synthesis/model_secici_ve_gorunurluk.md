@@ -321,9 +321,10 @@ Hibrit ilk gerçek AUTO koşusunda **19 LLM çağrısının 19'unu** doğru uca 
 `composed` ×8 + `idea` ×4 → yerel `qwen3.8-27b`, `custom_block` ×7 →
 `claude-fable-5`. 7 strateji önerildi, hiçbiri `degraded` değil; hata/timeout 0.
 
-Aynı koşu, kapanmamış kardeş boşluğu da gösterdi: rozet artık hibridi yazıyor ama
-**maliyet satırı yazmıyor** — bütün tur maliyeti koşunun pinlenmiş modeline
-atfediliyor. Bkz. [[llm_maliyet_kaldiraclari]].
+Aynı koşu kardeş boşluğu da gösterdi ve o da kapatıldı: maliyet satırı bütün turu
+koşunun pinlenmiş modeline atfediyordu. Artık model bazında kırılıyor
+(`_run_cost`); tek harcayan varsa adı, birden fazlaysa "hibrit (N model)" yazılır.
+Bkz. [[llm_maliyet_kaldiraclari]].
 
 <!-- BACKLINKS:BEGIN -->
 ## Referenced by

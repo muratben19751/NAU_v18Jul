@@ -251,6 +251,27 @@ HOLDOUT_REQUIRE_POSITIVE_PNL = True
 HOLDOUT_REQUIRE_POSITIVE_SHARPE = True
 HOLDOUT_REQUIRE_POSITIVE_EXCESS = True
 
+# Benchmark kapısının ÖLÇÜSÜ (kullanıcı kararı, 2026-08-15).
+#
+# "absolute"      — yıllık alfa POZİTİF olmalı (buy&hold'u mutlak getiride geç)
+#                   VE Calmar'ı da geç. Eski davranış.
+# "risk_adjusted" — ASIL ölçü Calmar üstünlüğü; alfanın pozitif olması ŞART
+#                   DEĞİL, ama strateji para kazanıyor olmalı (CAGR > 0).
+#
+# Gerekçe ölçümden: koşu 1fa9870e'de en iyi aday (LRC Dip DMI ATR OBV, 1-HOUR)
+# 784 işlemde +%442 yaptı, düşüşü −%26'da tuttu ve Calmar'da buy&hold'u GEÇTİ
+# (0,292 vs 0,269) — ama yıllık alfası −%6,8 olduğu için elendi. QQQ 22,7 yılda
+# yılda %14,5 yapmış; long-only bir strateji piyasadan zaman zaman çıktığı için
+# mutlak getiride kaybeder. Ölçüldü: pencereyi kısaltmak da kurtarmıyor, QQQ'nun
+# HER penceresinde CAGR %14-24 arası (3 yılda %24,2 ile daha da zor).
+#
+# Takas açık: bu mod "daha az getiri + çok daha az düşüş" stratejilerini kataloğa
+# alır. Sermayeyi korumak öncelikse doğru; mutlak getiri kovalanıyorsa "absolute"
+# moduna dönülmeli.
+BENCHMARK_GATE_MODE = (
+    os.environ.get("AGENT_BENCHMARK_GATE", "risk_adjusted").strip().lower()
+)
+
 # Continuous AUTO is bounded by default. Operators can choose other positive
 # values through the form/env; an explicit zero no longer creates an accidental
 # unbounded bill/worker loop.
@@ -269,12 +290,60 @@ HARD_MAX_AUTO_HOURS = max(
         os.environ.get("AGENT_HARD_MAX_AUTO_HOURS", str(DEFAULT_CONTINUOUS_MAX_HOURS))
     ),
 )
+# ── İKİ TAVAN, İKİ BİRİM (2026-08-15) ─────────────────────────────────────
+#
+# Token sayısı, TEK sağlayıcı varken faturanın iyi bir vekiliydi ve yukarıdaki
+# tavan o varsayımla kalibre edildi. Amaç-başına model eşlemesi bedava bir uç
+# ekleyince bağ koptu: koşu 0057a0cd'de bütçenin %92'sini (194.375/210.411
+# token) hiç para harcamayan YEREL model yedi, gerçek fatura 1,03 USD'ydi ve
+# tur 28 dakikada tek round kapatamadan `outcome: budget` ile kesildi. Yerele
+# geçmenin gerekçesi "token bedava → daha çok iterasyon"du; bedava model
+# BEDAVA OLDUĞU İÇİN değil SAYILDIĞI İÇİN koşuyu kısalttı.
+#
+# Çözüm iki sayacı ayırmak — amaçları farklı olduğu için birimleri de farklı:
+#   · PARA tavanı  (AGENT_DEFAULT_MAX_COST_USD): faturayı sınırlar.
+#   · TOKEN tavanı (yukarıdaki): artık kaçak döngü/sonsuz koşu emniyeti.
+#
+# KÖRLÜK ŞARTI: para tavanı ancak maliyeti GÖREBİLDİĞİ kadar korur. Fiyatı
+# bilinmeyen paralı bir uçta (`price_table` None döner, sağlayıcı da maliyet
+# bildirmez) para tavanı hiç tetiklenmez. O durumda token tavanı eski
+# para-vekili değerine iner — gevşetme yalnız parayı GÖREBİLDİĞİMİZDE geçerli.
+DEFAULT_MAX_COST_USD = float(os.environ.get("AGENT_DEFAULT_MAX_COST_USD", "5"))
+HARD_MAX_COST_USD = max(
+    0.01, float(os.environ.get("AGENT_HARD_MAX_COST_USD", str(DEFAULT_MAX_COST_USD)))
+)
+# Kaçak-döngü emniyeti: para tavanı çalışırken token tavanı bu ölçeğe çıkar.
+RUNAWAY_MAX_TOKENS = int(os.environ.get("AGENT_RUNAWAY_MAX_TOKENS", "2000000"))
+# Maliyet görünmüyorken geri düşülen sıkı tavan (eski davranış).
+BLIND_MAX_TOKENS = int(
+    os.environ.get("AGENT_BLIND_MAX_TOKENS", str(DEFAULT_CONTINUOUS_MAX_TOKENS))
+)
+
+
+# Token tavanı artık faturanın vekili DEĞİL, kaçak döngü emniyeti — sert tavanı
+# da o ölçekten türer. Operatör AGENT_HARD_MAX_AUTO_TOKENS'ı açıkça verirse
+# elbette ona uyulur.
 HARD_MAX_AUTO_TOKENS = max(
     1,
-    int(
-        os.environ.get("AGENT_HARD_MAX_AUTO_TOKENS", str(DEFAULT_CONTINUOUS_MAX_TOKENS))
-    ),
+    int(os.environ.get("AGENT_HARD_MAX_AUTO_TOKENS", str(RUNAWAY_MAX_TOKENS))),
 )
+
+
+def _default_cost_cap() -> float:
+    """Bu koşuya uygulanacak PARA tavanı (0 = kapalı)."""
+    return min(DEFAULT_MAX_COST_USD, HARD_MAX_COST_USD)
+
+
+def _continuous_token_cap() -> int:
+    """Sürekli modun token tavanı.
+
+    Para tavanı devredeyse token yalnız kaçak döngüye bakar (gevşek); para
+    tavanı kapalıysa token yine faturanın tek vekilidir (eski sıkı değer).
+    """
+    return (
+        RUNAWAY_MAX_TOKENS if _default_cost_cap() > 0 else DEFAULT_CONTINUOUS_MAX_TOKENS
+    )
+
 
 # M22 extra circuit breaker: threshold of consecutive winnerless rounds
 # (continuous mode). Three complete rounds are enough to identify a stalled
@@ -449,10 +518,10 @@ def _make_llm_control(
             state = _AGENT_PROGRESS.get(run_id)
             if state is None or state.get("stop_requested"):
                 return True
-            cap = int(state.get("max_total_tokens") or 0)
-            used = _token_usage(state)
-        if cap > 0 and used >= cap:
-            raise AgentBudgetReached(f"token ceiling ({cap:,}) reached at {used:,}")
+            snapshot = dict(state)
+        breach = _budget_breach(snapshot)
+        if breach:
+            raise AgentBudgetReached(breach)
         # The old wall-clock ceiling was checked only between rounds. A long
         # provider request could therefore begin just before the deadline and
         # continue spending well past it. The LLM wrapper polls this callback,
@@ -464,7 +533,7 @@ def _make_llm_control(
     def _llm_observer(event: dict) -> None:
         usage = event.get("usage")
         if usage:
-            _add_tokens(run_id, usage)
+            _add_tokens(run_id, usage, str(event.get("model") or ""))
         _session_log(run_id, "llm_usage", **_offload_transcript(run_id, wstate, event))
 
     return _llm_cancelled, _llm_observer
@@ -500,6 +569,10 @@ def _effective_run_config() -> dict:
         },
         "default_continuous_max_hours": DEFAULT_CONTINUOUS_MAX_HOURS,
         "default_continuous_max_tokens": DEFAULT_CONTINUOUS_MAX_TOKENS,
+        "default_max_cost_usd": DEFAULT_MAX_COST_USD,
+        "hard_max_cost_usd": HARD_MAX_COST_USD,
+        "runaway_max_tokens": RUNAWAY_MAX_TOKENS,
+        "blind_max_tokens": BLIND_MAX_TOKENS,
         "hard_max_hours": HARD_MAX_AUTO_HOURS,
         "hard_max_tokens": HARD_MAX_AUTO_TOKENS,
         # Bütçe sayacının BİRİMİ: ham token değil girdi-eşdeğeri. Ağırlıklar
@@ -586,6 +659,81 @@ def _heartbeat_snapshot(state: dict, wstate: _WorkerState) -> dict:
         "threads": threading.active_count(),
         "audit_degraded": bool(state.get("audit_degraded")),
     }
+
+
+# run_id → son başarılı `_session_log` yazımının monotonic zamanı.
+_LAST_LOG_AT: dict[str, float] = {}
+
+# Kaç saniye sessizlikten sonra thread dökümü alınır. Nabız 30 s'de bir yazar,
+# yani 300 s sessizlik nabzın da durduğu anlamına gelir.
+_STALL_DUMP_SEC = env_float("NAU_AUTO_STALL_DUMP_SEC", 300.0)
+
+
+def _start_stall_watchdog(run_id: str) -> threading.Thread:
+    """Koşu susarsa TÜM thread'lerin yığın izini dosyaya dök.
+
+    Neden var: 2026-08-15/16'da üç AUTO koşusu sonuçsuz durdu — süreç ayakta
+    kaldı (pm2 restart sayacı değişmedi), `session_end` hiç yazılmadı, nabız
+    kesildi. Nerede takıldıklarını gösteren TEK bir kayıt yoktu, dolayısıyla
+    teşhis hipoteze kalıyordu: `_run_openrouter_killable`'ın `proc.start()`'ı mı,
+    nabız thread'inin sessiz ölümü mü, başka bir şey mi. Üç ayrı tahmin, sıfır
+    kanıt.
+
+    `faulthandler.dump_traceback` TÜM thread'leri döker (worker, nabız, uvicorn)
+    — takılan thread'in tam satırı ilk dökümde görünür. Döküm koşuyu
+    ETKİLEMEZ: yalnız okur, hiçbir şeyi öldürmez; asılma sürüyorsa bir sonraki
+    dökümle karşılaştırıp "aynı yerde mi duruyor" sorusu da yanıtlanır.
+
+    Döküm dosyası oturum logunun yanına: `<run_id>.stall.txt`.
+    """
+    started = time.monotonic()
+    _LAST_LOG_AT.setdefault(run_id, started)
+    dump_path = SESSION_LOG_DIR / f"{run_id}.stall.txt"
+
+    def _watch() -> None:
+        import faulthandler
+
+        dumps = 0
+        while dumps < 3:
+            time.sleep(min(60.0, max(5.0, _STALL_DUMP_SEC / 5.0)))
+            with _AGENT_LOCK:
+                state = _AGENT_PROGRESS.get(run_id)
+            if state is None or state.get("continuous_finished") or state.get("done"):
+                return
+            idle = time.monotonic() - _LAST_LOG_AT.get(run_id, started)
+            if idle < _STALL_DUMP_SEC:
+                continue
+            dumps += 1
+            try:
+                SESSION_LOG_DIR.mkdir(parents=True, exist_ok=True)
+                with dump_path.open("a", encoding="utf-8") as fh:
+                    header = "===== STALL DUMP #%d run=%s idle=%.0fs at %s =====" % (
+                        dumps,
+                        run_id,
+                        idle,
+                        datetime.now(UTC).isoformat(),
+                    )
+                    fh.write(os.linesep + header + os.linesep)
+                    fh.flush()
+                    faulthandler.dump_traceback(file=fh, all_threads=True)
+                logging.warning(
+                    "AUTO %s: %.0f sn'dir hiçbir oturum logu yazılmadı — thread "
+                    "dökümü #%d alındı: %s",
+                    run_id,
+                    idle,
+                    dumps,
+                    dump_path,
+                )
+            except Exception:
+                logging.warning("AUTO %s: stall dump alınamadı", run_id, exc_info=True)
+                return
+            # Sonraki dökümü beklemek için damgayı ilerlet: aksi hâlde üç döküm
+            # arka arkaya alınır ve "aynı yerde mi kaldı" sorusu yanıtsız kalır.
+            _LAST_LOG_AT[run_id] = time.monotonic()
+
+    thread = threading.Thread(target=_watch, name=f"auto-stall-{run_id}", daemon=True)
+    thread.start()
+    return thread
 
 
 def _start_heartbeat(
@@ -752,6 +900,10 @@ def _session_log(run_id: str, event: str, **kwargs) -> None:
             if state is not None:
                 state["audit_degraded"] = True
                 state["audit_error"] = f"Session audit log unavailable: {exc}"
+    # Takılma teşhisi: son BAŞARILI oturum-logu yazımının zamanı. Nabız 30 s'de
+    # bir yazdığı için bu damganın uzun süre eskimesi "koşuda hiçbir thread iş
+    # yapmıyor" demektir (bkz. _start_stall_watchdog).
+    _LAST_LOG_AT[run_id] = time.monotonic()
     # Outside the try on purpose: a failed *review* is not a failed *audit log*,
     # and marking the run's audit degraded for it would send the reader looking
     # for a missing event that is right there on disk.
@@ -1155,13 +1307,39 @@ def _make_rob_progress(run_id: str, cand_idx: int, round_num: int):
     return progress
 
 
-def _add_tokens(run_id: str, usage: dict | None) -> None:
-    """Accumulate token counters from the Claude API usage dict."""
+def _add_tokens(run_id: str, usage: dict | None, model: str = "") -> None:
+    """Accumulate token counters from the Claude API usage dict.
+
+    ``model`` — bu çağrının GERÇEKTEN gittiği model. Amaç-başına eşleme
+    (`NAUTILUS_MODEL_BY_PURPOSE`) bir koşuda birden fazla modelin para
+    harcamasına izin verdiği için toplamlar tek başına "kim harcadı"yı
+    söyleyemez; kırılım `state["by_model"]`'de tutulur ve maliyet oradan
+    hesaplanır (bkz. ``_run_cost``). Boş bırakılırsa "?" kovasına yazılır —
+    uydurma bir model adına yazmaktansa bilinmezliği göstermek yeğdir.
+    """
     if not usage:
         return
     with _AGENT_LOCK:
         s = _AGENT_PROGRESS.get(run_id)
         if s is not None:
+            _slot = s.setdefault("by_model", {}).setdefault(
+                (model or "").strip() or "?",
+                {
+                    "calls": 0,
+                    "input": 0,
+                    "output": 0,
+                    "cache_read": 0,
+                    "cache_write": 0,
+                    "provider_cost_usd": 0.0,
+                },
+            )
+            _slot["calls"] += 1
+            _slot["input"] += usage.get("input_tokens") or 0
+            _slot["output"] += usage.get("output_tokens") or 0
+            _slot["cache_read"] += usage.get("cache_read_input_tokens") or 0
+            _slot["cache_write"] += usage.get("cache_creation_input_tokens") or 0
+            if usage.get("cost_usd") is not None:
+                _slot["provider_cost_usd"] += float(usage["cost_usd"])
             s["tokens_in"] = s.get("tokens_in", 0) + (usage.get("input_tokens") or 0)
             s["tokens_out"] = s.get("tokens_out", 0) + (usage.get("output_tokens") or 0)
             s["tokens_cache_read"] = s.get("tokens_cache_read", 0) + (
@@ -1218,15 +1396,40 @@ def _token_usage(state: dict) -> int:
     return int(sum(int(state.get(k) or 0) * w for k, w in _TOKEN_USAGE_WEIGHTS.items()))
 
 
+def _budget_breach(state: dict) -> str | None:
+    """Aşılan tavanın sebebi — hiçbiri aşılmadıysa None.
+
+    İki tavan, iki birim (bkz. DEFAULT_MAX_COST_USD yorumu):
+      · PARA  — faturayı sınırlar, `_run_cost` ile ölçülür.
+      · TOKEN — kaçak döngü emniyeti; para GÖRÜLEBİLİYORSA gevşek
+        (RUNAWAY_MAX_TOKENS), görülemiyorsa eski sıkı değere iner.
+
+    Körlük şartı kasıtlı: maliyet hiçbir modelde okunamıyorsa para tavanı asla
+    tetiklenmez ve tek koruma token tavanıdır — orada gevşemek sessizce
+    sınırsız bir fatura yaratırdı.
+    """
+    cost_cap = float(state.get("max_total_cost_usd") or 0.0)
+    spent = _run_cost(state).get("cost_usd")
+    if cost_cap > 0 and spent is not None and spent >= cost_cap:
+        return f"cost ceiling (${cost_cap:,.2f}) reached at ${spent:,.2f}"
+
+    used = _token_usage(state)
+    cap = int(state.get("max_total_tokens") or 0)
+    if not spent:  # None ya da 0.0 → parayı göremiyoruz
+        cap = min(cap, BLIND_MAX_TOKENS) if cap > 0 else BLIND_MAX_TOKENS
+    if cap > 0 and used >= cap:
+        return f"token ceiling ({cap:,}) reached at {used:,}"
+    return None
+
+
 def _enforce_token_budget(run_id: str) -> None:
     """Stop before another LLM call once the persisted per-run ceiling is hit."""
 
     with _AGENT_LOCK:
-        s = _AGENT_PROGRESS.get(run_id) or {}
-        cap = int(s.get("max_total_tokens") or 0)
-        used = _token_usage(s)
-    if cap > 0 and used >= cap:
-        raise AgentBudgetReached(f"token ceiling ({cap:,}) reached at {used:,}")
+        s = dict(_AGENT_PROGRESS.get(run_id) or {})
+    breach = _budget_breach(s)
+    if breach:
+        raise AgentBudgetReached(breach)
 
 
 def _admit_llm_budget(run_id: str, request: dict) -> None:
@@ -1676,9 +1879,32 @@ def _benchmark_rejection(m: dict, legacy_excess: float | None) -> str | None:
         alpha = float(alpha)
     except (TypeError, ValueError):
         return "no_metrics"
-    if not math.isfinite(alpha) or alpha <= 0:
-        return "negative_alpha"
     strat_calmar, bench_calmar = m.get("strategy_calmar"), m.get("benchmark_calmar")
+    if BENCHMARK_GATE_MODE == "risk_adjusted":
+        # Alfanın POZİTİF olması şart değil — ölçü Calmar üstünlüğü (aşağıdaki
+        # ORTAK blokta, mod fark etmeksizin uygulanır). Burada yalnız TABAN
+        # var: para kaybeden bir strateji, düşüşü küçük diye geçemez.
+        try:
+            cagr = float(m.get("strategy_cagr"))
+        except (TypeError, ValueError):
+            cagr = None
+        if strat_calmar is None or bench_calmar is None:
+            # Bu modun ÖLÇÜSÜ Calmar üstünlüğü ve o ölçülemedi → eski mutlak
+            # kurala düş. Ölçülemeyen bir üstünlük, üstünlük sayılmaz.
+            if not math.isfinite(alpha) or alpha <= 0:
+                return "negative_alpha"
+        elif cagr is not None:
+            if not math.isfinite(cagr) or cagr <= 0:
+                return "not_profitable"
+        elif not math.isfinite(alpha) or alpha <= 0:
+            # Kârlılık ölçülemedi, taban yok → alfaya geri dön (fail-closed).
+            return "negative_alpha"
+        # DİKKAT: burada erken dönme YOK. Calmar karşılaştırması aşağıdaki
+        # ORTAK blokta yapılır. Bir önceki sürümde buradan `return None`
+        # ediliyordu ve Calmar bacağı atlanıyordu — kapıyı zayıflatan sessiz
+        # bir delik (test_alpha_gate_calibration yakaladı).
+    elif not math.isfinite(alpha) or alpha <= 0:
+        return "negative_alpha"
     if strat_calmar is None or bench_calmar is None:
         # Alfa pozitif ama risk bacağı ölçülemedi: kapıyı alfa ile geçir,
         # uydurulmuş bir risk karşılaştırmasıyla değil.
@@ -2197,7 +2423,7 @@ def _run_promotion_gate(
                     "measured": _n >= HOLDOUT_MIN_TRADES,
                 }
                 promotion_passed, promotion_reason = _holdout_promotion_verdict(
-                    _n, _pnl_fr, _sharpe, _excess_fr
+                    _n, _pnl_fr, _sharpe, _excess_fr, metrics=_hm
                 )
                 if _n < HOLDOUT_MIN_TRADES:
                     _add_step(
@@ -3033,6 +3259,7 @@ def _holdout_promotion_verdict(
     pnl_pct: float,
     sharpe: float | None,
     excess_pnl_pct: float,
+    metrics: dict | None = None,
 ) -> tuple[bool, str]:
     """Single publication policy for sealed holdout results — pass/fail AND why.
 
@@ -3046,8 +3273,18 @@ def _holdout_promotion_verdict(
         return False, "sealed holdout PnL is not positive"
     if HOLDOUT_REQUIRE_POSITIVE_SHARPE and (sharpe is None or sharpe <= 0):
         return False, "sealed holdout Sharpe is not positive"
-    if HOLDOUT_REQUIRE_POSITIVE_EXCESS and excess_pnl_pct <= 0:
-        return False, "sealed holdout did not beat buy-and-hold"
+    # Mühürlü pencere kapısı, alfa kapısıyla AYNI ölçüyü kullanmalı: ikisi
+    # ıraksarsa bir aday sıralamayı geçip yayımda takılır ve kullanıcı iki
+    # farklı "buy&hold'u geçti mi" cevabı görür. `metrics` verildiğinde ölçü
+    # `_benchmark_rejection` (risk-ayarlı mod dahil); verilmediğinde eski
+    # kümülatif kural — çağıranı kırmadan geçiş.
+    if HOLDOUT_REQUIRE_POSITIVE_EXCESS:
+        if metrics:
+            rej = _benchmark_rejection(metrics, excess_pnl_pct)
+            if rej is not None:
+                return False, f"sealed holdout benchmark leg: {rej}"
+        elif excess_pnl_pct <= 0:
+            return False, "sealed holdout did not beat buy-and-hold"
     return True, "passed"
 
 
@@ -3222,6 +3459,93 @@ def _llm_cost_usd(
     )
 
 
+def _run_cost(state: dict, fallback_model: str = "") -> dict:
+    """Koşunun maliyeti — MODEL BAZINDA kırılmış.
+
+    Amaç-başına model eşlemesi (`NAUTILUS_MODEL_BY_PURPOSE`, 2026-08-15) bir
+    koşuda birden fazla modelin para harcamasına izin veriyor. Maliyet satırı
+    bunu bilmiyordu: toplam token'lar TEK bir modelle fiyatlanıp o modele
+    yazılıyordu.
+
+    Ölçülen vaka (koşu 14ff96e7): `pricing_model: 'or:qwen3.8-27b'`,
+    `cost_usd: 1.019011`. Sayı doğruydu, etiket yanlıştı — o 1,02 USD tamamen
+    Claude'un 7 `custom_block` çağrısının bedeliydi; yerel model bedava. Ekranda
+    ise "yerel Qwen 1 dolar yaktı" gibi görünüyordu, yani satır tam da "yerel
+    model bedava" olan kararı çürütür gibi duruyordu.
+
+    Burada her modelin dilimi KENDİ fiyatıyla değerlenir: o dilim için sağlayıcı
+    maliyet bildirdiyse o kullanılır, yoksa fiyat tablosu. `pricing_model` tek
+    model harcadıysa onun adı, birden fazlaysa ``"hibrit (N model)"`` — tek bir
+    ad yazmak yalan olurdu.
+
+    Kırılım yoksa (eski koşu kaydı, ya da hiç `by_model` biriktirmemiş bir
+    durum) eski tek-model yoluna düşülür: davranış aynen korunur.
+    """
+    by = state.get("by_model") or {}
+    ti = int(state.get("tokens_in") or 0)
+    to = int(state.get("tokens_out") or 0)
+    tcr = int(state.get("tokens_cache_read") or 0)
+    tcw = int(state.get("tokens_cache_write") or 0)
+    provider_total = float(state.get("provider_cost_usd") or 0.0)
+
+    if not by:
+        model, estimated = _llm_cost_usd(ti, to, tcr, tcw, model=fallback_model)
+        cost = provider_total if provider_total > 0 else estimated
+        return {
+            "pricing_model": model,
+            "cost_usd": cost,
+            "cost_source": "provider_reported" if provider_total > 0 else "price_table",
+            "by_model": {},
+        }
+
+    import token_ledger
+
+    breakdown: dict[str, dict] = {}
+    total = 0.0
+    any_reported = False
+    for name, sl in by.items():
+        reported = float(sl.get("provider_cost_usd") or 0.0)
+        if reported > 0:
+            cost, source = reported, "provider_reported"
+            any_reported = True
+        else:
+            cost = token_ledger.cost_usd(
+                {
+                    "input": sl.get("input", 0),
+                    "output": sl.get("output", 0),
+                    "cache_read": sl.get("cache_read", 0),
+                    "cache_write": sl.get("cache_write", 0),
+                },
+                name,
+            )
+            source = "price_table"
+        breakdown[name] = {
+            **{
+                k: sl.get(k, 0)
+                for k in ("calls", "input", "output", "cache_read", "cache_write")
+            },
+            "cost_usd": round(cost, 6) if cost is not None else None,
+            "cost_source": source,
+        }
+        if cost:
+            total += float(cost)
+
+    spenders = [n for n, b in breakdown.items() if (b.get("cost_usd") or 0) > 0]
+    if len(spenders) == 1:
+        label = spenders[0]
+    elif len(spenders) > 1:
+        label = f"hibrit ({len(spenders)} model)"
+    else:
+        # Kimse para harcamadıysa (ör. hepsi yerel/bedava) modeli yine de söyle.
+        label = next(iter(breakdown), fallback_model or "?")
+    return {
+        "pricing_model": label,
+        "cost_usd": total if breakdown else None,
+        "cost_source": "provider_reported" if any_reported else "price_table",
+        "by_model": breakdown,
+    }
+
+
 # ── Worker ────────────────────────────────────────────────────────────────────
 
 
@@ -3268,10 +3592,23 @@ def _agent_worker(
     set_thread_random_seed(run_id)
 
     is_external = source == "external"
+    # Para tavanı faturayı, token tavanı kaçak döngüyü sınırlar (iki birim,
+    # bkz. DEFAULT_MAX_COST_USD yorumu). Form bir değer vermiyorsa varsayılan;
+    # verdiyse de sert tavanı aşamaz.
+    max_total_cost_usd = min(DEFAULT_MAX_COST_USD, HARD_MAX_COST_USD)
     if continuous_mode:
         max_hours = max_hours if max_hours > 0 else DEFAULT_CONTINUOUS_MAX_HOURS
+        # Token tavanı artık PARA vekili değil; para tavanı devredeyken kaçak
+        # döngü ölçeğine çıkar. Maliyet görünmüyorsa `_budget_breach` bunu
+        # BLIND_MAX_TOKENS'a geri indirir — koruma kaybolmaz.
         max_total_tokens = (
-            max_total_tokens if max_total_tokens > 0 else DEFAULT_CONTINUOUS_MAX_TOKENS
+            max_total_tokens
+            if max_total_tokens > 0
+            else (
+                RUNAWAY_MAX_TOKENS
+                if max_total_cost_usd > 0
+                else DEFAULT_CONTINUOUS_MAX_TOKENS
+            )
         )
 
     # M22: optional budget ceilings (0 = unlimited) + winnerless-round breaker.
@@ -3338,6 +3675,9 @@ def _agent_worker(
     _start_heartbeat(
         run_id, wstate, continuous_mode=continuous_mode, max_hours=max_hours
     )
+    # Nabız "koşu yaşıyor" der; bu ise "yaşamıyorsa NEREDE öldü" der. İkisi ayrı
+    # thread — nabzın kendisi sustuğunda da döküm alınabilsin diye.
+    _start_stall_watchdog(run_id)
 
     run_number = 0
     # Round count itself is not the budget; continuous mode is bounded by the
@@ -3378,23 +3718,13 @@ def _agent_worker(
         # M22: budget check at round start — if the time/token ceiling is exceeded, finish gracefully.
         _elapsed_h = (time.monotonic() - wstate.worker_t0) / 3600.0
         with _AGENT_LOCK:
-            _bs = _AGENT_PROGRESS.get(run_id) or {}
-            _tok_total = sum(
-                (_bs.get(k, 0) or 0)
-                for k in (
-                    "tokens_in",
-                    "tokens_out",
-                    "tokens_cache_read",
-                    "tokens_cache_write",
-                )
-            )
+            _bs = dict(_AGENT_PROGRESS.get(run_id) or {})
         _budget_reason = None
         if max_hours and max_hours > 0 and _elapsed_h >= max_hours:
             _budget_reason = f"time ceiling ({max_hours:g} hours) reached"
-        elif (
-            max_total_tokens and max_total_tokens > 0 and _tok_total >= max_total_tokens
-        ):
-            _budget_reason = f"token ceiling ({max_total_tokens:,}) exceeded"
+        else:
+            # Tek sayaç yerine iki tavan — para ve kaçak döngü ayrı ayrı.
+            _budget_reason = _budget_breach(_bs)
         if _budget_reason:
             _add_step(
                 run_id,
@@ -4051,12 +4381,13 @@ def _agent_worker(
             _to = s.get("tokens_out", 0) or 0
             _tcr = s.get("tokens_cache_read", 0) or 0
             _tcw = s.get("tokens_cache_write", 0) or 0
-            _provider_cost = float(s.get("provider_cost_usd") or 0.0)
-            # OpenRouter returns billed usage cost. Prefer it over a local price
-            # table; fall back to notional pricing for providers that omit cost.
-            _model, _estimated_cost = _llm_cost_usd(_ti, _to, _tcr, _tcw, model=model)
-            _cost_usd = _provider_cost if _provider_cost > 0 else _estimated_cost
-            _cost_source = "provider_reported" if _provider_cost > 0 else "price_table"
+            # Maliyet MODEL BAZINDA kırılır: hibritte (amaç-başına eşleme) bir
+            # koşuda birden fazla model harcar ve toplamı tek bir modele yazmak
+            # yanlış atıf üretir — bkz. _run_cost.
+            _cost = _run_cost(s, fallback_model=model)
+            _model = _cost["pricing_model"]
+            _cost_usd = _cost["cost_usd"]
+            _cost_source = _cost["cost_source"]
             _session_log(
                 run_id,
                 "token_snapshot",
@@ -4066,6 +4397,7 @@ def _agent_worker(
                 cache_read=_tcr,
                 cache_write=_tcw,
                 pricing_model=_model,
+                cost_by_model=_cost["by_model"],
                 cost_source=_cost_source if _cost_usd is not None else None,
                 cost_usd=round(_cost_usd, 6) if _cost_usd is not None else None,
                 cost_eur=round(_cost_usd * 0.91, 6) if _cost_usd is not None else None,
@@ -4725,7 +5057,9 @@ async def run(
         # Preserve the existing continuous defaults while the hard caps above
         # protect every run type from oversized hand-crafted form values.
         max_hours = min(max_hours, DEFAULT_CONTINUOUS_MAX_HOURS)
-        max_total_tokens = min(max_total_tokens, DEFAULT_CONTINUOUS_MAX_TOKENS)
+        # Token tavanı para vekili olmaktan çıktı: para tavanı devredeyken
+        # kaçak-döngü ölçeğine çıkar (bkz. _continuous_token_cap).
+        max_total_tokens = min(max_total_tokens, _continuous_token_cap())
     # App-wide convention: a DOTTED id (QQQ.NASDAQ) is an external-catalog
     # instrument — the studio AUTO cockpit posts it through the plain symbol
     # select, so promote it here instead of requiring a separate source field.
@@ -4874,6 +5208,7 @@ async def run(
             "started_at": datetime.now(UTC).timestamp(),
             "max_hours": max_hours,
             "max_total_tokens": max_total_tokens,
+            "max_total_cost_usd": _default_cost_cap(),
             "research_only": research_only,
             # Timeline spans (SVG Gantt — see _tl_begin/_tl_end)
             "timeline": [],
@@ -5124,10 +5459,13 @@ async def progress(request: Request, run_id: str):
     _to = state.get("tokens_out", 0) or 0
     _tcr = state.get("tokens_cache_read", 0) or 0
     _tcw = state.get("tokens_cache_write", 0) or 0
-    _provider_cost = float(state.get("provider_cost_usd") or 0.0)
     _pricing_model = str((raw.get("brief") or {}).get("model") or "")
-    _model, _estimated_cost = _llm_cost_usd(_ti, _to, _tcr, _tcw, model=_pricing_model)
-    _cost_usd = _provider_cost if _provider_cost > 0 else _estimated_cost
+    # Oturum logundaki token_snapshot ile AYNI hesap: iki yüzey aynı koşu için
+    # farklı maliyet göstermesin (bu daha önce bir kez yaşandı, bkz. 5065
+    # civarındaki DeepR notu).
+    _cost = _run_cost(state, fallback_model=_pricing_model)
+    _model = _cost["pricing_model"]
+    _cost_usd = _cost["cost_usd"]
     token_info = {
         "input": _ti,
         "output": _to,
@@ -5135,7 +5473,8 @@ async def progress(request: Request, run_id: str):
         "cache_write": _tcw,
         "total": _ti + _to + _tcr + _tcw,
         "pricing_model": _model,
-        "cost_source": ("provider_reported" if _provider_cost > 0 else "price_table"),
+        "cost_by_model": _cost["by_model"],
+        "cost_source": _cost["cost_source"],
         "cost_usd": round(_cost_usd, 4) if _cost_usd is not None else None,
         "cost_eur": round(_cost_usd * _USD_EUR, 4) if _cost_usd is not None else None,
     }
