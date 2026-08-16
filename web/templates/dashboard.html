@@ -1,83 +1,46 @@
 {% extends "base.html" %}
 {% block content %}
 
+{# Loop kokpiti 2026-08-17'de kaldırıldı (iterasyon listesi / Best So Far /
+   equity grafiği hepsi legacy AppState'ten besleniyordu). Burası `/` olduğu
+   için sayfa kaldı ama artık DURUM TUTMUYOR: ne gösterdiği tek bir istekte
+   çözülüyor, hiçbir şeyi yoklamıyor. #}
+
 <div class="stack">
 
-  {# ---- Control strip ---- #}
-  <div class="panel">
-    <div class="panel-body row">
-      <div>
-        <div class="section-title" style="margin:0 0 4px">Autonomous Loop</div>
-        <div class="text-muted text-mono">
-          Iterations: <span id="iter-count-inline">{{ iter_count }}</span> ·
-          Mode: <b>Agent</b> — LLM proposes strategy parameters each iteration; <b>Catalog</b> — cycles through saved specs.
-        </div>
-      </div>
-      <div class="spacer"></div>
-
-      {# Kontroller kendi kapsayıcısında: /fragments/loop_status yanıtı bunu
-         OOB ile tazeliyor (bkz. fragments/loop_controls.html). #}
-      <div id="loop-controls" style="display:contents;">
-        {% include "fragments/loop_controls.html" %}
-      </div>
-
-      <div id="loop-status" hx-get="/fragments/loop_status" hx-trigger="every 2s" hx-swap="innerHTML">
-        {% include "fragments/loop_status.html" %}
-      </div>
-    </div>
-  </div>
-
-  {# ---- Grid: iterations left, best right ---- #}
-  <div class="grid-2">
-    <div class="panel">
-      <div class="panel-header">
-        <div class="panel-title">Iterations</div>
-        <div class="spacer"></div>
-        <span class="text-muted text-mono">latest first · polling 2s</span>
-      </div>
-      <div id="iters" hx-get="/fragments/iterations" hx-trigger="load, every 2s" hx-swap="innerHTML">
-        <div class="empty-state">loading…</div>
-      </div>
-    </div>
-
-    <div class="panel">
-      <div class="panel-header">
-        <div class="panel-title">Best So Far</div>
-      </div>
-      <div id="best" hx-get="/fragments/best" hx-trigger="load, every 2s" hx-swap="innerHTML">
-        <div class="empty-state">loading…</div>
-      </div>
-    </div>
-  </div>
-
-  {# ---- Equity chart ---- #}
   <div class="panel">
     <div class="panel-header">
-      <div class="panel-title">Best Equity Curve</div>
+      <div class="panel-title">Nautilus Lab</div>
       <div class="spacer"></div>
-      <span class="text-muted text-mono">Nautilus BacktestEngine · realized PnL</span>
+      <span class="text-muted text-mono">{{ market }}</span>
     </div>
     <div class="panel-body">
-      <div class="chart-wrap"><canvas id="equity-canvas"></canvas></div>
-      <div id="equity-marker" data-reload="1" style="display:none;"></div>
+      <div class="text-muted">
+        Kayıtlı strateji: <b class="text-mono">{{ catalog_count }}</b>
+      </div>
+    </div>
+  </div>
+
+  <div class="grid-2">
+    <div class="panel">
+      <div class="panel-header"><div class="panel-title">Başla</div></div>
+      <div class="panel-body stack">
+        <div><a href="/studio">Strategy Studio</a> — kural ağacı, AUTO kokpiti</div>
+        <div><a href="/backtest">Backtest</a> — tek koşu, kayıtlı bir spec ile</div>
+        <div><a href="/lab">Strategy Lab</a> — süpürme ve karşılaştırma</div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-header"><div class="panel-title">Bak</div></div>
+      <div class="panel-body stack">
+        <div><a href="/reports">Reports</a> — geçmiş koşular, tear sheet</div>
+        <div><a href="/data">Data</a> — katalog kapsamı, ingest</div>
+        <div><a href="/wiki">Wiki</a> — proje bilgi tabanı</div>
+      </div>
     </div>
   </div>
 
 </div>
 
-{% endblock %}
-
-{% block scripts %}
-<script>
-  // Trigger initial equity load
-  fetch("/fragments/equity.json").then(r=>r.json()).then(j=>{
-    if (j.points && j.points.length) NautilusLab.renderEquity("equity-canvas", j.points);
-  });
-  // Refresh equity chart every 4s
-  setInterval(() => {
-    fetch("/fragments/equity.json").then(r=>r.json()).then(j=>{
-      if (j.points && j.points.length) NautilusLab.renderEquity("equity-canvas", j.points);
-    });
-  }, 4000);
-</script>
 {% endblock %}

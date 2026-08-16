@@ -433,57 +433,6 @@ class TestWfoWindowBounds:
 
 
 # ---------------------------------------------------------------------------
-# #7a (critical) — state.AppState.append best-selection: the single source of
-# truth for "best so far". pnl comparison, missing-pnl→-inf, error-never-wins.
-# ---------------------------------------------------------------------------
-class TestAppStateAppend:
-    def _res(self, rid, pnl=None, error=None):
-        from datetime import UTC, datetime
-
-        from state import IterationResult
-
-        metrics = {} if pnl is None else {"pnl": pnl}
-        return IterationResult(
-            id=rid,
-            strategy="s",
-            params={},
-            metrics=metrics,
-            equity_curve=[],
-            rationale="",
-            error=error,
-            timestamp=datetime.now(UTC),
-        )
-
-    def test_best_tracks_highest_pnl_and_does_not_downgrade(self):
-        from state import AppState
-
-        st = AppState()
-        st.append(self._res(1, pnl=10.0))
-        assert st.best.id == 1
-        st.append(self._res(2, pnl=50.0))
-        assert st.best.id == 2
-        st.append(self._res(3, pnl=20.0))  # lower → unchanged
-        assert st.best.id == 2
-
-    def test_errored_iteration_never_wins(self):
-        from state import AppState
-
-        st = AppState()
-        st.append(self._res(1, pnl=10.0))
-        st.append(self._res(2, pnl=999.0, error="boom"))  # error → CANNOT be best
-        assert st.best.id == 1
-
-    def test_missing_pnl_is_neg_inf(self):
-        from state import AppState
-
-        st = AppState()
-        st.append(self._res(1))  # no pnl → -inf, -inf > -inf is False → best None
-        assert st.best is None
-        st.append(self._res(2, pnl=5.0))  # real pnl wins
-        assert st.best.id == 2
-
-
-# ---------------------------------------------------------------------------
 # #8 (critical) — agent.propose_custom_block retry loop + _acc_usage token
 # ledger: usage must accumulate on EVERY attempt; 2 failed attempts →
 # GeneratedCodeError. Drives the REAL propose_custom_block with a fake client
@@ -549,55 +498,6 @@ class TestProposeCustomBlockRetry:
             agent.propose_custom_block("blk", "desc", "entry")
 
 
-# ---------------------------------------------------------------------------
-# #7b (critical) — loop M29: while /loop/start is running a second POST must be a
-# no-op (synchronous running=True-under-lock guard). If a regression moves the
-# flag back into the thread body, a double loop thread starts (shared state /
-# double token).
-# ---------------------------------------------------------------------------
-class TestLoopDoubleStart:
-    def test_second_start_while_running_is_noop(self, monkeypatch):
-        import time
-
-        from fastapi.testclient import TestClient
-
-        import web.routes.loop as loop_mod
-        from server import app
-        from state import get_state
-
-        calls = []
-
-        def fake_run_loop(state, bars, mode, **kw):
-            calls.append(1)
-            time.sleep(0.3)  # stay busy — do NOT RESET running (the route set it)
-
-        monkeypatch.setattr(loop_mod, "run_loop", fake_run_loop)
-        monkeypatch.setattr("server.get_bars", lambda: None)
-
-        st = get_state()
-        with st.lock:
-            st.running = False
-            st.stop_requested = False
-            st.iterations = []
-        try:
-            client = TestClient(app)
-            r1 = client.post("/loop/start", data={"mode": "agent"})
-            r2 = client.post("/loop/start", data={"mode": "agent"})
-            assert r1.status_code == 200 and r2.status_code == 200
-            time.sleep(0.45)  # let the single fake thread run
-            assert len(calls) == 1, f"double-start: {len(calls)} threads"
-        finally:
-            with st.lock:
-                st.stop_requested = True
-                st.running = False
-
-
-# ---------------------------------------------------------------------------
-# #9b (high) — ComposedStrategySpec vol_target sizing round-trip: to_dict/
-# from_dict must preserve trade_size_{mode,vol_target,vol_span,capital}. The
-# spec crosses a JSON boundary (catalog + subprocess spec_json); a missing
-# from_dict read silently reverts sizing to defaults in the child process.
-# ---------------------------------------------------------------------------
 class TestVolTargetSpecRoundTrip:
     def test_vol_target_fields_survive_round_trip(self):
         from composer import ComposedStrategySpec, SignalBlock

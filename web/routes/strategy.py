@@ -31,7 +31,6 @@ from composer import (
     register_custom_from_disk,
     unregister_custom_block,
 )
-from state import get_state
 from web.shared import (
     MAX_LLM_TEXT_LEN,
     SESSION_COOKIE,
@@ -427,8 +426,13 @@ async def suggest(request: Request):
             status_code=400,
         )
 
-    state = get_state()
-    history, _, _, _ = state.snapshot()
+    # `history` eskiden legacy Loop koşucusunun iterasyon listesiydi. O listeyi
+    # dolduran tek yer `loop_runner.run_loop`'tu ve Loop sayfası kullanılmıyordu
+    # (kullanıcı kararı 2026-08-17) — yani bu çağrı pratikte ZATEN boş geçmişle
+    # yapılıyordu. Loop kaldırılınca varsayım örtük olmaktan çıkıp yazılı hâle
+    # geldi; önerici geçmişsiz de çalışıyor (imzası opsiyonel değil, boş liste
+    # alıyor).
+    history: list = []
     catalog = load_catalog()
 
     proposal, _usage = propose_composed_strategy(history, catalog, hint=user_desc)

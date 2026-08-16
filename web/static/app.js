@@ -69,17 +69,6 @@ window.NautilusLab = (function () {
   return { renderEquity, resetEquity, fmtMoney };
 })();
 
-// Refresh equity from JSON endpoint whenever HTMX swaps a marker element
-document.body.addEventListener("htmx:afterSwap", (evt) => {
-  const marker = document.getElementById("equity-marker");
-  if (marker && marker.dataset.reload === "1") {
-    marker.dataset.reload = "0";
-    fetch("/fragments/equity.json")
-      .then(r => r.json())
-      .then(j => { if (j.points && j.points.length) NautilusLab.renderEquity("equity-canvas", j.points); });
-  }
-});
-
 // ── MAX date-range filler ────────────────────────────────────────────────────
 // Shared by every backtest surface's date pair: fetches the cached coverage of
 // the selected series (GET /data/range or a prebuilt URL) and fills the Start/

@@ -296,7 +296,7 @@ async def lifespan(app: FastAPI):
     # load_bybit_bars → lifespan → FastAPI startup would take the whole thing
     # down (even with a full cache on disk, the tail-fetch blows up with a
     # connection error). Swallow the exception, continue with an empty df —
-    # let the server come up, and let the loop runner run once data arrives.
+    # let the server come up; veri geldiğinde koşular normale döner.
     try:
         bars = await loop.run_in_executor(
             None,
@@ -326,8 +326,8 @@ async def lifespan(app: FastAPI):
         )
         warnings.warn(
             f"Startup: could not load bars for {_DEFAULT_SYMBOL}/{_DEFAULT_INTERVAL} — "
-            f"{_why}. Server is starting anyway; the loop runner will report "
-            "errors until data arrives.",
+            f"{_why}. Server is starting anyway; backtest yüzeyleri veri "
+            "gelene kadar hata bildirecek.",
             RuntimeWarning,
             stacklevel=2,
         )
@@ -497,7 +497,7 @@ async def _require_auth(request: Request, call_next):
 # engel `nau_auth` çerezinin `samesite="lax"` olmasıydı ve o da işe yaramıyordu:
 # NAU_ACCESS_TOKEN boşken (uzun süre öyleydi) çerez hiç gerekmiyor, dolayısıyla
 # SameSite hiçbir şeyi korumuyor. Operatörün tarayıcısında açılan kötücül bir
-# sayfa `POST /agent/run` (para harcatan LLM turu), `/loop/start`,
+# sayfa `POST /agent/run` (para harcatan LLM turu), `/agent/stop/{id}`,
 # `/strategy/blocks/save-custom`, `/studio/{id}/deploy` çağırabiliyordu;
 # 127.0.0.1'e bağlı olmak bunu ENGELLEMEZ, çünkü isteği atan kurbanın kendi
 # tarayıcısı.
@@ -645,9 +645,7 @@ from web.routes import (
 from web.routes import (  # noqa: E402  (late import: routers import from server, circular)
     backtest,
     dashboard,
-    fragments,
     lab,
-    loop,
     reports,
     strategy,
     studio,
@@ -682,8 +680,6 @@ app.include_router(studio.router)
 app.include_router(strategy_studio_route.router)
 app.include_router(strategy.router)
 app.include_router(backtest.router)
-app.include_router(loop.router)
-app.include_router(fragments.router)
 app.include_router(wiki.router)
 app.include_router(data_route.router)
 app.include_router(lab.router)

@@ -87,20 +87,6 @@ templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 templates.env.globals["static_version"] = static_version()
 
 
-def _loop_running() -> bool:
-    """Live loop status for the sidebar Engine card + Dashboard nav dot."""
-    try:
-        from state import get_state
-
-        _, _, running, _ = get_state().snapshot()
-        return bool(running)
-    except Exception:
-        return False
-
-
-templates.env.globals["loop_running"] = _loop_running
-
-
 def _engine_model_label() -> str:
     """Sidebar ENGINE card's model line. Was a hardcoded string ('Claude Fable 5')
     regardless of which model AUTO/SIMPLE/PRO actually ran with — this resolves
