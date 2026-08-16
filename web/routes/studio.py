@@ -30,10 +30,17 @@ router = APIRouter(prefix="/studio")
 
 # ── AUTO brief'inin açılış varsayılanı ────────────────────────────────────
 # Kokpit brief'i boş bir formla değil, kullanıcının fiilen koşturduğu ayarlarla
-# açılır. Model dışındaki alanların varsayılanı studio.html'de (formun kendi
-# `selected`/`value`'ları); model burada durur çünkü seçenek listesi çalışma
-# anında oluşuyor ve seçili değerin listede OLDUĞU doğrulanmalı.
-AUTO_DEFAULT_MODEL = "or:moonshotai/kimi-k3"
+# açılır. Sabit alanların varsayılanı studio.html'de (formun kendi
+# `selected`/`value`'ları); model ve sembol burada durur çünkü ikisinin de
+# seçenek listesi çalışma anında oluşuyor ve seçili değerin listede OLDUĞU
+# doğrulanmalı.
+AUTO_DEFAULT_MODEL = "or:qwen3.8-27b"
+
+# Aynı brief'in enstrümanı. Noktalı id = dış katalog; liste diskten CANLI
+# tarandığı için (bkz. _mc_external_symbols) katalog başka bir makinede/boşsa
+# seçenek hiç render edilmez — o durumda ilk statik satıra (BTCUSDT) düşeriz,
+# yoksa hiçbir seçeneği işaretli olmayan bir kutu kalırdı.
+AUTO_DEFAULT_SYMBOL = "QQQC.NASDAQ"
 
 # Aynı brief'in düşünme bütçesi. "" = ucun kendi varsayılanı; seviye listesi
 # çalışma anında oluşmadığı için (sabit sözlük) burada doğrulamaya gerek yok.
@@ -246,6 +253,7 @@ def page(request: Request):
         # (elle yazılı tek satır QQQ.NASDAQ, ingest edilen diğer hisseleri
         # görünmez kılıyordu).
         "mc_external_symbols": _mc_external_symbols(),
+        "mc_default_symbol": _mc_default_symbol(),
         # ── AUTO kokpiti: effort (düşünme bütçesi) seçici ──
         "llm_efforts": _llm_efforts(),
         "mc_default_effort": AUTO_DEFAULT_EFFORT,
@@ -329,6 +337,19 @@ def llm_badge() -> dict[str, str]:
         "llm_model_id": model_id(),
         "llm_model_hybrid": hybrid_note(),
     }
+
+
+def _mc_default_symbol() -> str:
+    """AUTO brief'i açılırken SYMBOL kutusunda seçili gelecek enstrüman.
+
+    ``_mc_default_model`` ile aynı gerekçe: liste canlı, istenen id o an
+    taranan katalogda yoksa formun kendi ilk satırına (BTCUSDT) düşülür.
+    """
+    return (
+        AUTO_DEFAULT_SYMBOL
+        if AUTO_DEFAULT_SYMBOL in _mc_external_symbols()
+        else "BTCUSDT"
+    )
 
 
 def _mc_external_symbols() -> list[str]:

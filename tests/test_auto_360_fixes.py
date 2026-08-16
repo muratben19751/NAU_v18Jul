@@ -1350,6 +1350,50 @@ def test_continuous_form_applies_finite_default_budgets(monkeypatch):
     assert ab._default_cost_cap() > 0
 
 
+def test_blank_budget_boxes_behave_like_zero(monkeypatch):
+    """AUTO brief'i MAX HOURS/TOKENS kutularını BOŞ açıyor.
+
+    Boş bir number input'u "" gönderir; alanlar `float`/`int` olarak
+    bildirildiğinde bu 422 idi, yani START hiçbir koşu başlatmadan düşüyordu.
+    Boş = "formdan tavan koyma" (0 ile aynı yol), bozuk değer ise 400.
+    """
+    from fastapi.testclient import TestClient
+
+    import web.routes.agent_backtest as ab
+    from server import app
+
+    captured = {}
+
+    class ImmediateThread:
+        def __init__(self, *, target, kwargs, daemon):
+            captured.update(kwargs)
+
+        def start(self):
+            return None
+
+    monkeypatch.setattr(ab.threading, "Thread", ImmediateThread)
+    # Sahte thread koşmadığı için aldığı AUTO slotunu asla bırakmaz; taze bir
+    # semafor olmadan bu test, aynı numarayı yapan komşusundan sonra 429 alır
+    # (ve kendi sızıntısını sonrakine bırakır).
+    monkeypatch.setattr(
+        ab,
+        "_AUTO_RUN_SLOTS",
+        ab.threading.BoundedSemaphore(ab._MAX_CONCURRENT_AUTO_RUNS),
+    )
+    client = TestClient(app)
+    response = client.post(
+        "/agent/run",
+        data={"continuous": "1", "max_hours": "", "max_total_tokens": ""},
+    )
+    assert response.status_code == 200
+    assert captured["max_hours"] == ab.DEFAULT_CONTINUOUS_MAX_HOURS
+    assert captured["max_total_tokens"] == ab._continuous_token_cap()
+
+    bad = client.post("/agent/run", data={"max_hours": "iki saat"})
+    assert bad.status_code == 400
+    assert "invalid budget" in bad.text
+
+
 def test_known_unadjusted_external_data_is_rejected(monkeypatch):
     from fastapi.testclient import TestClient
 

@@ -72,6 +72,32 @@ def test_studio_page_renders_200_with_no_active_run(stub_catalog, clean_agent_pr
     assert "running = false" in resp.text
 
 
+def test_auto_brief_opens_with_the_operators_working_defaults(stub_catalog):
+    """Brief boş bir formla değil, fiilen koşturulan ayarlarla açılır.
+
+    Alanların yarısı şablonda sabit, yarısı rotada çözülüyor; ikisi bir arada
+    doğru olmadan "açılış = son koşu" sözü tutulmaz.
+    """
+    import re
+
+    html = _client().get("/studio").text
+
+    tfs = dict(re.findall(r'name="tfs" value="([^"]+)" hidden([^>]*)', html))
+    assert [tf for tf, attrs in tfs.items() if "checked" in attrs] == ["60", "240", "D"]
+    assert '<option value="relaxed" selected>Relaxed</option>' in html
+    assert 'name="n_iterations" min="2" max="15" value="15"' in html
+    # Boş = "formdan tavan koyma"; koşuyu sunucunun sert tavanları bağlar.
+    assert 'name="max_hours" min="0.5" step="0.5" value=""' in html
+    assert 'name="max_total_tokens" min="10000" step="10000" value=""' in html
+    # Sembol ve model canlı listelerden geliyor: istenen değer o an yoksa
+    # görünmeyen bir seçenek seçili kalmasın diye geri düşülür.
+    import web.routes.studio as studio
+
+    want = studio.AUTO_DEFAULT_SYMBOL
+    expected = want if want in studio._mc_external_symbols() else "BTCUSDT"
+    assert f'<option value="{expected}" selected>' in html
+
+
 def test_studio_page_sets_the_draft_session_cookie_when_missing(stub_catalog):
     resp = _client().get("/studio")
 

@@ -4969,8 +4969,11 @@ async def run(
     instrument_id: str = Form(default=""),
     ext_interval: str = Form(default="1-DAY"),
     ext_trend_interval: str = Form(default="1-DAY"),
-    max_hours: float = Form(default=0.0),
-    max_total_tokens: int = Form(default=0),
+    # Boş kutu = "formdan tavan koyma". `float`/`int` olarak bildirildiklerinde
+    # boş bir number input'u ("" gönderir) 422 veriyordu, yani START hiç
+    # koşmuyordu; brief bu iki alanı boş açtığı için tolerans burada.
+    max_hours: str = Form(default=""),
+    max_total_tokens: str = Form(default=""),
     range_start: str = Form(default=""),
     range_end: str = Form(default=""),
     tfs: list[str] = Form(default=[]),
@@ -5038,6 +5041,19 @@ async def run(
         )
 
     n_iterations = max(2, min(15, n_iterations))
+    # Boş/eksik alan 0'a çözülür (aşağıdaki "0 = güvenli azami" yolu). Gerçekten
+    # bozuk bir değer sessizce 0 OLMAZ: sessiz 0, kullanıcının yazdığı tavanı
+    # kaldırıp koşuyu sert tavana kadar açardı — bu yüzden 400.
+    try:
+        max_hours = float(max_hours.strip() or 0)
+        max_total_tokens = int(max_total_tokens.strip() or 0)
+    except ValueError:
+        return error_html(
+            "invalid budget: max_hours={h} · max_total_tokens={t}",
+            400,
+            h=max_hours,
+            t=max_total_tokens,
+        )
     # A client may lower the budget but cannot disable server-side safety caps.
     # ``0`` selects the safe maximum for both single and continuous AUTO runs.
     max_hours = min(

@@ -103,13 +103,15 @@
           <div class="mc-f">
             <label for="mc-symbol">SYMBOL</label>
             <select id="mc-symbol" name="symbol" onchange="window.mcSyncRange()">
-              <option value="BTCUSDT" selected>BTCUSDT</option>
+              {# Seçili gelen enstrüman mc_default_symbol (rota çözer; istenen id
+                 taranan katalogda yoksa BTCUSDT'ye düşer). #}
+              <option value="BTCUSDT" {% if mc_default_symbol == 'BTCUSDT' %}selected{% endif %}>BTCUSDT</option>
               <option value="ETHUSDT">ETHUSDT</option>
               <option value="SOLUSDT">SOLUSDT</option>
               {# Dotted id = external catalog (the route promotes it) — the list
                  is scanned live so every ingested instrument is selectable. #}
               {% for xsym in mc_external_symbols %}
-              <option value="{{ xsym }}">{{ xsym }}</option>
+              <option value="{{ xsym }}" {% if xsym == mc_default_symbol %}selected{% endif %}>{{ xsym }}</option>
               {% endfor %}
             </select>
           </div>
@@ -171,10 +173,12 @@
             <span style="font-size:9.5px;color:#5a4f46;">multiple allowed</span>
           </div>
           <div class="mc-tfs">
+            {# Açılışta 1H+4H+1D işaretli: kullanıcının fiilen koşturduğu set. #}
+            {% set _mc_on_tfs = ["60", "240", "D"] %}
             {% for code, lbl in [("5","5M"), ("15","15M"), ("60","1H"), ("240","4H"), ("D","1D")] %}
-            <label class="mc-tf {{ 'on' if code == '60' }}">
+            <label class="mc-tf {{ 'on' if code in _mc_on_tfs }}">
               <input type="checkbox" name="tfs" value="{{ code }}" hidden
-                     {% if code == "60" %}checked{% endif %}
+                     {% if code in _mc_on_tfs %}checked{% endif %}
                      onchange="mcTf(this)">
               {{ lbl }}
             </label>
@@ -198,8 +202,8 @@
           <div class="mc-f">
             <label for="mc-strict">ROBUSTNESS</label>
             <select id="mc-strict" name="strict_mode">
-              <option value="strict" selected>Strict</option>
-              <option value="relaxed">Relaxed</option>
+              <option value="strict">Strict</option>
+              <option value="relaxed" selected>Relaxed</option>
             </select>
           </div>
         </div>
@@ -231,20 +235,24 @@
         <div class="mc-f">
           <div style="display:flex;justify-content:space-between;align-items:baseline;">
             <span class="mc-f-label">ITERATIONS</span>
-            <span id="mc-iter-val" style="font-size:13px;color:#e0762e;font-weight:700;">4</span>
+            <span id="mc-iter-val" style="font-size:13px;color:#e0762e;font-weight:700;">15</span>
           </div>
-          <input class="mc-range" type="range" name="n_iterations" min="2" max="15" value="4"
+          <input class="mc-range" type="range" name="n_iterations" min="2" max="15" value="15"
                  oninput="document.getElementById('mc-iter-val').textContent=this.value">
         </div>
 
+        {# İki kutu da açılışta BOŞ (= tavan yok): koşuyu fiilen bağlayan şey
+           sunucunun sert tavanları (HARD_MAX_AUTO_*, sürekli modda 4 saat) ve
+           para tavanı (DEFAULT_MAX_COST_USD) — boş kutu bunları kaldırmaz,
+           yalnız formdan gelen daha düşük bir tavanı koymaz. #}
         <div class="mc-grid2">
           <div class="mc-f">
             <label for="mc-hours">MAX HOURS <span style="color:#5a4f46;">0=∞</span></label>
-            <input type="number" id="mc-hours" name="max_hours" min="0.5" step="0.5" value="4">
+            <input type="number" id="mc-hours" name="max_hours" min="0.5" step="0.5" value="">
           </div>
           <div class="mc-f">
             <label for="mc-tok">MAX TOKENS <span style="color:#5a4f46;">0=∞</span></label>
-            <input type="number" id="mc-tok" name="max_total_tokens" min="10000" step="10000" value="250000"
+            <input type="number" id="mc-tok" name="max_total_tokens" min="10000" step="10000" value=""
                    title="Total LLM token cap; cache reads count at 0.1x (they are billed at ~10% of input). 0 = unlimited">
           </div>
         </div>
