@@ -145,7 +145,17 @@ _SANDBOX = [
         "int",
         "2048",
         "sandbox",
-        "Alt sürecin bellek tavanı; ölçüldü: 512 çöküyor, 1024 geçiyor.",
+        "Önizleme/smoke alt sürecinin bellek tavanı; ölçüldü: 512 çöküyor, "
+        "1024 geçiyor.",
+    ),
+    _v(
+        "NAU_BACKTEST_MEMORY_MB",
+        "int",
+        "3072",
+        "sandbox",
+        "Backtest alt sürecinin bellek tavanı — ayrı iş yükü, ayrı sayı. "
+        "Ölçüldü 2026-08-17: en ağır koşu (1,1M bar) 1.250 MB commit; "
+        "tavan RSS'i değil commit'i sınırlar (fark ~4 kat).",
     ),
     _v(
         "NAUTILUS_SPAWN_PYW",

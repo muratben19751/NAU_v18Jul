@@ -44,6 +44,43 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 DEFAULT_TIMEOUT_S = 180.0
+
+# Backtest çocuğunun bellek tavanı. Duvar saati bir kaçak DÖNGÜYÜ yakalar ama
+# tek satırlık bir ayırmayı (`[0] * 10**9` ≈ 8 GB) deadline'dan ÖNCE makine
+# yer. Önizleme/smoke çocuklarında bu koruma zaten vardı; backtest çocuğu
+# (`_child_entry`) tavansızdı.
+#
+# AYRI bir sabit, çünkü iş yükü ayrı: `USER_CODE_MEMORY_MB` (2048) 150 barlık
+# bir önizleme için kalibre edilmişti; buradan tam aralıklı bir Nautilus
+# backtest'i geçiyor.
+#
+# Ölçüldü 2026-08-17 (Windows, gerçek `_child_entry` koşuları):
+#
+#   veri                       bar        işlem   WS tepe   commit tepe
+#   QQQC 1-DAY               5.762          89    225 MB       919 MB
+#   QQQC 1-HOUR             40.236         702    256 MB       955 MB
+#   BTCUSDT 1m             200.000           0    263 MB       952 MB
+#   BTCUSDT 1m           1.099.096           0    562 MB     1.249 MB
+#
+# Üç okuma: (1) tavan RSS'i DEĞİL commit'i sınırlıyor (Windows Job Object
+# ProcessMemoryLimit; POSIX'te RLIMIT_AS daha da geniş olan adres alanını) ve
+# aradaki fark dört kat — RSS'e bakarak seçilen bir sayı sağlıklı koşuları
+# keserdi. (2) Taban veriden bağımsız ~920 MB: çocuk spawn'da pandas +
+# nautilus_trader + pyarrow'u yeniden import ediyor. (3) Veri ve işlem katkısı
+# ılımlı — 1,1M bar ~330 MB, işlem başına ~30 KB (5.000 işlem ≈ +150 MB), yani
+# gerçekçi en kötü hâl ≈ 1,4 GB.
+#
+# 3072 = ölçülen tepenin ~2,5 katı, tahmini en kötü hâlin ~2,2 katı; kaçak
+# ayırmayı yine anında yakalar. 2048'i yeniden kullanmak yalnız 1,6 kat pay
+# bırakırdı ve işlem yoğun tam aralıklı bir koşuyu MemoryError'a çevirebilirdi
+# — yani koruma, korumaya çalıştığı işi keserdi.
+#
+# Tavanın SESSİZCE kurulamama ihtimali de sınandı (ctypes yolu, kısıtlı token):
+# aynı 1,1M barlık koşu `NAU_BACKTEST_MEMORY_MB=1024` ile tekrar edildi —
+# commit 1.023 MB'da durdu (sınırsızken 1.250) ve koşu temiz bir `MemoryError`
+# ile döndü: exitcode 0, çöküş yok, hata normal sonuç alanında. Yani bu kutuda
+# tavan GERÇEKTEN bağlayıcı ve arıza kullanıcıya doğru anlatılıyor.
+BACKTEST_MEMORY_MB = int(_os.environ.get("NAU_BACKTEST_MEMORY_MB", "3072"))
 # Robustness runs many backtests (multi-symbol + IS/OOS + walk-forward + Monte
 # Carlo), so it gets a much longer wall-clock budget than a single backtest.
 ROBUSTNESS_TIMEOUT_S = 900.0
@@ -207,6 +244,12 @@ def _child_entry(q, payload):
     # Progress strings contain Turkish/glyph chars; a fresh Windows child that
     # never imported server needs UTF-8 stdout or print() crashes on cp125x.
     _child_stdio_guard()
+
+    # Bellek tavanı: duvar saati kaçak bir DÖNGÜYÜ kesebilir, tek satırlık bir
+    # ayırmayı kesemez — o, deadline gelmeden makinenin RAM'ini yer. Bu koruma
+    # önizleme/smoke çocuklarında vardı, burada yoktu. Kalibrasyon ve ölçüm
+    # tablosu için bkz. BACKTEST_MEMORY_MB. Patlayan çocuk, sunucu değil.
+    _install_memory_ceiling(BACKTEST_MEMORY_MB)
 
     try:
         spec, bars_df, recipe, iteration_id, rationale = payload
