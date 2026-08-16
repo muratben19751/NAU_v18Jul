@@ -5,7 +5,9 @@ separate Nautilus API.
 
 Wiki References
 ---------------
-See: [[backtesting_guide]], [[backtest_node]]
+See: [[backtesting_guide]], [[backtest_node]],
+[[multi_symbol_generalization]] (peer seçimi + üstünlük ölçütü — `peer_is_superior`
+burada tanımlı), [[auto_kapi_ve_geri_bildirim]] (kapının felsefesi ve ortak anahtar)
 """
 
 from __future__ import annotations

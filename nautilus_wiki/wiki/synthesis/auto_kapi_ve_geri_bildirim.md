@@ -306,5 +306,6 @@ yani kapı değiştikten sonra ekranda "✗" yazan bir peer skorda geçmiş olab
 
 - [[auto_360_canli_review_iyilestirmeleri]]
 - [[auto_arama_ekonomisi]]
+- [[multi_symbol_generalization]]
 - [[nau_deepr_dorduncu_tur_2026_08_11]]
 <!-- BACKLINKS:END -->

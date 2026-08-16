@@ -1503,3 +1503,41 @@ sınıfı), `auto_mission_control` (stall watchdog ve neden yama değil araç),
 
 Açık kalan: asılmaların kök nedeni bilinmiyor (watchdog henüz tetiklenmedi);
 `backup/macos-portability` dalının eksik özellikleri main'e taşınmadı.
+
+## [2026-08-16] sync | Çok-sembol kapısı: peer havuzu, venue çözümlemesi, risk-ayarlı ölçüt
+
+Yeni sayfa: `wiki/synthesis/multi_symbol_generalization.md` — peer seçiminin üç
+süzgeci (dikiş-farkındalıklı dışlama → venue çözümlemesi → veri filtresi +
+`PEER_SAMPLE_SIZE` kırpması), örneklem boyutunun eşik çözünürlüğü olması, ve
+üstünlük ölçütünün ana kapıyla ortaklaşması. Sayfa `auto/robustness.py`'nin uzun
+süredir ÇÖZÜMLENMEYEN `[[multi_symbol_generalization]]` bağının hedefiydi.
+
+Güncellenen: `auto_kapi_ve_geri_bildirim` (5 peer'lı koşunun sonucu + kapının
+risk-ayarlıya çekilmesi), `webapp_module_map` (`backtest_robustness.py` satırı
+`peer_is_superior` ve ortak anahtarı yazıyor), `backtest_robustness.py` docstring
+(Wiki References artık iki sayfaya bağlı).
+
+Kaynak `09_baglam_ve_butce_olcumu_2026_08_16.md` bu senkronda genişletilmedi;
+392287b2 sonrası ölçümler (38bdfeff, 5 peer) ilgili sentez sayfalarında duruyor.
+
+### Açık boşluk: lint kod→wiki köprüsünü GÖRMÜYOR
+
+`wiki_tools.py lint` yalnız `wiki/` içindeki sayfaları tarıyor; Python
+modüllerinin `Wiki References` bloklarındaki wikilinkleri kontrol etmiyor. Bu
+yüzden `broken_links (0)` raporlanırken `auto/robustness.py` var olmayan bir
+sayfaya bağ veriyordu.
+
+Ölçüm: `Wiki References` bloklarında 40 bağ var, **5'i kırık** (blokla sınırlı
+tarama yanlış pozitif üretmiyor; tüm dosyayı taramak Python liste literallerini
+`[[close[0]]`, `[["QQQ"]]` wikilink sanıyor). Bu senkronda YALNIZ biri kapatıldı
+(`multi_symbol_generalization`). Kalanlar:
+
+- `[[nau_deepr_mimari_katman_ayrimi]]` — `auto/__init__.py`, `auto/robustness.py`
+- `[[nau_token_tuketim_izleme]]` — `compact_sessions.py`
+- `[[nau_token_tuketim_izleme_2026_07]]` — `web/routes/tokens.py`
+- `[[ticker_kimlik_degil_o_gunun_etiketi]]` — dört ingest betiği
+- `[[max_tokens_tavani_modelin_uslubuna_baglidir]]` — `tests/test_model_by_purpose.py`
+
+İki iş öneriliyor: (1) lint'e kod dosyalarını tarayan bir kol eklemek (yanlış
+pozitifleri ayıklamak için yalnız `Wiki References` bloğuna bakmalı), (2) yukarıdaki
+sayfaları yazmak. İkisi de bu senkronun kapsamı dışında bırakıldı.
