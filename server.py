@@ -136,16 +136,17 @@ def _is_deployed(env: dict | None = None) -> bool:
     """ "Gerçekten dağıtıldık mı" — ÜÇ yerin de okuduğu TEK kural.
 
     Üç tüketicisi var (dosya yedeği, açılış uyarısı, token'sız 503) ve üçü de
-    ayrı ayrı `PM2_HOME`'a bakıyordu. Tek kopya olması yalnız zarafet değil:
-    işaret yanlışsa üçü BİRDEN yanlış olur ve bunu 2026-08-17'de canlıda
-    gördük — `pm2 env` çıktısında `PM2_HOME` yok, yani pm2 bu kurulumda onu
-    çocuk sürece geçirmiyor. Zincir: token dosyası hiç okunmadı → kapı boş
-    token'la açık kaldı → aynı işarete bakan 503 de ateşlemedi. Koruma,
-    izlediğiyle aynı arızaya bağlıydı.
+    ayrı ayrı `PM2_HOME` okuyordu. Aynı kuralın çoklu kopyası bu depoda
+    tekrarlayan kusur (bkz. benchmark kapısı 93bfcc4, işlem eşiği 178a8f8):
+    işaret bir gün yanlış olursa üçü BİRDEN yanlış olur ve hangi kopyanın
+    güncellendiğini kimse hatırlamaz.
 
-    `NAU_DEPLOYED` bu yüzden birinci sırada: onu `serve.py` koyuyor, yani
-    DAĞITIMIN KENDİSİ. `PM2_HOME` yedek olarak duruyor — çalıştığı kurulumlarda
-    (ve `sandbox.py`'nin pythonw kararında) hâlâ doğru bir işaret.
+    `PM2_HOME` ÇALIŞIYOR — doğrudan ölçüldü (2026-08-17): pm2 altında koşan bir
+    süreç `PM2_HOME` değerini görüyor. Bir süre bunun aksini yazdım; kanıtım
+    `pm2 env <id>` çıktısıydı ve o komut süreçten değil YAPILANDIRMADAN okur.
+    `NAU_DEPLOYED` yine de birinci sırada duruyor, ama bir arızayı düzelttiği
+    için değil: onu `serve.py` koyuyor, yani işaret süreç yöneticisinin
+    davranışına değil dağıtımın kendisine bağlanıyor.
     """
     env = env if env is not None else _os.environ
     return bool(env.get("NAU_DEPLOYED") or env.get("PM2_HOME"))

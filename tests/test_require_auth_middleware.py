@@ -222,14 +222,17 @@ class TestDeployedWithoutATokenIsRefused:
         assert server._deployed_without_a_token() is False
 
 
-class TestTheDeploymentMarkerCannotGoMissing:
-    """`PM2_HOME` bu kurulumda çocuk sürece HİÇ geçmiyordu (ölçüldü 2026-08-17,
-    canlı süreçte `pm2 env`).
+class TestTheDeploymentMarkerIsOneRule:
+    """Aynı "dağıtıldık mı" kuralı ÜÇ yerde ayrı ayrı yazılmıştı.
 
-    Zincir: dosya yedeği okunmadı → `_ACCESS_TOKEN` boş → `_is_authenticated`
-    herkese True → `GET /` çerezsiz 200 döndü, cloudflared 15 saattir açıkken.
-    Ve aynı işarete bakan 503 de ateşlemedi. Koruma, izlediğiyle aynı arızaya
-    bağlıydı: işaret kaybolunca hem kapı açıldı hem alarm sustu.
+    KAYIT DÜZELTMESİ (2026-08-17): bu sınıf önce "PM2_HOME çocuk sürece hiç
+    geçmiyor, kapı canlıda açık" iddiasıyla yazıldı. İddia YANLIŞTI ve iki
+    kanıtı da ölçüm hatasıydı — `pm2 env <id>` süreçten değil yapılandırmadan
+    okur, `urllib.urlopen` ise yönlendirmeyi takip edip `303 → /login → 200`
+    zincirini tek bir `200` gibi gösterir. Doğrudan ölçüm: pm2 altındaki bir
+    süreç `PM2_HOME`'u görüyor, ve kapı zaten kapalıydı.
+
+    Geriye kalan gerçek kusur çoklu kopyaydı; testler onu tutuyor.
     """
 
     def test_serve_py_sets_the_marker_before_server_is_imported(self):
@@ -246,16 +249,17 @@ class TestTheDeploymentMarkerCannotGoMissing:
         assert server._is_deployed({"PM2_HOME": "/home/u/.pm2"}) is True
         assert server._is_deployed({}) is False
 
-    def test_the_token_file_is_read_under_the_new_marker(self, tmp_path, monkeypatch):
-        """Asıl kırılan buydu: dosya vardı, okunmuyordu."""
+    def test_the_token_file_is_read_under_either_marker(self, tmp_path, monkeypatch):
+        """Dosya yedeği İKİ işaretle de okunmalı; yerel dev ikisinde de sessiz."""
         f = tmp_path / ".nau_access_token"
         f.write_text("s3cr3t\n", encoding="utf-8")
         monkeypatch.setattr(server, "_ACCESS_TOKEN_FILE", f)
 
         assert server._read_access_token({"NAU_DEPLOYED": "1"}) == "s3cr3t"
+        assert server._read_access_token({"PM2_HOME": "/home/u/.pm2"}) == "s3cr3t"
         assert server._read_access_token({}) == "", "yerel dev sessizce açık kalmalı"
 
-    def test_the_503_fires_under_the_new_marker_too(self, monkeypatch):
+    def test_the_503_fires_under_the_serve_py_marker_too(self, monkeypatch):
         monkeypatch.setattr(server, "_ACCESS_TOKEN", "")
         monkeypatch.delenv("PM2_HOME", raising=False)
         monkeypatch.delenv("NAU_ALLOW_NO_AUTH", raising=False)

@@ -31,22 +31,29 @@ try:
 except (AttributeError, ValueError):
     pass
 
-# "Gerçekten dağıtıldık" işareti — ve işaret BU DOSYANIN KENDİSİ.
+# "Gerçekten dağıtıldık" işareti, süreç yöneticisinden BAĞIMSIZ olarak.
 #
-# Eskiden o rolü `PM2_HOME` oynuyordu: erişim kapısının dosya yedeği, açılış
-# uyarısı ve (2026-08-17'den beri) token'sız dağıtımı reddeden 503, üçü de ona
-# bakıyordu. ÖLÇÜLDÜ 2026-08-17, canlı süreçte: `pm2 env` çıktısında `PM2_HOME`
-# YOK — pm2 bu kurulumda onu çocuk sürece geçirmiyor. Sonuç zinciri şuydu:
-# `~/.nau_access_token` (6 bayt, mevcut) hiç okunmadı → `_ACCESS_TOKEN` boş →
-# `_is_authenticated` herkese True → `GET /` çerezsiz 200 döndü, cloudflared
-# 15 saattir açıkken.
+# DÜZELTME (2026-08-17): bu satır önce yanlış bir gerekçeyle eklendi. "pm2 bu
+# kurulumda `PM2_HOME`'u çocuk sürece geçirmiyor, dolayısıyla token dosyası hiç
+# okunmuyor ve kapı açık" diye yazmıştım; İKİSİ DE YANLIŞTI. Kanıt olarak
+# kullandığım iki gözlemin ikisi de ölçüm hatasıydı:
 #
-# Kusur token'da değil, İŞARETTEYDİ: koruma, izlediğiyle aynı arızaya bağlıydı.
-# İşaret kaybolunca hem kapı açıldı hem kapıyı bekleyen alarm sustu.
+#   · `pm2 env <id>` süreçten değil YAPILANDIRMADAN okur; runtime ortamını
+#     göstermez. Doğrudan ölçüldü: pm2 altında koşan bir Python süreci
+#     `PM2_HOME = 'C:\\Users\\MYDESK\\.pm2'` görüyor. İşaret hep oradaydı.
+#   · `urllib.urlopen` yönlendirmeyi takip eder; `303 → /login → 200` zinciri
+#     tek bir `200` gibi göründü. Kapı zaten AÇIK DEĞİL, KAPALIYDI.
 #
-# `serve.py` kaybolamaz, çünkü dağıtım O. Geliştirme yolu `uvicorn server:app`
-# bu dosyadan geçmez, dolayısıyla yerel koşum eskisi gibi kapısız kalır.
-# `server` import'undan ÖNCE konması şart: `_ACCESS_TOKEN` import anında okunur.
+# Yani ortada bir açık yoktu. Kalan gerçek kusur şuydu: aynı "dağıtıldık mı"
+# kuralı ÜÇ yerde ayrı ayrı yazılmıştı (dosya yedeği, açılış uyarısı, 503) ve
+# üçü de tek bir dış değişkene bağlıydı — bu depoda tekrarlayan çoklu-kopya
+# deseni. Kural `server._is_deployed()`'te tekleşti; bu satır ise işareti süreç
+# yöneticisinin davranışından bağımsız kılıyor, çünkü `serve.py` dağıtımın
+# kendisi. `PM2_HOME` yedek olarak duruyor ve çalışıyor.
+#
+# Geliştirme yolu (`uvicorn server:app`) bu dosyadan geçmez, dolayısıyla yerel
+# koşum eskisi gibi kapısız kalır. `server` import'undan ÖNCE konması şart:
+# `_ACCESS_TOKEN` import anında okunur.
 os.environ.setdefault("NAU_DEPLOYED", "1")
 
 

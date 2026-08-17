@@ -113,9 +113,9 @@ _HTTP = [
         "bool",
         "(serve.py set eder)",
         "server",
-        "'Gerçekten dağıtıldık' işareti; erişim kapısının dosya yedeği ve "
-        "token'sız 503 buna bakar. PM2_HOME yedek — pm2 onu her kurulumda "
-        "çocuk sürece geçirmiyor (ölçüldü 2026-08-17).",
+        "'Gerçekten dağıtıldık' işareti; erişim kapısının dosya yedeği, açılış "
+        "uyarısı ve token'sız 503 buna bakar. serve.py koyar, yani işaret süreç "
+        "yöneticisinden bağımsız. PM2_HOME de kabul edilir (o da çalışıyor).",
     ),
     _v(
         "NAU_ALLOW_NO_AUTH",
