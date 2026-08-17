@@ -54,10 +54,12 @@ from strategy_studio.ai import (
     parse_suggestion,
 )
 from strategy_studio.backtest import (
+    REAL_ENGINE,
     BacktestMetrics,
     NautilusBacktestAdapter,
     StubBacktestAdapter,
     UnsupportedStrategy,
+    engine_name,
     to_nautilus,
 )
 from strategy_studio.compiler import CompileError, compile_strategy
@@ -1017,7 +1019,16 @@ def route_backtest(
     run_id = uuid.uuid4().hex[:12]
     # The hash records WHICH definition this run measures, so the deploy gate
     # can insist on a run of the definition being deployed (see _gate_baseline).
-    store.create_run(run_id, strategy_id, defn.version, is_draft, definition_hash(defn))
+    # Motor kaydı koşuyla BİRLİKTE yazılıyor: sonradan türetmek imkânsız,
+    # çünkü `STUDIO_BACKTEST` iki koşu arasında değişebilir.
+    store.create_run(
+        run_id,
+        strategy_id,
+        defn.version,
+        is_draft,
+        definition_hash(defn),
+        engine=engine_name(ADAPTER),
+    )
     _claim_job(run_id)  # görev başlamadan önce sahiplen (bkz. `_claim_job`)
     background_tasks.add_task(_execute_run, run_id, defn, date_range)
     return _render_footer(request, defn, store.latest_run(strategy_id))
@@ -1328,7 +1339,9 @@ def _baseline_metrics(strategy_id: str) -> BacktestMetrics | None:
     return None
 
 
-def _gate_baseline(defn: StrategyDefinition) -> BacktestMetrics | None:
+def _gate_baseline(
+    defn: StrategyDefinition,
+) -> tuple[BacktestMetrics | None, str | None]:
     """The deploy gate's baseline: a completed run OF THIS EXACT DEFINITION.
 
     Deploy compiles the SAVED version while the footer shows the newest run,
@@ -1338,11 +1351,15 @@ def _gate_baseline(defn: StrategyDefinition) -> BacktestMetrics | None:
     judged. Matching on the content hash also keeps the normal
     draft → backtest → save → deploy flow working, because promoting a draft
     changes only version bookkeeping, which the hash excludes.
+
+    Metriklerin YANINDA motoru da döndürüyor: kapı sayıya bakmadan önce sayının
+    nereden geldiğine bakmak zorunda ve `BacktestMetrics` bunu taşımıyor
+    (taşımamalı da — o bir ölçüm, bir köken kaydı değil).
     """
     run = store.latest_run_for_hash(defn.id, definition_hash(defn))
     if run and run["metrics"]:
-        return BacktestMetrics.from_json(run["metrics"])
-    return None
+        return BacktestMetrics.from_json(run["metrics"]), run["engine"]
+    return None, None
 
 
 # Trial baselines, keyed by (engine, definition). LRU-bounded: the AI loop
@@ -1665,7 +1682,7 @@ def route_deploy_modal(request: Request, strategy_id: str):
         raise HTTPException(404, f"strategy '{strategy_id}' not found") from None
     # Show exactly what the gate will judge — the run that measured THIS saved
     # definition — so the modal cannot promise a pass the deploy then refuses.
-    metrics = _gate_baseline(defn)
+    metrics, gate_engine = _gate_baseline(defn)
     objective_value = None
     if metrics:
         objective_value = {"sharpe": metrics.sharpe, "max_dd": metrics.max_dd_pct}.get(
@@ -1690,6 +1707,10 @@ def route_deploy_modal(request: Request, strategy_id: str):
                 metrics=metrics,
                 objective_value=objective_value,
                 gate_default=default_gate_min(defn.walkforward.objective),
+                # Modalın sözü: "kapının yargılayacağı şeyi TAM olarak göster,
+                # sonradan reddedeceği bir geçişi vaat etme." Motor kontrolü de
+                # kapının parçası olduğuna göre burada da görünmeli.
+                gate_engine_ok=gate_engine == REAL_ENGINE,
                 unrunnable=unrunnable,
                 has_draft=store.load_draft(strategy_id) is not None,
             )
@@ -1746,7 +1767,8 @@ def route_deploy(
         gate_min_objective=gate_min,
     )
     try:
-        artifact = prepare_deployment(defn, _gate_baseline(defn), cfg)
+        gate_metrics, gate_engine = _gate_baseline(defn)
+        artifact = prepare_deployment(defn, gate_metrics, cfg, gate_engine)
     except UnsupportedStrategy as e:
         # The artifact is what a runner executes, so a strategy that cannot be
         # lowered has nothing to deploy. Refusing here keeps the failure

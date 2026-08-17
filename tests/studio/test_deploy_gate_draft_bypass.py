@@ -58,9 +58,19 @@ def client(tmp_path, monkeypatch):
     return c
 
 
-def _record_run(client, defn, dsr: float, *, is_draft: bool, run_id: str) -> None:
-    """A completed run, recorded exactly as the Backtest button records one."""
-    client.store.create_run(run_id, SID, defn.version, is_draft, definition_hash(defn))
+def _record_run(
+    client, defn, dsr: float, *, is_draft: bool, run_id: str, engine="nautilus"
+) -> None:
+    """A completed run, recorded exactly as the Backtest button records one.
+
+    ``engine`` dahil — düğme 2026-08-17'den beri onu da yazıyor ve kapı sayıya
+    bakmadan önce ona bakıyor. Bu dosyanın konusu TASLAK/KAYITLI ayrımı, o
+    yüzden koşular gerçek motorla kaydediliyor; motor kontrolünün kendi testi
+    ``test_deploy.py``'de.
+    """
+    client.store.create_run(
+        run_id, SID, defn.version, is_draft, definition_hash(defn), engine=engine
+    )
     client.store.finish_run(run_id, _metrics(dsr).to_json())
 
 

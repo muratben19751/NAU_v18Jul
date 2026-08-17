@@ -186,6 +186,21 @@ def _bars_span(bars) -> tuple[str, str]:
         return "", ""
 
 
+# Koşu kaydına yazılan motor kimliği. Sınıf adı DEĞİL: kayıt kalıcı, sınıf adı
+# bir yeniden adlandırmayla değişir ve eski satırlar okunamaz hâle gelir.
+REAL_ENGINE = "nautilus"
+STUB_ENGINE = "stub"
+
+
+def engine_name(adapter) -> str:
+    """Bu adapter'ın ürettiği sayıların kimliği.
+
+    Deploy kapısı buna bakıyor: stub'ın hash-tohumlu rastgele yürüyüşü OOS
+    kanıtı değildir ve kayıtta ayırt edilebilir olması şart.
+    """
+    return STUB_ENGINE if isinstance(adapter, StubBacktestAdapter) else REAL_ENGINE
+
+
 class StubBacktestAdapter:
     """Deterministic fake engine. See module docstring."""
 

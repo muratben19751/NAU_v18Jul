@@ -7,6 +7,7 @@ söylediği yer ile yapmadığı yer arasında hiçbir iz yok.
    yine "başarılı" ve trend filtreli spec adıyla kaydediliyordu.
 2. `pending` iken durdurulan (ya da build'i zaman aşımına uğrayan) deployment
    arka planda başlayabiliyordu: DB 'stopped'/'failed', sahada canlı düğüm.
+3. Deploy kapısı stub'ın rastgele yürüyüşünü gerçek OOS kanıtı sayıyordu.
 
 Wiki References
 ---------------
@@ -14,6 +15,8 @@ Bkz: [[strategy_studio]], [[review_raporu_uretildigi_anda_bayatlar]]
 """
 
 from __future__ import annotations
+
+import pytest
 
 # ---------------------------------------------------------------------------
 # 1. Trend filtresi fail-closed
@@ -266,3 +269,91 @@ def test_abandoned_marks_do_not_leak(monkeypatch):
     r.stop("dep-3")
     r.launch("dep-3", ARTIFACT)  # iptal edilir, işaret tüketilir
     assert "dep-3" not in r._abandoned
+
+
+# ---------------------------------------------------------------------------
+# 3. Motor provenance ve kapı
+# ---------------------------------------------------------------------------
+
+
+def test_engine_name_distinguishes_the_two_adapters():
+    from strategy_studio.backtest import (
+        REAL_ENGINE,
+        STUB_ENGINE,
+        StubBacktestAdapter,
+        engine_name,
+    )
+
+    assert engine_name(StubBacktestAdapter()) == STUB_ENGINE
+    assert engine_name(object()) == REAL_ENGINE  # stub değilse gerçek
+
+
+def test_a_run_records_which_engine_measured_it(tmp_path):
+    from strategy_studio.store import StrategyStore
+
+    store = StrategyStore(tmp_path / "t.db")
+    store.create_run("r1", "s1", 1, False, "hash", engine="nautilus")
+    assert store.latest_run("s1")["engine"] == "nautilus"
+
+
+@pytest.mark.parametrize("engine", ["stub", None])
+def test_the_gate_refuses_metrics_it_cannot_vouch_for(engine):
+    """Kapı bir KANIT iddiasıdır; kanıt olmayanı reddetmesi tanımı gereği.
+
+    `None` da reddediliyor: "belki gerçekti" bir kanıt değil, bir tahmindir.
+    """
+    from strategy_studio.deploy import DeployBlocked, check_gate
+
+    with pytest.raises(DeployBlocked, match="not the real backtest engine"):
+        check_gate(_defn(), _good_metrics(), _gate_cfg(), engine)
+
+
+def test_the_gate_still_judges_the_number_when_the_engine_is_real():
+    """Motor kontrolü eşiğin YERİNE geçmiyor, ÖNÜNE geçiyor."""
+    from strategy_studio.deploy import DeployBlocked, check_gate
+
+    check_gate(_defn(), _good_metrics(), _gate_cfg(0.5), "nautilus")  # geçer
+    with pytest.raises(DeployBlocked, match="below required"):
+        check_gate(_defn(), _good_metrics(), _gate_cfg(5.0), "nautilus")
+
+
+def test_turning_the_gate_off_still_allows_a_simulated_deploy():
+    """Sentetik sayıyla deploy yasaklanmadı — sadece KANIT diye satılamıyor."""
+    from strategy_studio.deploy import check_gate
+
+    cfg = _gate_cfg()
+    cfg.gate_enabled = False
+    check_gate(_defn(), _good_metrics(), cfg, "stub")  # atmamalı
+
+
+def _defn():
+    from scripts.seed_studio import build_engine_fixture
+
+    return build_engine_fixture()
+
+
+def _good_metrics():
+    from strategy_studio.backtest import BacktestMetrics
+
+    return BacktestMetrics(
+        net_pnl_pct=12.0,
+        sharpe=1.4,
+        dsr=0.92,
+        max_dd_pct=-8.0,
+        trades=500,
+        win_rate_pct=55.0,
+        profit_factor=2.0,
+    )
+
+
+def _gate_cfg(gate_min: float = 0.5):
+    from strategy_studio.deploy import DeployConfig
+
+    return DeployConfig(
+        environment="paper",
+        instruments="active",
+        capital=10_000.0,
+        kill_switch_daily_pct=None,
+        gate_enabled=True,
+        gate_min_objective=gate_min,
+    )

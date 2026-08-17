@@ -31,7 +31,7 @@ from __future__ import annotations
 import json
 from dataclasses import asdict, dataclass
 
-from .backtest import BacktestMetrics, to_nautilus
+from .backtest import REAL_ENGINE, BacktestMetrics, to_nautilus
 from .compiler import CompiledStrategy, compile_strategy
 from .schema import StrategyDefinition
 
@@ -79,14 +79,38 @@ class DeployConfig:
 
 
 def check_gate(
-    defn: StrategyDefinition, latest_metrics: BacktestMetrics | None, cfg: DeployConfig
+    defn: StrategyDefinition,
+    latest_metrics: BacktestMetrics | None,
+    cfg: DeployConfig,
+    engine: str | None = None,
 ) -> None:
-    """Server-side deployment gate — not just UI."""
+    """Server-side deployment gate — not just UI.
+
+    ``engine`` koşuyu ÜRETEN motorun kaydı (bkz. ``backtest.engine_name``).
+    ``None`` = kayıtta yok (motor sütunundan önceki satırlar).
+    """
     if not cfg.gate_enabled:
         return
     if latest_metrics is None:
         raise DeployBlocked(
             "deployment gate: no completed walk-forward run to evaluate"
+        )
+    # Sayıya bakmadan ÖNCE sayının nereden geldiğine bak. Shipped varsayılanda
+    # Studio `StubBacktestAdapter` kullanıyor: metrikler compiled config'in
+    # hash'inden türeyen bir rastgele yürüyüş. Kapı bunu gerçek OOS kanıtından
+    # ayırt edemiyordu, dolayısıyla olumlu bir SENTETİK DSR artifact üretmeye
+    # yetiyordu (DeepR 2026-08-17 [YÜKSEK]).
+    #
+    # Kapı bir KANITA DAYALI İDDİADIR ("OOS X ≥ Y"); kanıt olmayanı reddetmesi
+    # tanımı gereği. Sentetik sayılarla deploy etmek isteyen kapıyı kapatabilir
+    # — o zaman ortada bir iddia da olmaz. Bilinmeyen motor da reddediliyor:
+    # "belki gerçekti" bir kanıt değildir, bir tahmindir.
+    if engine != REAL_ENGINE:
+        raise DeployBlocked(
+            "deployment gate: the run was measured by "
+            f"{engine or 'an unrecorded engine'}, not the real backtest engine "
+            f"— set STUDIO_BACKTEST={REAL_ENGINE} and re-run, or turn the gate "
+            "off to deploy on simulated numbers"
         )
     objective = defn.walkforward.objective
     metrics_by_objective = {
@@ -163,10 +187,13 @@ def build_artifact(
 
 
 def prepare_deployment(
-    defn: StrategyDefinition, latest_metrics: BacktestMetrics | None, cfg: DeployConfig
+    defn: StrategyDefinition,
+    latest_metrics: BacktestMetrics | None,
+    cfg: DeployConfig,
+    engine: str | None = None,
 ) -> str:
     if cfg.environment not in ("paper", "live"):
         raise DeployBlocked(f"unknown environment '{cfg.environment}'")
-    check_gate(defn, latest_metrics, cfg)
+    check_gate(defn, latest_metrics, cfg, engine)
     compiled = compile_strategy(defn)  # SAVED version, never the draft
     return build_artifact(defn, compiled, cfg)

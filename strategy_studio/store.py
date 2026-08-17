@@ -136,6 +136,12 @@ _ADDED_COLUMNS = [
     # Content hash of the definition a run actually measured, so the deploy gate
     # can require a run OF THE THING BEING DEPLOYED (see definition_hash).
     ("studio_runs", "defn_hash", "TEXT"),
+    # HANGİ MOTOR ölçtü. Kayıtta bu yoktu, dolayısıyla `StubBacktestAdapter`'ın
+    # hash-tohumlu rastgele yürüyüşü ile gerçek Nautilus koşusu birbirinden
+    # ayırt EDİLEMİYORDU — deploy kapısı ikisini de "OOS kanıtı" sayıyordu.
+    # Ekrandaki "SİMÜLE" rozeti operatörü uyarıyordu ama kapı okuyamıyordu:
+    # rozet bir görüntü, bu bir kayıt (DeepR 2026-08-17 [YÜKSEK]).
+    ("studio_runs", "engine", "TEXT"),
 ]
 
 
@@ -410,14 +416,15 @@ class StrategyStore:
         version: int,
         is_draft: bool,
         defn_hash: str | None = None,
+        engine: str | None = None,
     ) -> None:
         now = datetime.now(UTC).isoformat()
         with self._connect() as con:
             con.execute(
                 "INSERT INTO studio_runs "
                 "(run_id, strategy_id, version, is_draft, status, created_at, "
-                "defn_hash) VALUES (?,?,?,?,'running',?,?)",
-                (run_id, strategy_id, version, int(is_draft), now, defn_hash),
+                "defn_hash, engine) VALUES (?,?,?,?,'running',?,?,?)",
+                (run_id, strategy_id, version, int(is_draft), now, defn_hash, engine),
             )
 
     def finish_run(self, run_id: str, metrics_json: str) -> None:

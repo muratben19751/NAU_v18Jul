@@ -28,11 +28,31 @@ def client(tmp_path, monkeypatch):
     return c
 
 
-def _run_backtest(client, sid=SID):
-    client.post(f"/studio/{sid}/backtest")
+def _run_backtest(client, sid=SID, *, engine="nautilus"):
+    """Bir koşu üret ve kaydına HANGİ MOTORUN ölçtüğünü yaz.
+
+    Süit stub adapter'la koşuyor, ama kapı 2026-08-17'den beri sentetik
+    metriği reddediyor — haklı olarak: kapı bir kanıt iddiasıdır. Buradaki
+    testlerin çoğu kapının EŞİK mantığını sınıyor, motor kontrolünü değil, o
+    yüzden koşu "gerçek motor ölçtü" diye kaydediliyor. Motor kontrolünün
+    kendi testleri ayrı (bkz. `test_gate_refuses_*`).
+    """
     from strategy_studio.backtest import BacktestMetrics
 
+    client.post(f"/studio/{sid}/backtest")
+    _stamp_engine(client, sid, engine)
     return BacktestMetrics.from_json(client.store.latest_run(sid)["metrics"])
+
+
+def _stamp_engine(client, sid, engine):
+    import sqlite3
+
+    con = sqlite3.connect(client.store.db_path)
+    with con:
+        con.execute(
+            "UPDATE studio_runs SET engine=? WHERE strategy_id=?", (engine, sid)
+        )
+    con.close()
 
 
 def test_modal_renders_with_gate_state(client):

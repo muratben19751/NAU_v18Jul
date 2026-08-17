@@ -57,6 +57,15 @@
             Deployment gate: require OOS {{ defn.walkforward.objective | upper }} ≥
             <input name="gate_min" value="{{ gate_default }}" class="gate-min">
           </label>
+          {# Kapı bir KANITA DAYALI iddia: sentetik sayı kanıt değil. Reddi
+             burada söylemezsek modal, deploy'un reddedeceği bir geçişi vaat
+             etmiş olur — bu modalın tam olarak kaçındığı şey. #}
+          {% if not gate_engine_ok %}
+            <div class="gate-now"><b class="bad">Gate will refuse:</b>
+              this run's numbers are simulated, not from the real engine.
+              Set <code>STUDIO_BACKTEST=nautilus</code> and re-run, or uncheck
+              the gate to deploy on simulated numbers.</div>
+          {% endif %}
           <div class="gate-now">
             {% if objective_value is not none %}
               Current: <b class="{{ 'ok' if objective_value >= gate_default else 'bad' }}">

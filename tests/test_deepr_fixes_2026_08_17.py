@@ -99,7 +99,9 @@ def test_a_healthy_max_dd_run_clears_the_default_gate():
     metrics = _metrics(max_dd_pct=-8.0)
     cfg = _cfg(gate_min=default_gate_min("max_dd"))
 
-    check_gate(defn, metrics, cfg)  # atmamalı
+    # Motor GERÇEK: kapı 2026-08-17'den beri sayıya bakmadan önce sayının
+    # nereden geldiğine bakıyor. Buranın konusu eşik, motor kontrolü değil.
+    check_gate(defn, metrics, cfg, "nautilus")  # atmamalı
 
 
 def test_a_catastrophic_max_dd_still_blocks():
@@ -116,7 +118,7 @@ def test_a_catastrophic_max_dd_still_blocks():
     cfg = _cfg(gate_min=default_gate_min("max_dd"))
 
     with pytest.raises(DeployBlocked, match="MAX_DD"):
-        check_gate(defn, _metrics(max_dd_pct=-60.0), cfg)
+        check_gate(defn, _metrics(max_dd_pct=-60.0), cfg, "nautilus")
 
 
 def _metrics(**over):
