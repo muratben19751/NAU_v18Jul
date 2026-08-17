@@ -62,3 +62,11 @@ unsloth_compiled_cache/
 
 # Manual scratch/debug scripts (one-off fix scripts, browser-driven E2E probes)
 debug/
+
+# Kaza eseri kök dizine yazılan mutlak-yol dökümleri. Bir betik "C:\Users\...\
+# scratchpad\diff_x.txt" gibi bir hedefe yazdığında Windows'ta ':' U+F03A'ya
+# çevriliyor ve dosya, adında sürücü harfi olan tek parça bir isimle repo
+# kökünde beliriyor. Beş tanesi aylarca git'te durdu (2026-08-17'de silindi);
+# içerikleri zaten repoda olan diff'lerdi.
+C[:\uf03a]Users*
+*AppDataLocalTemp*

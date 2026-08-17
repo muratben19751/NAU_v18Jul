@@ -4,22 +4,28 @@
 # This file is kept only for `pip install -r requirements.txt` compatibility;
 # its floors are advisory and it does NOT reproduce a known-good environment.
 # Prefer:  uv sync --locked --extra dev   (or)   pip install -e ".[dev]"
+#
+# CONTENTS = pyproject's `[project] dependencies`, VERBATIM and in order. The
+# extras live only in pyproject and are installed by name:
+#     dev     -> pytest, ruff, playwright      (pip install -e ".[dev]")
+#     legacy  -> streamlit, yfinance           (pip install -e ".[legacy]")
+#
+# Do not hand-edit this list. `tests/test_requirements_txt_matches_pyproject.py`
+# fails on any drift, because the drift was never theoretical: `requests` was
+# missing here while the code imported it, and CI died BEFORE COLLECTION until
+# it was declared (2026-08-16). In the other direction a `streamlit` line sat
+# here for months labelled "kept for legacy/streamlit_app.py" — a file that no
+# longer exists.
 nautilus_trader==1.230.0
 anthropic>=0.40
 openai>=1.40
-yfinance>=0.2.40
 pandas>=2.2
 pyarrow>=17
 numpy>=1.26
-pytest>=8.0
+requests>=2.32
 ddgs>=1.0
-
-# Web UI (FastAPI + HTMX + Jinja2)
 fastapi>=0.115
 uvicorn[standard]>=0.32
 jinja2>=3.1
 python-multipart>=0.0.9
 markdown>=3.6
-
-# Legacy Streamlit (kept for legacy/streamlit_app.py; safe to remove)
-streamlit>=1.36
