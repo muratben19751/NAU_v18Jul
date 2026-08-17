@@ -148,6 +148,58 @@ yapmıyor; ilk kapıyı geçen aday bu üçünün ilk gerçek sınavı olacak.
 Aynı koşudan çıkan ikinci ölçüm — `max_tokens`'ın advisory olması ve maliyet
 tahminini tek yönlü bozması — [[llm_maliyet_kaldiraclari]] sayfasına yazıldı.
 
+## İkinci 360° rapor — 11 bulgunun ayıklanması (2026-08-17)
+
+Aynı gün ikinci bir kapsamlı inceleme raporu geldi. Her madde koda karşı
+doğrulandı; dağılım öğretici:
+
+| verdikt | adet |
+|---|---:|
+| gerçek ve iş yapılası | **4** |
+| gerçek ama kozmetik / kısmen | 2 |
+| **zaten kapatılmış, açık diye raporlanmış** | **2** |
+| ölçümle çürütülen | 3 |
+
+**Kapatılanlar** (`backtest.py` komisyon/slippage, `wfo_optimizer` sönümleme)
+ikisi de aynı biçimde üretilmişti: rapor, düzeltmenin DOCSTRING'inde anlatılan
+ESKİ hatayı mevcut davranış sanmıştı. İkisinde de verilen satır aralığı kodu
+değil düzyazıyı gösteriyordu — ucuz bir ayırt etme işareti.
+
+**Çürütülenler**: `indicators.py` float karşılaştırması (ölçüldü: `avg_loss`
+5e-324'te bile `rsi=100.0`, NaN/Inf üretilemiyor), `agent_backtest` sınırsız
+kümeler (parmak izi 20 karakter = 61 bayt, koşu 4 saatle sınırlı → 4 saatlik
+koşuda ~6 KB; önerilen LRU bilinen-ölü adayı yeniden koşturarak dakikalarca
+backtest yakardı), `llm_dispatch` truncation retry (döngü yok, tek yeniden
+deneme; 1800×4 = 7200, 16.000 değil — ve ölçüm tavanın DÜŞÜK olduğunu söylüyor,
+kademeli büyüme israfı artırırdı).
+
+### Kapatılan dört bulgu (`e48309b`)
+
+* **`compiler.compile_strategy`** — `[i for i in ... if i.active] or
+  defn.instruments`: hiçbiri aktif değilken `or` TÜM enstrümanları derlemeye
+  sokuyordu. Ters yönde konuşuyordu: `deploy.py` bu daraltmaya güvenerek
+  artefaktı yazıyor, `graph.py` fallback'siz filtrelediği için Canvas BOŞ
+  görünüyordu. Ölçüldü: üç enstrüman pasife çekilince derleyici üçünü de
+  listeliyor, `to_graph` sıfır düğüm veriyordu. Toggle yolu bunu üretemez
+  (`mutations.py` engelliyor) ama `InstrumentConfig.active` varsayılanı FALSE,
+  yani alanı yazmayan bir JSON `model_validate`'ten hepsi pasif çıkıyor.
+* **`sandbox`** — `_robustness_child` ve `_manual_suite_child` bellek tavanı
+  kurmuyordu; en ağır iş yükü tavansızdı. Bunu koruyan test VARDI ve "yeni bir
+  çocuk hedefi eklendiğinde de aynı soruyu sordurur" diye söz veriyordu, ama
+  hedefleri ELLE sayıyordu. Kapsam `_run_in_child(...)` çağrılarından AST ile
+  türetilince test ilk koşuşta kırıldı ve **altıncı** bir hedefi buldu:
+  `_legacy_backtest_child`. Üçüne de tavan kondu.
+* **`pending` dağıtımlar** — devralma yanıttan SONRA koşuyor; o birkaç saniyede
+  süreç ölürse satır sonsuza dek `pending` kalıyordu. `live_deployments` artık
+  `pending` de döndürüyor; `reconcile_orphans` onu `include_pending=False`
+  VARSAYILANIYLA kabul ediyor (bayrak bir yarış içindir: farkı satır değil
+  ÇAĞIRAN bilir).
+* **`delete_custom`** — `unlink()` sonra ayrı `_write_registry()`; arada bir I/O
+  hatası dosyayı silinmiş, kaydı yerinde bırakıyordu. `_registry_transaction`'a
+  geçirildi (kardeşi `delete_custom_batch` zaten oradaydı).
+
+Canlı doğrulama: [[nau_auto_kosusu_755b7880_2026_08_17]].
+
 <!-- BACKLINKS:BEGIN -->
 ## Referenced by
 

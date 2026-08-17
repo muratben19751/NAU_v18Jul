@@ -1655,3 +1655,22 @@ düzeltilmemiş olabilir. Kapı kararı kullanıcıya bırakıldı.
   yani bu turun üç yeni göstergesi HÂLÂ canlıda sınanmadı.
 
 BOŞLUK: peer satırları / ρ₁ rozeti / WFO paydası ilk kapıyı geçen adayı bekliyor.
+
+## 2026-08-17 — AUTO 755b7880: zincir uçtan uca koştu, holdout aritmetiği kırık
+
+Yeni: `wiki/synthesis/nau_auto_kosusu_755b7880_2026_08_17.md`.
+
+Kapanan boşluk: `multi_symbol_generalization`'daki "karar verilmedi" notu kapandı —
+`effective_symbols` teşhis olarak eklendi (ağırlıklandırma seçilmedi).
+
+AÇIK KALAN İKİ ÇELİŞKİ (ikisi de ölçülmüş, ikisi de düzeltilmedi):
+
+1. `holdout_days=60` × `holdout_min_trades=20` çifti, boru hattının SEÇTİĞİ
+   frekansta imkânsız. Kazanan 2,3 işlem/yıl yapıyor; 60 günde beklenen 0,38.
+   Önceki kapılar düşük frekansı ödüllendirirken son kapı yüksek frekans istiyor.
+2. WFO ölü: 89 pencerenin 0'ı ≥3 işleme ulaşıyor. Pencere boyutlandırması
+   (6ay/2ay) stratejilerin frekansıyla uyumsuz.
+
+Ayrıca kayda geçti: koşu sürerken `backtest_robustness.py` değişti ve spawn
+çocuğu diskten yeniden import ettiği için yeni kod aynı koşuda çalıştı —
+`run_env.sha` artık çalışan kodu tarif etmiyor.

@@ -293,11 +293,39 @@ Sonuç: `_admit_llm_budget` (2026-08-17) girişte para tavanını zorlarken sır
 `output_token_bound = max(configured, observed_high_water)` gözlenen zirveyi
 öğreniyor; eksik olan maliyet tarafının aynı gerçeği kullanmamasıydı.
 
+## Üretim tavanları defterden ölçüldü (2026-08-17)
+
+`max_tokens` bu uçta advisory; değerler tahminle konmuştu. `token_usage.jsonl`'daki
+GERÇEKLEŞEN `output` dağılımı (9.795 kayıt; parantez = son 300 çağrı):
+
+| amaç | n | medyan | p90 | p95 | p99 | maks | eski → yeni |
+|---|---:|---:|---:|---:|---:|---:|---|
+| `idea` | 507 | 1.542 **(4.190)** | 8.256 | 9.790 | 13.879 | 15.559 | **1.500 → 12.000** |
+| `composed` | 596 | 2.216 (2.956) | 8.220 | 9.190 | 12.181 | 13.549 | **4.000 → 10.000** |
+| `custom_block` | 1.566 | 1.196 (1.732) | 2.889 | 3.268 | 3.785 | 4.270 | **1.800 → 6.000** |
+
+`idea`'nın MEDYANI tavanının 2,8 katıydı — kesilme istisna değil TİPİK durumdu.
+Koşu `d515080e` tam böyle öldü (`fallback_reasons: ["TruncatedResponse"]`).
+
+Yerleştirme kuralı: tavan **p99'un hemen ALTINA** konur, üstüne değil. Gerekçe
+tırmanma yolunun korunması — `bigger = min(base×4, RETRY_CAP)` ve `bigger <= base`
+olduğunda kod doğrudan hata atar, yani tavanı 16.000'e eşitlemek kuyruğu retry ile
+kurtarılabilir olmaktan çıkarıp sert hataya çevirirdi.
+
+İki yan bulgu: `AGENT_CUSTOM_BLOCK_MAX_TOKENS` ayarının `hi`'si de 1.800'dü (ayar
+vardı, yukarı yolu yoktu) → 16.000'e çekildi; `AGENT_CUSTOM_BLOCK_TOKEN_LIMIT`
+(25.000) kaçak-döngü freniydi ama ölçüm zaten ateşleme menzilinde olduğunu gösterdi
+(çağrı başına toplam maks 16.121 → iki denemede 32.242) → 40.000.
+
+**Canlı doğrulama:** koşu 755b7880'in üç turunda `TruncatedResponse` YOK
+([[nau_auto_kosusu_755b7880_2026_08_17]]).
+
 <!-- BACKLINKS:BEGIN -->
 ## Referenced by
 
 - [[auto_mission_control]]
 - [[model_secici_ve_gorunurluk]]
+- [[nau_auto_kosusu_755b7880_2026_08_17]]
 - [[nau_bulgu_kapatma_turu_2026_08_17]]
 - [[webapp_module_map]]
 <!-- BACKLINKS:END -->

@@ -13,7 +13,7 @@ related:
   - wiki/synthesis/auto_arama_ekonomisi.md
   - wiki/synthesis/auto_mission_control.md
   - wiki/synthesis/webapp_module_map.md
-last_updated: 2026-08-16
+last_updated: 2026-08-17
 ---
 
 # AUTO'nun kapısı ve geri bildirimi
@@ -300,6 +300,35 @@ doğrudan okunuyor, operatör için tek düğme.
 şart; taşınmasaydı kapı sessizce mutlak kurala düşerdi), ve ilerleme satırındaki
 `✓/✗` ikonu artık kapının GERÇEK ölçütünü gösteriyor — eskiden excess'e bakıyordu,
 yani kapı değiştikten sonra ekranda "✗" yazan bir peer skorda geçmiş olabilirdi.
+
+## Reddin BÜYÜKLÜĞÜ de kayda geçer (2026-08-17)
+
+Kapının ölçüsü Calmar üstünlüğü ve reddi tek bir etiketti: `worse_risk_adjusted`.
+O etiket barın %98'ine ulaşan adayla %2'sinde kalanı ayırt edilemez kılıyordu, yani
+"eşiği biraz gevşetsem kaç aday girerdi" sorusu ancak defteri elle yeniden
+oynatarak cevaplanabiliyordu.
+
+`app_constants._stamp_annualized_comparison` artık
+`calmar_ratio_vs_benchmark = strategy_calmar / benchmark_calmar` damgalıyor. ORAN
+seçildi, fark değil: Calmar zaten bir oran ve barın büyüklüğü pencereye göre
+değişiyor. `1.0` = tam eşikte.
+
+İki yüzey: aday satırı `… · Calmar ×0.98 vs b&h`, ve 0/N faz satırı
+`(Calmar en iyi ×0.98, medyan ×0.22 vs b&h)` — yalnız `worse_risk_adjusted` ile
+elenenlerden. Ölçülen tur 1 tam da bunu gösteriyordu: "0/15 elendi" cümlesi
+"hiçbiri yaklaşamadı" diye de okunabiliyordu, oysa biri barın %98'indeydi.
+
+TEŞHİS, karar değil: kabul kuralı tek kopya (`benchmark_rejection`) ve bir test
+kararın alanla/alansız BİREBİR aynı kaldığını çiviliyor.
+
+**Bayat metin de düzeltildi.** Faz satırı "positive benchmark excess" diyordu;
+o kümülatif kural 2026-08-15'te risk-ayarlı ölçüyle değiştirilmişti ve operatör
+faz satırını okuyup YANLIŞ eşiği kurcalıyordu. Tarif artık
+`_gate_description()` üzerinden `benchmark_gate_mode()`'a soruluyor — sabit
+yazılmış bir tarif, kural değiştiğinde sessizce yalan söyler.
+
+Kapının canlı davranışı için bkz. [[nau_auto_kosusu_755b7880_2026_08_17]]:
+alfa kapısı üç turda 0/15 → 2/15 → 3/15 açıldı, **eşiğe hiç dokunulmadan**.
 
 <!-- BACKLINKS:BEGIN -->
 ## Referenced by

@@ -191,11 +191,45 @@ verisi ister. Ama ETKİN BAĞIMSIZLIK ölçülebilir çıktı ve daha bağlayıc
 Seçenekler: sepeti düşük korelasyonlu isimlerle genişletmek, `pass_rate`'i
 etkin sayıyla ağırlıklandırmak, ya da en ucuzu — `effective_symbols`'ü
 artefakta ve ekrana yazıp etiketin ne kadar bilgi taşıdığını görünür kılmak.
-Karar verilmedi; bkz. [[nau_bulgu_kapatma_turu_2026_08_17]].
+
+## Karar verildi: üçüncüsü (2026-08-17)
+
+`backtest_robustness.effective_symbol_count` — katılım oranı `(Σλ)²/Σλ²`,
+korelasyon matrisinin özdeğerlerinden; yalnız `valid` sembollerle hesaplanır
+(payda oysa, bağımsızlık da onun olmalı). Adım satırında
+`etkin bağımsız sembol ≈ 2.3/5`, artefaktta `effective_symbols`
+(`None` = ölçülemedi — sıfır ya da nominal DEĞİL).
+
+**TEŞHİS, karar değil**: etiket eşikleri yalnız `pass_rate` okur ve bir test
+karar bloğunda `effective` geçmediğini çiviliyor. Ağırlıklandırma seçilmedi,
+çünkü teşhis eklerken kapıyı oynatmak ölçmek için ölçtüğünü bozmaktır.
+
+Ölçüm koşu 755b7880'in KENDİ penceresinde yenilendi (son 730 gün = 502 işlem
+günü, 1-DAY):
+
+| sepet | nominal | etkin | PC1 |
+|---|---:|---:|---:|
+| koşuda kullanılan 5'li (SPY·IWM·AAPL·MSFT·NVDA) | 5 | **2,32** | %60 |
+| GOOGL'sız 6'lı (QQQ dahil) | 6 | 2,17 | %65 |
+| tam sepet 7'li | 7 | 2,37 | %62 |
+
+Sezgiye aykırı sonuç: sepeti GENİŞLETMEK bağımsızlığı düşürüyor. Eklenenler ya
+artık (QQQ↔SPY = **0,95**) ya da veri açısından sakat (GOOGL 498 bar, ötekiler
+5.762 — sepete girdiği anda ortak takvimi 729'dan 497 güne indiriyor).
+Bağımsızlık sayıyla değil ÇEŞİTLE artar: farklı sektör, varlık sınıfı, ABD dışı.
+
+Sayı PENCEREYE bağlıdır (aynı sepet 729 işlem günlük pencerede 2,42), o yüzden
+sabit bir "sepet katsayısı" olarak saklanmaz — her koşuda testin kendi
+penceresiyle yeniden hesaplanır.
+
+Canlı davranış: [[nau_auto_kosusu_755b7880_2026_08_17]] — iki aday
+`⚠ Limited` (2/5 ve 3/5) ile zincire devam etti, biri `✗` almadı.
+Bkz. [[nau_bulgu_kapatma_turu_2026_08_17]].
 
 <!-- BACKLINKS:BEGIN -->
 ## Referenced by
 
+- [[nau_auto_kosusu_755b7880_2026_08_17]]
 - [[nau_bulgu_kapatma_turu_2026_08_17]]
 - [[webapp_module_map]]
 <!-- BACKLINKS:END -->

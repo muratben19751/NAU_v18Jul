@@ -4,7 +4,7 @@ type: synthesis
 sources:
   - https://github.com/nautechsystems/nautilus_trader
   - sources/02_architecture_docs.md
-last_updated: 2026-08-08
+last_updated: 2026-08-17
 summary: /studio/{id} altındaki görsel strateji kurucu; sürümlü şema → derleyici → to_nautilus → composer spec → run_composed_backtest zinciri, çeviremediğini sessizce atmak yerine gerekçesiyle reddeder; sweep pencereli walk-forward ve deflate edilmiş DSR ile skorlanır. Nav'da "Strategy Builder"; /canvas altında aynı stratejinin node graf'ı ikinci yüzey olarak durur (2026-07-27). Varsayılan stub motoru artık UI'da "SİMÜLE" rozetiyle işaretleniyor (2026-08-08).
 key_concepts:
   - strategy_and_actor
@@ -630,6 +630,30 @@ koşar — böylece test süreci canlı `studio.db`'ye import anında yazmaz. UI
 yerde yeni bir dal kazandı (footer "Interrupted", optimizer "Last run
 interrupted"), poll'lar durur. Testler:
 `tests/studio/test_reconcile_studio_jobs.py`.
+
+## Pasif enstrüman ve asılı `pending` (2026-08-17)
+
+`compile_strategy` `[i for i in ... if i.active] or defn.instruments` yazıyordu:
+hiçbiri aktif değilken `or` TÜM enstrümanları — pasifleri dahil — derlemeye
+sokuyordu. Sessiz değil TERS yönde konuşuyordu, çünkü `deploy.py` bu daraltmaya
+açıkça güveniyor ("compile_strategy already narrows to the active ones") ve
+`graph.py` fallback'siz filtrelediği için Canvas BOŞ görünüyordu — ekran
+"hiçbir şey işlem görmüyor" derken artefakt üçünü birden listeliyordu.
+
+Toggle/remove yolu bunu üretemez (`mutations.py` en az bir aktif bırakmayı
+zorunlu kılıyor) ama üretebilen tek yol o değil: `InstrumentConfig.active`
+varsayılanı **FALSE**, dolayısıyla alanı yazmayan bir JSON (AI önerisi, elle
+düzenlenmiş kayıt, içe aktarma) `model_validate`'ten hepsi pasif çıkar. Fallback
+kaldırıldı; boş liste ile "hepsi pasif" AYRI mesaj alıyor (operatör eylemi
+farklı: enstrüman ekle / var olanı aç).
+
+Aynı turda: `store.live_deployments` artık `pending` satırları da döndürüyor ve
+`runner.reconcile_orphans` onları `include_pending=False` VARSAYILANIYLA kabul
+ediyor. Devralma (`_runner_pickup`) yanıt gönderildikten SONRA koşuyor; o birkaç
+saniyede süreç ölürse satır sonsuza dek `pending` kalıyordu. Bayrak bir yarış
+içindir: bir `pending` satır ya az önce yaratılmış CANLI bir kayıttır ya da
+devralınamadan ölmüş bir kalıntı — farkı satır değil ÇAĞIRAN bilir, ve bugün
+tek çağıran açılış yolu.
 
 <!-- BACKLINKS:BEGIN -->
 ## Referenced by
