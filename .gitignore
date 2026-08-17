@@ -70,3 +70,8 @@ debug/
 # içerikleri zaten repoda olan diff'lerdi.
 C[:\uf03a]Users*
 *AppDataLocalTemp*
+
+# Coverage veri dosyası (pytest --cov) — türetilmiş, sürümlenmez.
+.coverage
+.coverage.*
+htmlcov/
