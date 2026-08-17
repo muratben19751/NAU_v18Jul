@@ -50,6 +50,105 @@ WFO_BATCH_TIMEOUT_S = _env_float("NAUTILUS_WFO_BATCH_TIMEOUT_S", 600.0)
 IS_SHARPE_MIN = _env_float("NAUTILUS_IS_SHARPE_MIN", 0.05)
 
 
+def effective_symbol_count(closes: dict[str, object]) -> float | None:
+    """Paydadaki sembollerin kaç BAĞIMSIZ gözleme denk geldiği.
+
+    ``pass_rate = pozitif / toplam`` paydayı bağımsız gözlem sayar. Aynı faktöre
+    binen semboller ise tek gözlemi birkaç kez saymaktır ve bu, hem geçme hem RET
+    kararını olduğundan güçlü gösterir.
+
+    Ölçüldü (2026-08-17, koşu 755b7880'in kendi penceresi — son 730 gün, 1-DAY,
+    yani 502 işlem günü):
+
+        SPY · IWM · AAPL · MSFT · NVDA   nominal 5 → ETKİN **2,32**
+        korelasyon medyanı 0,43 · PC1 varyans payı %60
+
+    (Aynı sepet 729 İŞLEM günlük — yaklaşık 2,9 takvim yılı — daha uzun bir
+    pencerede 2,42 veriyor. Fark küçük ama yönü öğretici: sayı pencereye
+    bağlıdır, o yüzden burada testin KENDİ penceresiyle ölçülür, sabit bir
+    "sepet katsayısı" diye saklanmaz.)
+
+    Sepeti genişletmek bunu İYİLEŞTİRMİYOR, kötüleştiriyor: QQQ eklenince 6'lı
+    sepet 2,17'ye düşüyor, çünkü QQQ↔SPY korelasyonu 0,95 — neredeyse aynı seriyi
+    iki kez saymak. Bağımsızlık sayıyla değil ÇEŞİTLE artar.
+
+    Ölçü katılım oranı (participation ratio): ``(Σλ)² / Σλ²``, λ = korelasyon
+    matrisinin özdeğerleri. Tam bağımsızlıkta N, tam bağımlılıkta 1 verir.
+    Entropi tabanlı ölçü aynı sepette 3,17 diyor; ikisi ayrıştığı için sayı
+    "yaklaşık" okunmalı — tek bir ondalık bile fazla kesinlik iddiasıdır.
+
+    Bu bir TEŞHİS: `pass_rate`'in yanında raporlanır, kararı DEĞİŞTİRMEZ. Karar
+    kuralı `peer_is_superior` + eşikler; tek kopya orada kalır.
+
+    Ölçülemezse ``None`` — uydurulmuş bir bağımsızlık, ölçülmemiş olandan kötüdür.
+    """
+    usable = {
+        sym: series
+        for sym, series in closes.items()
+        if series is not None and len(series) >= 30
+    }
+    if len(usable) < 2:
+        return None
+    try:
+        frame = pd.DataFrame(usable).dropna()
+        if len(frame) < 30:
+            return None
+        rets = np.log(frame.astype(float)).diff().dropna()
+        corr = rets.corr().to_numpy()
+        if not np.isfinite(corr).all():
+            return None
+        lam = np.clip(np.linalg.eigvalsh(corr), 0.0, None)
+        total = float(lam.sum())
+        denom = float((lam**2).sum())
+        if total <= 0 or denom <= 0:
+            return None
+        return round(total**2 / denom, 2)
+    except Exception:
+        # Teşhis bir koşuyu asla düşürmemeli; ölçülemeyen sayı basitçe yoktur.
+        return None
+
+
+def _peer_closes(
+    symbols, interval: str, source: str, category: str, days: int, start_dt, end_dt
+) -> dict:
+    """Etkin sembol sayımı için kapanış serileri — backtest YOK, yalnız veri.
+
+    Paralel dal metriklerden başka bir şey döndürmediği için seriler sıralı
+    daldan toplanamıyor; burada yeniden yükleniyor. Bedeli günlük bar okumak,
+    yani yanında koşan backtest'lerin yanında ölçülemeyecek kadar küçük.
+
+    Pencere kesme SIRALI DALDAKİ İLE AYNI olmalı — farklı bir pencerede
+    hesaplanan korelasyon, testin bağımsızlığı hakkında konuşmaz. Bu yüzden
+    kesim birebir kopyalandı ve herhangi bir sapmada seri atlanıyor.
+    """
+    out: dict = {}
+    for sym in symbols:
+        try:
+            if source == "external":
+                from data import load_external_bars
+
+                df = load_external_bars(sym, interval)
+                if df is None or df.empty:
+                    continue
+                df = df[df.index >= df.index[-1] - timedelta(days=days)]
+            else:
+                from data import load_bybit_bars
+
+                df = load_bybit_bars(
+                    symbol=sym,
+                    interval=interval,
+                    category=category,
+                    start=start_dt,
+                    end=end_dt,
+                )
+            if df is None or df.empty or "close" not in df:
+                continue
+            out[sym] = df["close"]
+        except Exception:
+            continue
+    return out
+
+
 def peer_is_superior(r: dict) -> bool:
     """Bu peer'da strateji al-tut'a ÜSTÜN mü — ana kapının TA KENDİSİ.
 
@@ -1491,12 +1590,32 @@ def run_multi_symbol(
     sharpes = [r["sharpe"] for r in valid if r.get("sharpe") is not None]
     avg_sharpe = round(sum(sharpes) / len(sharpes), 2) if sharpes else None
 
+    # Paydanın GENİŞLİĞİ: kaç satır saydığımızı yukarıdaki sayı söylüyor, o
+    # satırların kaç BAĞIMSIZ gözlem ettiğini bu söylüyor. Ölçüm yalnız `valid`
+    # sembollerle yapılır — `pass_rate`'in paydası oysa, bağımsızlık da onun
+    # olmalı; başka bir küme üzerinden hesaplanan sayı başka bir sepeti anlatır.
+    effective = effective_symbol_count(
+        _peer_closes(
+            [r["symbol"] for r in valid],
+            interval,
+            source,
+            category,
+            days,
+            start_dt,
+            end_dt,
+        )
+    )
     # Payda neden bu: elenen satır sayısı özette de görünsün ki "5 sembol test
     # edildi ama 2/4 yazıyor" sorusu ekranda cevaplansın.
     excluded_note = f" · {excluded_n} sayılmadı" if excluded_n else ""
+    eff_note = (
+        f" · etkin bağımsız sembol ≈ {effective:.1f}/{n_valid}"
+        if effective is not None
+        else ""
+    )
     _p(
         f"Multi-symbol completed · {n_positive}/{n_valid} symbols positive alpha · "
-        f"pass_rate={pass_rate:.0%} · {label}{excluded_note}"
+        f"pass_rate={pass_rate:.0%}{eff_note} · {label}{excluded_note}"
     )
 
     return {
@@ -1507,6 +1626,11 @@ def run_multi_symbol(
         "symbols_excluded": excluded_n,
         "symbols_positive": n_positive,
         "pass_rate": round(pass_rate, 2),
+        # `pass_rate`'in paydası kaç BAĞIMSIZ gözleme denk geliyor (bkz.
+        # effective_symbol_count). Kararı değiştirmez; kanıtın gerçek genişliğini
+        # artefakta yazar ki "5 sembolde sınandı" ifadesi denetlenebilsin.
+        # None = ölçülemedi (seri yok/kısa) — sıfır ya da nominal değil.
+        "effective_symbols": effective,
         "generalization_label": label,
         "avg_sharpe": avg_sharpe,
         "primary_symbol": primary_symbol,
