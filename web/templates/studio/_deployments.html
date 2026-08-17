@@ -1,7 +1,11 @@
 {# ctx: defn, deployments (list[dict]), runner_is_stub #}
-{% set any_pending = deployments | selectattr("status", "equalto", "pending") | list %}
+{# `running` polls too, not just `pending`: the kill switch pauses a deployment
+   from a background thread, and a panel that only refreshes while something is
+   pending would keep showing RUNNING until the operator reloaded the page —
+   the one moment they need the screen to tell them the truth. #}
+{% set any_live = deployments | selectattr("status", "in", ["pending", "running"]) | list %}
 <div id="deployments-panel"
-  {% if any_pending %}
+  {% if any_live %}
     hx-get="/studio/{{ defn.id }}/deployments/panel" hx-trigger="every 2s" hx-swap="outerHTML"
   {% endif %}>
   {# Runner yokken satırlar yine 'running' oluyor (davranış korunuyor) ama arkada
@@ -30,10 +34,12 @@
         {% if d.status == "pending" %}<span class="pulse-dot"></span>{% endif %}
         {{ d.status | upper }}{% if runner_is_stub and d.status in ["running", "paused"] %} · SIM{% endif %}</span>
     </div>
-    {% if d.status == "failed" and d.error %}
+    {% if d.error %}
       {# A failed deployment without its reason is just a red badge; the reason
-         is the whole content of the failure. #}
-      <div class="opt-note" style="color:var(--short);white-space:pre-wrap"
+         is the whole content of the failure. Not gated on `failed` any more:
+         the kill switch writes its reason onto a PAUSED row, and a machine that
+         stops trading without saying why is the same defect in a calmer colour. #}
+      <div class="opt-note" style="white-space:pre-wrap;color:{% if d.status == 'failed' %}var(--short){% else %}var(--muted){% endif %}"
         >{{ d.error }}</div>
     {% endif %}
     <div class="dep-actions">

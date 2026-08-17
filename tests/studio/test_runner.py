@@ -165,6 +165,37 @@ class _FakeStrategy:
         self.is_running = True
 
 
+class _FakeAccount:
+    def __init__(self):
+        self.base_currency = None
+
+
+class _FakePortfolio:
+    """The two calls the kill switch's default reader makes on a Portfolio."""
+
+    def __init__(self):
+        self.pnls: dict = {}
+        self.account_obj = _FakeAccount()
+
+    def total_pnls(self, venue=None):
+        return self.pnls
+
+    def account(self, venue=None):
+        return self.account_obj
+
+
+class _FakeCache:
+    def __init__(self):
+        self.open: list = []
+        self.closed: list = []
+
+    def positions_open(self, venue=None):
+        return self.open
+
+    def positions_closed(self, venue=None):
+        return self.closed
+
+
 class _FakeNode:
     """Stands in for a TradingNode: run_async blocks until stop()."""
 
@@ -174,6 +205,8 @@ class _FakeNode:
         self._stop = None
         self.disposed = False
         self.strategy = _FakeStrategy()
+        self.portfolio = _FakePortfolio()
+        self.cache = _FakeCache()
 
         class _Trader:
             def __init__(self, s):
@@ -357,3 +390,174 @@ def test_resume_uses_the_transition_a_stopped_component_accepts(artifact):
 
     _wait(lambda: node.strategy.is_running)
     runner.stop("dep008")
+
+
+# ── kill switch ─────────────────────────────────────────────────────────────
+#
+# The fixture artifact is capital 25,000 USDT with a 3% daily limit, so the
+# number that matters throughout is −750.00.
+
+
+def _armed(artifact, pnl: list[float], deploy_id: str = "dep010", **kw):
+    """A launched deployment whose account PnL the test moves via `pnl[0]`."""
+    runner, seen = _runner(node_factory=_FakeNode, pnl_reader=lambda _d: pnl[0], **kw)
+    runner.launch(deploy_id, artifact)
+    return runner, seen
+
+
+def test_the_kill_switch_pauses_the_deployment_that_breaches_its_limit(artifact):
+    """Until 2026-08-17 this was decorative: the modal offered "Pause at −3%
+    day", the artifact recorded 3.0, and nothing ever compared it to a PnL."""
+    pnl = [0.0]
+    runner, seen = _armed(artifact, pnl)
+    node = runner._nodes["dep010"].node
+
+    assert runner.check_kill_switches() == []  # the day's baseline is taken here
+    pnl[0] = -749.0  # −2.996%: a bad day is not a breach
+    assert runner.check_kill_switches() == []
+
+    pnl[0] = -750.01
+    assert runner.check_kill_switches() == ["dep010"]
+
+    _wait(lambda: not node.strategy.is_running)
+    assert runner.is_running("dep010"), "pause keeps the node and its feed up"
+    _d, status, reason = seen[-1]
+    assert status == "paused"
+    assert "-3.00% on the day" in reason and "limit" in reason
+    runner.stop("dep010")
+
+
+def test_an_unreadable_account_is_not_read_as_a_flat_day(artifact):
+    """`None` means "cannot see the account", which is the moment to keep
+    watching — not to conclude the day is flat and take it as a baseline."""
+    runner, _seen = _runner(node_factory=_FakeNode, pnl_reader=lambda _d: None)
+    runner.launch("dep011", artifact)
+
+    assert runner.check_kill_switches() == []
+    assert runner._armed["dep011"].day == "", "a None was banked as today's start"
+    runner.stop("dep011")
+
+
+def test_the_day_is_measured_from_its_first_reading(artifact):
+    """A node started mid-drawdown must not trip on yesterday's loss: the
+    artifact says *daily*, and lifetime PnL is not that."""
+    pnl = [-5_000.0]
+    runner, _seen = _armed(artifact, pnl)
+
+    assert runner.check_kill_switches() == []
+    assert runner.check_kill_switches() == []  # still flat *for today*
+
+    pnl[0] = -5_750.01
+    assert runner.check_kill_switches() == ["dep010"]
+    runner.stop("dep010")
+
+
+def test_a_new_utc_day_re_baselines(artifact):
+    now = [1_755_000_000.0]
+    pnl = [0.0]
+    runner, _seen = _armed(artifact, pnl, clock=lambda: now[0])
+
+    runner.check_kill_switches()
+    pnl[0] = -700.0  # −2.8%: survives the day
+    assert runner.check_kill_switches() == []
+
+    now[0] += 86_400
+    runner.check_kill_switches()  # first reading of the new day → baseline −700
+    pnl[0] = -1_400.0  # another −2.8%, measured from the new baseline
+    assert runner.check_kill_switches() == []
+
+    pnl[0] = -1_451.0
+    assert runner.check_kill_switches() == ["dep010"]
+    runner.stop("dep010")
+
+
+def test_the_switch_fires_once_not_on_every_poll(artifact):
+    pnl = [0.0]
+    runner, seen = _armed(artifact, pnl)
+    runner.check_kill_switches()
+
+    pnl[0] = -2_000.0
+    assert runner.check_kill_switches() == ["dep010"]
+    assert runner.check_kill_switches() == []
+
+    assert [s for _d, s, _e in seen].count("paused") == 1
+    runner.stop("dep010")
+
+
+def test_resume_re_arms_the_switch_from_the_current_balance(artifact):
+    """Keeping the old baseline would re-fire on the next poll, making Resume a
+    button that does nothing. The cost is stated on the row: resuming grants
+    the deployment another `limit_pct` for the same day."""
+    pnl = [0.0]
+    runner, _seen = _armed(artifact, pnl)
+    runner.check_kill_switches()
+    pnl[0] = -800.0
+    assert runner.check_kill_switches() == ["dep010"]
+
+    runner.resume("dep010")
+
+    assert runner.check_kill_switches() == []  # re-baselined at −800
+    pnl[0] = -1_550.01  # another −750 from there
+    assert runner.check_kill_switches() == ["dep010"]
+    runner.stop("dep010")
+
+
+def test_off_arms_nothing(artifact):
+    artifact["kill_switch_daily_pct"] = None
+    runner, seen = _runner(node_factory=_FakeNode, pnl_reader=lambda _d: -1e9)
+    runner.launch("dep012", artifact)
+
+    assert runner.check_kill_switches() == []
+    assert [s for _d, s, _e in seen] == ["running"]
+    runner.stop("dep012")
+
+
+def test_a_switch_with_no_denominator_says_so_on_the_row(artifact):
+    """A percentage needs something to be a percentage *of*. Silently not
+    arming would leave the operator believing a switch is watching."""
+    artifact["capital"] = 0.0
+    runner, seen = _runner(node_factory=_FakeNode)
+    runner.launch("dep013", artifact)
+
+    assert seen[-1][1] == "running"
+    assert "kill switch INACTIVE" in (seen[-1][2] or "")
+    assert "dep013" not in runner._armed
+    runner.stop("dep013")
+
+
+def test_the_monitor_thread_fires_it_with_nobody_calling_check(artifact):
+    """The defect being fixed was a control that existed and was never
+    evaluated — a `check_kill_switches` nothing calls is the same defect."""
+    pnl = [0.0]
+    runner, seen = _armed(artifact, pnl, deploy_id="dep014", poll_s=0.02)
+
+    _wait(lambda: runner._armed["dep014"].day != "")  # the thread took a baseline
+    pnl[0] = -1_000.0
+
+    _wait(lambda: any(s == "paused" for _d, s, _e in seen))
+    runner.stop("dep014")
+
+
+def test_the_default_reader_reads_the_accounts_currency(artifact):
+    """No pnl_reader injected: the path a real node actually takes."""
+    from nautilus_trader.model.currencies import USD, USDT
+    from nautilus_trader.model.objects import Money
+
+    runner, _seen = _runner(node_factory=_FakeNode)
+    runner.launch("dep015", artifact)
+    node = runner._nodes["dep015"].node
+
+    assert runner._read_pnl("dep015") == 0.0  # no positions ⇒ genuinely flat
+
+    # `total_pnls` returns {} both for "no positions" and for a failed internal
+    # lookup. With positions on the books the empty dict is the second case.
+    node.cache.open = ["a position"]
+    assert runner._read_pnl("dep015") is None
+
+    node.portfolio.pnls = {USDT: Money(-12.5, USDT), USD: Money(3.0, USD)}
+    node.portfolio.account_obj.base_currency = USDT
+    assert runner._read_pnl("dep015") == -12.5
+
+    node.portfolio.account_obj.base_currency = None  # two currencies, no account
+    assert runner._read_pnl("dep015") is None, "summed across currencies"
+    runner.stop("dep015")

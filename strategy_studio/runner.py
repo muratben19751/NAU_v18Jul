@@ -26,6 +26,16 @@ such: it does not survive a restart, so a deployment left `running` in the
 database with no node behind it is **reconciled at startup**
 (``reconcile_orphans``) instead of lying on the panel.
 
+Kill switch
+-----------
+``kill_switch_daily_pct`` travels in the artifact and is enforced *here* —
+``check_kill_switches`` measures every armed deployment against its own day and
+pauses the ones that breach. Until 2026-08-17 nothing read the field: the deploy
+modal offered "Pause at −3% day", the artifact recorded it, a test asserted it
+was written, and no code anywhere compared it to a PnL. A safety control that is
+configured, displayed and never evaluated is worse than none — it is the reason
+an operator does not watch the position themselves.
+
 Wiki References
 ---------------
 Bkz: [[strategy_studio]], [[environment_contexts]], [[strategy_and_actor]]
@@ -35,10 +45,15 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import threading
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Any
+
+log = logging.getLogger(__name__)
 
 # Studio timeframe → the Bybit kline code `_make_bybit_bar_type` understands.
 _INTERVAL_FOR = {
@@ -202,12 +217,33 @@ def build_node_config(artifact: dict, *, trader_id: str, product: str = "LINEAR"
 # (deploy_id, status, error|None)
 StatusSink = Callable[[str, str, str | None], None]
 
+# How often armed deployments are measured. This is a loss limit, not a stop
+# order: it reacts within a poll, not within a tick.
+KILL_SWITCH_POLL_S = 5.0
+
+# deploy_id -> the account's PnL for the day so far, in the account currency;
+# None when it cannot be read right now. None is NOT zero — reading "unknown"
+# as "flat" would leave the switch armed and blind, which is the failure mode
+# this whole mechanism exists to prevent.
+PnlReader = Callable[[str], float | None]
+
 
 @dataclass
 class _Node:
     thread: threading.Thread
     loop: Any
     node: Any
+
+
+@dataclass
+class _KillSwitch:
+    """One deployment's daily loss limit and the day it is measured against."""
+
+    limit_pct: float  # positive magnitude: 3.0 == "pause at −3% on the day"
+    capital: float
+    day: str = ""  # UTC date the baseline belongs to ("" = not baselined yet)
+    baseline: float = 0.0  # account PnL when that day started
+    fired: bool = False
 
 
 @dataclass
@@ -218,9 +254,16 @@ class PaperRunner:
     product: str = "LINEAR"
     # Injectable so the lifecycle can be tested without an engine or a network.
     node_factory: Callable[[Any], Any] | None = None
+    # Same reason, for the kill switch: the breach decision has to be testable
+    # without a funded account and a losing day.
+    pnl_reader: PnlReader | None = None
+    poll_s: float = KILL_SWITCH_POLL_S
+    clock: Callable[[], float] = time.time
     _nodes: dict[str, _Node] = field(default_factory=dict, init=False)
     # Deployments being torn down on purpose — their exit is not a failure.
     _stopping: set[str] = field(default_factory=set, init=False)
+    _armed: dict[str, _KillSwitch] = field(default_factory=dict, init=False)
+    _monitor: threading.Thread | None = field(default=None, init=False)
     _lock: threading.Lock = field(default_factory=threading.Lock, init=False)
 
     # -- helpers ---------------------------------------------------------
@@ -307,6 +350,10 @@ class PaperRunner:
                     stopping = deploy_id in self._stopping
                     self._stopping.discard(deploy_id)
                     self._nodes.pop(deploy_id, None)
+                    # Disarmed with the node it was watching. A switch left
+                    # armed over a dead deployment would read `None` forever
+                    # and keep the monitor thread alive for nothing.
+                    self._armed.pop(deploy_id, None)
                 # The status goes out BEFORE teardown: dispose() can block, and
                 # a hung teardown must not swallow the news that the node is
                 # gone. A node can die long after launch() returned, so without
@@ -347,6 +394,9 @@ class PaperRunner:
             return
         self.on_status(deploy_id, "running", None)
         announced.set()
+        # After the row says running, so an inactive-switch warning lands on a
+        # row that exists and is not overwritten by the status above.
+        self._arm_kill_switch(deploy_id, artifact)
 
     def _strategies(self, deploy_id: str):
         with self._lock:
@@ -385,11 +435,13 @@ class PaperRunner:
                 entry.loop.call_soon_threadsafe(
                     s.resume if hasattr(s, "resume") else s.start
                 )
+        self._rearm_kill_switch(deploy_id)
 
     def stop(self, deploy_id: str) -> None:
         """Terminal. The thread's `finally` disposes the node and deregisters."""
         with self._lock:
             entry = self._nodes.get(deploy_id)
+            self._armed.pop(deploy_id, None)
             if entry is None:
                 return  # already gone; the row is set to stopped regardless
             # Marked before the stop is dispatched, so the serve thread reads
@@ -404,6 +456,151 @@ class PaperRunner:
             entry.loop.call_soon_threadsafe(entry.node.stop)
         else:
             asyncio.run_coroutine_threadsafe(stop_async(), entry.loop)
+
+    # -- kill switch -----------------------------------------------------
+    def _arm_kill_switch(self, deploy_id: str, artifact: dict) -> None:
+        raw = artifact.get("kill_switch_daily_pct")
+        if raw is None:
+            return  # the operator chose 'off' in the deploy modal
+        try:
+            limit = abs(float(raw))
+            capital = float(artifact.get("capital") or 0.0)
+        except (TypeError, ValueError):
+            limit, capital = 0.0, 0.0
+        if limit <= 0 or capital <= 0:
+            # A limit is a percentage OF something; without capital there is no
+            # denominator. Say it on the row — an operator who picked "−3% day"
+            # must not be left believing a switch is watching when none is.
+            self.on_status(
+                deploy_id,
+                "running",
+                f"kill switch INACTIVE: needs a positive limit and capital "
+                f"(limit={raw!r}, capital={artifact.get('capital')!r})",
+            )
+            return
+        with self._lock:
+            self._armed[deploy_id] = _KillSwitch(limit_pct=limit, capital=capital)
+            self._start_monitor()
+
+    def _rearm_kill_switch(self, deploy_id: str) -> None:
+        """A manual resume re-arms the switch from HERE, not from this morning.
+
+        Keeping the old baseline would re-fire on the very next poll and make
+        the Resume button do nothing visible. The trade-off is deliberate and
+        stated on the row when the switch fires: resuming a deployment the
+        switch stopped allows it another ``limit_pct`` for the same day.
+        """
+        with self._lock:
+            ks = self._armed.get(deploy_id)
+            if ks is None:
+                return
+            ks.fired = False
+            ks.day = ""  # the next reading becomes the new baseline
+
+    def _start_monitor(self) -> None:
+        """Start the polling thread if it is not already up. Caller holds `_lock`."""
+        if self._monitor is not None and self._monitor.is_alive():
+            return
+        self._monitor = threading.Thread(
+            target=self._monitor_loop, name="studio-killswitch", daemon=True
+        )
+        self._monitor.start()
+
+    def _monitor_loop(self) -> None:
+        while True:
+            time.sleep(self.poll_s)
+            with self._lock:
+                if not self._armed:
+                    self._monitor = None  # re-armed later ⇒ a fresh thread
+                    return
+            try:
+                self.check_kill_switches()
+            except Exception:  # noqa: BLE001 — one bad tick must not end the watch
+                log.exception("kill switch tick failed")
+
+    def check_kill_switches(self) -> list[str]:
+        """One measurement pass; returns the deployments it just paused.
+
+        Split from the thread that calls it because *when* to look and *what to
+        conclude* are different problems: this half is deterministic and takes
+        neither a clock nor a network.
+        """
+        with self._lock:
+            armed = [(d, ks) for d, ks in self._armed.items() if not ks.fired]
+        day = datetime.fromtimestamp(self.clock(), UTC).date().isoformat()
+        fired: list[str] = []
+        for deploy_id, ks in armed:
+            pnl = self._read_pnl(deploy_id)
+            if pnl is None:
+                continue  # unreadable — look again next tick, never assume flat
+            with self._lock:
+                if ks.day != day:
+                    # First reading of a new UTC day: today is measured from
+                    # here, not from the node's lifetime PnL. Without this a
+                    # node started mid-drawdown would trip on yesterday's loss.
+                    ks.day, ks.baseline = day, pnl
+                    continue
+                pct = (pnl - ks.baseline) / ks.capital * 100.0
+                if pct > -ks.limit_pct:
+                    continue
+                ks.fired = True
+            try:
+                self.pause(deploy_id)
+            except RunnerError as e:
+                self.on_status(deploy_id, "failed", f"kill switch could not pause: {e}")
+                continue
+            self.on_status(
+                deploy_id,
+                "paused",
+                f"kill switch fired: {pct:+.2f}% on the day, limit −{ks.limit_pct:.2f}%. "
+                "Strategies stopped; the node and its data feed are still up. "
+                "Resume re-arms the switch from the current balance.",
+            )
+            fired.append(deploy_id)
+        return fired
+
+    def _read_pnl(self, deploy_id: str) -> float | None:
+        """Account PnL (realized **and** unrealized) in the account currency.
+
+        Unrealized is included on purpose. The deploy modal promises "daily
+        loss", and an operator reads that as the account, not as the subset of
+        it that happens to be closed — a realized-only switch would watch an
+        open position bleed all day and never fire.
+        """
+        if self.pnl_reader is not None:
+            return self.pnl_reader(deploy_id)
+        with self._lock:
+            entry = self._nodes.get(deploy_id)
+        if entry is None:
+            return None
+        from nautilus_trader.model.identifiers import Venue
+
+        venue = Venue(BYBIT_VENUE)
+        node = entry.node
+        pnls = node.portfolio.total_pnls(venue)
+        if not pnls:
+            # An empty dict means "no positions" OR "a lookup failed inside the
+            # portfolio" — `Portfolio.total_pnls` returns {} for both. The cache
+            # separates them; guessing 0.0 for the second would blind the switch.
+            has_positions = node.cache.positions_open(venue=venue) or (
+                node.cache.positions_closed(venue=venue)
+            )
+            return None if has_positions else 0.0
+        account = node.portfolio.account(venue)
+        base = getattr(account, "base_currency", None) if account is not None else None
+        money = pnls.get(base) if base is not None else None
+        if money is None and len(pnls) == 1:
+            money = next(iter(pnls.values()))
+        if money is None:
+            # Several currencies and none of them the account's: summing them
+            # would be adding apples to pears at an FX rate nobody supplied.
+            log.warning(
+                "kill switch: %s reports PnL in %d currencies, none the account's",
+                deploy_id[:6],
+                len(pnls),
+            )
+            return None
+        return money.as_double()
 
 
 def reconcile_orphans(rows: list[dict], active: set[str]) -> list[tuple[str, str]]:

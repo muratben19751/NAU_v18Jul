@@ -399,3 +399,47 @@ def test_the_deploy_confirmation_does_not_promise_a_pickup(studio_client, monkey
     assert r.status_code == 200
     assert "simulated pickup only" in r.text
     assert "pending runner pickup" not in r.text
+
+
+# ── kill switch paneli: duran makine NEDEN durduğunu söylemeli ───────────────
+
+
+def test_a_paused_row_shows_why_it_was_paused(studio_client, monkeypatch):
+    """Kill switch arka planda duraklatıyor; sebep satırda görünmezse operatör
+    "neden durdu?" sorusuyla baş başa kalıyor.
+
+    Şablon sebebi yalnız `failed` satırlarda basıyordu — kill switch ise
+    `paused` yazıyor, yani gerekçe tam da yeni ihtiyaç duyulduğu yerde
+    ekrana hiç gelmiyordu.
+    """
+    client, store, main = studio_client
+    _stub_runner(monkeypatch, main, stub=False)
+    store.create_deployment("dep-ks0001", "wt-funding-v3", 1, "paper", "{}")
+    store.set_deployment_status(
+        "dep-ks0001", "paused", "kill switch fired: -3.20% on the day, limit -3.00%."
+    )
+
+    body = client.get("/studio/wt-funding-v3/deployments/panel").text
+
+    assert "kill switch fired" in body
+    assert "-3.20% on the day" in body
+
+
+def test_the_panel_keeps_polling_while_a_deployment_runs(studio_client, monkeypatch):
+    """Panel yalnız `pending` varken yenileniyordu.
+
+    Kill switch RUNNING bir satırı arka plan thread'inden PAUSED'a çeviriyor;
+    yenilenmeyen panel operatöre, o sayfayı elle tazeleyene kadar yeşil rozeti
+    göstermeye devam ederdi — ekranın doğruyu söylemesi gereken tek an.
+    """
+    client, store, main = studio_client
+    _stub_runner(monkeypatch, main, stub=False)
+    store.create_deployment("dep-ks0002", "wt-funding-v3", 1, "paper", "{}")
+    store.set_deployment_status("dep-ks0002", "running")
+
+    body = client.get("/studio/wt-funding-v3/deployments/panel").text
+    assert "hx-trigger" in body
+
+    store.set_deployment_status("dep-ks0002", "stopped")
+    done = client.get("/studio/wt-funding-v3/deployments/panel").text
+    assert "hx-trigger" not in done, "biten deployment'ı 2 saniyede bir sormaya devam"

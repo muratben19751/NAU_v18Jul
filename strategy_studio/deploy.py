@@ -14,9 +14,12 @@ INTEGRATION POINT for nautilus_web_app: a runner that consumes this artifact.
 The strategy layer is venue-agnostic (``ComposedStrategy`` subscribes to bars
 and submits orders), so a live/sim ``TradingNode`` can host it unchanged; what
 this repo has no infrastructure for yet is the node itself, its market-data
-client, and credentials. The kill switch is passed through; if the runner
-lacks native support, add a monitor task that pauses the deployment when
-realized daily PnL breaches ``kill_switch_daily_pct``.
+client, and credentials. The kill switch is passed through and **enforced by
+the runner**: ``PaperRunner`` arms ``kill_switch_daily_pct`` at launch and
+pauses the deployment when the account's PnL for the UTC day breaches it (see
+``runner.check_kill_switches``). Any other runner consuming this artifact owes
+the same — writing the field without evaluating it is what this line used to
+describe, and it made the field decorative for months.
 
 Wiki References
 ---------------
