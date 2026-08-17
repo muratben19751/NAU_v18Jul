@@ -1564,3 +1564,65 @@ Süit: 2350 passed / 2 skipped. Ruff temiz.
 
 **Açık boşluk (değişmedi):** Wiki References bloklarında 40 bağdan 4'ü hâlâ
 kırık; lint bu bloklara bakmıyor.
+
+## [2026-08-17] Loop sayfası emekliye ayrıldı + iki denetim raporunun doğrulaması
+
+**Kaldırma (25ad8eb → 50d7729).** Kullanıcı Loop sayfasını kullanmadığını
+söyledi. İki commit'te yapıldı çünkü `loop_runner.py` sahipsiz bir koruma
+taşıyordu: OpenRouter'ın `multiprocessing.Process()` çocuklarını pm2 altında
+konsol donmasından koruyan `mp.set_executable(pythonw.exe)`, yalnız
+`server → routes/loop → loop_runner → sandbox` import zinciri sayesinde
+çalışıyordu. Önce koruma `server.py`'ye açıkça taşındı ve tripwire hedef
+değiştirdi; sonra silme yapıldı. Silinen: `loop_runner.py`, `web/routes/loop.py`,
+`web/routes/fragments.py`, `legacy/streamlit_app.py`, iki şablon parçası, iki
+test dosyası. `state.py`'den yalnız `AppState` gitti — `IterationResult` her
+backtest'in dönüş tipi.
+
+**Kapsam dersi:** ilk tüketici taramam `| head` ile kesilmişti ve iki tüketici
+(`web/routes/strategy.py`, `web/templating.py`'nin `loop_running` Jinja
+global'i) listede görünmedi; silme `ImportError` ile patladı. Silme/taşıma
+kararını besleyen taramayı kırpma.
+
+**İki denetim raporu doğrulandı (kod okuyarak + çalıştırarak).** Kapatılanlar bu
+oturumda: comprehension bütçe deliği (b3bb253), backtest çocuğunun bellek tavanı
+(80f20c8). Raporların ikisi de bu commit'lerden ÖNCE üretilmiş — "En Kritik 3"
+listesindeki bellek tavanı maddesi çoktan kapalıydı.
+
+### AÇIK BOŞLUKLAR (doğrulandı, henüz düzeltilmedi)
+
+- **Kill switch dekoratif.** `kill_switch_daily_pct` config'de var
+  (`strategy_studio/deploy.py:73`), artefakta yazılıyor (`:152`), docstring
+  "realized daily PnL breaches" diye söz veriyor — ama `runner.py`'de kelime hiç
+  geçmiyor. Günlük PnL izleyen bir şey yok, `pause()` yalnız elle. Var olmayan
+  bir korumadan kötü: kullanıcı buna güvenerek pozisyon büyütür.
+- **Auth fail-open.** `_is_authenticated` token boşken `True` dönüyor. Kod bunu
+  biliyor ve PM2 altında UYARIYOR (`_warn_if_unauthenticated_and_deployed`);
+  doğru düzeltme yeni mekanizma değil, uyarıyı REDDE çevirmek.
+- **Path traversal — kanıtlandı.** `web/shared.load_result_snapshot` `run_id`'yi
+  doğrulamıyor ve `GET /backtest/result/{run_id}` ham parametreyi geçiriyor.
+  Ölçüldü: `..%5C..%5Cevil` → HTTP 200 ve yol `C:\Users\MYDESK\evil.json`'a
+  çözülüyor (ters bölü Starlette'in segment eşleşmesine takılmıyor, eğik çizgi
+  takılıyor). Kardeş yüzeyin (`data._bybit_cache_path`) testi var, bu atlanmış.
+- **MC hep IID.** `run_monte_carlo` varsayılanı `iid_bootstrap`; `block_bootstrap`
+  yazılı (`backtest_robustness.py:859`) ve HİÇ seçilmiyor. IID karıştırma
+  oto-korelasyonu yok eder → `max_dd_p50/p95` iyimser, ve o değerler kabul
+  kapısını besliyor.
+- **Eşik tutarsızlığı.** `WFO_MIN_TRADES = 3` vs peer geçerlilik eşiği 5.
+- **Non-finite fold'lar paydadan düşüyor** (`_mean`, backtest_robustness.py:692)
+  → fold düzeyinde survivorship.
+- **Peer sepeti survivorship taşıyor** — yedi isim de hayatta kalan mega-cap.
+- **Para tavanı girişte zorlanmıyor** — `_admit_llm_budget` yalnız token bakıyor.
+- **Depo hijyeni:** kökte 5 ezik isimli diff dökümü + 6 `deepr_report_*.md`,
+  hepsi git'te izleniyor.
+
+### Rapor iddialarının DÜZELTMELERİ (yanlış yönlendirmesin diye)
+
+- Stub adapter'ın provenance'ı VAR: `engine_is_stub` + "SİMÜLE" rozeti
+  (2026-08-08). Kalan risk daha ince — bayrak koşu kaydına değil o anki sürecin
+  adaptörüne bakıyor.
+- Trend filtresi arızası SESSİZ değil: `backtest.py:1789` ilerleme akışına
+  yazıyor. Gerçek kusur, bozulmanın artefakta taşınmaması.
+- MC bellek tahmini ~4 kat büyük: gerçek çağrı `n_sims=300`, `n_trades` ölçülen
+  en yüksek 1.184 (50.000 değil). Üstelik artık 3072 MB tavanın altında.
+- "Varsayılan para tavanı $5": kod öyle, DAĞITIM öyle değil —
+  `ecosystem.config.js` `AGENT_DEFAULT_MAX_COST_USD: "20"` pinliyor.
