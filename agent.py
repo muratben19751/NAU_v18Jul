@@ -1384,8 +1384,15 @@ def _call_claude_for_block(
     # Compact JSON-only custom blocks do not need the generic 4k ceiling.
     # Keeping the limit below the prompt's 1,800-token contract reduces
     # OpenRouter latency and prevents oversized retry spend.
+    # 2026-08-17: varsayılan 1.800'dü ve `hi` de 1.800'dü — yani ayar VARDI ama
+    # yukarı yolu yoktu; ortam değişkeniyle bile çalışan bir değer verilemiyordu.
+    # Defterden ölçüm (1.566 `custom_block` çağrısı, gerçekleşen `output`):
+    # medyan 1.196 · p90 2.889 · p95 3.268 · p99 3.785 · maks 4.270 — yani
+    # çağrıların yarısına yakını tavanı aşıyordu (canlı koşuda 22/39, %56).
+    # Yeni varsayılan maks'ın üstünde; `hi` de tırmanma tavanına (16.000)
+    # çekildi ki operatörün eli bağlı kalmasın.
     custom_max_tokens = _env_bounded(
-        "AGENT_CUSTOM_BLOCK_MAX_TOKENS", 1_800, lo=512, hi=1_800
+        "AGENT_CUSTOM_BLOCK_MAX_TOKENS", 6_000, lo=512, hi=16_000
     )
     # A custom-block timeout should be shorter than the generic research
     # call deadline; the composer can safely select a builtin fallback.
@@ -1825,7 +1832,14 @@ Return the JSON only."""
     last_error = None
     _acc_usage: dict = {}
     _attempt_limit = _env_bounded("AGENT_CUSTOM_BLOCK_MAX_ATTEMPTS", 2, lo=1, hi=2)
-    _token_limit = _env_bounded("AGENT_CUSTOM_BLOCK_TOKEN_LIMIT", 25_000, lo=4_000)
+    # 25.000 → 40.000 (2026-08-17). Bu bir KAÇAK-DÖNGÜ freni, üretimin normal
+    # maliyet sınırı değil; frenin meşru bir üretimde ateşlemesi onu frenlikten
+    # çıkarır. Defterden ölçüm (1.566 `custom_block` çağrısı, çağrı başına
+    # input+output+cache toplamı): medyan 6.240 · p95 9.878 · maks 16.121. İki
+    # denemelik en kötü hâl bugün bile 32.242 — yani eski değer ZATEN ateşleme
+    # menzilindeydi. `max_tokens` 1.800'den 6.000'e çıkınca çıktı payı
+    # büyüyeceği için sınır, gerçekçi en kötü hâlin ~2 katına çekildi.
+    _token_limit = _env_bounded("AGENT_CUSTOM_BLOCK_TOKEN_LIMIT", 40_000, lo=4_000)
 
     def _spent_tokens() -> int:
         return sum(

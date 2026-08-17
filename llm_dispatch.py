@@ -325,8 +325,31 @@ _TRUNCATION_RETRY_CAP = 16000
 # 5 çağrının 5'i kesildi, 5'i de fallback'e düştü. Tavan, promptun değil ÜRETENİN
 # özelliğine göre kalibre olduğu için bolluk tarafında hata yapılır: kullanılmayan
 # tavan bedava, yarım JSON toptan kayıp.
-MAX_TOKENS_COMPOSED = 4000
-MAX_TOKENS_IDEA = 1500
+#
+# 2026-08-17: değerler artık TAHMİNDEN değil, defterin kendisinden geliyor.
+# `token_usage.jsonl`'daki gerçekleşen `output` dağılımı (9.795 kayıt; parantez
+# içi SON 300 çağrı, yani güncel uçların davranışı):
+#
+#   amaç          n     medyan        p90      p95      p99     maks   eski tavan
+#   idea        507   1.542 (4.190)   8.256    9.790   13.879   15.559     1.500
+#   composed    596   2.216 (2.956)   8.220    9.190   12.181   13.549     4.000
+#
+# `idea`'nın MEDYANI tavanın 2,8 katıydı — yani tipik çağrı kesiliyor, 4× ile
+# yeniden deneniyor ve 6.000'de de kesilebiliyordu; koşu `d515080e` tam böyle
+# öldü (`fallback_reasons: ["TruncatedResponse"]`, tur 1'de 1/15).
+#
+# Yeni değerler p99'un hemen ALTINA konuyor, üstüne değil — kasıtlı: ilk çağrı
+# vakaların ~%98-99'unu tek seferde bitirsin, kalan kuyruk için de tırmanma yolu
+# AÇIK kalsın. `_TRUNCATION_RETRY_CAP`'e (16.000) eşitlemek tırmanmayı kapatırdı
+# (`bigger <= base` → doğrudan `TruncatedResponse`), yani kuyruk retry ile
+# kurtarılabilecekken sert hataya dönerdi.
+#
+# Rezervasyona etkisi yok denecek kadar az: `llm_client` zaten
+# `max(configured, observed_high_water)` kullanıyor ve gözlenen zirve (15.559)
+# bu sayıların üstünde — tavanı yükseltmek yalnız sürecin ilk çağrısını daha
+# dürüst rezerve ettiriyor.
+MAX_TOKENS_COMPOSED = 10_000
+MAX_TOKENS_IDEA = 12_000
 
 # Ceilings LEARNED at runtime, keyed by (model, purpose). The retry below is
 # correct but had no memory: measured on run 3467219a, EVERY `idea` and

@@ -202,7 +202,18 @@ def test_custom_block_token_limit_stops_retry(monkeypatch):
     assert len(calls) == 1
 
 
-def test_custom_block_uses_compact_provider_limits(monkeypatch):
+def test_custom_block_ceiling_covers_the_measured_output(monkeypatch):
+    """İstenen tavan, GÖZLENEN çıktı dağılımının üstünde kalmalı.
+
+    Eski adı `test_custom_block_uses_compact_provider_limits`'ti ve 1.800'ü
+    çiviliyordu — "kompakt" kendiliğinden iyi bir şey sanılmıştı. Defter tersini
+    söyledi (1.566 çağrı: medyan 1.196, p95 3.268, maks 4.270): tavan çağrıların
+    yarısına yakınını kesiyordu ve kesilen her çağrı tam bedelle çöpe gidiyordu.
+    Canlı sonucu koşu `d515080e`: `TruncatedResponse` → rastgele kompozisyon.
+
+    Test artık SAYIYI değil KURALI koruyor. Sayı ayarlanabilir; kuralı çiğneyen
+    bir ayar — gözlenen maksimumun altına inmek — kırılmalı.
+    """
     import agent
 
     captured = {}
@@ -231,7 +242,13 @@ def test_custom_block_uses_compact_provider_limits(monkeypatch):
         lambda client, **kwargs: captured.update(kwargs) or response,
     )
     agent._call_claude_for_block("x", role_hint="entry")
-    assert captured["max_tokens"] == 1_800
+
+    # token_usage.jsonl, 2026-08-17 · 1.566 `custom_block` çağrısının en büyüğü.
+    MEASURED_MAX_OUTPUT = 4_270
+    assert captured["max_tokens"] > MEASURED_MAX_OUTPUT, (
+        "tavan gözlenen en uzun çıktının altında — kesilme kaçınılmaz, "
+        "her kesilen çağrı tam bedelle çöpe gider"
+    )
     assert captured["timeout"] == 75.0
 
 
