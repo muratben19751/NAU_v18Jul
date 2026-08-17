@@ -199,6 +199,31 @@ def _reconcile_studio_jobs_once() -> None:
         log.warning("studio job reconciliation failed", exc_info=True)
 
 
+def _job_in_flight(latest: dict | None, noun: str) -> PlainTextResponse | None:
+    """Bu strateji için zaten koşan bir iş varsa 409, yoksa ``None``.
+
+    Çağırmadan ÖNCE `_reconcile_studio_jobs_once()`: restart'tan kalan sahipsiz
+    bir 'running' satır aksi hâlde düğmeyi KALICI olarak kilitlerdi.
+
+    Backtest rotasında bu koruma vardı, optimize'da YOKTU: her POST mevcut
+    koşanı hiç sormadan yeni bir arka plan işi açıyordu. Hızlı ya da paralel
+    istekler yüzlerce motor koşusunu çoğaltıyor, ortak optimizer alanları
+    yarışıyor, arayüz ise yalnız en yeni işi gösterdiği için ötekiler
+    GÖRÜNMEDEN kaynak yakmaya devam ediyordu (DeepR 2026-08-17 [YÜKSEK]).
+
+    İkinci kopyayı elle yazmak yerine çıkarıldı: üç iş de (backtest, optimize,
+    AI loop) aynı `BackgroundTasks` modelinde koşuyor, yani bu korumanın
+    üçüncü kopyası zaten sıradaydı — ve kopyalar hatayla değil, birine yapılan
+    İYİLEŞTİRMENİN ötekilere ulaşmamasıyla ıraksıyor.
+    """
+    if not latest or latest["status"] != "running":
+        return None
+    msg = f"a {noun} is already running for this strategy - wait for it to finish"
+    resp = PlainTextResponse(msg, status_code=409)
+    resp.headers["HX-Toast"] = f"err|{msg[0].upper()}{msg[1:]}."
+    return resp
+
+
 def _tpl():
     """Host app's Jinja environment (late import: server imports this module)."""
 
@@ -978,17 +1003,8 @@ def route_backtest(
     # ile AYNI duruş; önce uzlaştır, çünkü restart'tan kalan sahipsiz bir
     # 'running' satır aksi hâlde düğmeyi KALICI olarak kilitlerdi.
     _reconcile_studio_jobs_once()
-    live = store.latest_run(strategy_id)
-    if live and live["status"] == "running":
-        resp = PlainTextResponse(
-            "a backtest is already running for this strategy - wait for it to finish",
-            status_code=409,
-        )
-        resp.headers["HX-Toast"] = (
-            "err|A backtest is already running for this strategy - "
-            "wait for it to finish."
-        )
-        return resp
+    if (busy := _job_in_flight(store.latest_run(strategy_id), "backtest")) is not None:
+        return busy
     date_range = (date_from, date_to) if (date_from or date_to) else None
     # compile FIRST so config errors surface immediately, not in the task
     try:
@@ -1233,6 +1249,10 @@ def route_optimize(
         defn, is_draft = store.working_copy(strategy_id)
     except KeyError:
         raise HTTPException(404, f"strategy '{strategy_id}' not found") from None
+    _reconcile_studio_jobs_once()
+    busy = _job_in_flight(store.latest_opt(strategy_id), "optimization")
+    if busy is not None:
+        return busy
     sweep = defn.sweep_size()
     if sweep == 0:
         return PlainTextResponse(

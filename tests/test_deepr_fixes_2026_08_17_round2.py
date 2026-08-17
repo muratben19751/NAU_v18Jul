@@ -6,6 +6,7 @@
    hem ``date.max + 1`` taşmasıyla 500 üretiyordu.
 2. ``render_md`` ham HTML'i geçiriyordu; AUTO review sayfası kullanıcının
    ``hint``'ini ve LLM strateji adlarını ``|safe`` ile basıyor.
+3. Optimize rotası koşan sweep'i sormadan yenisini açıyordu.
 
 Wiki References
 ---------------
@@ -166,3 +167,61 @@ def test_repo_wiki_routes_opt_in_to_trusted():
 
     assert "trusted=True" in inspect.getsource(wiki._render)
     assert "trusted=True" in inspect.getsource(strategy.wiki_html_for)
+
+
+# ---------------------------------------------------------------------------
+# 3. Optimize eşzamanlılığı
+# ---------------------------------------------------------------------------
+
+SID = "rsi-adx-btc"
+
+
+@pytest.fixture()
+def client(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from scripts.seed_studio import build_engine_fixture
+    from server import app as _host
+    from strategy_studio.store import StrategyStore
+    from web.routes import strategy_studio as main
+
+    store = StrategyStore(tmp_path / "t.db")
+    store.save(build_engine_fixture())
+    monkeypatch.setattr(main, "store", store)
+    c = TestClient(_host)
+    c.store = store
+    return c
+
+
+def test_second_optimize_is_refused_while_one_runs(client, monkeypatch):
+    """Her POST, koşanı hiç sormadan yeni bir arka plan işi açıyordu.
+
+    Arayüz yalnız en yeni işi gösterdiği için ötekiler GÖRÜNMEDEN motor koşusu
+    üretmeye devam ediyordu.
+    """
+    from web.routes import strategy_studio as main
+
+    # Koşan bir sweep satırı: rotayı gerçekten çalıştırmadan aynı durumu kur.
+    client.store.create_opt("run-in-flight", SID, 1, False)
+    monkeypatch.setattr(main, "_reconcile_studio_jobs_once", lambda: None)
+
+    r = client.post(f"/studio/{SID}/optimize")
+    assert r.status_code == 409
+    assert "already running" in r.text
+    # Reddedilen istek ÇÖP SATIR bırakmamalı — eski davranışın ikinci zararı.
+    assert client.store.latest_opt(SID)["run_id"] == "run-in-flight"
+
+
+def test_an_orphaned_running_row_does_not_lock_the_button_forever(client):
+    """Restart'tan kalan sahipsiz 'running' satırı uzlaştırma temizler.
+
+    Koruma bu adım olmadan düğmeyi KALICI olarak kilitlerdi — bu yüzden
+    `_job_in_flight` çağrılmadan önce `_reconcile_studio_jobs_once` var.
+    """
+    from web.routes import strategy_studio as main
+
+    client.store.create_opt("orphan", SID, 1, False)
+    main._JOBS_RECONCILED.discard(client.store.db_path)
+    main._reconcile_studio_jobs_once()
+
+    assert client.store.latest_opt(SID)["status"] == "interrupted"
