@@ -10,6 +10,7 @@ DAVRANIŞI değil VAADİ sınıyor:
    negatif; hiçbir gerçek sonuç geçemiyordu).
 3. Geçersiz blok rolü reddediliyor mu (kaydedilip runtime'da sessizce yok
    sayılıyordu).
+4. Tamsayı optimizer aralığı tek noktaya çöküyor / işaret bozuyor mu.
 
 Wiki References
 ---------------
@@ -176,3 +177,47 @@ def test_unknown_block_role_is_rejected(compose_client):
 def test_valid_block_roles_still_pass(compose_client, role):
     r = compose_client.post("/strategy/drafts", data={"type": _BLOCK, "role": role})
     assert r.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# 4. Tamsayı optimizer aralığı
+# ---------------------------------------------------------------------------
+
+
+def _range_for(value):
+    from strategy_studio.mutations import _default_range
+    from strategy_studio.schema import Param
+
+    return _default_range(Param(name="p", value=value))
+
+
+def test_int_range_never_collapses_to_a_single_point():
+    """``value=1`` için ±%50 aralık ``int()`` kırpmasıyla ``[1, 1]`` oluyordu —
+    optimizer yalnız mevcut değeri deniyor, "sweep" hiçbir şey aramıyordu."""
+    for v in (1, 2, 3, 5, 14, 200):
+        r = _range_for(v)
+        assert r.max > r.min, f"value={v} aralığı çöktü: [{r.min}, {r.max}]"
+        assert r.max - r.min >= r.step, f"value={v} tek adıma bile yetmiyor"
+
+
+def test_int_range_preserves_sign():
+    """``int(-0.5) or 2`` üst ucu +2 yapıp aralığı negatiften pozitife
+    taşıyordu — optimizer parametrenin işaretini kendiliğinden değiştiriyordu."""
+    for v in (-1, -3, -10):
+        r = _range_for(v)
+        assert r.max < 0, f"value={v} aralığının üst ucu işaret değiştirdi: {r.max}"
+        assert r.min < r.max < 0
+
+
+def test_int_range_brackets_the_current_value():
+    """Aralık mevcut değeri içermeli, yoksa sweep başlangıç noktasını hiç
+    denemez."""
+    for v in (2, 3, 10, 14, -5):
+        r = _range_for(v)
+        assert r.min <= v <= r.max, f"value={v} kendi aralığının dışında"
+
+
+def test_float_params_are_untouched():
+    r = _range_for(2.0)
+    assert (r.min, r.max) == (1.0, 3.0)
+    assert r.step != int(r.step)  # tamsayıya yuvarlanmadı

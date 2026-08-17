@@ -10,6 +10,8 @@ Bkz: [[strategy_studio]]
 
 from __future__ import annotations
 
+import math
+
 from .registry import INDICATOR_REGISTRY, ParamSpec
 from .schema import OptimizeRange, Param, Rule, RuleGroup, StrategyDefinition
 
@@ -208,8 +210,25 @@ def _default_range(p: Param) -> OptimizeRange:
     lo, hi = sorted((v * 0.5, v * 1.5)) if v != 0 else (-1.0, 1.0)
     step = round((hi - lo) / 6, 6) or 1.0
     if isinstance(p.value, int) and not isinstance(p.value, bool):
-        lo, hi = int(lo) or 1, int(hi) or 2
-        step = max(1, int(step))
+        # `int()` SIFIRA DOĞRU kırpar, yani aralığı iki uçtan birden daraltır:
+        # `value=1` için (0.5, 1.5) → (0, 1) → `or` düzeltmesiyle (1, 1), yani
+        # optimizer yalnız mevcut değeri deniyordu — "sweep" tek noktaya
+        # çöküyordu. `or 1`/`or 2` ayrıca İŞARETİ bozuyordu: `value=-1` için
+        # üst uç `int(-0.5) or 2` → +2 olup aralık negatiften pozitife
+        # taşıyordu (DeepR 2026-08-17 [DÜŞÜK]).
+        #
+        # floor/ceil DIŞA yuvarlar, o yüzden daralma diye bir şey kalmıyor;
+        # işaret koruması `or` sihirli sayıları yerine açık bir clamp.
+        step = max(1, round(step))
+        lo, hi = math.floor(lo), math.ceil(hi)
+        # Pozitif bir tamsayı param (periyot, lookback, sayaç) için 0 ve altı
+        # neredeyse hiç geçerli değil — eski `or 1`'in korumaya çalıştığı buydu.
+        if v > 0:
+            lo = max(1, lo)
+        elif v < 0:
+            hi = min(-1, hi)
+        if hi - lo < step:  # yuvarlama aralığı yine de yedirdiyse bir adım aç
+            hi = lo + step
     return OptimizeRange(min=lo, step=step, max=hi)
 
 
