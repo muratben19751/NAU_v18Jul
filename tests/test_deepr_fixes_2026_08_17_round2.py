@@ -7,6 +7,7 @@
 2. ``render_md`` ham HTML'i geçiriyordu; AUTO review sayfası kullanıcının
    ``hint``'ini ve LLM strateji adlarını ``|safe`` ile basıyor.
 3. Optimize rotası koşan sweep'i sormadan yenisini açıyordu.
+4. AI önerisi URL'deki stratejiyle eşleştirilmiyordu.
 
 Wiki References
 ---------------
@@ -225,3 +226,39 @@ def test_an_orphaned_running_row_does_not_lock_the_button_forever(client):
     main._reconcile_studio_jobs_once()
 
     assert client.store.latest_opt(SID)["status"] == "interrupted"
+
+
+# ---------------------------------------------------------------------------
+# 4. Öneri sahipliği
+# ---------------------------------------------------------------------------
+
+
+def test_a_suggestion_cannot_be_accepted_from_another_strategys_url(client):
+    """`sid` global, `strategy_id` yolun parçası — karşılaştırılmıyordu.
+
+    `apply_suggestion` yalnız alanların uyup uymadığına bakar; hangi strateji
+    için üretildiğine bakmaz. Yani A'ya ait uyumlu bir öneri B'nin taslağına
+    uygulanabiliyordu.
+    """
+    from scripts.seed_studio import build_fixture
+
+    other = build_fixture()
+    client.store.save(other)
+    client.store.add_suggestion("sug-1", SID, "entry", "{}", "review")
+
+    r = client.post(f"/studio/{other.id}/ai/suggestions/sug-1/accept")
+    assert r.status_code == 422
+    assert client.store.get_suggestion("sug-1")["status"] == "review"
+
+
+def test_a_suggestion_cannot_be_dismissed_from_another_strategys_url(client):
+    """Ters yön: A'nın öneri DURUMU B'nin URL'sinden değiştirilebiliyordu."""
+    from scripts.seed_studio import build_fixture
+
+    other = build_fixture()
+    client.store.save(other)
+    client.store.add_suggestion("sug-2", SID, "entry", "{}", "review")
+
+    r = client.post(f"/studio/{other.id}/ai/suggestions/sug-2/dismiss")
+    assert r.status_code == 422
+    assert client.store.get_suggestion("sug-2")["status"] == "review"

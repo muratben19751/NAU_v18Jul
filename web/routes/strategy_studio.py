@@ -1497,9 +1497,29 @@ def route_ai_suggest(
     return HTMLResponse(_block_html(request, defn, target, oob=True))
 
 
+def _suggestion_of(strategy_id: str, sid: str) -> dict | None:
+    """URL'deki stratejiye AİT öneri satırı; başkasınınsa ``None``.
+
+    `sid` global bir anahtar, `strategy_id` ise yolun bir parçası — ve ikisi
+    karşılaştırılmıyordu. Bir öneri yalnız `sid` ile yükleniyordu, yani
+    A stratejisine üretilmiş bir öneri B'nin URL'sine POST edilerek B'nin
+    taslağına UYGULANABİLİYORDU (`apply_suggestion` yalnız alanların uyup
+    uymadığına bakar; hangi strateji için üretildiğine bakmaz) ya da A'nın
+    öneri durumu B'nin URL'sinden değiştirilebiliyordu.
+
+    Eşleşmeyen satır "yok" sayılıyor, "yasak" değil: istemcinin görmemesi
+    gereken bir kaydın VAR olduğunu doğrulamanın anlamı yok
+    (DeepR 2026-08-17 [ORTA]).
+    """
+    row = store.get_suggestion(sid)
+    if not row or row["strategy_id"] != strategy_id:
+        return None
+    return row
+
+
 @router.post("/studio/{strategy_id}/ai/suggestions/{sid}/accept")
 def route_ai_accept(request: Request, strategy_id: str, sid: str):
-    row = store.get_suggestion(sid)
+    row = _suggestion_of(strategy_id, sid)
     if not row or row["status"] != "review":
         return PlainTextResponse("suggestion not reviewable", status_code=422)
     sugg = Suggestion.model_validate_json(row["suggestion"])
@@ -1518,7 +1538,7 @@ def route_ai_accept(request: Request, strategy_id: str, sid: str):
 @router.post("/studio/{strategy_id}/ai/suggestions/{sid}/dismiss")
 def route_ai_dismiss(request: Request, strategy_id: str, sid: str):
     defn = _load_working(strategy_id)
-    row = store.get_suggestion(sid)
+    row = _suggestion_of(strategy_id, sid)
     if not row:
         return PlainTextResponse("suggestion not found", status_code=422)
     store.set_suggestion_status(sid, "rejected", "dismissed by user")
