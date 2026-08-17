@@ -46,6 +46,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0",
+    "pytest-cov>=5.0",
     "ruff>=0.6",
     # Tarayıcı E2E'si (`pytest -m browser`). Paket tarayıcı İKİLİSİNİ getirmez;
     # `playwright install chromium` ayrı bir adım (CI'da da öyle).
@@ -144,3 +145,34 @@ filterwarnings = [
 #
 # `uv sync --locked` kilit pyproject'ten SAPMIŞSA hata verir: yeni bir bağımlılık
 # `uv lock` koşulmadan eklenirse CI sessizce en yenisini çözmek yerine kırılır.
+
+# Kapsam (coverage) — kapı ÖLÇÜMDEN kondu, sezgiden değil
+# ------------------------------------------------------
+# Ölçüldü 2026-08-17, tam süit (2.431 test): uygulama kodunda %79 satır kapsamı
+# (`tests/` hariç; tests dahil edilirse %89 çıkıyor ve o sayı kendi kendini
+# överdi). Kapı 75'e konuldu: anlamlı bir düşüşü yakalar, rutin işi bloklamaz.
+# Yükseltmek isteyen önce ölçümü yenilesin — bu depoda eşiklerin gözlemden
+# konması yerleşik bir kural.
+#
+# `fail_under` BURADA, CI komut satırında değil: yerel `pytest --cov` de aynı
+# kapıyı görsün, "CI'da kırmızı ama bende yeşil" olmasın.
+[tool.coverage.run]
+branch = false
+omit = [
+    "tests/*",
+    "legacy/*",
+    "scripts/*",
+    ".venv/*",
+    "*/site-packages/*",
+    # Tek seferlik/elle koşulan araçlar: süit onları çağırmaz ve çağırmamalı.
+    "capture_baseline.py",
+    "compact_sessions.py",
+]
+
+[tool.coverage.report]
+fail_under = 75
+skip_covered = true
+exclude_also = [
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+]

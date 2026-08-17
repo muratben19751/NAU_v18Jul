@@ -3,6 +3,19 @@ write PnL/trades/sharpe/positions_report sha256 to regression_baseline.json.
 
 Used as pre-migration parity anchor. See plan v1→v2 migration Phase 0.
 
+BU BİR TARİHSEL KAYIT, UYGULANAN BİR ÇIPA DEĞİL — ve olamaz. Aşağıdaki
+pencere ``datetime.now() - 7 gün``: veri her gün kayıyor, dolayısıyla
+2026-07-23'te yazılan sayılar bir daha asla üretilemez. Hiçbir test ve hiçbir
+CI adımı ``regression_baseline.json``'ı okumaz; okusaydı ilk koşuda kırılırdı.
+Wiki'deki "bit-identical parity" iddiası bu dosyaya dayanıyor ve o iddia
+migrasyon anında ölçülmüş bir gözlemdir, süregelen bir garanti değil.
+
+Uygulanan çıpa ``tests/test_engine_numeric_anchor.py``'de: sabit tohumlu,
+ağsız, cache'siz bir çerçeve üzerinde tam PnL/işlem/Sharpe. Motorun cevabı bir
+pandas/numpy/nautilus yükseltmesiyle kayarsa CI orada kırılır. Bu betiği
+uygulanabilir hâle getirmek isteyen, önce aşağıdaki pencereyi SABİT bir tarih
+aralığına çevirmek zorunda.
+
 Wiki References
 ---------------
 Bkz: [[v1_to_v2_migration_lessons]]

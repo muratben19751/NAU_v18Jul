@@ -568,16 +568,9 @@ _CSRF_SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS", "TRACE"})
 _CSRF_EXEMPT_PATHS = frozenset({"/login"})
 
 
-def _allowed_origin_hosts(request: Request) -> set[str]:
-    """Bu istek için meşru sayılan köken host'ları (hepsi küçük harf)."""
-    hosts = {
-        h.strip().lower()
-        for h in (
-            request.headers.get("host"),
-            request.headers.get("x-forwarded-host"),
-        )
-        if h and h.strip()
-    }
+def _configured_origin_hosts() -> set[str]:
+    """`NAU_ALLOWED_ORIGINS`'ten okunan host'lar (küçük harf, boşsa boş küme)."""
+    hosts: set[str] = set()
     for raw in _os.environ.get("NAU_ALLOWED_ORIGINS", "").split(","):
         raw = raw.strip()
         if not raw:
@@ -587,6 +580,40 @@ def _allowed_origin_hosts(request: Request) -> set[str]:
         if parsed.netloc:
             hosts.add(parsed.netloc.lower())
     return hosts
+
+
+def _allowed_origin_hosts(request: Request) -> set[str]:
+    """Bu istek için meşru sayılan köken host'ları (hepsi küçük harf).
+
+    YAPILANDIRMA VARSA TEK KAYNAK ODUR. `NAU_ALLOWED_ORIGINS` eskiden yalnızca
+    EKLİYORDU; istek başlıklarından türeyen liste her hâlükârda içerideydi, yani
+    ayarı doldurmak kapıyı daraltmıyordu. Şimdi dolduran kişi gerçekten kilidi
+    çeviriyor.
+
+    Neden önemli — DNS REBINDING: `Host` ve `X-Forwarded-Host` istekle GELİR.
+    Saldırganın sayfası `evil.com`'u uygulamanın IP'sine çözdürürse tarayıcı
+    hem `Host: evil.com` hem `Origin: https://evil.com` gönderir; ikisi de
+    saldırganın olduğu için karşılaştırma kendiliğinden tutar. `X-Forwarded-Host`
+    ayrıca doğrudan bağlantıda tamamen istemci uydurmasıdır. Yani başlıktan
+    türeyen izin listesi, düz çapraz-köken POST'unu durdurur (tarayıcı `Host`'u
+    hedefe göre yazar) ama rebinding'i durdurmaz.
+
+    Yapılandırma yokken eski davranış korunuyor: tünel host adı kurulum anında
+    bilinmiyor ve sabit bir liste her POST'u 403 yapardı. Bunun yerine ilk
+    reddedilen istekte operatöre ne yazması gerektiği söyleniyor
+    (`_csrf_guard`).
+    """
+    configured = _configured_origin_hosts()
+    if configured:
+        return configured
+    return {
+        h.strip().lower()
+        for h in (
+            request.headers.get("host"),
+            request.headers.get("x-forwarded-host"),
+        )
+        if h and h.strip()
+    }
 
 
 def _csrf_origin_ok(request: Request) -> bool | None:
@@ -631,6 +658,18 @@ async def _csrf_guard(request: Request, call_next):
             request.headers.get("referer"),
             request.headers.get("host"),
         )
+        if not _configured_origin_hosts():
+            # Reddin YANINDA söylenmesi kasıtlı: operatör bu satırı zaten
+            # okuyordur ve tam o an "hangi host'u yazayım" sorusunun cevabı
+            # ekranda duruyor. Ayrı bir açılış uyarısı bu bağlamı kaybederdi.
+            _log.warning(
+                "CSRF: NAU_ALLOWED_ORIGINS boş — izin listesi isteğin kendi "
+                "Host/X-Forwarded-Host başlığından türüyor. Bu düz çapraz-köken "
+                "POST'unu durdurur ama DNS rebinding'i durdurmaz. Kilidi çevirmek "
+                "için NAU_ALLOWED_ORIGINS'e bu kurulumun host adını yaz (ör. "
+                "NAU_ALLOWED_ORIGINS=%s).",
+                request.headers.get("host") or "nau.example.com",
+            )
         # Gövde HTML değil: htmx bunu DOM'a basacak olsa bile zararsız kalsın.
         return Response(
             status_code=403,

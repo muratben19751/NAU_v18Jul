@@ -221,3 +221,75 @@ class TestAuthCookieSameSite:
         assert "samesite=strict" in set_cookie.lower()
         assert "httponly" in set_cookie.lower()
         assert "secure" in set_cookie.lower()
+
+
+class TestConfiguredOriginsAreAuthoritative:
+    """`NAU_ALLOWED_ORIGINS` eskiden yalnızca EKLİYORDU: isteğin kendi
+    `Host`/`X-Forwarded-Host` başlığından türeyen liste her hâlükârda içerideydi,
+    yani ayarı doldurmak kapıyı DARALTMIYORDU.
+
+    Neden önemli — DNS rebinding: saldırganın sayfası `evil.com`'u uygulamanın
+    IP'sine çözdürürse tarayıcı hem `Host: evil.com` hem `Origin: https://evil.com`
+    gönderir; ikisi de saldırganın olduğu için başlıktan türeyen karşılaştırma
+    kendiliğinden tutar. `X-Forwarded-Host` ise doğrudan bağlantıda tamamen
+    istemci uydurmasıdır.
+    """
+
+    def test_the_header_derived_host_is_ignored_once_origins_are_configured(
+        self, monkeypatch
+    ):
+        monkeypatch.setenv("NAU_ALLOWED_ORIGINS", "nau.example.com")
+        client = TestClient(server.app)
+
+        r = client.post(
+            PROBE,
+            headers={"Origin": "https://evil.com", "Host": "evil.com"},
+        )
+
+        assert r.status_code == 403, "rebinding senaryosu geçti"
+
+    def test_x_forwarded_host_cannot_widen_a_configured_allowlist(self, monkeypatch):
+        monkeypatch.setenv("NAU_ALLOWED_ORIGINS", "nau.example.com")
+        client = TestClient(server.app)
+
+        r = client.post(
+            PROBE,
+            headers={
+                "Origin": "https://evil.com",
+                "X-Forwarded-Host": "evil.com",
+            },
+        )
+
+        assert r.status_code == 403
+
+    def test_the_configured_host_itself_still_passes(self, monkeypatch):
+        monkeypatch.setenv("NAU_ALLOWED_ORIGINS", "https://nau.example.com")
+        client = TestClient(server.app)
+
+        r = client.post(PROBE, headers={"Origin": "https://nau.example.com"})
+
+        assert r.status_code != 403
+
+    def test_without_configuration_the_old_behaviour_is_kept(self, monkeypatch):
+        """Tünel host adı kurulum anında bilinmiyor; sabit bir liste her POST'u
+        403 yapardı. Yapılandırma yokken davranış aynen korunuyor."""
+        monkeypatch.delenv("NAU_ALLOWED_ORIGINS", raising=False)
+        client = TestClient(server.app)
+
+        r = client.post(
+            PROBE, headers={"Origin": "http://testserver", "Host": "testserver"}
+        )
+
+        assert r.status_code != 403
+
+    def test_the_refusal_tells_the_operator_what_to_set(self, monkeypatch, caplog):
+        """Operatör o satırı zaten okuyor; "hangi host'u yazayım" sorusunun
+        cevabı tam o an ekranda olmalı."""
+        monkeypatch.delenv("NAU_ALLOWED_ORIGINS", raising=False)
+        client = TestClient(server.app)
+
+        with caplog.at_level("WARNING"):
+            client.post(PROBE, headers={"Origin": "https://evil.com"})
+
+        assert "NAU_ALLOWED_ORIGINS" in caplog.text
+        assert "rebinding" in caplog.text.lower()

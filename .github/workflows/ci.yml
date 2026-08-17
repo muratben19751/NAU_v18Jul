@@ -50,8 +50,12 @@ jobs:
       # was indistinguishable from a genuinely green suite. `--junitxml` feeds
       # the "Skipped tests" step below, which writes the same information into
       # the GitHub job summary — visible without opening the log.
-      - name: Pytest
-        run: uv run pytest -q -ra --junitxml=pytest-report.xml tests
+      # `--cov` eklendi: eşik ve omit listesi pyproject'te, komut satırında değil
+      # — yerel `pytest --cov` de AYNI kapıyı görsün ("CI'da kırmızı, bende
+      # yeşil" olmasın). Kapı ölçümden kondu: 2026-08-17'de tam süit uygulama
+      # kodunda %79 kapsıyordu, `fail_under` 75.
+      - name: Pytest (+ coverage gate)
+        run: uv run pytest -q -ra --junitxml=pytest-report.xml --cov=. --cov-report=term:skip-covered tests
 
       # The full POST /backtest/run → progress poll → result render chain now
       # runs in the step above too: TestBacktestChainOffline drives the real
@@ -154,3 +158,41 @@ jobs:
           }
           $lines | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
           $lines | ForEach-Object { Write-Host $_ }
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # İkinci işletim sistemi. Tek OS'ta koşmak bu depoda somut bir boşluktu:
+  # `sandbox._install_memory_ceiling`'in POSIX dalı (RLIMIT_AS) ve `os.fork`
+  # varsayan her yol, Windows runner'da HİÇ çalışmıyordu — yazıldı, test edildi
+  # (davranış olarak değil, sözleşme olarak) ve gerçek bir çekirdekte hiç
+  # denenmedi.
+  #
+  # Kapsam bilinçli olarak DAR: lint + varsayılan süit. Canlı Bybit e2e'si,
+  # Chromium adımı ve coverage kapısı Windows ayağında kalıyor — üçünü iki kez
+  # koşmak süreyi ikiye katlar ve ikinci koşum yeni bir şey söylemez.
+  #
+  # NOT: bu ayağın İLK koşumu Windows'a özgü varsayımları ortaya çıkarabilir
+  # (yol ayracı, dosya kilidi, pythonw). Kırmızı yanarsa bulgunun kendisi
+  # görünmüş demektir; bulguyu gizlemek için `continue-on-error` KOYULMADI —
+  # bu deponun CI yorumları tam olarak o deseni "sessizce merge" diye eleştiriyor.
+  # ───────────────────────────────────────────────────────────────────────────
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install Python 3.12
+        run: uv python install 3.12
+
+      - name: Sync dependencies (from the committed lockfile)
+        run: uv sync --locked --extra dev
+
+      - name: Ruff lint
+        run: uv run ruff check .
+
+      - name: Pytest (default suite)
+        run: uv run pytest -q -ra --no-cov tests

@@ -26,7 +26,9 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 import uuid
+from collections import OrderedDict
 from datetime import UTC, date, datetime
 
 from fastapi import APIRouter, Form, Request
@@ -90,17 +92,41 @@ def catalog_index_symbols() -> list[str]:
     return sorted(seen)
 
 
-# Last backtest result — now SESSION-SCOPED (sid → slot) instead of a single
-# process-global slot that was last-writer-wins across all users. Bounded like
-# _DRAFTS: drop the oldest sid when over cap. Read via last_result_get(sid),
-# written by the run worker via _last_result_set(sid, ...).
-_LAST_RESULT: dict[str, dict] = {}
+# Last backtest result — SESSION-SCOPED (sid → slot) instead of a single
+# process-global slot that was last-writer-wins across all users. Read via
+# last_result_get(sid), written by the run worker via _last_result_set(sid, ...).
+#
+# ÜÇ SINIR, ÜÇÜ DE ÖLÇÜMDEN:
+#
+# 1. BOYUT. Bir yuva canlı `IterationResult`'ı tutuyor — işlem listesi ve öz
+#    sermaye eğrisiyle. ÖLÇÜLDÜ (2026-08-17, 120k barlık gerçek koşu, 451 işlem,
+#    452 noktalı eğri): pickle protokol 5 ile 565.136 B ≈ 0,57 MB. Eski 500'lük
+#    tavan bunun 283 MB'ı demek, ve tam menzilli 1m koşuları (1M+ bar) bunun
+#    birkaç katı işlem üretiyor. 24 seçildi: bu TEK OPERATÖRLÜ bir uygulama,
+#    `sid` bir çerez — birkaç tarayıcı/sekme. Aynı ölçüyle en kötü hâl ~14 MB.
+#
+# 2. TAHLİYE SIRASI. Eski kod `next(iter(...))` ile İLK EKLENENİ atıyordu, en az
+#    kullanılanı değil. Operatörün aylardır açık duran sekmesi tam da ilk eklenen
+#    olduğu için, yeni sid'ler geldikçe ÖNCE o düşerdi. Artık LRU: okuma da
+#    yazma da yuvayı sona taşıyor.
+#
+# 3. SÜRE. `sid` istemcinin gönderdiği çerez değeri; doğrulanmıyor, imzalanmıyor.
+#    Tavan tek savunma olamaz — saatlerdir kimsenin bakmadığı bir sonuç zaten
+#    ölü. TTL dolduğunda yuva düşüyor.
+_LAST_RESULT: OrderedDict[str, dict] = OrderedDict()
 _LAST_RESULT_LOCK = threading.Lock()
-_MAX_RESULT_SESSIONS = 500
+_MAX_RESULT_SESSIONS = 24
+_RESULT_TTL_S = 6 * 3600
 
 
 def _empty_result_slot() -> dict:
     return {"r": None, "spec_name": None, "narrative": "", "bars_info": {}}
+
+
+def _prune_result_slots(now: float) -> None:
+    """Süresi dolmuş yuvaları düşür. Çağıran `_LAST_RESULT_LOCK`'u tutar."""
+    for sid in [s for s, v in _LAST_RESULT.items() if now - v["at"] > _RESULT_TTL_S]:
+        _LAST_RESULT.pop(sid, None)
 
 
 def last_result_get(sid: str) -> dict:
@@ -110,20 +136,30 @@ def last_result_get(sid: str) -> dict:
     2026-08-09 [YÜKSEK]).
     """
     with _LAST_RESULT_LOCK:
+        _prune_result_slots(time.time())
         slot = _LAST_RESULT.get(sid)
-        return dict(slot) if slot is not None else _empty_result_slot()
+        if slot is None:
+            return _empty_result_slot()
+        _LAST_RESULT.move_to_end(sid)  # LRU: bakılan yuva en tazedir
+        out = dict(slot)
+        out.pop("at", None)  # `at` iç bir alan; çağıranların sözleşmesi değişmedi
+        return out
 
 
 def _last_result_set(sid: str, *, r, spec_name, narrative, bars_info) -> None:
     with _LAST_RESULT_LOCK:
-        if sid not in _LAST_RESULT and len(_LAST_RESULT) >= _MAX_RESULT_SESSIONS:
-            _LAST_RESULT.pop(next(iter(_LAST_RESULT)), None)
+        now = time.time()
+        _prune_result_slots(now)
         _LAST_RESULT[sid] = {
             "r": r,
             "spec_name": spec_name,
             "narrative": narrative,
             "bars_info": bars_info,
+            "at": now,
         }
+        _LAST_RESULT.move_to_end(sid)
+        while len(_LAST_RESULT) > _MAX_RESULT_SESSIONS:
+            _LAST_RESULT.popitem(last=False)  # en az kullanılan
 
 
 # Progress store: run_id → {steps, done, result, error, spec_name}
