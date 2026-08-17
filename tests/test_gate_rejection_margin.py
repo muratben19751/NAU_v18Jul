@@ -24,7 +24,7 @@ kararın DEĞİŞMEDİĞİNİ çiviliyor — teşhis eklerken kapıyı oynatmak,
 
 Wiki References
 ---------------
-See: [[benchmark_kapisi_veri_penceresine_baglanmamali]], [[deepr_skill]]
+See: [[auto_kapi_ve_geri_bildirim]], [[nau_auto_kosusu_755b7880_2026_08_17]]
 """
 
 from __future__ import annotations

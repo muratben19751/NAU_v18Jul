@@ -26,7 +26,7 @@ asla dokunulmaz.
 
 Wiki References
 ---------------
-See: [[strategy_studio]], [[deepr_skill]], [[webapp_module_map]]
+See: [[strategy_studio]], [[webapp_module_map]], [[nau_soz_verip_yapmayan_yollar_2026_08_17]]
 """
 
 from __future__ import annotations

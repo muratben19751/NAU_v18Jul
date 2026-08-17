@@ -131,5 +131,6 @@ sınamıyordu — gerçek `run_composed_backtest`, gerçek `PaperRunner` ve ger�
 <!-- BACKLINKS:BEGIN -->
 ## Referenced by
 
+- [[kod_dokuman_koprusu_denetlenmiyor]]
 - [[nau_bulgu_kapatma_turu_2026_08_17]]
 <!-- BACKLINKS:END -->

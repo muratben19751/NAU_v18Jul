@@ -1699,3 +1699,18 @@ eşik yüksek frekans istiyordu; iki kapı aynı adayı farklı BİRİMLERDE öl
 
 Kaydedilen ayrım: eşik oynatılmadı, birim düzeltildi. O koşunun kazananı yeni
 pencerede de geçemiyor — değişen, sistemin verdiği cevap.
+
+## 2026-08-18 — wiki-sync: köprünün kod yakası denetlenmiyor (373 bağın 32'si kırık)
+
+Kod tarafı senkron: son wiki senkronundan (7933a00) sonra kod commit'i YOK, tree
+temiz. Lint altı kategoride de sıfır. Ama linter'ın görmediği yakada ölçüm:
+157 modülde 373 `Wiki References` bağı, 45'i çözülmüyor — 13'ü yanlış pozitif
+(10 docstring örneği + 3 dosya-adı kullanımı), **32'si gerçek** ve tamamı
+çapraz-vault sızıntısı (kişisel Obsidian vault'unda var olan sayfa adlarının
+proje modülüne kopyalanması; en sık `deepr_skill` ×11).
+
+- wiki/concepts/kod_dokuman_koprusu_denetlenmiyor.md (yeni)
+- wiki/synthesis/webapp_module_map.md (köprünün denetlenmeyen yakası bölümü)
+- Bu turda açılmış 3 test dosyasının kırık bağı düzeltildi; kalan 28 başka
+  oturumların dosyalarında — toplu düzenleme wiki-sync kapsamı dışında,
+  kullanıcıya raporlandı.

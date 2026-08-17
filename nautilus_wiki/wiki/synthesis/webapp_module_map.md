@@ -226,11 +226,20 @@ Karpathy'nin "Explorations always add up in the knowledge base" prensibi:
 
 - **Strategy Builder enstrüman seçici (2026-07-27)**: kullanıcı "backtest edeceğim sembolü seçebilmeliyim, sadece 3 sembol görünüyor" dedi. Kök neden iki ayrı yerdeydi ve yalnız biri kurucudaydı: `studio/_instruments.html`'in "+ Add" çipi **tıklanabilir görünen bir stub**'tı (`title="Phase 2+: add instrument via config"`, arkasında endpoint yok) — sembol listesi stratejinin kendi `instruments` alanıydı ve yalnız aktif/pasif toggle'lanabiliyordu, seed fixture'ın üç enstrümanı (`XAUUSD`/`EURUSD`/`NAS100`) sabit kalıyordu. (Aynı anda AI cockpit/Lab/Agent sayfalarındaki `<select>`'ler HTML'de sabit BTC/ETH/SOL tutuyor; bu tur kapsam dışı bırakıldı — Backtest sekmesi zaten `_bybit_symbols()` ile katalogdan besleniyor.) Çip artık gerçek bir seçici: `POST /studio/{id}/instruments` (symbol + timeframe) ve `DELETE /studio/{id}/instruments/{symbol}` eklendi, mutasyonlar `add_instrument`/`remove_instrument` olarak `strategy_studio/mutations.py`'ye indi. **Üç tasarım kararı**: (1) sembol alanı `<select>` değil **`<datalist>`** — katalog sembolleri yalnızca öneridir, `load_bybit_bars` bilinmeyen sembolü ilk koşuda API'den çeker, kapalı liste kullanıcıyı kataloğa hapsederdi; öneriler **sadece linear** kategoriden, çünkü `BybitBarsAdapter._recipe` her tarifi `category="linear"` kurar ve inverse/spot bir sembol yanlış piyasadan çekilirdi. (2) timeframe listesi `BYBIT_ALL_INTERVALS` etiketlerinden türer — adaptörün `_interval_code`'u ile aynı tablo, yani sunulan her etiket tanımı gereği yüklenebilir. (3) çipte toggle ve ✕ **kardeş** öğeler: `hx-delete`'i `hx-patch`'li çipin İÇİNE koymak tek tıkta iki istek attırıyordu. Silme, toggle'ın "en az bir enstrüman aktif kalmalı" kuralını miras alır; sembol tekil (rota `{symbol}` ile eşler, ikinci kayıt ayırt edilemezdi). Katalog taraması `_ctx`'te her blok render'ında koştuğundan 60 sn TTL ile cache'lendi (`/data`'dan yeni indirilen sembol yeniden başlatmadan görünsün). **Testler: 588 geçti / 3 atlandı** (4 yeni), `ruff check .` temiz; canlı sunucuda ekle/çift-ekle/geçersiz-sembol/geçersiz-TF/sil/son-aktif-koruması uçtan uca sürüldü. **NautilusTrader kütüphanesine dokunulmadı.**
 
+## Köprünün kod yakası denetlenmiyor
+
+Bu tablonun ikinci yarısı modül başlıklarındaki `Wiki References` bloklarıdır
+ve `wiki_tools lint` onları HİÇ taramaz. Ölçüldü (2026-08-18): lint altı
+kategoride de sıfır verirken kod yakasında 373 bağın 32'si çözülmüyordu —
+tamamı kişisel vault'ta var olan sayfa adlarının bu depoya kopyalanmasından.
+Ayrıntı ve kapatma yolu: [[kod_dokuman_koprusu_denetlenmiyor]].
+
 <!-- BACKLINKS:BEGIN -->
 ## Referenced by
 
 - [[getting_started_roadmap]]
 - [[import_aninda_yakalanan_referans]]
+- [[kod_dokuman_koprusu_denetlenmiyor]]
 - [[llm_maliyet_kaldiraclari]]
 - [[nau_deepr_toplu_sertlestirme_2026_08]]
 - [[nau_guvenlik_dayaniklilik_duzeltmeleri]]

@@ -16,7 +16,7 @@ bağımlı olur ve asıl iddiayı sınamaz.
 
 Wiki References
 ---------------
-See: [[multi_symbol_generalization]], [[deepr_skill]]
+See: [[multi_symbol_generalization]], [[nau_auto_kosusu_755b7880_2026_08_17]]
 """
 
 from __future__ import annotations
