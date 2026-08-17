@@ -325,3 +325,118 @@ class TestRoute:
         r = client.get("/tearsheet?src=log&ts=2026-08-02T17:13:48.513747%2B00:00")
         assert "Buy &amp; Hold" in r.text and "45.02%" in r.text
         assert "buy &amp; hold -53.12%" in r.text  # sub-line on the drawdown tile
+
+
+# ── Blocks paneli ───────────────────────────────────────────────────────────
+
+
+class TestBlocksPanel:
+    """Tear sheet "bu koşu NE yaptı"yı sayılarla anlatıyordu; "hangi STRATEJİ
+    koştu" sorusunun cevabı yalnız başlıktaki addı.
+
+    Kart anatomisi Strategy Builder · Canvas'tan alındı (rol çipi + kalın ad +
+    soluk parametre satırı) — aynı nesne için iki ayrı görsel dil, okuyanı
+    eşleştirme işine sokardı.
+    """
+
+    _BLOCKS = [
+        {"role": "exit", "type": "rsi_exit", "params": {"period": 14, "oversold": 40}},
+        {
+            "role": "entry",
+            "type": "ema_adx",
+            "params": {"ema_fast": 20, "ema_slow": 50, "adx_min": 25},
+        },
+    ]
+
+    def _view(self, **over):
+        from web.tearsheet import tearsheet_view
+
+        kw = dict(title="t", metrics={"pnl": 1.0}, blocks=self._BLOCKS)
+        kw.update(over)
+        return tearsheet_view(**kw)
+
+    def test_flow_order_is_canvas_order_not_record_order(self):
+        """Kayıtta exit önce geliyor; Canvas akışı ENTRY → EXIT. Panel bir AKIŞ
+        anlatıyor, kaydın diziliş kazasını değil."""
+        v = self._view()
+
+        badges = [b["badge"] for b in v["blocks"]]
+        assert badges == ["ENTRY · LONG", "EXIT"]
+
+    def test_params_keep_their_recorded_order(self):
+        """Alfabetik dizmek aynı bloğu iki koşuda iki farklı biçimde
+        gösterirdi ve kartlar karşılaştırılamaz hâle gelirdi."""
+        v = self._view()
+
+        assert v["blocks"][0]["detail"] == "ema_fast=20 · ema_slow=50 · adx_min=25"
+
+    def test_a_long_param_dict_is_truncated_with_a_count(self):
+        from web.tearsheet import _param_line
+
+        line = _param_line({f"p{i}": i for i in range(9)})
+
+        assert line.endswith("+5"), line
+        assert line.count("·") == 4
+
+    def test_data_and_trend_cards_come_before_the_rules(self):
+        v = self._view(
+            spec={
+                "_symbol": "BTCUSDT",
+                "_timeframe": "1h",
+                "trend_filter": True,
+                "trend_ema_period": 200,
+                "trend_interval": "4h",
+            }
+        )
+
+        badges = [b["badge"] for b in v["blocks"]]
+        assert badges[:2] == ["DATA", "TREND"]
+        assert v["blocks"][0]["label"] == "BTCUSDT"
+        assert "len=200" in v["blocks"][1]["detail"]
+
+    def test_the_risk_card_reads_like_the_canvas_one(self):
+        v = self._view(
+            spec={
+                "trade_size_mode": "atr_risk",
+                "trade_size_atr_risk": 0.7,
+                "use_bracket": True,
+                "sl_type": "atr",
+                "sl_value": 2,
+                "tp_type": "rr",
+                "tp_value": 1.8,
+                "allow_short": True,
+            }
+        )
+
+        risk = [b for b in v["blocks"] if b["badge"] == "RISK"]
+        assert len(risk) == 1
+        assert risk[0]["detail"] == "risk 0.7×ATR · SL 2×ATR · TP 1.8R · short ok"
+        assert v["blocks"][-1]["badge"] == "RISK", "risk kartı akışın sonunda"
+
+    def test_a_record_without_blocks_says_so_instead_of_showing_an_empty_panel(self):
+        v = self._view(blocks=None, spec=None)
+
+        assert v["has_blocks"] is False
+        assert v["blocks"] == []
+        assert any("does not store the strategy's block list" in n for n in v["notes"])
+
+    def test_the_error_view_carries_the_same_keys(self):
+        """Şablon iki modeli de aynı anahtarlarla okuyor; hata görünümünde
+        eksik bir anahtar `UndefinedError` demek."""
+        from web.tearsheet import tearsheet_error, tearsheet_view
+
+        err = tearsheet_error("nope")
+        ok = tearsheet_view(title="t", metrics={})
+
+        assert set(err) == set(ok)
+
+    def test_the_panel_renders_in_the_fragment(self):
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parents[1]
+        html = (root / "web/templates/fragments/tearsheet.html").read_text(
+            encoding="utf-8"
+        )
+
+        assert "tsh-blocks" in html and "ts.has_blocks" in html
+        assert "tsh-blk-badge" in html and "tsh-blk-detail" in html

@@ -75,6 +75,154 @@ def _is_num(v: Any) -> bool:
     return isinstance(v, (int, float)) and not (isinstance(v, float) and math.isnan(v))
 
 
+# ── blocks panel ────────────────────────────────────────────────────────────
+#
+# Tear sheet "bu koşu NE yaptı" sorusunu sayılarla cevaplıyordu; "hangi
+# STRATEJİ koştu" sorusunun cevabı yalnız başlıktaki addı. İki koşuyu
+# karşılaştıran kişi metriklere bakıp spec'i hatırlamak zorundaydı.
+#
+# Kartların anatomisi Strategy Builder · Canvas'tan alındı (bkz. ekran
+# görüntüsü, 2026-08-17): büyük harfli rol çipi + kalın blok adı + soluk tek
+# satır parametre. Aynı görsel dilin iki yerde durması bilinçli — operatör
+# Canvas'ta kurduğu şeyi raporda aynı biçimde görsün. Akış sırası da Canvas'ın
+# soldan sağa dizilimi: DATA → TREND → ENTRY → EXIT → RISK.
+#
+# Not: `strategy_studio.graph.to_graph` Studio tanımı için bu node modelini
+# ZATEN üretiyor. Burada onu çağırmıyoruz çünkü tear sheet'in üç kaynağından
+# ikisi (log, session) composer spec'i taşıyor — düz bir `blocks` listesi, o
+# tipin StrategyDefinition'a çevrilmiş hâli değil. İki ayrı veri modeli, aynı
+# görsel sözleşme.
+_ROLE_BADGE = {
+    "entry": "ENTRY · LONG",
+    "exit": "EXIT",
+    "risk": "RISK",
+    "regime": "IF · REGIME",
+    "sub_entry": "REGIME · ENTRY",
+    "sub_exit": "REGIME · EXIT",
+    "filter": "FILTER",
+    "allocation": "ALLOCATION",
+}
+_ROLE_ORDER = {
+    "regime": 0,
+    "entry": 1,
+    "sub_entry": 2,
+    "exit": 3,
+    "sub_exit": 4,
+    "filter": 5,
+    "allocation": 6,
+    "risk": 7,
+}
+
+
+def _param_line(params: Any, limit: int = 4) -> str:
+    """`{'ema_fast': 20, 'adx_min': 25}` → ``ema_fast=20 · adx_min=25``.
+
+    Sıra KAYITTAKİ sıra; alfabetik dizmek aynı bloğu iki koşuda iki farklı
+    biçimde gösterirdi ve kartlar karşılaştırılamaz hâle gelirdi.
+    """
+    if not isinstance(params, dict) or not params:
+        return ""
+    parts = []
+    for k, v in list(params.items())[:limit]:
+        if isinstance(v, float):
+            v = f"{v:g}"
+        parts.append(f"{k}={v}")
+    if len(params) > limit:
+        parts.append(f"+{len(params) - limit}")
+    return " · ".join(parts)
+
+
+def _risk_detail(spec: dict) -> str:
+    """Canvas'ın "Position & risk" kartının tek satırı."""
+    bits: list[str] = []
+    mode = spec.get("trade_size_mode")
+    if mode == "percent" and _is_num(spec.get("trade_size_percent")):
+        bits.append(f"size {spec['trade_size_percent']:g}% equity")
+    elif mode == "usdt" and _is_num(spec.get("trade_size_usdt")):
+        bits.append(f"size {spec['trade_size_usdt']:g} USDT")
+    elif mode == "atr_risk" and _is_num(spec.get("trade_size_atr_risk")):
+        bits.append(f"risk {spec['trade_size_atr_risk']:g}×ATR")
+    elif _is_num(spec.get("trade_size")):
+        bits.append(f"size {spec['trade_size']:g}")
+    if spec.get("use_bracket"):
+        sl, tp = spec.get("sl_type"), spec.get("tp_type")
+        if sl and sl != "off":
+            bits.append(
+                f"SL {spec.get('sl_value', '')}{'×ATR' if sl == 'atr' else '%'}"
+            )
+        if tp and tp != "off":
+            bits.append(f"TP {spec.get('tp_value', '')}{'R' if tp == 'rr' else '%'}")
+    if spec.get("allow_short"):
+        bits.append("short ok")
+    if spec.get("order_type") and spec["order_type"] != "market":
+        bits.append(str(spec["order_type"]))
+    return " · ".join(bits)
+
+
+def blocks_view(blocks: Any, spec: dict | None = None) -> list[dict]:
+    """Composer spec'in blokları → Canvas stilinde kart listesi.
+
+    Boş liste "gösterilecek blok yok" demek; çağıran bunu `notes`'a yazar
+    (bu modülün kuralı: hesaplanamayan bölüm doldurulmaz, sebebi söylenir).
+    """
+    spec = dict(spec or {})
+    cards: list[dict] = []
+
+    sym = spec.get("_symbol") or ""
+    tf = spec.get("_timeframe") or ""
+    if sym or tf:
+        cards.append(
+            {
+                "badge": "DATA",
+                "label": str(sym or "—"),
+                "detail": str(tf or ""),
+                "kind": "data",
+            }
+        )
+
+    # Trend filtresi spec düzeyinde bir alan, blok değil — ama Canvas'ta kendi
+    # kartı var ve akışta entry'den ÖNCE geliyor (kapı görevi görüyor).
+    if spec.get("trend_filter"):
+        det = []
+        if spec.get("trend_ema_period"):
+            det.append(f"len={spec['trend_ema_period']}")
+        if spec.get("trend_interval"):
+            det.append(f"{spec['trend_interval']} — price above")
+        cards.append(
+            {
+                "badge": "TREND",
+                "label": "Trend filter",
+                "detail": " · ".join(det),
+                "kind": "filter",
+            }
+        )
+
+    rows = [b for b in (blocks or []) if isinstance(b, dict)]
+    rows.sort(key=lambda b: _ROLE_ORDER.get(str(b.get("role") or ""), 9))
+    for b in rows:
+        role = str(b.get("role") or "")
+        cards.append(
+            {
+                "badge": _ROLE_BADGE.get(role, role.upper() or "BLOCK"),
+                "label": str(b.get("type") or "—"),
+                "detail": _param_line(b.get("params")),
+                "kind": "rule",
+            }
+        )
+
+    risk = _risk_detail(spec)
+    if risk:
+        cards.append(
+            {
+                "badge": "RISK",
+                "label": "Position & risk",
+                "detail": risk,
+                "kind": "risk",
+            }
+        )
+    return cards
+
+
 def _fmt(kind: str, v: Any) -> str:
     if v is None or not _is_num(v):
         return "—"
@@ -197,6 +345,8 @@ def tearsheet_view(
     subtitle: str = "",
     notes: list[str] | None = None,
     back_label: str = "",
+    blocks: list[dict] | None = None,
+    spec: dict | None = None,
 ) -> dict:
     """Normalise one backtest into the tear sheet render model.
 
@@ -233,10 +383,19 @@ def tearsheet_view(
         # still needs a direction for the chart colour.
         pnl = metrics.get("pnl_pct") or metrics.get("net_pnl_pct") or 0
 
+    cards = blocks_view(blocks, spec)
+    if not cards:
+        notes.append(
+            "This record does not store the strategy's block list, so the "
+            "Blocks panel is empty."
+        )
+
     return {
         "title": title or "Backtest",
         "subtitle": subtitle,
         "ident": list(ident or []),
+        "blocks": cards,
+        "has_blocks": bool(cards),
         "kpis": _kpis(metrics),
         "wins_losses": _wins_losses(metrics),
         "runner": metrics.get("runner") or "",
@@ -260,6 +419,8 @@ def tearsheet_error(msg: str) -> dict:
         "title": "Tear sheet",
         "subtitle": "",
         "ident": [],
+        "blocks": [],
+        "has_blocks": False,
         "kpis": [],
         "wins_losses": "",
         "runner": "",

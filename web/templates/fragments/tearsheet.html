@@ -80,6 +80,25 @@
   <div class="tsh-empty">No equity curve was stored for this run.</div>
   {% endif %}
 
+  {# Bloklar paneli — kart anatomisi Strategy Builder · Canvas'tan: büyük harfli
+     rol çipi + kalın blok adı + soluk parametre satırı. Aynı görsel dilin iki
+     yerde durması bilinçli: operatör Canvas'ta kurduğu şeyi raporda aynı
+     biçimde görsün. Dizilim Canvas'ın soldan sağa akışı; dar ekranda yatay
+     kaydırılır (sarmalamak akış okunu anlamsız kılardı). #}
+  {% if ts.has_blocks %}
+  <div class="tsh-sec"><span class="tsh-k">Blocks</span></div>
+  <div class="tsh-blocks">
+    {% for b in ts.blocks %}
+    <div class="tsh-blk tsh-blk-{{ b.kind }}">
+      <div class="tsh-blk-badge">{{ b.badge }}</div>
+      <div class="tsh-blk-label">{{ b.label }}</div>
+      {% if b.detail %}<div class="tsh-blk-detail">{{ b.detail }}</div>{% endif %}
+    </div>
+    {% if not loop.last %}<div class="tsh-blk-arrow">›</div>{% endif %}
+    {% endfor %}
+  </div>
+  {% endif %}
+
   {% if ts.notes %}
   <ul class="tsh-notes">
     {% for n in ts.notes %}<li>{{ n }}</li>{% endfor %}

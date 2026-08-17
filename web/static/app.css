@@ -2944,6 +2944,62 @@ body.tsh-open { overflow: hidden; }
 }
 .tsh-heat-c.empty { background: #0f1216; }
 
+/* Bloklar paneli. Kart anatomisi Strategy Builder · Canvas'ın node'larıyla
+   AYNI: sol kenarda rol rengi, üstte büyük harfli çip, altında kalın ad ve
+   soluk parametre satırı. Operatörün Canvas'ta kurduğu şeyi raporda aynı
+   biçimde görmesi için — iki ayrı görsel dil, aynı nesne için, okuyanı
+   eşleştirme işine sokar. */
+.tsh-blocks {
+  display: flex;
+  align-items: stretch;
+  gap: 6px;
+  /* Sarmalama YOK: akış oku soldan sağa bir sıra anlatıyor, satır atlayınca
+     ok yanlış yeri gösterir. Dar ekranda yatay kaydırılır. */
+  overflow-x: auto;
+  padding: 2px 0 6px;
+}
+.tsh-blk {
+  flex: 0 0 auto;
+  min-width: 132px;
+  max-width: 210px;
+  background: #0f1216;
+  border: 1px solid var(--border, #23282f);
+  border-left: 2px solid var(--text-muted);
+  border-radius: 4px;
+  padding: 7px 9px;
+}
+.tsh-blk-data { border-left-color: #4b5563; }
+.tsh-blk-filter { border-left-color: #a78bfa; }
+.tsh-blk-rule { border-left-color: #3b82f6; }
+.tsh-blk-risk { border-left-color: #f0b429; }
+.tsh-blk-badge {
+  font-family: var(--mono);
+  font-size: 8.5px;
+  letter-spacing: 0.08em;
+  color: var(--text-muted);
+  margin-bottom: 3px;
+}
+.tsh-blk-label {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
+}
+.tsh-blk-detail {
+  font-family: var(--mono);
+  font-size: 9.5px;
+  line-height: 1.5;
+  color: var(--text-muted);
+  margin-top: 3px;
+  overflow-wrap: anywhere;
+}
+.tsh-blk-arrow {
+  flex: 0 0 auto;
+  align-self: center;
+  color: var(--text-muted);
+  font-size: 14px;
+}
+
 .tsh-notes {
   margin: 18px 0 0;
   padding-left: 16px;

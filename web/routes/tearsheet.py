@@ -96,6 +96,10 @@ def _log_view(ts: str) -> dict:
         subtitle=f"{sym} · {tf}",
         metrics=rec.get("metrics") or {},
         ident=ident,
+        blocks=spec.get("blocks") or [],
+        # Sembol/timeframe DATA kartına gidiyor; spec'in kendisinde yok, bar
+        # bilgisinde var. Alt çizgili anahtarlar `blocks_view`'a özel.
+        spec={**spec, "_symbol": sym, "_timeframe": tf},
     )
 
 
@@ -156,6 +160,11 @@ def _session_view(run_id: str, index: int) -> dict:
         equity=ev.get("equity_curve") or [],
         equity_dates=ev.get("equity_dates") or [],
         ident=ident,
+        # AUTO oturum kaydı blokları `spec_blocks` altında taşıyor; spec'in
+        # geri kalanı (risk/bracket alanları) kayıtta YOK, o yüzden RISK kartı
+        # bu kaynakta çıkmaz — uydurmak yerine eksik bırakılıyor.
+        blocks=ev.get("spec_blocks") or [],
+        spec={"_symbol": sym, "_timeframe": tf},
     )
 
 
