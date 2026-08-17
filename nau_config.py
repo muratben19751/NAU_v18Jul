@@ -417,6 +417,16 @@ _AGENT = [
         "Mühürlü holdout için asgari işlem sayısı.",
     ),
     _v(
+        "AGENT_HOLDOUT_FRACTION",
+        "float",
+        "0.15",
+        "web.routes.agent_backtest",
+        "Mühürlü pencerenin örnekleme oranı. Pencere sabit takvim DEĞİL: "
+        "max(60 gün, oran × örneklem süresi). 22 yıllık seride 60 gün "
+        "mühürlemek örneklemin %0,7'siydi ve düşük frekanslı adaylar için kapıyı "
+        "ulaşılamaz kılıyordu (1-DAY'de 41 bar içinde 20 giriş = barların %49'u).",
+    ),
+    _v(
         "AGENT_WINLESS_ROUND_LIMIT",
         "int",
         "3",

@@ -236,6 +236,34 @@ _KNOWN_CONTINUOUS_TAIL_GAPS = {
 # declared. The result is NOT BOUND to the decision, shown for information only.
 OOS_HOLDOUT_DAYS = 60
 
+# Mühürlü pencere SABİT TAKVİM DEĞİL, örneklemin oranı — 60 gün yalnızca taban.
+#
+# Kapı iki bağımsız sabitle tanımlıydı: `OOS_HOLDOUT_DAYS` (takvim günü) ve
+# `HOLDOUT_MIN_TRADES` (sayım). Aralarındaki dönüşüm katsayısı stratejinin işlem
+# hızı, ve o hız serbest bir değişken. ÖLÇÜLDÜ (QQQC, 2026-08-17):
+#
+#   TF        mühürlü pencere   20 giriş için gereken oran   giriş arası
+#   1-HOUR    287 bar           %7                           14,3 bar
+#   4-HOUR     82 bar           %24                           4,1 bar
+#   1-DAY      41 bar           %49                           2,0 bar
+#
+# Kazanan 1-DAY'di: kapı ondan barların YARISINDA yeni pozisyon açmasını istedi.
+# Doğal hızı yılda 2,3 işlem; 20 işlem için gereken pencere ≈ 8,7 yıl. Üstelik
+# önceki kapılar (maliyet-ayarlı benchmark) frekansı DÜŞÜRÜYOR — sistem aradığı
+# profili üretip en sonda kendi eliyle eliyordu, hem de zincirin tamamı
+# koştuktan sonra (127 dk, $9,19).
+#
+# 22 yıllık bir seride 60 gün mühürlemek örneklemin %0,7'si. Oran kuralı VERİDEN
+# BAĞIMSIZ olduğu için sızıntı yaratmaz — mühür zaten adaydan önce atılıyor —
+# ama uzun seride pencere anlamlı hâle gelir. Taban korunuyor: kısa örneklemde
+# davranış değişmiyor (1 yıllık seride %15 ≈ 55 gün < 60).
+HOLDOUT_SAMPLE_FRACTION = float(os.environ.get("AGENT_HOLDOUT_FRACTION", "0.15"))
+
+# Bir girişin "makul" sayıldığı azami sıklık: bundan sık giriş istemek, giriş +
+# tutma + çıkış üçlüsü yüzünden trend stratejileri için tanım gereği imkânsız.
+# Yalnızca UYARI eşiği — hiçbir kapıyı oynatmaz.
+HOLDOUT_PLAUSIBLE_ENTRY_RATE = 1 / 3
+
 # Sealed-holdout warmup lead-in (bars). Custom-block indicators need up to
 # NAU_WINDOW=260 bars before their FIRST signal can exist; running the winner
 # on the bare 60-day slice left coarser TFs below warmup (4h≈120, 1d≈42 bars)
@@ -550,7 +578,12 @@ def _effective_run_config() -> dict:
         "winless_round_limit": _WINLESS_ROUND_LIMIT,
         "equity_pct": AGENT_EQUITY_PCT,
         "starting_cash": STARTING_CASH,
+        # TABAN, sabit pencere değil: gerçek genişlik örneklemin oranı
+        # (`holdout_window_days`) ve koşunun kaydında `winner_holdout.days`
+        # olarak ÖLÇÜLEN değer duruyor. Anahtar adı korundu — denetim defterini
+        # okuyan mevcut testler ve eski kayıtlar bunu bekliyor.
         "holdout_days": OOS_HOLDOUT_DAYS,
+        "holdout_sample_fraction": HOLDOUT_SAMPLE_FRACTION,
         "holdout_warmup_bars": HOLDOUT_WARMUP_BARS,
         "holdout_min_trades": HOLDOUT_MIN_TRADES,
         "holdout_requires": {
@@ -2381,9 +2414,12 @@ def _run_promotion_gate(
                 _n, _pnl_fr, _sharpe = _sealed_holdout_stats(
                     _hold_res.trades, int(_hold_start.timestamp())
                 )
-                _sealed_prices = _hold_run_df[_hold_run_df.index >= _hold_start][
-                    "close"
-                ]
+                _sealed = _hold_run_df[_hold_run_df.index >= _hold_start]
+                _sealed_prices = _sealed["close"]
+                _sealed_bars = len(_sealed)
+                _sealed_days = (
+                    (_sealed.index[-1] - _sealed.index[0]).days if _sealed_bars else 0
+                )
                 from app_constants import benchmark_and_excess
 
                 _bench_excess = (
@@ -2404,7 +2440,11 @@ def _run_promotion_gate(
                     "benchmark_return_pct": round(_benchmark_fr, 6),
                     "excess_pnl_pct": round(_excess_fr, 6),
                     "n_trades": _n,
-                    "days": OOS_HOLDOUT_DAYS,
+                    # GERÇEK mühürlü genişlik — sabit `OOS_HOLDOUT_DAYS` değil.
+                    # Pencere artık örneklemin oranı (`holdout_window_days`), ve
+                    # burada sabiti raporlamak kayıt ile ölçümü ıraksatırdı.
+                    "days": _sealed_days,
+                    "bars": _sealed_bars,
                     "warmup_bars": HOLDOUT_WARMUP_BARS,
                     # A count, not a boolean question. 0 entries means
                     # the layer measured nothing; but so, in practice,
@@ -2421,17 +2461,25 @@ def _run_promotion_gate(
                     _n, _pnl_fr, _sharpe, _excess_fr, metrics=_hm
                 )
                 if _n < HOLDOUT_MIN_TRADES:
+                    # Mesaj ARİTMETİĞİ de söylüyor: "20 lazımdı, 0 geldi" tek
+                    # başına eşiğin sert olduğunu ima ediyordu; asıl bilgi
+                    # pencerenin kaç bar olduğu ve bunun hangi giriş sıklığını
+                    # gerektirdiği. Operatör eşiği mi yoksa pencereyi mi
+                    # değiştireceğine ancak bununla karar verebilir.
+                    _rate, _ = holdout_feasibility(_sealed_bars)
                     _add_step(
                         run_id,
-                        f"⚠ Sealed OOS ({OOS_HOLDOUT_DAYS}d): {_n} trade "
-                        f"— ÖLÇÜLEMEDİ (en az {HOLDOUT_MIN_TRADES} giriş "
-                        "gerekiyor; warmup lead-in dahil)",
+                        f"⚠ Sealed OOS ({_sealed_days}d / {_sealed_bars:,} bar): "
+                        f"{_n} trade — ÖLÇÜLEMEDİ. {HOLDOUT_MIN_TRADES} giriş "
+                        f"gerekiyordu, yani barların %{100 * _rate:.0f}'inde "
+                        f"(her {_sealed_bars / max(HOLDOUT_MIN_TRADES, 1):.1f} "
+                        "barda bir) giriş — warmup lead-in dahil",
                     )
                 else:
                     _sh_txt = f"{_sharpe:.2f}" if _sharpe is not None else "—"
                     _add_step(
                         run_id,
-                        f"🔒 Sealed OOS ({OOS_HOLDOUT_DAYS}d): "
+                        f"🔒 Sealed OOS ({_sealed_days}d): "
                         f"Sharpe {_sh_txt} · "
                         f"PnL {100 * _pnl_fr:.1f}% · "
                         f"Excess {100 * _excess_fr:+.1f}% · "
@@ -3019,12 +3067,20 @@ class _TfLoader:
             self.holdout_cache[iv] = (pd.concat([_lead, hold_df]), hold_df.index[0])
             df = trimmed
             self.tf_cache[iv] = df
+            _win_days = holdout_window_days(pd.concat([df, hold_df]))
             _add_step(
                 self.run_id,
                 f"🔒 Sealed holdout separated ({iv}): the last "
-                f"{OOS_HOLDOUT_DAYS} days ({len(hold_df):,} bars) will be "
+                f"{_win_days} days ({len(hold_df):,} bars) will be "
                 f"withheld until a winner is declared — {len(df):,} bars remaining",
             )
+            # Kapının ULAŞILABİLİR olup olmadığı ŞİMDİ biliniyor: pencere kaç
+            # bar ve kaç giriş isteniyor. Bunu burada söylemek, aynı bilgiyi
+            # zincirin tamamı koştuktan (saatler + dolarlar) sonra vermekten
+            # iyidir — eski davranış tam olarak oydu.
+            _rate, _warn = holdout_feasibility(len(hold_df))
+            if _warn:
+                _add_step(self.run_id, f"⚠ {_warn}")
         else:
             self.holdout_cache[iv] = None
             self.tf_cache[iv] = df
@@ -3313,8 +3369,43 @@ def _ms_score_factor(rob: dict | None) -> float:
     return 0.15 + (x + 0.5) * 0.85
 
 
+def holdout_window_days(df) -> int:
+    """Mühürlü pencerenin genişliği (gün) — örneklemin oranı, 60 gün tabanlı.
+
+    Bkz. ``HOLDOUT_SAMPLE_FRACTION``: sabit takvim penceresi ile sayım cinsinden
+    bir eşiği birlikte kullanmak, kapıyı düşük frekanslı adaylar için
+    ulaşılamaz kılıyordu.
+    """
+    if df is None or len(df) == 0:
+        return OOS_HOLDOUT_DAYS
+    span_days = (df.index[-1] - df.index[0]).days
+    return max(OOS_HOLDOUT_DAYS, int(span_days * HOLDOUT_SAMPLE_FRACTION))
+
+
+def holdout_feasibility(n_bars: int) -> tuple[float, str | None]:
+    """(gereken giriş/bar oranı, uyarı) — ADAYDAN BAĞIMSIZ.
+
+    Kapının ulaşılabilirliği mühür anında bilinebilir: pencere kaç bar ve kaç
+    giriş isteniyor. Bunu o anda söylemek, aynı bilgiyi zincirin tamamı
+    koştuktan saatler sonra vermekten iyidir. Uyarı yalnız uyarıdır — eşiği
+    oynatmaz (DeepR/AUTO 755b7880, 2026-08-17).
+    """
+    if n_bars <= 0:
+        return 1.0, "sealed window has no bars"
+    rate = HOLDOUT_MIN_TRADES / n_bars
+    if rate <= HOLDOUT_PLAUSIBLE_ENTRY_RATE:
+        return rate, None
+    every = n_bars / HOLDOUT_MIN_TRADES
+    return rate, (
+        f"the sealed gate needs {HOLDOUT_MIN_TRADES} entries in {n_bars:,} bars "
+        f"— an entry every {every:.1f} bars ({rate:.0%} of them). Only a very "
+        "high-frequency strategy can reach it on this timeframe; anything "
+        "slower will end as ÖLÇÜLEMEDİ after the whole chain has run"
+    )
+
+
 def _split_holdout(df, min_bars: int = 200):
-    """L32: seal off the last OOS_HOLDOUT_DAYS days as a sealed slice.
+    """L32: seal off the trailing window (see ``holdout_window_days``).
 
     Returns ``(trimmed_df, holdout_df | None)``. If the remaining (trimmed) data
     falls below ``min_bars``, the holdout is SKIPPED and the full df is returned
@@ -3326,7 +3417,7 @@ def _split_holdout(df, min_bars: int = 200):
 
     if df is None or len(df) == 0:
         return df, None
-    cutoff = df.index[-1] - pd.Timedelta(days=OOS_HOLDOUT_DAYS)
+    cutoff = df.index[-1] - pd.Timedelta(days=holdout_window_days(df))
     # M674: NAU purge gap (WF_EMBARGO_DAYS) between train and holdout — so
     # patterns/lookback learned around the cutoff don't leak into the first days
     # of the holdout (NAU fit_end = oos_start − WF_EMBARGO_DAYS).
