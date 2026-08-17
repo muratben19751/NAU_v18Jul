@@ -723,6 +723,26 @@ def wfo_aggregate(windows: list[dict]) -> dict:
     oos_pnl_opt = _mean(("test_metrics", "pnl"))
     oos_pnl_naive = _mean(("test_metrics_naive", "pnl"))
 
+    # Paydayı KARAR metriğinden say, sabit bir anahtardan değil. İlk sürüm
+    # yalnız `test_metrics_naive`'e bakıyordu ve optimize edilebilir sayısal
+    # parametresi OLMAYAN bir spec'te o bacak hiç üretilmiyor — dördü de sayı
+    # üretmiş sağlıklı bir aggregate'te etiket "0/4 · ÇOĞU SAYI ÜRETMEDİ"
+    # diyordu (üretildi 2026-08-17). Alarm tarafına yalan söyleyen bir gösterge,
+    # operatörü "bu satır durduk yere bağırıyor" diye eğitir; gerçekten
+    # bağırdığında kimse bakmaz.
+    #
+    # Geri düşme kuralı YENİDEN YAZILMIYOR: `auto.robustness.wfo_test` onun tek
+    # sahibi ve buradan çağrılıyor. İçe aktarma fonksiyon içinde, çünkü
+    # `auto.robustness` bu modülden `run_monte_carlo` alıyor — modül düzeyinde
+    # döngü olurdu.
+    from auto.robustness import wfo_test as _decision_metrics
+
+    scored_windows = sum(
+        1
+        for w in windows
+        if (v := _decision_metrics(w).get("sharpe")) is not None and not _isnan_local(v)
+    )
+
     # M28: NAU dispersion penalty — mean − 0.5·std (variance across windows is
     # penalized; a candidate that looks 'robust' from a single lucky window falls).
     # Consumer: agent _robustness_passed reads it via .get (backward compatible).
@@ -814,10 +834,8 @@ def wfo_aggregate(windows: list[dict]) -> dict:
         # koşularda %60,7). `scored_label` ekrana basılacak tek satır; oran
         # düştükçe okuyanın güveni de düşsün diye metnin kendisi değişiyor.
         "windows_total": len(windows),
-        "windows_scored": _scored.get("test_metrics_naive_sharpe", (0, 0))[0],
-        "scored_label": _scored_label(
-            *_scored.get("test_metrics_naive_sharpe", (0, len(windows)))
-        ),
+        "windows_scored": scored_windows,
+        "scored_label": _scored_label(scored_windows, len(windows)),
     }
 
 

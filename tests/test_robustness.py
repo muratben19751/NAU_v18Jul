@@ -77,7 +77,13 @@ class TestMonteCarloBootstrap:
         sessizce geri alırdı."""
         from pathlib import Path
 
-        for src in (Path("auto/robustness.py"), Path("sandbox.py")):
+        # Kök, DOSYAYA göre: `Path("server.py")` sessizce cwd'ye bağlanır ve
+        # `cd tests && pytest` ile FileNotFoundError verirdi (ölçüldü 2026-08-17).
+        # `from conftest import ...` de çözüm değil — `tests/browser/conftest.py`
+        # aynı adı taşıyor ve tam süit koşumunda sys.path'te öne geçiyor.
+        root = Path(__file__).resolve().parents[1]
+        for name in ("auto/robustness.py", "sandbox.py"):
+            src = root / name
             text = src.read_text(encoding="utf-8")
             assert "iid_bootstrap" not in text, f"{src} yöntemi IID'ye sabitliyor"
 
@@ -312,6 +318,51 @@ class TestWfoMeanDenominatorIsVisible:
         assert "ÇOĞU SAYI ÜRETMEDİ" not in half["scored_label"]
         assert half["scored_label"].startswith("3/5")
         assert full["scored_label"] == "3/3 pencere"
+
+    def test_a_spec_with_no_naive_leg_is_not_slandered(self):
+        """`wfo_test`'in docstring'i şunu yazıyor: optimize edilebilir sayısal
+        parametresi olmayan bir spec'te arama uzayı boş kalır, naive bacak hiç
+        koşmaz ve `test_metrics` ZATEN optimize edilmemiş koşudur.
+
+        İlk sürüm paydayı sabit `test_metrics_naive`'den okuyordu; o bacak
+        olmayınca dördü de sayı üretmiş sağlıklı bir aggregate'te etiket
+        "0/4 · ÇOĞU SAYI ÜRETMEDİ" diyordu. Alarm tarafına yalan söyleyen bir
+        gösterge, operatörü "bu satır durduk yere bağırıyor" diye eğitir."""
+        from backtest_robustness import wfo_aggregate
+
+        agg = wfo_aggregate([{"test_metrics": {"sharpe": 1.0, "n_trades": 9}}] * 4)
+
+        assert agg["windows_scored"] == 4
+        assert agg["scored_label"] == "4/4 pencere"
+        assert "ÇOĞU SAYI ÜRETMEDİ" not in agg["scored_label"]
+
+    def test_the_naive_leg_wins_when_both_exist(self):
+        """İki bacak varken karar metriği naive'dir (kataloğa yazılan spec o).
+        Payda da onu saymalı, yoksa etiket başka bir sayının paydası olur."""
+        from backtest_robustness import wfo_aggregate
+
+        def w(naive):
+            return {
+                "test_metrics": {"sharpe": 9.0},
+                "test_metrics_naive": {"sharpe": naive},
+            }
+
+        agg = wfo_aggregate([w(1.0), w(2.0), w(float("nan")), w(None)])
+
+        assert agg["windows_scored"] == 2, "optimize bacağın 4'ü sayıldı"
+        assert agg["scored_label"].startswith("2/4")
+
+    def test_the_denominator_rule_is_not_a_third_copy(self):
+        """Geri düşme kuralının sahibi `auto.robustness.wfo_test`. Burada
+        yeniden yazmak, bu oturumda üç ayrı yerde kapatılan çoklu-kopya
+        kusurunun dördüncüsü olurdu."""
+        import inspect
+
+        import backtest_robustness as br
+
+        src = inspect.getsource(br.wfo_aggregate)
+        assert "from auto.robustness import wfo_test" in src
+        assert 'w.get("test_metrics_naive") or' not in src
 
     def test_the_gate_numbers_did_not_move(self):
         """Bu değişiklik RAPORLAMA: kapı eşiği değiştirilmedi. Eleme sertliğini

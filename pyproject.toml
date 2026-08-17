@@ -154,8 +154,21 @@ filterwarnings = [
 # Yükseltmek isteyen önce ölçümü yenilesin — bu depoda eşiklerin gözlemden
 # konması yerleşik bir kural.
 #
-# `fail_under` BURADA, CI komut satırında değil: yerel `pytest --cov` de aynı
-# kapıyı görsün, "CI'da kırmızı ama bende yeşil" olmasın.
+# EŞİK BURADA DEĞİL, CI ADIMINDA (`--cov-fail-under=75`). Önce buraya
+# `fail_under = 75` koymuştum, gerekçe "yerel `pytest --cov` de aynı kapıyı
+# görsün"dü; gördüğü kapı aynı değil, DAHA SIKI ve anlamsızdı:
+#
+#     pytest tests/test_engine_numeric_anchor.py --cov  ->  FAIL 10.01% < 75%
+#
+# %75, "TÜM SÜİT uygulama kodunun ne kadarını dolaşıyor" ifadesidir; bir alt
+# kümeye uygulanınca ölçtüğü şey kalmıyor ve tek dosya koşan geliştirici,
+# kodla ilgisi olmayan bir kırmızı alıyor. coverage.py'de "yalnız tam koşumda
+# uygula" anahtarı yok, o yüzden eşik tam süiti koşan yere taşındı. Buradaki
+# omit/exclude ayarları her koşumda geçerli kalıyor — onlar koşumun boyutuna
+# bağlı değil.
+#
+# `tests/test_ci_workflow_contract.py` bayrağın CI'dan sessizce düşmesini
+# engelliyor: eşik tek yerdeyse, o yer de denetlenmeli.
 [tool.coverage.run]
 branch = false
 omit = [
@@ -170,7 +183,6 @@ omit = [
 ]
 
 [tool.coverage.report]
-fail_under = 75
 skip_covered = true
 exclude_also = [
     "if TYPE_CHECKING:",

@@ -55,7 +55,7 @@ jobs:
       # yeşil" olmasın). Kapı ölçümden kondu: 2026-08-17'de tam süit uygulama
       # kodunda %79 kapsıyordu, `fail_under` 75.
       - name: Pytest (+ coverage gate)
-        run: uv run pytest -q -ra --junitxml=pytest-report.xml --cov=. --cov-report=term:skip-covered tests
+        run: uv run pytest -q -ra --junitxml=pytest-report.xml --cov=. --cov-report=term:skip-covered --cov-fail-under=75 tests
 
       # The full POST /backtest/run → progress poll → result render chain now
       # runs in the step above too: TestBacktestChainOffline drives the real

@@ -239,7 +239,12 @@ class TestTheDeploymentMarkerIsOneRule:
         """`_ACCESS_TOKEN` import anında okunur; işaret sonra konsa geç kalır."""
         from pathlib import Path
 
-        src = Path("serve.py").read_text(encoding="utf-8")
+        # Kök, DOSYAYA göre: `Path("server.py")` sessizce cwd'ye bağlanır ve
+        # `cd tests && pytest` ile FileNotFoundError verirdi (ölçüldü 2026-08-17).
+        # `from conftest import ...` de çözüm değil — `tests/browser/conftest.py`
+        # aynı adı taşıyor ve tam süit koşumunda sys.path'te öne geçiyor.
+        root = Path(__file__).resolve().parents[1]
+        src = (root / "serve.py").read_text(encoding="utf-8")
         marker = src.index('os.environ.setdefault("NAU_DEPLOYED"')
         # uvicorn.run("server:app", ...) — server bu satırda import edilir.
         assert marker < src.index('"server:app"')
@@ -276,7 +281,12 @@ class TestTheDeploymentMarkerIsOneRule:
         import inspect
         from pathlib import Path
 
-        src = Path("server.py").read_text(encoding="utf-8")
+        # Kök, DOSYAYA göre: `Path("server.py")` sessizce cwd'ye bağlanır ve
+        # `cd tests && pytest` ile FileNotFoundError verirdi (ölçüldü 2026-08-17).
+        # `from conftest import ...` de çözüm değil — `tests/browser/conftest.py`
+        # aynı adı taşıyor ve tam süit koşumunda sys.path'te öne geçiyor.
+        root = Path(__file__).resolve().parents[1]
+        src = (root / "server.py").read_text(encoding="utf-8")
         body = src[src.index("def _is_deployed") :]
         # `_is_deployed`'in KENDİ gövdesi dışında hiçbir yerde ham PM2_HOME okuması olmasın.
         own = inspect.getsource(server._is_deployed)
