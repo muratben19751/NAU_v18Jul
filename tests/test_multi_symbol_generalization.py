@@ -672,3 +672,19 @@ def test_serial_branch_scores_identically(monkeypatch):
     assert out["pass_rate"] == 0.5
     assert out["generalization_label"] == "⚠ Limited"
     assert {r["symbol"]: r["error"] for r in out["results"]}["C"] == "engine blew up"
+
+
+def test_the_wfo_and_peer_thresholds_are_the_same_number():
+    """Aynı soruya iki cevap vardı: bir WFO penceresi 3 işlemle sayılıyor,
+    4 işlemli bir peer sayılmıyordu.
+
+    Bu depoda tekrarlayan kusur tam olarak bu: aynı kural iki dosyada iki
+    kopya olarak yaşıyor ve kopyalar ıraksıyor (bkz. benchmark kapısı,
+    2026-08-16). Farklı sayılar farklı gerekçe ister; gerekçesiz fark yalnızca
+    iki dosyanın birbirinden habersiz yazılmış olmasıdır.
+    """
+    from app_constants import MIN_DECISION_TRADES
+    from auto.robustness import WFO_MIN_TRADES
+    from backtest_robustness import MIN_PEER_TRADES
+
+    assert WFO_MIN_TRADES == MIN_PEER_TRADES == MIN_DECISION_TRADES

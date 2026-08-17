@@ -1216,6 +1216,74 @@ def test_route_budget_rejects_conservative_overshoot(monkeypatch):
             ab._AGENT_PROGRESS.pop(run_id, None)
 
 
+def _budget_state(run_id, monkeypatch, **over):
+    import web.routes.agent_backtest as ab
+
+    logged: list[dict] = []
+    monkeypatch.setattr(
+        ab, "_session_log", lambda _r, kind, **kw: logged.append({"kind": kind, **kw})
+    )
+    state = {
+        "tokens_in": 10,
+        "tokens_out": 0,
+        "tokens_cache_read": 0,
+        "tokens_cache_write": 0,
+        "max_total_tokens": 1_000_000,
+        "provider_cost_usd": 0.0,
+        **over,
+    }
+    with ab._AGENT_LOCK:
+        ab._AGENT_PROGRESS[run_id] = state
+    return ab, logged
+
+
+def test_admission_stops_spending_once_the_money_cap_is_reached(monkeypatch):
+    """`_budget_breach` parayı zaten sayıyordu — ama TURLAR ARASI. Bir turun
+    içinde onlarca sağlayıcı çağrısı var ve giriş kontrolü yalnız token'a
+    bakıyordu; tavan aşıldıktan sonra koşu turun sonuna kadar harcamaya devam
+    edebiliyordu. Tavan, aşıldığını öğrendiğin an değil, bir sonraki harcamayı
+    durdurduğun an tavandır."""
+    run_id = "cost-cap-reached"
+    ab, logged = _budget_state(
+        run_id, monkeypatch, max_total_cost_usd=5.0, provider_cost_usd=5.01
+    )
+    try:
+        with pytest.raises(ab.AgentBudgetReached, match=r"cost ceiling"):
+            ab._admit_llm_budget(run_id, {"total_token_bound": 15})
+        assert any(e["kind"] == "llm_budget_rejected" for e in logged), (
+            "reddedilen çağrı deftere yazılmadı"
+        )
+    finally:
+        with ab._AGENT_LOCK:
+            ab._AGENT_PROGRESS.pop(run_id, None)
+
+
+def test_admission_lets_a_run_under_the_money_cap_through(monkeypatch):
+    run_id = "cost-cap-ok"
+    ab, _logged = _budget_state(
+        run_id, monkeypatch, max_total_cost_usd=5.0, provider_cost_usd=1.25
+    )
+    try:
+        ab._admit_llm_budget(run_id, {"total_token_bound": 15})  # yükselmemeli
+    finally:
+        with ab._AGENT_LOCK:
+            ab._AGENT_PROGRESS.pop(run_id, None)
+
+
+def test_a_blind_run_is_not_stopped_by_an_unmeasurable_cost(monkeypatch):
+    """Maliyet hiçbir modelde okunamıyorsa para tavanı tetiklenemez; o durumda
+    tek koruma token tavanıdır (bkz. `_budget_breach` körlük şartı). Giriş
+    kontrolü de aynı şeyi yapmalı — 0.0'ı "tavan aşıldı" saymak, ölçemediğimiz
+    için koşuyu kesmek olurdu."""
+    run_id = "cost-cap-blind"
+    ab, _logged = _budget_state(run_id, monkeypatch, max_total_cost_usd=0.01)
+    try:
+        ab._admit_llm_budget(run_id, {"total_token_bound": 15})
+    finally:
+        with ab._AGENT_LOCK:
+            ab._AGENT_PROGRESS.pop(run_id, None)
+
+
 def test_external_auto_normalizes_candidate_exposure(monkeypatch):
     import web.routes.agent_backtest as ab
 

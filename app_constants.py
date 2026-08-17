@@ -285,6 +285,26 @@ def _stamp_annualized_comparison(
 
 
 # ---------------------------------------------------------------------------
+# "Yeterince işlem" — bir sonucun karara girmeye hak kazanması için eşik
+# ---------------------------------------------------------------------------
+#
+# Aynı soruya iki farklı cevap vardı: bir WFO penceresi 3 işlemle sayılıyordu,
+# aynı anda 4 işlemli bir peer sayılmıyordu (`MIN_PEER_TRADES = 5`). Oysa soru
+# tek: "bu kadar işlemden bir sonuç çıkar mı?" Farklı sayılar farklı gerekçe
+# ister; gerekçesi olmayan fark yalnızca iki dosyanın birbirinden habersiz
+# yazılmış olmasıdır.
+#
+# 5 seçildi çünkü daha gevşek olan taraf hizalandı, gevşek olan taraf değil.
+# Bedeli ÖLÇÜLDÜ (2026-08-17, diskteki AUTO artefaktlarındaki 178 WFO
+# penceresi): pencere başına işlem dağılımı {0: 70, 1: 88, 2: 20} — 3-4 işlem
+# bandında TEK pencere yok, yani eşiği 3'ten 5'e çekmek hiçbir pencereyi
+# elemiyor. (Aynı ölçüm ayrı bir şeyi de gösteriyor: bu koşularda hiçbir WFO
+# penceresi 3 işleme bile ulaşmamış, yani WFO fiilen hiç konuşmuyor. Bu pencere
+# boyutlandırmasının sorunu, eşiğin değil.)
+MIN_DECISION_TRADES = 5
+
+
+# ---------------------------------------------------------------------------
 # Kabul kapısı — yukarıdaki alanları OKUYAN tek kural (bkz. modül docstring'i)
 # ---------------------------------------------------------------------------
 

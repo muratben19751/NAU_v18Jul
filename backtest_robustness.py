@@ -19,7 +19,7 @@ from datetime import UTC, timedelta
 import numpy as np
 import pandas as pd
 
-from app_constants import benchmark_rejection
+from app_constants import MIN_DECISION_TRADES, benchmark_rejection
 from app_constants import env_float as _env_float
 
 # Embargo (purge) gap, in days (M28), placed between train and test (and between
@@ -74,7 +74,9 @@ def peer_is_superior(r: dict) -> bool:
 # Bir peer'ın pass_rate paydasına girmesi için gereken en az işlem. Eksik piyasa
 # verisi, geniş bir ralli sırasında nominal kâr edildi diye sessizce geçişe
 # dönüşmemeli — ama eleme de sessiz olmamalı (bkz. peer_exclusion_reason).
-MIN_PEER_TRADES = 5
+# Sayının kendisi artık app_constants'ta: WFO penceresi 3, peer 5 diyordu ve
+# ikisi aynı soruyu soruyor.
+MIN_PEER_TRADES = MIN_DECISION_TRADES
 
 
 def peer_exclusion_reason(r: dict) -> str | None:
@@ -808,29 +810,52 @@ def run_monte_carlo(
     n_sims: int = 500,
     starting_cash: float = 1_000_000.0,
     progress_fn=None,
-    method: str = "iid_bootstrap",
+    method: str = "block_bootstrap",
 ) -> dict:
     """Bootstrap Monte Carlo of the trade PnL distribution.
 
     Resamples the realized per-trade PnLs to build ``n_sims`` alternative equity
     paths, then reports distribution bands. Two resampling methods:
 
-      - ``iid_bootstrap`` (default): sample trades WITH REPLACEMENT. Each sim is a
-        different multiset, so final PnL and win-rate genuinely vary.
-      - ``block_bootstrap``: resample contiguous BLOCKS of trades (length
-        ≈ √n_trades) with replacement, preserving streak/autocorrelation in the
-        trade sequence.
+      - ``block_bootstrap`` (default): resample contiguous BLOCKS of trades
+        (length ≈ √n_trades) with replacement, preserving streak/autocorrelation
+        in the trade sequence.
+      - ``iid_bootstrap``: sample single trades WITH REPLACEMENT. Order is
+        destroyed, so any serial dependence in the sequence disappears with it.
 
-    NOTE: the previous implementation *permuted* a fixed set of PnLs. Because a
-    permutation preserves the sum, every sim ended at the identical final equity
-    and win-rate — so the final-PnL / win-rate bands were mathematically constant
-    and conveyed no information. Sampling with replacement fixes that.
+    WHY BLOCK IS THE DEFAULT (changed 2026-08-17). ``max_dd_p50``/``max_dd_p95``
+    feed the acceptance gate, and drawdown is precisely the statistic that
+    depends on ORDER: a losing streak and the same losses scattered produce very
+    different worst paths. Both callers omitted ``method``, so every run in this
+    app had been IID — the block path existed, was tested, and was never taken.
+
+    Measured before switching, 300 sims each:
+
+      trade sequence            lag-1 acf   IID p95    block p95
+      ------------------------  ---------   --------   ---------
+      real run, 451 trades         ~0.00      -0.44       -0.43
+      synthetic AR(1) rho=0.6       0.66      -1.50       -2.17
+      synthetic independent        ~0.00      -0.85       -0.82
+
+    So the mechanism is real but it is NOT what is currently binding here: this
+    repo's actual trade sequences are near-independent, and on them the two
+    methods agree to a hundredth of a point. Block is the default because it
+    costs nothing when there is no dependence and is the honest answer when
+    there is — not because it moves today's numbers. ``pnl_autocorr_lag1`` is
+    returned so the operator can see which regime their own run is in instead
+    of taking this table's word for it.
+
+    NOTE: an even earlier implementation *permuted* a fixed set of PnLs. Because
+    a permutation preserves the sum, every sim ended at the identical final
+    equity and win-rate — so the final-PnL / win-rate bands were mathematically
+    constant and conveyed no information. Sampling with replacement fixed that.
 
     Returns: {
         n_sims, n_trades, starting_cash, method,
         p5_final, p25_final, median_final, p75_final, p95_final,
         original_final,
         max_dd_p50, max_dd_p95,
+        pnl_autocorr_lag1,   — how much the method choice could matter here
         win_rate_mean, win_rate_std,
         curves_sample: list[list[float]]  — 50 sample curves (for the chart)
         percentile_curves: {p5, p25, p50, p75, p95}  — percentiles at each point
@@ -900,6 +925,18 @@ def run_monte_carlo(
     # Win rate distribution
     win_rates = [(sim > 0).sum() / n_trades for sim in shuffled]
 
+    # Serial dependence of the REAL sequence. This is the number that decides
+    # whether the resampling method matters at all: near zero and block/IID
+    # agree, well above zero and IID understates drawdown. Reporting it turns
+    # "which method" from a config argument into an observable.
+    centred = pnls_arr - pnls_arr.mean()
+    denom = float(np.dot(centred, centred))
+    acf1 = (
+        round(float(np.dot(centred[:-1], centred[1:])) / denom, 4)
+        if n_trades > 1 and denom > 0
+        else 0.0
+    )
+
     # 50 sample curves (do not send too much data to the chart)
     sample_idx = rng.choice(n_sims, size=min(50, n_sims), replace=False)
     curves_sample = all_curves[sample_idx].tolist()
@@ -921,6 +958,7 @@ def run_monte_carlo(
         "max_dd_p95": round(
             float(np.percentile(max_dds_arr, 5)) * 100, 2
         ),  # p5 of negative values = worst-case
+        "pnl_autocorr_lag1": acf1,
         "win_rate_mean": round(float(np.mean(win_rates)) * 100, 2),
         "win_rate_std": round(float(np.std(win_rates)) * 100, 2),
         "curves_sample": curves_sample,

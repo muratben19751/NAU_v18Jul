@@ -61,6 +61,63 @@ class TestMonteCarloBootstrap:
     def test_empty_trades_returns_error(self):
         assert "error" in run_monte_carlo([], n_sims=10)
 
+    def test_the_default_is_block_not_iid(self):
+        """`block_bootstrap` yazılmış, testi de varmış ve HİÇ SEÇİLMEMİŞTİ:
+        her iki çağrı yeri de `method` vermiyordu, dolayısıyla uygulamadaki
+        her koşu IID'ydi. Düşüş, sıraya bağlı olan istatistiğin ta kendisi."""
+        import inspect
+
+        default = inspect.signature(run_monte_carlo).parameters["method"].default
+        assert default == "block_bootstrap"
+        assert run_monte_carlo(self._TRADES, n_sims=50)["method"] == "block_bootstrap"
+
+    def test_neither_caller_pins_the_method(self):
+        """Varsayılanı değiştirmek, çağrı yerleri onu ezmediği sürece işe yarar.
+        Bir çağrı yerinin `method="iid_bootstrap"` yazması bu düzeltmeyi
+        sessizce geri alırdı."""
+        from pathlib import Path
+
+        for src in (Path("auto/robustness.py"), Path("sandbox.py")):
+            text = src.read_text(encoding="utf-8")
+            assert "iid_bootstrap" not in text, f"{src} yöntemi IID'ye sabitliyor"
+
+    def test_the_sequence_autocorrelation_is_reported(self):
+        """Yöntem seçiminin bu koşuda önemli olup olmadığını söyleyen sayı.
+        Rozet olmadan "block_bootstrap" yalnız bir yapılandırma adı."""
+        import numpy as np
+
+        rng = np.random.default_rng(11)
+        independent = [{"pnl": float(p)} for p in rng.normal(0, 100, 400)]
+        assert abs(run_monte_carlo(independent, n_sims=50)["pnl_autocorr_lag1"]) < 0.15
+
+        e = rng.normal(0, 100, 400)
+        ar = np.zeros(400)
+        for i in range(1, 400):
+            ar[i] = 0.6 * ar[i - 1] + e[i]
+        streaky = [{"pnl": float(p)} for p in ar]
+        assert run_monte_carlo(streaky, n_sims=50)["pnl_autocorr_lag1"] > 0.4
+
+    def test_block_is_harsher_than_iid_exactly_when_the_streaks_are_real(self):
+        """Ölçüldü (300 sim): AR(1) rho=0.6'da IID p95 −1.50, blok −2.17.
+        Bağımsız dizide ikisi yüzde-puanın yüzde biri içinde. Yani varsayılanı
+        değiştirmek bugünün sayılarını oynatmıyor; bağımlılık ÇIKTIĞINDA
+        dürüst cevabı veriyor."""
+        import numpy as np
+
+        rng = np.random.default_rng(7)
+        e = rng.normal(0, 100, 450)
+        ar = np.zeros(450)
+        for i in range(1, 450):
+            ar[i] = 0.6 * ar[i - 1] + e[i]
+        streaky = [{"pnl": float(p)} for p in ar]
+
+        iid = run_monte_carlo(streaky, n_sims=300, method="iid_bootstrap")
+        blk = run_monte_carlo(streaky, n_sims=300, method="block_bootstrap")
+
+        assert blk["max_dd_p95"] < iid["max_dd_p95"], (
+            "blok bootstrap seri bağımlılıkta daha derin düşüş göstermeli"
+        )
+
 
 def test_window_benchmark_uses_exact_oos_slice():
     metrics = {"pnl_pct": 0.10}

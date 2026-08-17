@@ -30,6 +30,8 @@ from __future__ import annotations
 from collections.abc import Callable
 from pathlib import Path
 
+from app_constants import MIN_DECISION_TRADES
+
 # L2: Monte Carlo drawdown limits (%).  The median describes the typical path;
 # strict publication also has to reject a materially unsafe adverse tail.
 MC_DD_LIMIT = -25.0
@@ -161,7 +163,10 @@ def wfo_test(w: dict) -> dict:
     return (w.get("test_metrics_naive") or {}) or (w.get("test_metrics") or {})
 
 
-WFO_MIN_TRADES = 3
+# Peer eşiğiyle AYNI sayı, tek kaynaktan. Burası 3 derken çok-sembol kapısı 5
+# diyordu: aynı soruya ("bu kadar işlemden sonuç çıkar mı?") iki cevap. Ölçüm
+# ve gerekçe app_constants.MIN_DECISION_TRADES'te.
+WFO_MIN_TRADES = MIN_DECISION_TRADES
 
 
 def valid_wfo_windows(wfo: list[dict]) -> list[dict]:

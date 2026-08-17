@@ -387,6 +387,14 @@
         {{ mc.n_sims }} simulations · {{ mc.n_trades }} trade · {{ mc.method|default('bootstrap') }} ·
         Actual: ${{ "{:,.0f}".format(mc.original_final) }} ·
         Win rate: {{ "%.1f%%"|format(mc.win_rate_mean) }} ± {{ "%.1f%%"|format(mc.win_rate_std) }}
+        {#- Yöntemin bu koşuda fark yaratıp yaratmadığını söyleyen tek sayı:
+            sıfıra yakınsa blok ile iid aynı cevabı verir, yükseldikçe iid
+            düşüşü hafif gösterir. Rozet olmadan yöntem adı bir yapılandırma
+            ayrıntısı gibi okunuyordu. #}
+        {% if mc.pnl_autocorr_lag1 is not none %} ·
+        <span title="Realized trade PnL'lerinin lag-1 oto-korelasyonu. |ρ| küçükse işlem sırası bilgi taşımıyor demektir ve yeniden örnekleme yöntemi sonucu değiştirmez; büyüdükçe seri bağımlılık var ve blok bootstrap gerekli olan yöntemdir."
+          >seq ρ₁ {{ "%+.2f"|format(mc.pnl_autocorr_lag1) }}{% if mc.pnl_autocorr_lag1|abs < 0.1 %} (sıra bilgi taşımıyor){% endif %}</span>
+        {% endif %}
       </div>
       <div style="height:280px;"><canvas id="mc-chart"></canvas></div>
       {% endif %}

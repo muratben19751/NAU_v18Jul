@@ -1417,13 +1417,46 @@ def _enforce_token_budget(run_id: str) -> None:
 
 
 def _admit_llm_budget(run_id: str, request: dict) -> None:
-    """Reject a provider request unless its conservative bound fits the cap."""
+    """Reject a provider request unless its conservative bound fits the cap.
+
+    İKİ TAVAN, İKİ KONTROL NOKTASI — ve para yanlış olanındaydı. `_budget_breach`
+    parayı da token'ı da sayıyor ama TURLAR ARASI çağrılıyor; bu fonksiyon HER
+    sağlayıcı çağrısından önce çalışıyor ve yalnız token'a bakıyordu. Bir turun
+    içinde onlarca çağrı var, dolayısıyla para tavanı aşıldıktan sonra koşu
+    turun sonuna kadar harcamaya devam edebiliyordu. Tavan, aşıldığını
+    öğrendiğin an değil, bir sonraki harcamayı durdurduğun an tavandır.
+
+    PROJEKSİYON YOK, BİLİNÇLİ. Sıradaki çağrının parasal maliyetini tahmin
+    etmek cazip ama elimizdeki tek sınır `total_token_bound` ve o BAYT sayıyor
+    (`llm_client._llm_request_token_bound`: `len(text.encode("utf-8"))`),
+    token değil — token başına ~4 kat fazla. Token yolunda bu tutarlı bir
+    ihtiyat payı ve sistem ona göre kalibre; aynı sayıyı parayla çarpmak
+    kullanıcının 20 dolarlık tavanını sessizce 5 dolara indirirdi. Harcanan
+    parayı okumak tahmin gerektirmiyor.
+    """
 
     reserve = max(0, int(request.get("total_token_bound") or 0))
     with _AGENT_LOCK:
-        s = _AGENT_PROGRESS.get(run_id) or {}
-        cap = int(s.get("max_total_tokens") or 0)
-        used = _token_usage(s)
+        s = dict(_AGENT_PROGRESS.get(run_id) or {})
+    cap = int(s.get("max_total_tokens") or 0)
+    used = _token_usage(s)
+
+    cost_cap = float(s.get("max_total_cost_usd") or 0.0)
+    spent = _run_cost(s).get("cost_usd")
+    if cost_cap > 0 and spent is not None and spent >= cost_cap:
+        _session_log(
+            run_id,
+            "llm_budget_rejected",
+            reason="cost_ceiling",
+            spent_usd=round(float(spent), 6),
+            cost_cap_usd=cost_cap,
+            requested_bound=reserve,
+        )
+        raise AgentBudgetReached(
+            f"cost ceiling (${cost_cap:,.2f}) cannot admit next call: "
+            f"${float(spent):,.2f} already spent"
+        )
+
     if cap > 0 and used + reserve > cap:
         remaining = max(0, cap - used)
         _session_log(
