@@ -1686,3 +1686,16 @@ filtre sessizce düşüyor, rozet kapıya ulaşmıyor.
 Kapanmayan boşluk, açıkça kaydedildi: holdout aritmetiği (`OOS_HOLDOUT_DAYS=60`
 ile `HOLDOUT_MIN_TRADES=20` birlikte sağlanamıyor) ve ölçümsüz sekiz performans
 maddesi. Lint: 0/0/0/0/0/0.
+
+## 2026-08-17 — holdout aritmetiği kapandı, üç sayfa güncellendi
+
+`2db813b` senkronlandı. [[nau_auto_kosusu_755b7880_2026_08_17]]'nin "aritmetik
+olarak ulaşılamaz" bölümüne kapanış eklendi (ölçümle: 1-DAY 41→862 bar, gereken
+sıklık %49→%2, eğitim verisinin %85'i korundu).
+[[nau_soz_verip_yapmayan_yollar_2026_08_17]]'nin açık listesinden düşürüldü.
+[[auto_kapi_ve_geri_bildirim]]'e kapıların çelişebileceği İKİNCİ eksen yazıldı:
+frekans. Maliyet-ayarlı ölçü düşük frekansı ödüllendirirken sayım cinsinden bir
+eşik yüksek frekans istiyordu; iki kapı aynı adayı farklı BİRİMLERDE ölçüyordu.
+
+Kaydedilen ayrım: eşik oynatılmadı, birim düzeltildi. O koşunun kazananı yeni
+pencerede de geçemiyor — değişen, sistemin verdiği cevap.

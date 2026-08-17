@@ -117,9 +117,10 @@ sınamıyordu — gerçek `run_composed_backtest`, gerçek `PaperRunner` ve ger�
 
 ## Açık kalanlar
 
-- **Holdout aritmetiği kırık** — `OOS_HOLDOUT_DAYS=60` ile
-  `HOLDOUT_MIN_TRADES=20` birlikte sağlanamıyor; ayrıntı ve ölçüm
-  [[nau_auto_kosusu_755b7880_2026_08_17]]'de.
+- ~~Holdout aritmetiği kırık~~ → **kapandı** (`2db813b`): pencere sabit takvim
+  yerine örneklemin oranı (`max(60 gün, %15 × süre)`), ulaşılabilirlik mühür
+  anında uyarılıyor. 1-DAY'de 41 → 862 bar, gereken sıklık %49 → %2. Eşik
+  oynatılmadı; ölçüm [[nau_auto_kosusu_755b7880_2026_08_17]]'de.
 - Performans bölümünün sekiz maddesi: ölçülmeden dokunulmayacak.
 - Auth fail-open ve CSRF/DNS-rebinding: tehdit modeli yazılmadan ciddiyetleri
   ölçeksiz.

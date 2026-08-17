@@ -205,6 +205,20 @@ Mühürlü holdout kapısı da AYNI ölçüye bağlandı: ikisi ıraksarsa bir a
 sıralamayı geçip yayımda takılır ve kullanıcı "buy&hold'u geçti mi" sorusuna iki
 farklı cevap görür.
 
+**Kapıların birbiriyle çelişebileceği ikinci eksen: FREKANS** (2026-08-17,
+`2db813b`). Buradaki maliyet-ayarlı ölçü düşük frekansı ödüllendiriyor — aynı
+koşuda 1.223 işlemli aday %1,2 CAGR alırken 52 işlemli aday %9,4 aldı. Mühürlü
+holdout ise sayım cinsinden bir eşik istiyordu (`HOLDOUT_MIN_TRADES=20`) ve
+penceresi sabit takvimdeydi (60 gün). İkisinin birimi farklı olduğu için
+aralarındaki dönüşüm katsayısı — işlem hızı — gizli bir serbest değişkendi, ve
+bu kapı onu aktif olarak küçültüyordu. Sonuç: sistem aradığı profili üretip son
+kapıda kendi eliyle eliyordu (1-DAY'de 41 barlık pencerede 20 giriş = barların
+%49'u). Pencere örneklemin oranına çevrildi; eşik oynatılmadı. Ölçüm
+[[nau_auto_kosusu_755b7880_2026_08_17]]'de.
+
+Genel kural: iki kapı aynı adayı farklı BİRİMLERDE ölçüyorsa, aralarındaki
+dönüşüm katsayısını adlandır ve boru hattının onu bir yöne itip itmediğini sor.
+
 ### Kapının seçtiği strateji SINIFI (üç bağımsız koşu, tutarlı)
 
 | aday | CAGR (piyasa %14,6) | MaxDD (piyasa −%54) | Calmar (piyasa 0,27) |
