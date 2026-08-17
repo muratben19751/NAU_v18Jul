@@ -5,6 +5,8 @@ söylediği yer ile yapmadığı yer arasında hiçbir iz yok.
 
 1. Trend filtresi yüklenemeyince koşu sessizce filtresiz sürüyordu; sonuç
    yine "başarılı" ve trend filtreli spec adıyla kaydediliyordu.
+2. `pending` iken durdurulan (ya da build'i zaman aşımına uğrayan) deployment
+   arka planda başlayabiliyordu: DB 'stopped'/'failed', sahada canlı düğüm.
 
 Wiki References
 ---------------
@@ -165,3 +167,102 @@ def test_the_fallback_branch_is_gone_from_the_source():
         "trend filtresi arızasını yutan sessiz geri düşüş geri gelmiş"
     )
     assert "was requested but" in src, "fail-closed mesajları kaybolmuş"
+
+
+# ---------------------------------------------------------------------------
+# 2. Durdurulan / zaman aşımına uğrayan deployment
+# ---------------------------------------------------------------------------
+
+
+class _FakeNode:
+    def __init__(self):
+        self.disposed = False
+        self.ran = False
+
+    def dispose(self):
+        self.disposed = True
+
+    async def run_async(self):
+        self.ran = True
+
+    def stop(self):
+        pass
+
+
+ARTIFACT = {
+    "schema": 2,
+    "environment": "paper",
+    "instruments": [{"symbol": "BTCUSDT", "timeframe": "1h"}],
+    "spec": {},
+    "capital": 10_000.0,
+    "kill_switch_daily_pct": None,
+    "version": 1,
+}
+
+
+def _runner(node_factory, statuses):
+    from strategy_studio.runner import PaperRunner
+
+    return PaperRunner(
+        on_status=lambda d, s, e=None: statuses.append((s, e)),
+        node_factory=node_factory,
+    )
+
+
+def test_stopping_a_pending_deployment_prevents_the_node_from_running(monkeypatch):
+    """Yarışın kalbi: `stop()` düğümü `_nodes`'da BULAMIYORDU.
+
+    "Zaten gitmiş" diye dönüyordu, oysa düğüm hâlâ KURULUYORDU. Sonra build
+    bitiyor, düğüm kaydediliyor ve koşmaya başlıyordu — DB 'stopped' derken.
+    """
+    from strategy_studio.runner import build_node_config
+
+    monkeypatch.setattr(
+        "strategy_studio.runner.build_node_config",
+        lambda *a, **k: object(),
+        raising=False,
+    )
+    _ = build_node_config  # import edildiğini göster
+
+    statuses: list = []
+    node = _FakeNode()
+    r = _runner(lambda cfg: node, statuses)
+
+    # Stop, launch'tan ÖNCE: rota satırı 'pending' yazıp görevi arka plana
+    # atmıştı, kullanıcı görev başlamadan durdurdu.
+    r.stop("dep-1")
+    r.launch("dep-1", ARTIFACT)
+
+    assert not node.ran, "durdurulmuş deployment yine de koştu"
+    assert ("running", None) not in statuses, "durdurulana 'running' denildi"
+
+
+def test_a_live_node_is_still_stoppable(monkeypatch):
+    """İptal işareti normal yolu bozmamalı."""
+    monkeypatch.setattr(
+        "strategy_studio.runner.build_node_config",
+        lambda *a, **k: object(),
+        raising=False,
+    )
+    statuses: list = []
+    node = _FakeNode()
+    r = _runner(lambda cfg: node, statuses)
+
+    r.launch("dep-2", ARTIFACT)
+    assert ("running", None) in statuses, "normal launch 'running' dememiş"
+
+
+def test_abandoned_marks_do_not_leak(monkeypatch):
+    """İşaret tüketiliyor: `launch` okuyup siliyor, yoksa ikinci bir deploy
+    aynı id ile hiç başlayamazdı."""
+    monkeypatch.setattr(
+        "strategy_studio.runner.build_node_config",
+        lambda *a, **k: object(),
+        raising=False,
+    )
+    statuses: list = []
+    r = _runner(lambda cfg: _FakeNode(), statuses)
+
+    r.stop("dep-3")
+    r.launch("dep-3", ARTIFACT)  # iptal edilir, işaret tüketilir
+    assert "dep-3" not in r._abandoned

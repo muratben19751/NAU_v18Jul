@@ -262,6 +262,11 @@ class PaperRunner:
     _nodes: dict[str, _Node] = field(default_factory=dict, init=False)
     # Deployments being torn down on purpose — their exit is not a failure.
     _stopping: set[str] = field(default_factory=set, init=False)
+    # Launch'ı iptal edilenler: durdurulduğunda ya da build timeout'unda düğüm
+    # HENÜZ `_nodes`'a girmemiş olabilir. `_stopping`'ten ayrı, çünkü o "koşan
+    # bir düğümü kapatıyoruz" demek; bu "hiç koşmaya başlamasın" demek.
+    # Bkz. `stop()` ve `_serve`'ün kayıt adımı (DeepR 2026-08-17 [YÜKSEK]).
+    _abandoned: set[str] = field(default_factory=set, init=False)
     _armed: dict[str, _KillSwitch] = field(default_factory=dict, init=False)
     _monitor: threading.Thread | None = field(default=None, init=False)
     _lock: threading.Lock = field(default_factory=threading.Lock, init=False)
@@ -302,6 +307,13 @@ class PaperRunner:
         HTTP response that has already been sent, so a failure has to reach the
         user through the deployment row, not through a traceback nobody sees.
         """
+        # Rota satırı 'pending' yazıp launch'ı arka plana atıyor; kullanıcı
+        # görev daha başlamadan Stop'a basmış olabilir. O çağrı `_nodes`'da
+        # hiçbir şey bulamadığı için işareti bırakıp gidiyor — okuyan burası.
+        with self._lock:
+            if deploy_id in self._abandoned:
+                self._abandoned.discard(deploy_id)
+                return
         try:
             config = build_node_config(
                 artifact,
@@ -331,10 +343,27 @@ class PaperRunner:
                 # coroutine was never awaited, and the node timed out after 60s
                 # with `DataEngine.check_connected() == False`.
                 node = self._build_node(config)
+                # TEK ÇOKTAN-SEÇMELİ NOKTA. Kayıt ile iptal kontrolü aynı kilit
+                # altında, çünkü ikisi arasındaki her boşluk şu demekti:
+                # kullanıcı durdurdu / build zaman aşımına uğradı, DB 'stopped'
+                # ya da 'failed' yazdı, ve düğüm yine de koşmaya başladı.
+                # `launch` de aynı kilidi alıp `_nodes`'a bakıyor, yani ikisinden
+                # yalnız biri kazanabiliyor.
                 with self._lock:
-                    self._nodes[deploy_id] = _Node(
-                        thread=threading.current_thread(), loop=loop, node=node
-                    )
+                    give_up = deploy_id in self._abandoned
+                    self._abandoned.discard(deploy_id)
+                    if not give_up:
+                        self._nodes[deploy_id] = _Node(
+                            thread=threading.current_thread(), loop=loop, node=node
+                        )
+                if give_up:
+                    built.set()
+                    try:
+                        node.dispose()
+                    except Exception:  # noqa: BLE001 — teardown gürültüsü
+                        pass
+                    loop.close()
+                    return
             except Exception as e:  # noqa: BLE001
                 failure.append(str(e))
                 built.set()
@@ -349,6 +378,7 @@ class PaperRunner:
                 with self._lock:
                     stopping = deploy_id in self._stopping
                     self._stopping.discard(deploy_id)
+                    self._abandoned.discard(deploy_id)
                     self._nodes.pop(deploy_id, None)
                     # Disarmed with the node it was watching. A switch left
                     # armed over a dead deployment would read `None` forever
@@ -383,15 +413,32 @@ class PaperRunner:
         # and handed to its loop", and anything that kills it later comes back
         # through the `finally` above.
         if not built.wait(timeout=self.BUILD_TIMEOUT):
+            # Zaman aşımı thread'i İPTAL ETMİYORDU: build sonradan bitip düğümü
+            # kaydediyor ve koşturuyordu. DB 'failed' derken sahada canlı bir
+            # düğüm — kimsenin bakmadığı ve durdurma düğmesi olmayan bir
+            # deployment. `_serve`'ün kayıt adımıyla aynı kilit, yani ya o
+            # kaydetmiştir (o zaman düzgünce durdururuz) ya da hiç kaydedemez.
+            with self._lock:
+                registered = deploy_id in self._nodes
+                if not registered:
+                    self._abandoned.add(deploy_id)
             self.on_status(
                 deploy_id,
                 "failed",
                 f"the node did not finish building within {self.BUILD_TIMEOUT:.0f}s",
             )
+            if registered:
+                self.stop(deploy_id)
             return
         if failure:
             self.on_status(deploy_id, "failed", failure[0])
             return
+        # Build bitmiş olabilir ama bu arada Stop gelmiş olabilir: `_serve`
+        # kaydı iptal ettiyse `_nodes`'ta hiçbir şey yok ve 'running' demek
+        # düpedüz yalan olurdu.
+        with self._lock:
+            if deploy_id not in self._nodes:
+                return
         self.on_status(deploy_id, "running", None)
         announced.set()
         # After the row says running, so an inactive-switch warning lands on a
@@ -443,7 +490,16 @@ class PaperRunner:
             entry = self._nodes.get(deploy_id)
             self._armed.pop(deploy_id, None)
             if entry is None:
-                return  # already gone; the row is set to stopped regardless
+                # Düğüm yoksa iki ihtimal var ve eskiden ikisi de "zaten
+                # gitmiş" sayılıyordu: (a) gerçekten bitmiş, (b) HÂLÂ
+                # KURULUYOR. (b)'de bu çağrı hiçbir şey yapmadan dönüyor, DB
+                # 'stopped' yazıyor, sonra build thread'i düğümü kaydedip
+                # çalıştırıyordu — durdurulmuş görünen, durdurulamayan bir
+                # deployment. İşaret bırakmak ikisini de doğru kapatıyor:
+                # (a)'da `launch` hiç gelmez ve işaret ölü kalır, (b)'de
+                # `_serve` onu okuyup kurulumu çöpe atar.
+                self._abandoned.add(deploy_id)
+                return  # the row is set to stopped regardless
             # Marked before the stop is dispatched, so the serve thread reads
             # this exit as deliberate rather than reporting it as a failure.
             self._stopping.add(deploy_id)
