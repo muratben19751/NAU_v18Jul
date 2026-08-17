@@ -717,10 +717,21 @@ class StrategyStore:
 
         Startup reconciliation needs this: the runner's node registry is
         in-process, so after a restart these rows have nothing behind them.
+
+        `pending` de dahil (2026-08-17). Satır `pending` yazılıp devralma
+        `background_tasks` ile yanıttan SONRA koşuyor; o birkaç saniyede süreç
+        ölürse kayıt sonsuza dek `pending` kalıyordu ve uzlaştırma onu hiç
+        görmüyordu. Elle kurtarma vardı (Stop `pending`'i kabul ediyor) ama
+        kendi kendine düzelmeyen bir satır bu fonksiyonun var oluş gerekçesine
+        aykırı: veritabanının canlı SANDIĞI ama arkasında hiçbir şey olmayan
+        satır. `paused` gibi bunun da işlem görmediğini unutma — uzlaştırmanın
+        `pending` için ürettiği sebep AYRI (bkz. `runner.reconcile_orphans`),
+        çünkü olan şey "düğüm kayboldu" değil "devralma hiç olmadı".
         """
         with self._connect() as con:
             rows = con.execute(
-                "SELECT * FROM deployments WHERE status IN ('running','paused')"
+                "SELECT * FROM deployments "
+                "WHERE status IN ('running','paused','pending')"
             ).fetchall()
         return [dict(r) for r in rows]
 

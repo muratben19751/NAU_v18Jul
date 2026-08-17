@@ -1780,7 +1780,15 @@ def _reconcile_deployments() -> None:
     because it looks fine.
     """
     active = RUNNER.active_ids() if RUNNER else set()
-    for deploy_id, reason in reconcile_orphans(store.live_deployments(), active):
+    # include_pending: bu fonksiyonun TEK çağıranı açılış yolu (aşağıdaki
+    # `_reconcile_deployments_at_startup`) ve süreç yeni doğduğu için bu sürece
+    # ait uçuşta bir `_runner_pickup` olamaz — yani buradaki her `pending`
+    # satır, önceki sürecin devralamadan öldüğü bir kalıntıdır. Bu çağrıya
+    # periyodik bir ikinci çağıran eklenirse bayrağı OLDUĞU GİBİ kopyalama:
+    # orada aynı gerekçe yok, canlı bir devralmayı biçersin.
+    for deploy_id, reason in reconcile_orphans(
+        store.live_deployments(), active, include_pending=True
+    ):
         store.set_deployment_status(deploy_id, "failed", reason)
 
 

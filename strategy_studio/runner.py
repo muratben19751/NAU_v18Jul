@@ -620,20 +620,40 @@ class PaperRunner:
         return money.as_double()
 
 
-def reconcile_orphans(rows: list[dict], active: set[str]) -> list[tuple[str, str]]:
+def reconcile_orphans(
+    rows: list[dict], active: set[str], *, include_pending: bool = False
+) -> list[tuple[str, str]]:
     """Deployments the database thinks are live but no node is behind.
 
     The node registry is in-process, so a restart leaves `running`/`paused`
     rows with nothing running. Returning them as (deploy_id, reason) rather
     than showing a green RUNNING badge for a node that does not exist.
+
+    ``include_pending`` bir tehlike anahtarı ve VARSAYILANI kapalı (2026-08-17).
+    Bir `pending` satır iki farklı şeyin adı olabiliyor: (a) devralınmayı hâlâ
+    bekleyen, birkaç saniye önce yaratılmış CANLI bir kayıt, (b) devralma hiç
+    olmadan süreci ölmüş bir kalıntı. Aradaki farkı satırın kendisi söylemiyor —
+    ÇAĞIRANIN bağlamı söylüyor. Yalnız açılış yolu "(a) benim için imkânsız"
+    diyebilir, çünkü süreç yeni doğdu ve ona ait hiçbir `background_tasks`
+    devralması uçuşta olamaz. Bu yüzden karar buraya bir zaman aşımı olarak
+    değil, çağıranın beyanı olarak gömüldü: periyodik bir çağıran sonradan
+    eklenirse güvenli tarafta başlar, `pending` satırları biçmez.
     """
     orphans = []
+    statuses = (
+        ("running", "paused", "pending") if include_pending else ("running", "paused")
+    )
     for row in rows:
-        if row["status"] in ("running", "paused") and row["deploy_id"] not in active:
-            orphans.append(
-                (
-                    row["deploy_id"],
-                    "runner process restarted — the node behind this deployment is gone",
-                )
-            )
+        if row["status"] not in statuses or row["deploy_id"] in active:
+            continue
+        # Sebep ayrı, çünkü olay ayrı: `running` bir düğüm KAYBETTİ, `pending`
+        # hiç düğüm görmedi. Operatörün ekranda okuduğu cümle hangisinin
+        # olduğunu söylemeli — "yeniden başlat" ile "yeniden dağıt" farklı iş.
+        reason = (
+            "runner pickup never happened — the process died before this "
+            "deployment was handed to the runner"
+            if row["status"] == "pending"
+            else "runner process restarted — the node behind this deployment is gone"
+        )
+        orphans.append((row["deploy_id"], reason))
     return orphans

@@ -417,6 +417,13 @@ def _robustness_child(q, payload):
 
     _child_stdio_guard()
 
+    # Tavan burada da (2026-08-17). `_child_entry` tek bir backtest için bunu
+    # koyuyordu; robustness çocuğu AYNI kullanıcı/LLM kodunu düzinelerce kez,
+    # üstelik çoklu pencere + Monte Carlo yüküyle koşuyor — yani korumanın en
+    # çok gerektiği yer tavansızdı. Duvar saati kaçak bir DÖNGÜYÜ keser, tek
+    # satırlık bir ayırmayı kesemez; deadline gelmeden host'un RAM'i biter.
+    _install_memory_ceiling(BACKTEST_MEMORY_MB)
+
     def _relay(msg: str) -> None:
         # Tag matches _run_in_child's ("progress", ...) branch. A dead/closed
         # queue must never abort the suite — audit relay is best effort.
@@ -520,6 +527,11 @@ def _manual_suite_child(q, payload):
     _start_parent_watchdog()
 
     _child_stdio_guard()
+
+    # Kardeşiyle aynı gerekçe (bkz. `_robustness_child`): elle /robustness
+    # süiti de WFO + IS/OOS + tam backtest + Monte Carlo'yu tek çocukta koşuyor
+    # ve spec özel blok taşıyabiliyor, yani burada da kullanıcı kodu çalışıyor.
+    _install_memory_ceiling(BACKTEST_MEMORY_MB)
 
     try:
         spec, bars_df, recipe, params = payload
@@ -656,6 +668,11 @@ def _legacy_backtest_child(q, payload):
 
     _start_parent_watchdog()  # M8: so it isn't orphaned on hard-kill
     _child_stdio_guard()
+    # Bu hedefi 2026-08-17'de ne inceleme raporu ne de elle yapılan tarama
+    # buldu; `_run_in_child` çağrılarını AST'den toplayan test buldu. Yolun
+    # legacy olması (loop 'agent' modu) tavanı gereksiz yapmıyor: hâlâ
+    # spawn edilebiliyor ve `run_backtest` aynı Nautilus yükünü taşıyor.
+    _install_memory_ceiling(BACKTEST_MEMORY_MB)
     try:
         strategy_name, params, bars_df, iteration_id, rationale = payload
         from backtest import run_backtest

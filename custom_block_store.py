@@ -555,18 +555,24 @@ def save_custom_batch(
 
 
 def delete_custom(name: str) -> bool:
-    """Remove a custom block from disk, registry, and in-memory BLOCK_REGISTRY."""
+    """Remove a custom block from disk, registry, and in-memory BLOCK_REGISTRY.
+
+    2026-08-17: burası `unlink()` yapıp AYRI bir `_write_registry()` çağırıyordu;
+    ikisinin arasındaki bir hata (disk dolu, izin) dosyayı silinmiş ama kaydı
+    yerinde bırakıyordu — registry bir modül vaat ediyor, modül yok. `save_custom`
+    aynı deliği 2026-08-09'da `_registry_transaction`'a geçerek kapattı, toplu
+    silme zaten oradaydı; tekil silme geride kalan son yoldu. Artık dosya İÇERİĞİ
+    silinmeden önce anlık görüntüye alınıyor, yani registry yazımı düşerse `.py`
+    da geri geliyor.
+    """
     if not is_valid_name(name):
         return False
-    with _registry_guard():
-        reg = _read_registry()
+    with _registry_guard(), _registry_transaction() as (reg, old_files):
         if name not in reg:
             return False
         path = module_path(name)
-        try:
-            path.unlink()
-        except FileNotFoundError:
-            pass
+        old_files[name] = path.read_text(encoding="utf-8") if path.exists() else None
+        path.unlink(missing_ok=True)
         del reg[name]
         _write_registry(reg)
     # Clear in-memory — a block deleted in the same session should not run.

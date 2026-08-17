@@ -163,8 +163,31 @@ def _risk_value(p: Param, name: str) -> float:
 
 
 def compile_strategy(defn: StrategyDefinition) -> CompiledStrategy:
-    active = [i for i in defn.instruments if i.active] or defn.instruments
+    # `or defn.instruments` fallback'i kaldırıldı (2026-08-17). Hiçbiri aktif
+    # değilken liste boş kalıyordu ve `or` TÜM enstrümanları — pasifleri dahil —
+    # derlemeye sokuyordu. Sessiz kalmıyordu, ters yönde konuşuyordu: artefaktı
+    # üreten `deploy.py` bu daraltmaya açıkça güveniyor ("compile_strategy
+    # already narrows to the active ones"), yani pasif küme doğrudan canlı
+    # dağıtıma yazılıyordu; ekran ise `graph.py`'nin fallback'siz filtresiyle
+    # BOŞ görünüyordu. Kapatılan şey `_reconcile_deployments`'ın tarif ettiği
+    # sınıfın aynısı: yeşil rozet, arkasında olmayan bir şey için.
+    #
+    # Toggle/remove yolu bunu üretemez (`mutations.py` en az bir aktif bırakmayı
+    # zorunlu kılıyor) ama üretebilen tek yol o değil: `InstrumentConfig.active`
+    # varsayılanı FALSE, dolayısıyla alanı hiç yazmayan bir JSON — AI önerisi,
+    # elle düzenlenmiş kayıt, dışarıdan içe aktarma — `model_validate`'ten hepsi
+    # pasif çıkıyor. Ölçüldü (seed fixture, üç enstrüman pasife çekildi):
+    # derleyici üçünü de işleme sokuyor, `to_graph` sıfır düğüm veriyordu.
+    #
+    # Boş liste ile "hepsi pasif" AYRI mesaj alıyor: ikisinin operatör eylemi
+    # farklı (enstrüman ekle / var olanı aç).
+    active = [i for i in defn.instruments if i.active]
     if not active:
+        if defn.instruments:
+            raise CompileError(
+                "strategy has instruments but none is active — "
+                "activate at least one before compiling"
+            )
         raise CompileError("strategy has no instruments configured")
 
     regime: dict[str, Any] | None = None

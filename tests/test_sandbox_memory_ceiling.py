@@ -14,7 +14,9 @@ yorumunda.
 
 from __future__ import annotations
 
+import ast
 import importlib
+import inspect
 
 import pytest
 
@@ -97,22 +99,79 @@ def test_operators_can_retune_the_ceiling_without_a_code_change(monkeypatch):
         importlib.reload(sandbox)
 
 
-def test_every_killable_child_target_installs_a_ceiling():
-    """Üç çocuk hedefi de tavanı KURMALI — biri unutulursa burası kırılır.
+def _child_targets() -> set[str]:
+    """`_run_in_child(...)`'a hedef olarak verilen HER fonksiyonun adı.
 
-    Bu testin varlık sebebi: backtest çocuğu tam olarak böyle unutulmuştu.
-    Kaynak-seviyesi tarama, çağrının hangi sabitle yapıldığını değil YAPILDIĞINI
-    çiviler; yeni bir çocuk hedefi eklendiğinde de aynı soruyu sordurur.
+    Liste elle yazılmıyor, çünkü elle yazılan liste 2026-08-17'de tam olarak
+    şunu kaçırdı: bu testin eski hâli üç hedefi sayıyor ve docstring'inde "yeni
+    bir çocuk hedefi eklendiğinde de aynı soruyu sordurur" diye söz veriyordu —
+    ama sabit bir üçlüyü sorguladığı için `_robustness_child` ve
+    `_manual_suite_child` yıllarca yanından geçti. İkisi de en ağır iş yükünü
+    (WFO + Monte Carlo + tam backtest) taşıyan çocuklardı, yani korumanın en
+    çok gerektiği yerde tavan yoktu ve testin kendisi bunu görmüyordu.
+
+    Kapsamı çağrı yerinden türetmek sözü yerine getirir: `_run_in_child`'a yeni
+    bir hedef verilir verilmez o hedef de sorgulanır.
     """
-    import inspect
+    tree = ast.parse(inspect.getsource(sandbox))
+    return {
+        node.args[0].id
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "_run_in_child"
+        and node.args
+        and isinstance(node.args[0], ast.Name)
+    }
 
-    src = inspect.getsource(sandbox)
-    for target in ("_child_entry", "_block_smoke_child", "_block_preview_child"):
-        start = src.index(f"def {target}(")
-        end = src.index("\ndef ", start + 1)
-        body = src[start:end]
 
-        assert "_install_memory_ceiling(" in body, (
+def _calls_made_by(fn_name: str) -> set[str]:
+    """`fn_name` gövdesinden yapılan düz fonksiyon çağrılarının adları.
+
+    AST, dize araması değil: bir yorumun içinde geçen `_install_memory_ceiling(`
+    testi geçirmemeli — anlatılan koruma ile kurulan koruma aynı şey değil.
+    """
+    tree = ast.parse(inspect.getsource(sandbox))
+    for node in tree.body:
+        if isinstance(node, ast.FunctionDef) and node.name == fn_name:
+            return {
+                inner.func.id
+                for inner in ast.walk(node)
+                if isinstance(inner, ast.Call) and isinstance(inner.func, ast.Name)
+            }
+    raise AssertionError(f"{fn_name} sandbox.py'de bulunamadı")
+
+
+def test_every_killable_child_target_installs_a_ceiling():
+    """Öldürülebilir her çocuk hedefi tavanı KURMALI — biri unutulursa kırılır."""
+    targets = _child_targets()
+
+    assert len(targets) >= 5, (
+        f"yalnız {sorted(targets)} bulundu — kapsam taraması bozulmuş olabilir, "
+        "sessizce daralmasındansa kırılsın"
+    )
+    for target in sorted(targets):
+        assert "_install_memory_ceiling" in _calls_made_by(target), (
             f"{target} bellek tavanı kurmuyor — öldürülebilir bir çocuk, "
             "duvar saatiyle tek satırlık bir ayırmadan korunamaz"
         )
+
+
+@pytest.mark.parametrize(
+    "target, payload",
+    [("_robustness_child", ("bozuk",)), ("_manual_suite_child", ("bozuk",))],
+)
+def test_the_heavy_suite_children_install_the_ceiling_before_working(
+    installed, target, payload
+):
+    """Süit çocukları da tavanı İŞ BAŞLAMADAN ÖNCE kurmalı.
+
+    Kaynak taraması çağrının varlığını çiviler, bu da SIRASINI: bozuk payload
+    gövdeyi hemen `except`e düşürüyor, tavan yine de kaydedilmiş olmalı.
+    """
+    q = _Q()
+
+    getattr(sandbox, target)(q, payload)
+
+    assert installed == [sandbox.BACKTEST_MEMORY_MB]
+    assert q.items and q.items[-1][0] == "error", "gövde hiç çalışmamış"
