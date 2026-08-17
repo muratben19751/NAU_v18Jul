@@ -30,7 +30,11 @@ router = APIRouter(prefix="/wiki")
 def _render(request: Request, rel_path: str, title: str) -> HTMLResponse:
 
     md = read_wiki_page(rel_path)
-    html = render_md(md, extensions=("fenced_code", "tables", "toc"))
+    # trusted: kaynak repo içindeki wiki dosyası (`WIKI_ROOT` altında,
+    # `resolve_slug` ile sınırlanmış), kullanıcı girdisi değil — kasıtlı HTML
+    # içerebilir ve kaçırmak onu bozardı. Güvenilmez metin için varsayılan
+    # (`trusted=False`) doğru olan; bkz. `web.shared.render_md`.
+    html = render_md(md, extensions=("fenced_code", "tables", "toc"), trusted=True)
     ctx = {
         "active": "wiki",
         "page_title": title,

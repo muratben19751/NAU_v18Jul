@@ -4,6 +4,8 @@
 
 1. Aşırı geniş tarih aralığı (``0001-01-01``–``9999-12-31``) hem RAM/CPU yiyor
    hem ``date.max + 1`` taşmasıyla 500 üretiyordu.
+2. ``render_md`` ham HTML'i geçiriyordu; AUTO review sayfası kullanıcının
+   ``hint``'ini ve LLM strateji adlarını ``|safe`` ile basıyor.
 
 Wiki References
 ---------------
@@ -13,6 +15,7 @@ Bkz: [[strategy_studio]], [[review_raporu_uretildigi_anda_bayatlar]]
 from __future__ import annotations
 
 from datetime import date
+from html.parser import HTMLParser
 
 import pytest
 
@@ -55,3 +58,111 @@ def test_loader_refuses_the_range_itself():
 
     with pytest.raises(ValueError, match="day limit"):
         load_index_bars("SPX", date(1, 1, 1), date(9999, 12, 31))
+
+
+# ---------------------------------------------------------------------------
+# 2. render_md — güvenilmeyen içerikte çalıştırılabilir HTML üretmemeli
+# ---------------------------------------------------------------------------
+
+
+class _Audit(HTMLParser):
+    """Üretilen HTML'de çalıştırılabilir ne varsa topla.
+
+    Kaçırılmış metinde ``onerror`` GEÇEBİLİR — o zararsız, görünür yazıdır.
+    Bu yüzden kontrol substring değil: gerçekten AYRIŞTIRILMIŞ bir etiket ya da
+    öznitelik mi diye bakıyor. (İlk elde yazdığım substring kontrolü tam da bu
+    yüzden altı vektörün üçünü yanlışlıkla "kötü" işaretlemişti.)
+    """
+
+    _EXEC_TAGS = {"script", "iframe", "object", "embed"}
+    _EXEC_SCHEMES = {"javascript", "data", "vbscript"}
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.bad: list[str] = []
+
+    def handle_starttag(self, tag, attrs):
+        if tag in self._EXEC_TAGS:
+            self.bad.append(f"<{tag}>")
+        for k, v in attrs:
+            if k.lower().startswith("on"):
+                self.bad.append(f"{k}=")
+            if k.lower() in ("href", "src") and v:
+                s = "".join(c for c in v.strip().lower() if c not in "\t\r\n\x00")
+                head, sep, _ = s.partition(":")
+                if sep and head in self._EXEC_SCHEMES:
+                    self.bad.append(f"{k}={head}:")
+
+
+def _executable_bits(html: str) -> list[str]:
+    a = _Audit()
+    a.feed(html)
+    return a.bad
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        "<img src=x onerror=alert(1)>",
+        "<script>alert(1)</script>",
+        '<div onclick="alert(1)">x</div>',
+        '<a href="javascript:x">y</a>',
+        "<svg onload=alert(1)>",
+        "[t](javascript:alert(1))",
+        "[t](JaVa\tScRiPt:alert(1))",  # tarayıcı bunu da çalıştırır
+        "![i](data:text/html;base64,PHNjcmlwdD4=)",
+    ],
+)
+def test_untrusted_markdown_emits_nothing_executable(payload):
+    from web.shared import render_md
+
+    assert _executable_bits(render_md(payload)) == []
+
+
+def test_untrusted_is_the_default():
+    """Dördüncü çağıran doğru olanı HATIRLAMAK zorunda kalmasın."""
+    from web.shared import render_md
+
+    assert _executable_bits(render_md("<script>alert(1)</script>")) == []
+
+
+@pytest.mark.parametrize(
+    "src,expect",
+    [
+        ("[ok](https://x.com)", 'href="https://x.com"'),
+        ("[rel](/sayfa)", 'href="/sayfa"'),
+        ("[m](mailto:a@b.c)", 'href="mailto:a@b.c"'),
+    ],
+)
+def test_legitimate_links_survive(src, expect):
+    from web.shared import render_md
+
+    assert expect in render_md(src)
+
+
+def test_markdown_structure_survives_escaping():
+    """Kaçırma HTML karakterlerine dokunuyor, markdown sözdizimine değil."""
+    from web.shared import render_md
+
+    out = render_md("# H\n\n| a |\n|---|\n| 1 |\n\n**b**\n\n```py\nx=1\n```")
+    for tag in ("<h1>", "<table>", "<strong>", "<code"):
+        assert tag in out, f"{tag} kayboldu"
+
+
+def test_trusted_content_keeps_intentional_html():
+    """Repo wiki sayfaları kasıtlı HTML içerebilir; kaçırmak onları bozardı."""
+    from web.shared import render_md
+
+    assert '<div class="note">x</div>' in render_md(
+        '<div class="note">x</div>', trusted=True
+    )
+
+
+def test_repo_wiki_routes_opt_in_to_trusted():
+    """İki güvenilir çağıran AÇIKÇA işaretli olmalı — sessizce değil."""
+    import inspect
+
+    from web.routes import strategy, wiki
+
+    assert "trusted=True" in inspect.getsource(wiki._render)
+    assert "trusted=True" in inspect.getsource(strategy.wiki_html_for)

@@ -22,6 +22,7 @@ kodlamasız metin açılışı Windows'ta cp1254'e düşüp Türkçe içerikte p
 
 from __future__ import annotations
 
+import html as _html
 import json
 import logging
 import math
@@ -37,22 +38,105 @@ from markupsafe import Markup, escape
 
 from app_constants import DATA_DIR, MAX_DATE_RANGE_DAYS
 
+# ---------------------------------------------------------------------------
+# Markdown → HTML. Çıktı şablonlarda `|safe` ile basılıyor, yani bu fonksiyonun
+# SÖZLEŞMESİ "döndürdüğüm HTML gövdeye gömülebilir"dir.
+#
+# DeepR 2026-08-17 [ORTA]: python-markdown ham HTML'i OLDUĞU GİBİ geçirir ve
+# hiçbir çağıran sanitize etmiyordu. AUTO review belgesi
+# (`sessions.py:/{run_id}/review`) kullanıcının `hint` alanını ve LLM'in
+# ürettiği strateji adlarını içeriyor; olay-işleyicili bir HTML parçası oraya
+# girip review sayfası her açıldığında uygulama origin'inde çalışabiliyordu.
+# Kalıcı: belge her istekte log'dan yeniden üretiliyor, yani girdi log'da
+# durduğu sürece yük de duruyor.
+#
+# NEDEN VARSAYILAN GÜVENLİ: üç çağıranın ikisi repo içindeki wiki dosyalarını
+# basıyor (güvenilir), biri kullanıcı/LLM metnini (güvenilmez). Varsayılanı
+# "güvenilir" yapmak, dördüncü çağıranın doğru olanı HATIRLAMASINI gerektirirdi
+# — `esc`/`error_html` yardımcılarının kurduğu duruşun tersi. Tehlikeli olan
+# açıkça istensin.
+#
+# NEDEN KÜTÜPHANE DEĞİL: bu kutuda bleach/nh3 yok ve elle HTML süzgeci yazmak
+# bilinen bir tuzak. Onun yerine ham HTML'in HİÇ ÜRETİLMEMESİ sağlanıyor:
+# kaynak metin markdown'a girmeden `html.escape`'ten geçiyor. Markdown sözdizimi
+# (`#`, tablolar, ```-blokları, **kalın**) HTML karakteri içermediği için
+# olduğu gibi çalışmaya devam ediyor; `<script>` ise görünür metne dönüşüyor.
+# Geriye kalan tek yüzey markdown'ın KENDİ ürettiği `href`/`src` — onu da
+# `_SafeUris` ağaç üzerinde temizliyor (regex değil, ayrıştırılmış ağaç).
+# ---------------------------------------------------------------------------
+
+_SAFE_URI_SCHEMES = frozenset({"http", "https", "mailto"})
+
+
+def _uri_is_safe(value: str) -> bool:
+    """``javascript:``/``data:`` gibi çalıştırılabilir şemaları ele.
+
+    Göreli URL'ler (şemasız, ``/x``, ``#x``, ``a/b``) geçerli. Şema ayıklaması
+    sekme/yeni satır/NUL temizlendikten SONRA yapılıyor: tarayıcılar
+    ``java\\tscript:`` yazımını da çalıştırır, çıplak bir ``startswith``
+    kontrolü onu kaçırırdı.
+    """
+    v = "".join(ch for ch in value.strip().lower() if ch not in "\t\r\n\x00")
+    scheme, sep, _ = v.partition(":")
+    if not sep:
+        return True  # şema yok → göreli
+    if any(c in scheme for c in "/?#"):
+        return True  # ':' yolun içinde (ör. "a/b:c"), şema değil
+    return scheme in _SAFE_URI_SCHEMES
+
+
 try:
     import markdown as _md
+    from markdown.treeprocessors import Treeprocessor as _Treeprocessor
+
+    class _SafeUris(_Treeprocessor):
+        """Güvensiz şemalı ``href``/``src`` değerlerini boşalt."""
+
+        def run(self, root):
+            for el in root.iter():
+                for attr in ("href", "src"):
+                    val = el.get(attr)
+                    if val is not None and not _uri_is_safe(val):
+                        el.set(attr, "")
+            return root
+
+    class _SafeUriExtension(_md.Extension):
+        def extendMarkdown(self, md):  # noqa: N802 — python-markdown API
+            # 'inline'dan sonra: bağlantılar o aşamada üretiliyor.
+            md.treeprocessors.register(_SafeUris(md), "nau_safe_uris", 1)
 
     def render_md(
-        txt: str, extensions: tuple[str, ...] = ("fenced_code", "tables")
+        txt: str,
+        extensions: tuple[str, ...] = ("fenced_code", "tables"),
+        *,
+        trusted: bool = False,
     ) -> str:
-        """Render markdown → HTML. Was hand-copied into strategy/backtest/wiki
-        routes; lives here now (leaf module). ``extensions`` lets the wiki route
-        keep its ``toc`` variant without a second copy."""
-        return _md.markdown(txt, extensions=list(extensions))
+        """Markdown → HTML. ``trusted=True`` YALNIZ repo içi içerik için.
+
+        Elle strategy/backtest/wiki route'larına kopyalanmıştı; artık yaprak
+        modülde tek kopya. ``extensions`` wiki route'unun ``toc`` varyantını
+        ikinci bir kopya olmadan kullanmasını sağlıyor.
+
+        ``trusted=False`` (varsayılan): ham HTML üretilmez, çalıştırılabilir
+        URI şemaları temizlenir. Kullanıcı ya da LLM kaynaklı her metin.
+        ``trusted=True``: metin repo'dan geliyor ve kasıtlı HTML içerebilir.
+        """
+        if trusted:
+            return _md.markdown(txt, extensions=list(extensions))
+        return _md.markdown(
+            _html.escape(txt), extensions=[*extensions, _SafeUriExtension()]
+        )
 except Exception:  # pragma: no cover
 
     def render_md(
-        txt: str, extensions: tuple[str, ...] = ("fenced_code", "tables")
+        txt: str,
+        extensions: tuple[str, ...] = ("fenced_code", "tables"),
+        *,
+        trusted: bool = False,
     ) -> str:
-        return f"<pre>{txt}</pre>"
+        # Kaçırma burada da şart: bu yedek yol da `|safe` ile basılıyor, yani
+        # markdown import'unun düşmesi sessizce bir XSS sink'i açıyordu.
+        return f"<pre>{_html.escape(txt)}</pre>"
 
 
 # ---------------------------------------------------------------------------

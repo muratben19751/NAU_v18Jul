@@ -214,7 +214,9 @@ def wiki_html_for(block_type: str) -> tuple[str, str]:
     2026-08-09 [YÜKSEK])."""
     refs = BLOCK_CATALOG.get(block_type, {}).get("wiki_refs", [])
     active = refs[0] if refs else "wiki/entities/strategy_and_actor.md"
-    return active, render_md(read_wiki_page(active))
+    # trusted: `wiki_refs` katalogdan, dosya repo içinden — kullanıcı metni
+    # değil (bkz. `web.shared.render_md`).
+    return active, render_md(read_wiki_page(active), trusted=True)
 
 
 def _preview_signals(code: str, meta: dict, role_hint: str) -> dict:
