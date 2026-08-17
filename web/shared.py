@@ -25,6 +25,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import re
 import threading
 import time
 import uuid
@@ -637,14 +638,30 @@ def log_backtest(
 _RESULTS_DIR = _CACHE_DIR / "bt_results"
 _RESULTS_KEEP = 20  # cap: newest N snapshots kept, older ones pruned
 
+# A run id is `uuid.uuid4().hex[:8]` at both call sites — eight lowercase hex
+# digits, nothing else. The shape is checked rather than the resulting path
+# because `run_id` arrives from the URL: `GET /backtest/result/{run_id}`.
+# Measured before this guard: `..%5C..%5Cevil` returned HTTP 200 and the read
+# resolved to C:\Users\MYDESK\evil.json — any JSON on the box was readable
+# through the result screen. `custom_block_store.list_agent_blocks` already
+# validated the same id this way; this surface was simply missed.
+_RUN_ID_RE = re.compile(r"[0-9a-f]{8}")
+
+
+def _snapshot_path(run_id: str):
+    """The file for `run_id`, or None if that is not a run id at all."""
+    if not run_id or not _RUN_ID_RE.fullmatch(run_id):
+        return None
+    return _RESULTS_DIR / f"{run_id}.json"
+
 
 def save_result_snapshot(run_id: str, viewmodel: dict) -> None:
     """Persist a full backtest result view-model; prune to the newest N."""
-    if not run_id:
+    path = _snapshot_path(run_id)
+    if path is None:
         return
     try:
         _RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-        path = _RESULTS_DIR / f"{run_id}.json"
         with open(path, "w", encoding="utf-8") as f:
             f.write(json.dumps(sanitize_floats(viewmodel), default=str))
         # Prune oldest beyond the cap (by mtime).
@@ -661,9 +678,16 @@ def save_result_snapshot(run_id: str, viewmodel: dict) -> None:
 
 
 def load_result_snapshot(run_id: str) -> dict | None:
-    """Read back a stored result view-model; None if missing/unreadable."""
+    """Read back a stored result view-model; None if missing/unreadable.
+
+    An id that is not eight hex digits is "missing", not an error: the route
+    renders the same "bu koşu artık saklanmıyor" panel either way, and telling
+    a prober which paths exist would be the next mistake.
+    """
+    path = _snapshot_path(run_id)
+    if path is None:
+        return None
     try:
-        path = _RESULTS_DIR / f"{run_id}.json"
         if not path.exists():
             return None
         with open(path, encoding="utf-8", errors="replace") as f:

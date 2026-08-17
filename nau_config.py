@@ -109,6 +109,14 @@ _HTTP = [
         "Tek operatörlü giriş kapısının paylaşılan sırrı; boşsa kapı kapalıdır.",
     ),
     _v(
+        "NAU_ALLOW_NO_AUTH",
+        "bool",
+        "(kapalı)",
+        "server",
+        "pm2 altında NAU_ACCESS_TOKEN boşken servis etmeye izin ver; "
+        "aksi hâlde her istek 503 alır (kapısız dağıtıma karşı fail-closed).",
+    ),
+    _v(
         "NAU_ALLOWED_ORIGINS",
         "str",
         "",

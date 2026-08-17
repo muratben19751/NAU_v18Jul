@@ -75,7 +75,12 @@ from pathlib import Path
 from urllib.parse import urlsplit as _urlsplit
 
 from fastapi import FastAPI, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse, RedirectResponse, Response
+from fastapi.responses import (
+    HTMLResponse,
+    PlainTextResponse,
+    RedirectResponse,
+    Response,
+)
 from fastapi.staticfiles import StaticFiles
 
 # `sandbox` BURADA, uygulamanın giriş noktasında ve AÇIKÇA import ediliyor —
@@ -174,6 +179,41 @@ def _warn_if_unauthenticated_and_deployed(token: str, env: dict) -> bool:
 
 
 _warn_if_unauthenticated_and_deployed(_ACCESS_TOKEN, _os.environ)
+
+
+def _deployed_without_a_token(env: dict | None = None) -> bool:
+    """Dağıtımdayız ve kapının sırrı yok — istek servis edilmemeli.
+
+    Uyarı 2026-08-09'da eklendi ve YETMEDİ: uyarı log'a düşerken uygulama
+    tünelden kapısız servis etmeye devam ediyordu, yani asıl davranış hiç
+    değişmedi. Bir güvenlik kontrolünün "uyar ama yine de yap" hâli, kararı
+    log'u okuyacak birinin var olduğu varsayımına bağlar; kimse okumazsa
+    koruma yoktur.
+
+    Fail-closed ama SÜRECİ ÖLDÜRMEDEN: pm2 altında import zamanı bir
+    `sys.exit` yeniden başlatma döngüsü yaratır ve tünel 502 döndürür — ne
+    olduğunu kimse anlamaz. Bunun yerine her istek, ne yapılacağını yazan bir
+    503 alır: süreç ayakta, sebep tarayıcıda.
+
+    Kaçış kapısı bilinçli: pm2'yi tünelsiz/yerel kullanan bir kurulum
+    `NAU_ALLOW_NO_AUTH=1` diyebilir. Kapıyı açmak artık bir CÜMLE kurmayı
+    gerektiriyor; unutmakla aynı şey değil.
+    """
+    env = env if env is not None else _os.environ
+    if _ACCESS_TOKEN or not env.get("PM2_HOME"):
+        return False
+    return env.get("NAU_ALLOW_NO_AUTH", "").strip().lower() not in ("1", "true", "yes")
+
+
+_NO_TOKEN_BODY = (
+    "503 — bu kurulum kimlik doğrulamasız servis etmeyi reddediyor.\n\n"
+    "NAU_ACCESS_TOKEN boş ve uygulama pm2 altında koşuyor (PM2_HOME set), "
+    "yani büyük olasılıkla cloudflared tüneliyle internete açık.\n\n"
+    "Düzeltmek için ikisinden biri:\n"
+    "  1) Sırrı ver:  ~/.nau_access_token dosyasına yaz (ya da NAU_ACCESS_TOKEN "
+    "ortam değişkenini set et) ve uygulamayı yeniden başlat.\n"
+    "  2) Bilerek kapısız koşuyorsan:  NAU_ALLOW_NO_AUTH=1\n"
+)
 
 
 def _auth_cookie_value(token: str) -> str:
@@ -479,6 +519,11 @@ async def _limit_request_body(request: Request, call_next):
 @app.middleware("http")
 async def _require_auth(request: Request, call_next):
     path = request.url.path
+    # ÖNCE bu: /login ve /static/* dahil hiçbir şey servis edilmiyor. Kapısız
+    # bir dağıtımda "giriş sayfası açık kalsın" diye bir istisna, girilecek bir
+    # sır olmadığı için yalnızca kapıyı açık tutmanın kibar adı olurdu.
+    if _deployed_without_a_token():
+        return PlainTextResponse(_NO_TOKEN_BODY, status_code=503)
     if not _ACCESS_TOKEN or path == "/login" or path.startswith("/static/"):
         return await call_next(request)
     if _is_authenticated(request):

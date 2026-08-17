@@ -165,3 +165,58 @@ class TestDeployedWithoutAuthWarns:
 
         assert warned is False
         assert caplog.text == ""
+
+
+class TestDeployedWithoutATokenIsRefused:
+    """Uyarı 2026-08-09'da eklenmişti ve DAVRANIŞ hiç değişmemişti: log'a bir
+    satır düşüyor, uygulama tünelden kapısız servis etmeye devam ediyordu.
+    Bir güvenlik kontrolünün "uyar ama yine de yap" hâli, koruma sayılmaz."""
+
+    def test_pm2_without_a_token_refuses_every_request(self, monkeypatch):
+        monkeypatch.setattr(server, "_ACCESS_TOKEN", "")
+        monkeypatch.setenv("PM2_HOME", "/home/user/.pm2")
+        monkeypatch.delenv("NAU_ALLOW_NO_AUTH", raising=False)
+
+        r = TestClient(server.app).get("/", follow_redirects=False)
+
+        assert r.status_code == 503
+        assert "NAU_ACCESS_TOKEN" in r.text
+        assert "NAU_ALLOW_NO_AUTH" in r.text, "ne yapılacağını söylemeyen 503"
+
+    def test_login_and_static_are_refused_too(self, monkeypatch):
+        """Kapısız bir dağıtımda "giriş sayfası açık kalsın" istisnası,
+        girilecek bir sır olmadığı için kapıyı açık tutmanın kibar adıdır."""
+        monkeypatch.setattr(server, "_ACCESS_TOKEN", "")
+        monkeypatch.setenv("PM2_HOME", "/home/user/.pm2")
+        monkeypatch.delenv("NAU_ALLOW_NO_AUTH", raising=False)
+        client = TestClient(server.app)
+
+        assert client.get("/login", follow_redirects=False).status_code == 503
+        assert client.get("/static/app.js", follow_redirects=False).status_code == 503
+
+    def test_local_dev_without_pm2_is_untouched(self, monkeypatch):
+        """Token'sız yerel geliştirme sessizce çalışmaya devam etmeli —
+        aksi hâlde tek satırlık bir sertleştirme bütün süiti 503'e çevirir."""
+        monkeypatch.setattr(server, "_ACCESS_TOKEN", "")
+        monkeypatch.delenv("PM2_HOME", raising=False)
+
+        assert server._deployed_without_a_token() is False
+        assert TestClient(server.app).get("/login").status_code == 200
+
+    def test_the_escape_hatch_has_to_be_stated(self, monkeypatch):
+        """Kapıyı açmak artık bir cümle kurmayı gerektiriyor; unutmakla aynı
+        şey değil."""
+        monkeypatch.setattr(server, "_ACCESS_TOKEN", "")
+        monkeypatch.setenv("PM2_HOME", "/home/user/.pm2")
+
+        monkeypatch.setenv("NAU_ALLOW_NO_AUTH", "1")
+        assert server._deployed_without_a_token() is False
+
+        monkeypatch.setenv("NAU_ALLOW_NO_AUTH", "maybe")
+        assert server._deployed_without_a_token() is True, "her değer 'evet' sayıldı"
+
+    def test_a_token_under_pm2_is_the_normal_case(self, monkeypatch):
+        monkeypatch.setattr(server, "_ACCESS_TOKEN", TOKEN)
+        monkeypatch.setenv("PM2_HOME", "/home/user/.pm2")
+
+        assert server._deployed_without_a_token() is False
