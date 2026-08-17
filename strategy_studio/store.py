@@ -20,9 +20,20 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
+from app_constants import studio_db_path
+
 from .schema import StrategyDefinition
 
-DB_PATH = Path(__file__).resolve().parents[1] / "studio.db"
+# Konum `app_constants.studio_db_path()`'ten gelir, buradan DEĞİL. Burası kendi
+# `parents[1] / "studio.db"` yolunu kuruyordu ve bu, `NAU_STUDIO_DB`'yi ölü bir
+# ayar yapıyordu: route'lar `StrategyStore()`'u parametresiz çağırdığı için
+# ortam değişkenini ayarlayan HERKES sessizce yok sayılıyordu. En somut kurbanı
+# `tests/browser/conftest.py`: değişkeni geçici bir dizine yönlendirip "gerçek
+# repo kökündeki studio.db'ye ASLA dokunmamalı" diye söz veriyor — o söz bu
+# satır yüzünden fiilen kırıktı, süit gerçek DB'ye yazıyordu.
+#
+# `app_constants` bu iş için var: yalnız stdlib'e dayanır, döngü riski yoktur.
+DB_PATH = studio_db_path()
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS strategy_versions (
@@ -169,8 +180,12 @@ class _Conn(sqlite3.Connection):
 
 
 class StrategyStore:
-    def __init__(self, db_path: Path | str = DB_PATH):
-        self.db_path = str(db_path)
+    def __init__(self, db_path: Path | str | None = None):
+        # Varsayılan ÇAĞRI ANINDA çözülür, import anında değil: `def
+        # __init__(..., db_path=DB_PATH)` ortam değişkenini modül import'una
+        # dondururdu ve süreç içinde `NAU_STUDIO_DB`'yi ayarlayan bir test onu
+        # asla göremezdi.
+        self.db_path = str(db_path if db_path is not None else studio_db_path())
         # One lock per strategy, guarding the read-modify-write in `editing`.
         # Never evicted: a lock is ~50 bytes and the key set is the strategy
         # list, so this cannot grow beyond what the DB already holds.
