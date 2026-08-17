@@ -3712,6 +3712,10 @@ def _agent_worker(
                 s["winner_rob"] = None
                 s["winner_holdout"] = None
                 s["winner_narrative"] = None  # M2625: new round → fresh narrative
+                # Uçuştaki üretim ARTIK eski kazananı anlatıyor. Bayrağı
+                # düşürmek onun sonucunu yeni tura yazmasını engelliyor
+                # (jeton olarak da kullanılıyor — bkz. poll yolundaki finally).
+                s["narrative_inflight"] = False
                 s["rob_scan_log"] = []
                 s["backtest_results"] = []
                 for p in s["phases"]:
@@ -5490,15 +5494,44 @@ async def progress(request: Request, run_id: str):
         # Previously, while done+winner was set, EVERY poll (every 2s in
         # continuous) made a new LLM API call and blocked on the response; since
         # the winner is fixed, a single generation is enough.
+        # TEK UÇUŞ (DeepR 2026-08-17 [ORTA]). Önbellek tek başına yetmiyordu:
+        # kontrol ile yazım arasında kilit BIRAKILIYOR ve arada bir `await`
+        # var. İki sekme (ya da continuous modda üst üste binen iki poll) aynı
+        # anda `None` görüp İKİ AYRI ücretli LLM çağrısı başlatabiliyordu —
+        # ikisi de aynı sabit kazananı anlatmak için.
+        #
+        # Bayrak da aynı kilidin altında konuyor, yani "boş mu" ile "ben
+        # aldım" tek bir atomik adım. Kaybeden poll üretmiyor: anlatısız
+        # render ediyor ve 1–2 sn sonraki poll önbellekten okuyor. Bir tur
+        # gecikme, ikinci bir faturadan iyidir.
         with _AGENT_LOCK:
             _real = _AGENT_PROGRESS.get(run_id)
             _narr = _real.get("winner_narrative") if _real else None
-        if _narr is None:
-            _narr = await asyncio.to_thread(_winner_narrative, last_row, state)
-            with _AGENT_LOCK:
-                _real = _AGENT_PROGRESS.get(run_id)
-                if _real is not None:
-                    _real["winner_narrative"] = _narr
+            _mine = (
+                _narr is None
+                and _real is not None
+                and not _real.get("narrative_inflight")
+            )
+            if _mine:
+                _real["narrative_inflight"] = True
+        if _mine:
+            try:
+                _narr = await asyncio.to_thread(_winner_narrative, last_row, state)
+            finally:
+                # Bayrak HER durumda düşmeli: çağrı patlarsa sonraki poll
+                # yeniden denesin, yoksa anlatı kalıcı olarak kaybolurdu.
+                #
+                # Bayrak aynı zamanda JETON: yeni bir tur başladıysa reset onu
+                # düşürmüştür ve elimdeki metin artık ESKİ kazananı anlatıyor.
+                # O metni yazmak, yeni kazananın altına başkasının hikâyesini
+                # koymak olurdu.
+                with _AGENT_LOCK:
+                    _real = _AGENT_PROGRESS.get(run_id)
+                    if _real is not None:
+                        still_mine = bool(_real.get("narrative_inflight"))
+                        _real["narrative_inflight"] = False
+                        if still_mine and _narr is not None:
+                            _real["winner_narrative"] = _narr
         last_row["narrative"] = _narr
 
         # Chart URL

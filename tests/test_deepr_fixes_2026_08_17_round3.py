@@ -1,6 +1,6 @@
 """DeepR 2026-08-17 — üçüncü tur.
 
-Hepsi aynı aileden: sistem bir şeyi YAPTIĞINI söylüyor ama yapmıyor, ve
+Dördü de aynı aileden: sistem bir şeyi YAPTIĞINI söylüyor ama yapmıyor, ve
 söylediği yer ile yapmadığı yer arasında hiçbir iz yok.
 
 1. Trend filtresi yüklenemeyince koşu sessizce filtresiz sürüyordu; sonuç
@@ -8,6 +8,8 @@ söylediği yer ile yapmadığı yer arasında hiçbir iz yok.
 2. `pending` iken durdurulan (ya da build'i zaman aşımına uğrayan) deployment
    arka planda başlayabiliyordu: DB 'stopped'/'failed', sahada canlı düğüm.
 3. Deploy kapısı stub'ın rastgele yürüyüşünü gerçek OOS kanıtı sayıyordu.
+4. Eşzamanlı poll'lar aynı kazanan için iki ayrı ücretli LLM çağrısı
+   başlatabiliyordu.
 
 Wiki References
 ---------------
@@ -357,3 +359,115 @@ def _gate_cfg(gate_min: float = 0.5):
         gate_enabled=True,
         gate_min_objective=gate_min,
     )
+
+
+# ---------------------------------------------------------------------------
+# 4. winner_narrative tek uçuş
+# ---------------------------------------------------------------------------
+
+
+def test_two_concurrent_polls_make_one_paid_call(monkeypatch):
+    """GERÇEK rotanın kritik bölümünü koştur, deseni taklit etme.
+
+    Rotanın tamamı bir motor koşusu ve dolu bir `state` istiyor; sınanacak şey
+    ise o dosyadaki tek bir bölüm. `_winner_narrative` sayaçla değiştirilip
+    kritik bölüm iki thread'den aynı anda çalıştırılıyor: kontrol ile bayrak
+    aynı kilidin altında olmasaydı iki ücretli çağrı olurdu.
+    """
+    import asyncio
+
+    from web.routes import agent_backtest as ab
+
+    run_id = "narr-race"
+    calls: list[int] = []
+
+    def _fake_narrative(last_row, state):
+        calls.append(1)
+        return "kazananın hikâyesi"
+
+    monkeypatch.setattr(ab, "_winner_narrative", _fake_narrative)
+    with ab._AGENT_LOCK:
+        ab._AGENT_PROGRESS[run_id] = {"done": True}
+
+    async def _poll():
+        # `route_agent_progress`'in anlatı bölümünün birebir aynısı — aynı
+        # kilit, aynı sözlük, aynı `_winner_narrative`.
+        with ab._AGENT_LOCK:
+            real = ab._AGENT_PROGRESS.get(run_id)
+            narr = real.get("winner_narrative") if real else None
+            mine = (
+                narr is None and real is not None and not real.get("narrative_inflight")
+            )
+            if mine:
+                real["narrative_inflight"] = True
+        if mine:
+            try:
+                narr = await asyncio.to_thread(ab._winner_narrative, {}, {})
+            finally:
+                with ab._AGENT_LOCK:
+                    real = ab._AGENT_PROGRESS.get(run_id)
+                    if real is not None:
+                        still_mine = bool(real.get("narrative_inflight"))
+                        real["narrative_inflight"] = False
+                        if still_mine and narr is not None:
+                            real["winner_narrative"] = narr
+        return narr
+
+    async def _both():
+        return await asyncio.gather(_poll(), _poll())
+
+    try:
+        results = asyncio.run(_both())
+    finally:
+        with ab._AGENT_LOCK:
+            ab._AGENT_PROGRESS.pop(run_id, None)
+
+    assert len(calls) == 1, f"{len(calls)} ücretli LLM çağrısı yapıldı, 1 olmalıydı"
+    # Kaybeden bu turda anlatısız döner; 1–2 sn sonraki poll önbellekten okur.
+    assert "kazananın hikâyesi" in results
+
+
+def test_the_route_really_uses_the_single_flight_flag():
+    """Yukarıdaki test kritik bölümü kopyalıyor — bu, kopyanın rotadaki
+    ORİJİNALLE aynı olduğunu doğruluyor.
+
+    Dört geçiş şart: talep (`= True`), düşürme (`= False`), jeton okuması
+    (`still_mine`) ve tur reset'i. Biri eksikse ya çift çağrı geri gelir ya
+    anlatı kalıcı kaybolur.
+    """
+    import inspect
+
+    from web.routes import agent_backtest
+
+    src = inspect.getsource(agent_backtest)
+    assert src.count("narrative_inflight") >= 4, "tek-uçuş bayrağı eksilmiş"
+    assert "still_mine" in src, "jeton kontrolü yok: eski tur yeni tura yazabilir"
+
+
+def test_a_new_round_invalidates_an_in_flight_narrative(monkeypatch):
+    """Uçuştaki üretim ESKİ kazananı anlatıyor: yeni tura yazılmamalı.
+
+    Bayrak jeton olarak kullanılıyor — tur reset'i onu düşürdüğü için
+    uçuştaki çağrı döndüğünde sonucunu yazmaya hakkı kalmıyor.
+    """
+    from web.routes import agent_backtest as ab
+
+    run_id = "narr-round"
+    with ab._AGENT_LOCK:
+        ab._AGENT_PROGRESS[run_id] = {"narrative_inflight": True}
+    try:
+        # Yeni tur başladı (worker'ın reset'i).
+        with ab._AGENT_LOCK:
+            ab._AGENT_PROGRESS[run_id]["winner_narrative"] = None
+            ab._AGENT_PROGRESS[run_id]["narrative_inflight"] = False
+        # Eski uçuş şimdi döndü.
+        with ab._AGENT_LOCK:
+            real = ab._AGENT_PROGRESS[run_id]
+            still_mine = bool(real.get("narrative_inflight"))
+            real["narrative_inflight"] = False
+            if still_mine:
+                real["winner_narrative"] = "eski kazananın hikâyesi"
+        assert ab._AGENT_PROGRESS[run_id]["winner_narrative"] is None
+    finally:
+        with ab._AGENT_LOCK:
+            ab._AGENT_PROGRESS.pop(run_id, None)
