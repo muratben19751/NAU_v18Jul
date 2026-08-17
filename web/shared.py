@@ -659,6 +659,13 @@ def save_result_snapshot(run_id: str, viewmodel: dict) -> None:
     """Persist a full backtest result view-model; prune to the newest N."""
     path = _snapshot_path(run_id)
     if path is None:
+        # Bugün buraya gelen her id bizim ürettiğimiz sekiz haneli hex; bir gün
+        # gelmezse sonuç ekranı sessizce "artık saklanmıyor" derdi ve sebebi
+        # hiçbir yerde yazmazdı. Yazma yolunda susmak, okuma yolundan farklı:
+        # orada susmak prob atana bilgi vermemek için KASITLI.
+        logging.getLogger(__name__).warning(
+            "result snapshot skipped: %r is not a run id", run_id
+        )
         return
     try:
         _RESULTS_DIR.mkdir(parents=True, exist_ok=True)

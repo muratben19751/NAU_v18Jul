@@ -547,6 +547,23 @@ class PaperRunner:
             try:
                 self.pause(deploy_id)
             except RunnerError as e:
+                # Kilit `pause()` çağrılmadan ÖNCE bırakılıyor (o kendi kilidini
+                # alacak), yani aradaki pencerede operatör Stop'a basmış ya da
+                # düğüm kendi ölmüş olabilir. Böyle bir durumda satırı kimin
+                # yazacağı zaten belli: `stop()` yolunda route 'stopped',
+                # kendiliğinden ölümde serve thread'i 'failed' yazıyor. Buradan
+                # da yazmak, KULLANICININ KENDİ durdurduğu bir deployment'ı hiç
+                # olmamış bir arıza mesajıyla kırmızıya çevirirdi.
+                with self._lock:
+                    still_there = deploy_id in self._nodes
+                if not still_there:
+                    log.info(
+                        "kill switch: %s disappeared before it could be paused "
+                        "(deliberate stop or the node exited) — leaving the row "
+                        "to whoever owns that transition",
+                        deploy_id[:6],
+                    )
+                    continue
                 self.on_status(deploy_id, "failed", f"kill switch could not pause: {e}")
                 continue
             self.on_status(

@@ -1433,6 +1433,12 @@ def _admit_llm_budget(run_id: str, request: dict) -> None:
     ihtiyat payı ve sistem ona göre kalibre; aynı sayıyı parayla çarpmak
     kullanıcının 20 dolarlık tavanını sessizce 5 dolara indirirdi. Harcanan
     parayı okumak tahmin gerektirmiyor.
+
+    MALİYETİ ÖLÇÜLDÜ (review sorusuydu: `_run_cost` artık HER sağlayıcı
+    çağrısında koşuyor, sıcak yol mu?). 2026-08-17, 4 modelli kırılım, 2.000
+    tekrar: **3,2 µs/çağrı**. Yanındaki sağlayıcı çağrısı yüzlerce milisaniye
+    — yani beş kat büyüklük farkı var. Önlem gerekmiyor; sayı burada dursun ki
+    aynı soru üçüncü kez sorulmasın.
     """
 
     reserve = max(0, int(request.get("total_token_bound") or 0))

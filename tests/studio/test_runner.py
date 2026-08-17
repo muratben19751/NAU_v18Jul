@@ -561,3 +561,51 @@ def test_the_default_reader_reads_the_accounts_currency(artifact):
     node.portfolio.account_obj.base_currency = None  # two currencies, no account
     assert runner._read_pnl("dep015") is None, "summed across currencies"
     runner.stop("dep015")
+
+
+def test_a_deployment_stopped_mid_tick_is_not_reported_as_a_failure(artifact):
+    """`pause()` çağrılmadan önce kilit bırakılıyor (o kendi kilidini alacak),
+    yani aradaki pencerede operatör Stop'a basmış olabilir.
+
+    Böyle bir durumda satırı kimin yazacağı zaten belli: `stop()` yolunda route
+    'stopped' yazıyor. Kill switch'in de yazması, KULLANICININ KENDİ durdurduğu
+    bir deployment'ı hiç olmamış bir arıza mesajıyla kırmızıya çevirirdi.
+    """
+    pnl = [0.0]
+    runner, seen = _armed(artifact, pnl, deploy_id="dep016")
+    runner.check_kill_switches()  # baz alındı
+    pnl[0] = -5_000.0
+
+    # Yarışı deterministik hâle getir: `pause` çağrılır çağrılmaz düğüm gitmiş
+    # olsun — Stop'un tam o anda düşmesiyle aynı durum.
+    def _vanish(_deploy_id):
+        with runner._lock:
+            runner._nodes.pop("dep016", None)
+        raise RunnerError("deployment dep016 has no live node")
+
+    runner.pause = _vanish
+
+    assert runner.check_kill_switches() == []
+    assert [s for _d, s, _e in seen] == ["running"], (
+        "durdurulan deployment kill switch tarafından 'failed' yazıldı"
+    )
+
+
+def test_a_pause_failure_on_a_LIVE_node_is_still_reported(artifact):
+    """Sessizleştirme yalnız "düğüm gitmiş" hâline özgü. Ayakta duran bir
+    düğümü duraklatamamak gerçek bir arızadır ve satıra yazılmalı."""
+    pnl = [0.0]
+    runner, seen = _armed(artifact, pnl, deploy_id="dep017")
+    runner.check_kill_switches()
+    pnl[0] = -5_000.0
+
+    def _boom(_deploy_id):
+        raise RunnerError("loop refused the call")
+
+    runner.pause = _boom
+
+    assert runner.check_kill_switches() == []
+    deploy_id, status, reason = seen[-1]
+    assert (deploy_id, status) == ("dep017", "failed")
+    assert "could not pause" in reason
+    runner.stop("dep017")

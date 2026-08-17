@@ -46,6 +46,18 @@ STATE_CHANGING = [
 PROBE = "/agent/stop/csrf-probe"
 
 
+@pytest.fixture(autouse=True)
+def _reset_csrf_hint():
+    """Öğüt bayrağı SÜREÇ genelinde bir kez yazılsın diye tutuluyor; bu, testler
+    arasında sızan bir durum demektir. Önce sızdı da: `..._tells_the_operator...`
+    testi, kendinden önce koşan bir testin bayrağı yakmış olması yüzünden
+    kırıldı. Süreç-geneli "bir kez" desenini seçen her yer bu bedeli öder ve
+    ödemesi gereken yer testtir, üretim kodu değil."""
+    server._CSRF_HINT_LOGGED.clear()
+    yield
+    server._CSRF_HINT_LOGGED.clear()
+
+
 @pytest.fixture()
 def client(monkeypatch):
     monkeypatch.setattr(server, "_ACCESS_TOKEN", "")
@@ -293,3 +305,20 @@ class TestConfiguredOriginsAreAuthoritative:
 
         assert "NAU_ALLOWED_ORIGINS" in caplog.text
         assert "rebinding" in caplog.text.lower()
+
+
+def test_the_configuration_hint_is_logged_once_not_per_request(monkeypatch, caplog):
+    """İlk sürüm her reddedilen istekte öğüt veriyordu: tek bir bot taraması
+    log'u doldurur, pm2-logrotate'i çalıştırır ve gerçek sinyali dışarı atar —
+    yani öğüt verirken kaydı siler. İçeriği doğruydu, sıklığı yanlıştı."""
+    monkeypatch.delenv("NAU_ALLOWED_ORIGINS", raising=False)
+    client = TestClient(server.app)
+
+    with caplog.at_level("WARNING"):
+        for _ in range(5):
+            client.post(PROBE, headers={"Origin": "https://evil.com"})
+
+    hints = [r for r in caplog.records if "NAU_ALLOWED_ORIGINS boş" in r.getMessage()]
+    refusals = [r for r in caplog.records if "cross-origin" in r.getMessage()]
+    assert len(hints) == 1, f"öğüt {len(hints)} kez yazıldı"
+    assert len(refusals) == 5, "reddin KENDİSİ her seferinde kaydedilmeli"

@@ -94,3 +94,16 @@ def test_the_route_answers_a_probe_the_same_as_a_missing_run():
 
     assert probe.status_code == missing.status_code
     assert "evil" not in probe.text
+
+
+def test_a_rejected_write_is_logged(results_dir, caplog):
+    """Okuma yolunda susmak KASITLI (prob atana hangi yolların var olduğunu
+    söylememek için). Yazma yolunda susmak farklı: sonuç ekranı sessizce
+    "artık saklanmıyor" der ve sebebi hiçbir yerde yazmaz."""
+    import logging
+
+    with caplog.at_level(logging.WARNING):
+        shared.save_result_snapshot("../../evil", {"x": 1})
+
+    assert any("not a run id" in r.getMessage() for r in caplog.records)
+    assert list(results_dir.rglob("*.json")) == []

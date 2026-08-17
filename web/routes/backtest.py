@@ -125,7 +125,13 @@ def _empty_result_slot() -> dict:
 
 def _prune_result_slots(now: float) -> None:
     """Süresi dolmuş yuvaları düşür. Çağıran `_LAST_RESULT_LOCK`'u tutar."""
-    for sid in [s for s, v in _LAST_RESULT.items() if now - v["at"] > _RESULT_TTL_S]:
+    # `.get`: `at`'i yazan tek yer `_last_result_set`, ama bir testin ya da
+    # sonraki bir çağrı yerinin elle yuva koyması `KeyError` ile TÜM okuma
+    # yolunu düşürürdü. Damgasız yuva "çok eski" sayılır ve düşer — sessizce
+    # sonsuza kadar yaşamasından iyi.
+    for sid in [
+        s for s, v in _LAST_RESULT.items() if now - v.get("at", 0.0) > _RESULT_TTL_S
+    ]:
         _LAST_RESULT.pop(sid, None)
 
 

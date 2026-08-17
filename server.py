@@ -587,6 +587,10 @@ _CSRF_SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS", "TRACE"})
 # var ve "kurbanı saldırganın hesabına girdirmek" tek-sır modelinde anlamsız.
 _CSRF_EXEMPT_PATHS = frozenset({"/login"})
 
+# "NAU_ALLOWED_ORIGINS'i doldur" öğüdü süreç başına bir kez verilsin. Küme,
+# çünkü `add` atomik ve bu iki thread'den de okunabiliyor.
+_CSRF_HINT_LOGGED: set[bool] = set()
+
 
 def _configured_origin_hosts() -> set[str]:
     """`NAU_ALLOWED_ORIGINS`'ten okunan host'lar (küçük harf, boşsa boş küme)."""
@@ -622,6 +626,14 @@ def _allowed_origin_hosts(request: Request) -> set[str]:
     bilinmiyor ve sabit bir liste her POST'u 403 yapardı. Bunun yerine ilk
     reddedilen istekte operatöre ne yazması gerektiği söyleniyor
     (`_csrf_guard`).
+
+    GEÇİŞ NOTU — bu ayarı DOLDURMAK bir davranış değişikliğidir: liste
+    yetkiliyse `Host` artık kendiliğinden eklenmiyor, yani tünel adını yazıp
+    `127.0.0.1:8111`'i yazmayan bir kurulumda yerel tarayıcıdan gelen POST'lar
+    403 olur. Kilit tam olarak budur; ama hem tünelden hem localhost'tan
+    kullanılıyorsa İKİSİ de listelenmeli:
+
+        NAU_ALLOWED_ORIGINS=nautilus.example.com,127.0.0.1:8111
     """
     configured = _configured_origin_hosts()
     if configured:
@@ -678,10 +690,16 @@ async def _csrf_guard(request: Request, call_next):
             request.headers.get("referer"),
             request.headers.get("host"),
         )
-        if not _configured_origin_hosts():
+        if not _configured_origin_hosts() and not _CSRF_HINT_LOGGED:
+            # SÜREÇ BAŞINA BİR KEZ. İlk sürüm her reddedilen istekte yazıyordu;
+            # tek bir bot taraması log'u doldurur, pm2-logrotate'i çalıştırır ve
+            # gerçek sinyali dışarı atar — yani öğüt verirken kaydı siler.
+            # İçeriği doğruydu, sıklığı yanlıştı.
+            #
             # Reddin YANINDA söylenmesi kasıtlı: operatör bu satırı zaten
             # okuyordur ve tam o an "hangi host'u yazayım" sorusunun cevabı
             # ekranda duruyor. Ayrı bir açılış uyarısı bu bağlamı kaybederdi.
+            _CSRF_HINT_LOGGED.add(True)
             _log.warning(
                 "CSRF: NAU_ALLOWED_ORIGINS boş — izin listesi isteğin kendi "
                 "Host/X-Forwarded-Host başlığından türüyor. Bu düz çapraz-köken "

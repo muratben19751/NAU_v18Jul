@@ -26,6 +26,7 @@ See: [[v1_to_v2_migration_lessons]]
 from __future__ import annotations
 
 import hashlib
+import sys
 
 import numpy as np
 import pandas as pd
@@ -105,6 +106,30 @@ def test_the_anchor_frame_has_not_moved():
     assert _frame_fingerprint(_anchor_frame()) == FRAME_SHA256
 
 
+# Çıpa DEĞERLERİ Windows'ta ölçüldü. Motorun OS'lar arası bit-birebir aynılığı
+# ve `np.random.default_rng` akışının sürümler arası kararlılığı — ikisi de
+# doğrulanmadı; NumPy Generator akışı için resmî bir garanti de vermiyor.
+# 2026-08-17'de eklenen ubuntu CI ayağı bu dosyayı da koşacak, ve iki
+# varsayımdan biri tutmazsa yeni ayak DÜZELTİLEN KODDAN BAĞIMSIZ bir sebeple
+# kırmızı yanardı — çıpanın amacı gerileme yakalamak, platform farkını gerileme
+# diye sunmak değil.
+#
+# Bu yüzden değerler ölçüldükleri platforma bağlı, ama motor yolu HER YERDE
+# koşuyor: aşağıdaki determinizm ve çerçeve-parmakizi testleri platformdan
+# bağımsız ve ubuntu'da da gerçek bir backtest sürüyor. Linux ayağı ilk yeşil
+# koşumunu verdiğinde oradaki sayılar da buraya ikinci bir kayıt olarak
+# eklenmeli; skip metni bunu söylüyor ve `-ra` her koşumda ekrana basıyor.
+_ANCHOR_PLATFORM = "win32"
+
+
+@pytest.mark.skipif(
+    sys.platform != _ANCHOR_PLATFORM,
+    reason=(
+        f"çıpa değerleri {_ANCHOR_PLATFORM}'da ölçüldü; bu platformun kendi "
+        "sayıları henüz kaydedilmedi (motor yolu yine de koşuyor: determinizm "
+        "ve çerçeve parmakizi testleri platformdan bağımsız)"
+    ),
+)
 @pytest.mark.parametrize("name", sorted(ANCHORS))
 def test_the_engine_still_returns_the_same_numbers(name):
     r = run_backtest_guarded(

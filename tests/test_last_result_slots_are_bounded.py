@@ -100,3 +100,15 @@ def test_the_cap_is_sized_from_the_measurement():
     assert bt._MAX_RESULT_SESSIONS <= 50, (
         "0,57 MB'lık yuvalarla 50'nin üstü ölçülmemiş bir bellek taahhüdü"
     )
+
+
+def test_a_slot_without_a_timestamp_does_not_break_every_read():
+    """`at`'i yazan tek yer `_last_result_set`, ama bir testin ya da sonraki bir
+    çağrı yerinin elle yuva koyması `KeyError` ile TÜM okuma yolunu düşürürdü —
+    `web/routes/studio.py` de bu yuvayı okuyor. Damgasız yuva "çok eski"
+    sayılır ve düşer; sessizce sonsuza kadar yaşamasından iyi."""
+    with bt._LAST_RESULT_LOCK:
+        bt._LAST_RESULT["legacy"] = {"r": None, "spec_name": "x"}  # `at` yok
+
+    assert bt.last_result_get("legacy")["spec_name"] is None
+    assert "legacy" not in bt._LAST_RESULT
