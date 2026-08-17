@@ -109,6 +109,15 @@ _HTTP = [
         "Tek operatörlü giriş kapısının paylaşılan sırrı; boşsa kapı kapalıdır.",
     ),
     _v(
+        "NAU_DEPLOYED",
+        "bool",
+        "(serve.py set eder)",
+        "server",
+        "'Gerçekten dağıtıldık' işareti; erişim kapısının dosya yedeği ve "
+        "token'sız 503 buna bakar. PM2_HOME yedek — pm2 onu her kurulumda "
+        "çocuk sürece geçirmiyor (ölçüldü 2026-08-17).",
+    ),
+    _v(
         "NAU_ALLOW_NO_AUTH",
         "bool",
         "(kapalı)",

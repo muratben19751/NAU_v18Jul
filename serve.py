@@ -22,6 +22,7 @@ Bkz: [[webapp_module_map]], [[nautilus_kernel]]
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 
 try:
@@ -29,6 +30,24 @@ try:
     sys.stderr.reconfigure(encoding="utf-8")
 except (AttributeError, ValueError):
     pass
+
+# "Gerçekten dağıtıldık" işareti — ve işaret BU DOSYANIN KENDİSİ.
+#
+# Eskiden o rolü `PM2_HOME` oynuyordu: erişim kapısının dosya yedeği, açılış
+# uyarısı ve (2026-08-17'den beri) token'sız dağıtımı reddeden 503, üçü de ona
+# bakıyordu. ÖLÇÜLDÜ 2026-08-17, canlı süreçte: `pm2 env` çıktısında `PM2_HOME`
+# YOK — pm2 bu kurulumda onu çocuk sürece geçirmiyor. Sonuç zinciri şuydu:
+# `~/.nau_access_token` (6 bayt, mevcut) hiç okunmadı → `_ACCESS_TOKEN` boş →
+# `_is_authenticated` herkese True → `GET /` çerezsiz 200 döndü, cloudflared
+# 15 saattir açıkken.
+#
+# Kusur token'da değil, İŞARETTEYDİ: koruma, izlediğiyle aynı arızaya bağlıydı.
+# İşaret kaybolunca hem kapı açıldı hem kapıyı bekleyen alarm sustu.
+#
+# `serve.py` kaybolamaz, çünkü dağıtım O. Geliştirme yolu `uvicorn server:app`
+# bu dosyadan geçmez, dolayısıyla yerel koşum eskisi gibi kapısız kalır.
+# `server` import'undan ÖNCE konması şart: `_ACCESS_TOKEN` import anında okunur.
+os.environ.setdefault("NAU_DEPLOYED", "1")
 
 
 def main() -> None:

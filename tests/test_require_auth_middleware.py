@@ -220,3 +220,60 @@ class TestDeployedWithoutATokenIsRefused:
         monkeypatch.setenv("PM2_HOME", "/home/user/.pm2")
 
         assert server._deployed_without_a_token() is False
+
+
+class TestTheDeploymentMarkerCannotGoMissing:
+    """`PM2_HOME` bu kurulumda çocuk sürece HİÇ geçmiyordu (ölçüldü 2026-08-17,
+    canlı süreçte `pm2 env`).
+
+    Zincir: dosya yedeği okunmadı → `_ACCESS_TOKEN` boş → `_is_authenticated`
+    herkese True → `GET /` çerezsiz 200 döndü, cloudflared 15 saattir açıkken.
+    Ve aynı işarete bakan 503 de ateşlemedi. Koruma, izlediğiyle aynı arızaya
+    bağlıydı: işaret kaybolunca hem kapı açıldı hem alarm sustu.
+    """
+
+    def test_serve_py_sets_the_marker_before_server_is_imported(self):
+        """`_ACCESS_TOKEN` import anında okunur; işaret sonra konsa geç kalır."""
+        from pathlib import Path
+
+        src = Path("serve.py").read_text(encoding="utf-8")
+        marker = src.index('os.environ.setdefault("NAU_DEPLOYED"')
+        # uvicorn.run("server:app", ...) — server bu satırda import edilir.
+        assert marker < src.index('"server:app"')
+
+    def test_either_marker_counts_as_deployed(self):
+        assert server._is_deployed({"NAU_DEPLOYED": "1"}) is True
+        assert server._is_deployed({"PM2_HOME": "/home/u/.pm2"}) is True
+        assert server._is_deployed({}) is False
+
+    def test_the_token_file_is_read_under_the_new_marker(self, tmp_path, monkeypatch):
+        """Asıl kırılan buydu: dosya vardı, okunmuyordu."""
+        f = tmp_path / ".nau_access_token"
+        f.write_text("s3cr3t\n", encoding="utf-8")
+        monkeypatch.setattr(server, "_ACCESS_TOKEN_FILE", f)
+
+        assert server._read_access_token({"NAU_DEPLOYED": "1"}) == "s3cr3t"
+        assert server._read_access_token({}) == "", "yerel dev sessizce açık kalmalı"
+
+    def test_the_503_fires_under_the_new_marker_too(self, monkeypatch):
+        monkeypatch.setattr(server, "_ACCESS_TOKEN", "")
+        monkeypatch.delenv("PM2_HOME", raising=False)
+        monkeypatch.delenv("NAU_ALLOW_NO_AUTH", raising=False)
+        monkeypatch.setenv("NAU_DEPLOYED", "1")
+
+        assert (
+            TestClient(server.app).get("/", follow_redirects=False).status_code == 503
+        )
+
+    def test_all_three_consumers_read_one_rule(self):
+        """Üç tüketici ayrı ayrı `PM2_HOME`'a bakıyordu; işaret yanlış olunca
+        üçü BİRDEN yanlış oldu. Aynı kuralın üç kopyası bu depoda tekrarlayan
+        kusur (bkz. benchmark kapısı, işlem eşiği)."""
+        import inspect
+        from pathlib import Path
+
+        src = Path("server.py").read_text(encoding="utf-8")
+        body = src[src.index("def _is_deployed") :]
+        # `_is_deployed`'in KENDİ gövdesi dışında hiçbir yerde ham PM2_HOME okuması olmasın.
+        own = inspect.getsource(server._is_deployed)
+        assert body.replace(own, "").count('get("PM2_HOME")') == 0

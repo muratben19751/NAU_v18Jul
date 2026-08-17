@@ -132,6 +132,25 @@ _log = _logging.getLogger(__name__)
 _ACCESS_TOKEN_FILE = Path.home() / ".nau_access_token"
 
 
+def _is_deployed(env: dict | None = None) -> bool:
+    """ "Gerçekten dağıtıldık mı" — ÜÇ yerin de okuduğu TEK kural.
+
+    Üç tüketicisi var (dosya yedeği, açılış uyarısı, token'sız 503) ve üçü de
+    ayrı ayrı `PM2_HOME`'a bakıyordu. Tek kopya olması yalnız zarafet değil:
+    işaret yanlışsa üçü BİRDEN yanlış olur ve bunu 2026-08-17'de canlıda
+    gördük — `pm2 env` çıktısında `PM2_HOME` yok, yani pm2 bu kurulumda onu
+    çocuk sürece geçirmiyor. Zincir: token dosyası hiç okunmadı → kapı boş
+    token'la açık kaldı → aynı işarete bakan 503 de ateşlemedi. Koruma,
+    izlediğiyle aynı arızaya bağlıydı.
+
+    `NAU_DEPLOYED` bu yüzden birinci sırada: onu `serve.py` koyuyor, yani
+    DAĞITIMIN KENDİSİ. `PM2_HOME` yedek olarak duruyor — çalıştığı kurulumlarda
+    (ve `sandbox.py`'nin pythonw kararında) hâlâ doğru bir işaret.
+    """
+    env = env if env is not None else _os.environ
+    return bool(env.get("NAU_DEPLOYED") or env.get("PM2_HOME"))
+
+
 def _read_access_token(env: dict | None = None) -> str:
     """Erişim kapısının sırrı: önce ortam değişkeni, sonra home'daki dosya.
 
@@ -147,7 +166,7 @@ def _read_access_token(env: dict | None = None) -> str:
     token = env.get("NAU_ACCESS_TOKEN", "").strip()
     if token:
         return token
-    if not env.get("PM2_HOME"):
+    if not _is_deployed(env):
         return ""
     try:
         return _ACCESS_TOKEN_FILE.read_text(encoding="utf-8").strip()
@@ -168,7 +187,7 @@ def _warn_if_unauthenticated_and_deployed(token: str, env: dict) -> bool:
     dev/test run" marker sandbox.py already uses to decide pythonw spawning;
     local dev (PM2_HOME unset) stays silent, matching the module comment
     above. Returns whether it warned (for tests)."""
-    if token or not env.get("PM2_HOME"):
+    if token or not _is_deployed(env):
         return False
     _log.warning(
         "NAU_ACCESS_TOKEN is unset while running under pm2 (PM2_HOME is set) "
@@ -200,7 +219,7 @@ def _deployed_without_a_token(env: dict | None = None) -> bool:
     gerektiriyor; unutmakla aynı şey değil.
     """
     env = env if env is not None else _os.environ
-    if _ACCESS_TOKEN or not env.get("PM2_HOME"):
+    if _ACCESS_TOKEN or not _is_deployed(env):
         return False
     return env.get("NAU_ALLOW_NO_AUTH", "").strip().lower() not in ("1", "true", "yes")
 
