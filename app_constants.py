@@ -301,6 +301,25 @@ def _stamp_annualized_comparison(
         return
     if math.isfinite(strat_dd):
         metrics["strategy_calmar"] = strat_cagr / max(abs(strat_dd), 0.01)
+        # RET PAYI (2026-08-17). Kapının ölçüsü Calmar üstünlüğü ve reddi tek bir
+        # etiket: `worse_risk_adjusted`. O etiket %2 kaçıranla 60 kat kaçıranı
+        # aynı satıra koyuyordu, yani "eşiği biraz gevşetsem ne olurdu" sorusu
+        # ancak elle, defteri yeniden oynatarak cevaplanabiliyordu (ölçüm
+        # 755b7880 tur 1: en yakın aday %2,3 kaçırdı, medyan aday barın YARISINDA
+        # kaldı — ikisi de aynı gerekçeyle elendi).
+        #
+        # Oran seçildi, fark değil: Calmar'ın kendisi bir orandır ve barın
+        # büyüklüğü pencereye göre değişir, dolayısıyla mutlak fark
+        # karşılaştırılabilir bir sayı değil. 1.0 = tam eşikte, 0.5 = barın
+        # yarısı, >1.0 = geçti. Kapı KARARINI bu alan üzerinden vermiyor —
+        # tek karar kuralı `benchmark_rejection`'da kalıyor; bu yalnız teşhis.
+        if (
+            math.isfinite(bench_calmar := metrics["benchmark_calmar"])
+            and bench_calmar > 0
+        ):
+            metrics["calmar_ratio_vs_benchmark"] = (
+                metrics["strategy_calmar"] / bench_calmar
+            )
 
 
 # ---------------------------------------------------------------------------

@@ -99,7 +99,12 @@ import pandas as pd
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse
 
-from app_constants import DATA_DIR, benchmark_rejection, env_float
+from app_constants import (
+    DATA_DIR,
+    benchmark_gate_mode,
+    benchmark_rejection,
+    env_float,
+)
 
 # Robustluk suite'i ve saf yardımcıları artık web'den bağımsız `auto` paketinde
 # (DeepR 2026-08-11 [YÜKSEK]: sandbox child'ı sırf suite için tüm router ağacını
@@ -1885,6 +1890,23 @@ _INELIGIBILITY_LABELS = (
 )
 
 
+def _gate_description() -> str:
+    """Faz satırının kapıyı tarif eden yarısı — kuralın KENDİSİNE sorarak.
+
+    Bu metin uzun süre kümülatif fazlayı tarif ediyordu; kural 2026-08-15'te
+    risk-ayarlı ölçüye geçtiğinde metin geride kaldı ve operatör faz satırına
+    bakıp yanlış eşiği kurcaladı. Sabit yazılmış bir tarif, kural değiştiğinde
+    sessizce yalan söyler.
+
+    Ayrı bir fonksiyon olmasının sebebi test edilebilirlik: kaynak metnini
+    tarayan bir test, yorumun nasıl satır sonlandığına bağlı olarak tesadüfen
+    geçer. Davranışı sınamak için çağrılabilir bir şey lazım.
+    """
+    if benchmark_gate_mode() == "risk_adjusted":
+        return "Calmar > buy&hold and CAGR > 0"
+    return "positive annualized alpha and Calmar > buy&hold"
+
+
 def _no_eligible_phase_label(results: list[tuple]) -> str:
     """Kazanansız turun faz satırı — GERÇEK gerekçeyle.
 
@@ -1895,10 +1917,17 @@ def _no_eligible_phase_label(results: list[tuple]) -> str:
     edilecek şey eşikti. Kırılım, hangisi olduğunu tek bakışta söyler.
     """
     counts: dict[str, int] = {}
+    ratios: list[float] = []
     for entry in results:
         reason = _ineligibility_reason(entry[1])
         if reason:
             counts[reason] = counts.get(reason, 0) + 1
+        if reason == "worse_risk_adjusted":
+            ratio = ((entry[1].metrics or {}) if entry[1] else {}).get(
+                "calmar_ratio_vs_benchmark"
+            )
+            if isinstance(ratio, (int, float)) and math.isfinite(ratio):
+                ratios.append(float(ratio))
     total = len(results)
     ran = total - counts.get("crashed", 0) - counts.get("no_metrics", 0)
     parts = [
@@ -1907,6 +1936,15 @@ def _no_eligible_phase_label(results: list[tuple]) -> str:
         if counts.get(key)
     ]
     breakdown = ", ".join(parts) or "no results"
+    # 0/N satırı turun tek özeti; "hepsi elendi" ile "biri kıl payı kaçırdı"
+    # arasındaki farkı taşımazsa okuyan kişi eşiği kurcalamakla evreni
+    # değiştirmek arasında seçim yapamaz. En iyi oran + medyan yeter: biri
+    # "ne kadar yaklaştık", öteki "alan bütün olarak nerede".
+    if ratios:
+        ratios.sort()
+        best = ratios[-1]
+        med = ratios[len(ratios) // 2]
+        breakdown += f" (Calmar en iyi ×{best:.2f}, medyan ×{med:.2f} vs b&h)"
     return (
         f"⚠ 0/{total} candidates passed the alpha gate "
         f"({ran} ran successfully) — {breakdown}"
@@ -1944,16 +1982,20 @@ def _rank_and_filter(
     _add_step(
         run_id,
         f"{len(eligible)}/{len(results)} results qualify (≥{_MIN_TRADES} trades, "
-        "positive PnL/Sharpe and positive benchmark excess)",
+        f"positive PnL/Sharpe, {_gate_description()})",
     )
     for rank_i, (s, r, iv) in enumerate(ranked[:5]):
         sc = _score(r)
         m = r.metrics or {}
+        # Ret payı: reddin BÜYÜKLÜĞÜ, etiketin kendisinde yok. `×0.98` ile
+        # `×0.02` aynı `worse_risk_adjusted` satırını üretiyordu.
+        ratio = m.get("calmar_ratio_vs_benchmark")
+        margin = f" · Calmar ×{float(ratio):.2f} vs b&h" if ratio is not None else ""
         _add_step(
             run_id,
             f"  #{rank_i + 1} {s.name} [{iv}] · score={sc:.3f} · "
             f"PnL={m.get('pnl', 0):+.2f} · "
-            f"Sharpe={m.get('sharpe', float('nan')):.2f}",
+            f"Sharpe={m.get('sharpe', float('nan')):.2f}{margin}",
         )
     return ranked, eligible
 
