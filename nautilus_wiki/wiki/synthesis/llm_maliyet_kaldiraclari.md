@@ -15,7 +15,7 @@ related:
   - wiki/synthesis/auto_mission_control.md
   - wiki/synthesis/webapp_module_map.md
   - wiki/synthesis/nau_performans_denetimi.md
-last_updated: 2026-08-16
+last_updated: 2026-08-17
 ---
 
 # LLM maliyet kaldıraçları
@@ -264,10 +264,40 @@ hangi taşımadan geçtiğine göre ya muaf ya faturalıydı. Ayrımı yapan hâ
 ad** (yani alt sınıf `APITimeoutError` adla eleniyor); `isinstance` yalnız
 "tanıdığımız bir SDK mı" diye bakar ve artık iki SDK'yı da tanır.
 
+## `max_tokens` bu yolda BAĞLAYICI DEĞİL (ölçüldü 2026-08-17)
+
+Sayfanın "`_ClaudeCLIMessages.create` `max_tokens`'ı DÜŞÜRÜR" notu tavanın
+etkisiz kaldığı bir yönü zaten söylüyordu; canlı koşu ikinci ve daha keskin
+yönü verdi. `custom_block` üretiminde tavan `1800` isteniyor, mod
+`advisory_cli` — yani uç onu ZORLAMIYOR (39 çağrı, AUTO koşusu 8af5d495):
+
+| | |
+|---|---|
+| tavanı aşan çağrı | **22 / 39 (%56)** |
+| aşım | min +149 · medyan **+733** · maks **+1.707** |
+| istenen 1800 → gerçekleşen | medyan **2.533 (×1,41)** · en kötü **3.507 (×1,95)** |
+
+Örneklem 20 çağrıyken medyan ×1,31'di; ikiye katlanınca ×1,41 oldu, oran
+(%55→%56) sabit kaldı — gürültü değil sistematik sapma. Aşım TEK YÖNLÜ: tavan
+zorlanmadığı için gerçekleşen değer altına düşmüyor, yalnız üstüne çıkıyor,
+dolayısıyla tavanı girdi alan her maliyet hesabı iyimser yanılıyor.
+
+Aşım **yalnız `custom_block`** amacında: aynı koşudaki diğer 17 çağrının hiçbiri
+tavanı aşmadı. Yani "CLI advisory modu genel olarak gevşek" değil — kod üretimi
+istenen bütçeye sığmıyor, diğer görevler sığıyor. `status: ok`, yani kesilme yok
+ve codegate'ten geçen bloklar tam; etkilenen şey kalite değil MALİYET TAHMİNİ.
+
+Sonuç: `_admit_llm_budget` (2026-08-17) girişte para tavanını zorlarken sıradaki
+çağrının maliyetini TAHMİN ETMİYOR, harcanmış parayı okuyor. İkinci gerekçe bu
+ölçüm. Doğru yapı zaten rezervasyon tarafında vardı —
+`output_token_bound = max(configured, observed_high_water)` gözlenen zirveyi
+öğreniyor; eksik olan maliyet tarafının aynı gerçeği kullanmamasıydı.
+
 <!-- BACKLINKS:BEGIN -->
 ## Referenced by
 
 - [[auto_mission_control]]
 - [[model_secici_ve_gorunurluk]]
+- [[nau_bulgu_kapatma_turu_2026_08_17]]
 - [[webapp_module_map]]
 <!-- BACKLINKS:END -->

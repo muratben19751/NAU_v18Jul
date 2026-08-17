@@ -12,7 +12,7 @@ related:
   - wiki/synthesis/webapp_module_map.md
   - wiki/synthesis/auto_mission_control.md
   - wiki/synthesis/strategy_studio.md
-last_updated: 2026-08-02
+last_updated: 2026-08-17
 ---
 
 # Tear sheet overlay'i
@@ -128,6 +128,49 @@ session indeksinin dosyadaki *satır* değil *backtest* sırası olduğu; fragme
 kendi DOM id'lerini kullandığı. Canlı doğrulama: Reports'ta 48 link, Session
 Logs `ad4933e4` sayfasında 7 link, gerçek bir kayıt açıldığında KPI'lar ve 5051
 noktalı MTM eğrisi geldi. Süit 700 geçti / 1 atlandı.
+
+## Blocks paneli (2026-08-17)
+
+Tear sheet "bu koşu NE yaptı"yı sayılarla anlatıyordu; "hangi STRATEJİ koştu"
+sorusunun cevabı yalnız başlıktaki addı — iki koşuyu karşılaştıran kişi
+metriklere bakıp spec'i hatırlamak zorundaydı. `web.tearsheet.blocks_view`
+artık spec'in bloklarını kart listesine çeviriyor ve şablon onları
+`Strategy Builder · Canvas`'ın node diliyle basıyor: sol kenarda rol rengi,
+üstte büyük harfli çip, altında kalın blok adı ve soluk parametre satırı,
+aralarında `›` akış oku. Aynı nesne için iki ayrı görsel dil, okuyanı
+eşleştirme işine sokar.
+
+Gerçek bir kayıtta:
+
+```
+[DATA        ] QQQC.NASDAQ          4-HOUR
+[ENTRY · LONG] macd_cross           fast=10 · slow=30 · direction=up
+[ENTRY · LONG] agnt_e_25674e00_13   period=14 · adx_threshold=22
+[EXIT        ] macd_cross           fast=10 · slow=30 · direction=down
+[EXIT        ] momentum             lookback=20 · sign=negative
+[RISK        ] Position & risk      size 1 · SL 3.0×ATR
+```
+
+Üç karar:
+
+* **Sıra Canvas akışı, kaydın dizilişi değil** — kayıtta exit blokları entry'den
+  önce gelebiliyor; panel `DATA → TREND → ENTRY → EXIT → RISK` diziyor. Panel bir
+  AKIŞ anlatıyor, kaydın sıralama kazasını değil.
+* **Parametre sırası kayıttaki sıra** — alfabetik dizmek aynı bloğu iki koşuda
+  iki farklı biçimde gösterir ve kartlar karşılaştırılamaz hâle gelir. Dörtten
+  sonrası `+N` ile kırpılır.
+* **Bloğu olmayan kayıt boş panel göstermiyor**, sebebini `notes`'a yazıyor —
+  sayfanın zaten yazılı kuralı.
+
+KAYNAK KAPSAMI üç depoda farklı: `log` spec'i tam taşıyor (RISK kartı dahil),
+`session` yalnız `spec_blocks` taşıyor (risk alanları kayıtta yok → RISK kartı
+çıkmaz, uydurulmaz), `strategy` (Studio) blok listesi tutmuyor.
+`strategy_studio.graph.to_graph` bu node modelini ZATEN üretiyor ama girdisi
+`StrategyDefinition`, composer spec'i değil — iki ayrı veri modeli, aynı görsel
+sözleşme; Studio'yu bağlamak ayrı bir iş.
+
+CSS'te sarmalama bilinçli olarak yok: akış oku bir sıra anlatıyor, satır
+atlayınca ok yanlış yeri gösterir. Dar ekranda yatay kaydırılır.
 
 <!-- BACKLINKS:BEGIN -->
 ## Referenced by

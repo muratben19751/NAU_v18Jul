@@ -121,6 +121,33 @@ docstring'de duruyor ki aynı soru üçüncü kez sorulmasın.
 
 Süit 2.452 test, kapsam %79,65.
 
+## Canlı doğrulama: göstergelerin üçü HÂLÂ sınanmadı
+
+Aynı gün bir AUTO koşusu (`8af5d495`, QQQC.NASDAQ, 83 dk, $4,93) iki tur döndü ve
+**iki turda da 0/15** aday alfa kapısını geçti. Eleme sebeplerinin kırılımı iki
+tur arasında anlamlı biçimde kaydı:
+
+| eleme sebebi | tur 1 | tur 2 |
+|---|---|---|
+| <20 işlem | 4 | 4 |
+| PnL ≤ 0 | 3 | **1** |
+| **Calmar < buy&hold** | 8 | **10** |
+
+Arama para kazanmayı öğreniyor (zarar edenler 3→1) ama tıkanma tamamen Calmar'a
+kaydı: 15 adayın 10'u KÂR ETTİĞİ hâlde buy&hold'un risk-ayarlı getirisini
+geçemedi. QQQC'nin 2003-2026 penceresinde buy&hold güçlü ve `risk_adjusted` mod
+bilinçli olarak "mutlak getiride kaybetsen de Calmar'da geç" diyor — 30 adayın
+hiçbiri geçemedi.
+
+Bunun bu sayfa için doğrudan sonucu şu: alfa kapısını geçen aday olmadığı için
+**robustness zinciri hiç çalışmadı**, dolayısıyla bu turda eklenen üç göstergenin
+üçü de (peer eleme gerekçeleri, `pnl_autocorr_lag1` rozeti, WFO paydası) canlıda
+HÂLÂ sınanmamış durumda. Kodda test edilmiş olmaları onları ekranda doğrulanmış
+yapmıyor; ilk kapıyı geçen aday bu üçünün ilk gerçek sınavı olacak.
+
+Aynı koşudan çıkan ikinci ölçüm — `max_tokens`'ın advisory olması ve maliyet
+tahminini tek yönlü bozması — [[llm_maliyet_kaldiraclari]] sayfasına yazıldı.
+
 <!-- BACKLINKS:BEGIN -->
 ## Referenced by
 

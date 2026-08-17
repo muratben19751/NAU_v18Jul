@@ -1641,3 +1641,17 @@ düzeltilmemiş olabilir. Kapı kararı kullanıcıya bırakıldı.
 - wiki/synthesis/nau_bulgu_kapatma_turu_2026_08_17.md (yeni)
 - wiki/synthesis/multi_symbol_generalization.md (etkin bağımsızlık ölçümü)
 - wiki/synthesis/webapp_module_map.md (5 satır: runner, serve, backtest_robustness, app_constants, web/shared)
+
+## 2026-08-17 (ikinci senkron) — Blocks paneli + canlı koşunun iki ölçümü
+
+- wiki/synthesis/tear_sheet_overlay.md — Blocks paneli: Canvas node dili, akış
+  sırası (kaydın dizilişi değil), üç deponun farklı kapsamı
+- wiki/synthesis/webapp_module_map.md — `web/tearsheet.py` satırı
+- wiki/synthesis/llm_maliyet_kaldiraclari.md — `max_tokens` advisory: 22/39 çağrı
+  tavanı aşıyor, medyan ×1,41, en kötü ×1,95; aşım TEK YÖNLÜ olduğu için tavana
+  dayanan maliyet tahmini iyimser yanılıyor. Yalnız `custom_block` amacında.
+- wiki/synthesis/nau_bulgu_kapatma_turu_2026_08_17.md — canlı doğrulama: iki
+  turda 0/15, tıkanma Calmar'a kaydı (8→10), robustness zinciri hiç çalışmadı,
+  yani bu turun üç yeni göstergesi HÂLÂ canlıda sınanmadı.
+
+BOŞLUK: peer satırları / ρ₁ rozeti / WFO paydası ilk kapıyı geçen adayı bekliyor.
