@@ -271,3 +271,55 @@ class TestRunnerParity:
             comparable_metrics(engine)["sharpe_nautilus"]
             == comparable_metrics(node)["sharpe_nautilus"]
         )
+
+
+class TestWfoMeanDenominatorIsVisible:
+    """NaN üreten pencere ortalamadan sessizce düşüyordu.
+
+    NaN'ı ortalamaya katmak matematiksel olarak yanlış; yanlış olan onu SESSİZCE
+    atmaktı. ÖLÇÜLDÜ (2026-08-17, diskteki iki AUTO koşusu, 356 pencere-metrik
+    çifti): yalnız 216'sı paydaya girdi — %60,7. Yani gerçek koşularda
+    pencerelerin üçte biri, "OOS Sharpe" diye sunulan sayının arkasında
+    görünmeden kayboluyordu.
+    """
+
+    @staticmethod
+    def _win(sharpe, n=5):
+        m = {"sharpe": sharpe, "pnl": 1.0, "n_trades": n}
+        return {"test_metrics": dict(m), "test_metrics_naive": dict(m)}
+
+    def test_the_denominator_is_reported(self):
+        from backtest_robustness import wfo_aggregate
+
+        agg = wfo_aggregate(
+            [self._win(1.0), self._win(None), self._win(float("nan")), self._win(2.0)]
+        )
+
+        assert agg["windows_total"] == 4
+        assert agg["windows_scored"] == 2
+        assert agg["oos_sharpe_naive"] == 1.5, "ortalama yine sayı üretenlerin"
+
+    def test_a_thin_denominator_says_so_in_words(self):
+        """Oran düştükçe okuyanın güveni de düşsün diye metnin kendisi değişiyor
+        — bir rozetin rengi değil, cümlenin kendisi."""
+        from backtest_robustness import wfo_aggregate
+
+        thin = wfo_aggregate([self._win(1.0)] + [self._win(None)] * 3)
+        half = wfo_aggregate([self._win(1.0)] * 3 + [self._win(None)] * 2)
+        full = wfo_aggregate([self._win(1.0)] * 3)
+
+        assert "ÇOĞU SAYI ÜRETMEDİ" in thin["scored_label"]
+        assert "ÇOĞU SAYI ÜRETMEDİ" not in half["scored_label"]
+        assert half["scored_label"].startswith("3/5")
+        assert full["scored_label"] == "3/3 pencere"
+
+    def test_the_gate_numbers_did_not_move(self):
+        """Bu değişiklik RAPORLAMA: kapı eşiği değiştirilmedi. Eleme sertliğini
+        oynatmak ayrı bir karar ve önce kaç adayı eleyeceği ölçülmeli."""
+        from backtest_robustness import wfo_aggregate
+
+        wins = [self._win(1.0), self._win(None), self._win(2.0)]
+        agg = wfo_aggregate(wins)
+
+        assert agg["oos_sharpe_naive"] == 1.5
+        assert agg["oos_sharpe_naive_penalized"] == 1.25  # 1.5 − 0.5·std(0.5)

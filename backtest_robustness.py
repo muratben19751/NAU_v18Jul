@@ -691,6 +691,17 @@ def wfo_aggregate(windows: list[dict]) -> dict:
     if not windows:
         return {}
 
+    # Kaç pencerenin gerçekten paydaya girdiği — `_scored` doldurur, aggregate
+    # dışarı verir. Sayı OLMADAN ortalama, kaç fold'un konuştuğunu söylemeyen
+    # bir güven beyanıdır: NaN/None üreten pencere sessizce düşüyor ve geriye
+    # kalanların ortalaması "OOS Sharpe" diye sunuluyordu.
+    #
+    # ÖLÇÜLDÜ (2026-08-17, diskteki iki AUTO koşusu, 356 pencere-metrik çifti):
+    # yalnız 216'sı paydaya girdi — %60,7. Yani gerçek koşularda pencerelerin
+    # yaklaşık üçte biri görünmeden kayboluyordu. NaN'ı ortalamaya katmak
+    # matematiksel olarak yanlış; yanlış olan onu SESSİZCE atmaktı.
+    _scored: dict[str, tuple[int, int]] = {}
+
     def _mean(key_path):
         vals = []
         for w in windows:
@@ -698,6 +709,7 @@ def wfo_aggregate(windows: list[dict]) -> dict:
             v = m.get(key_path[1])
             if v is not None and not _isnan_local(v):
                 vals.append(float(v))
+        _scored["_".join(key_path)] = (len(vals), len(windows))
         return float(np.mean(vals)) if vals else None
 
     def _isnan_local(x):
@@ -797,7 +809,31 @@ def wfo_aggregate(windows: list[dict]) -> dict:
         "param_cv": param_cv,
         "unstable_params": unstable,
         "stability_label": stability_label,
+        # Ortalamanın PAYDASI. `windows_total` kaç pencere vardı,
+        # `windows_scored` kaçı sayı üretti (bkz. `_mean` yorumu: gerçek
+        # koşularda %60,7). `scored_label` ekrana basılacak tek satır; oran
+        # düştükçe okuyanın güveni de düşsün diye metnin kendisi değişiyor.
+        "windows_total": len(windows),
+        "windows_scored": _scored.get("test_metrics_naive_sharpe", (0, 0))[0],
+        "scored_label": _scored_label(
+            *_scored.get("test_metrics_naive_sharpe", (0, len(windows)))
+        ),
     }
+
+
+# Payda ne kadar incelirse ortalamanın anlamı o kadar azalır. Eşikler gözlemden:
+# ölçülen iki gerçek koşuda oran %58 ve %63 — yani BUGÜNKÜ tipik hâl zaten
+# "yarısı konuşuyor" bandında. Etiket bunu saklamak yerine söylüyor; kapı
+# DEĞİŞTİRİLMEDİ (bu ayrı bir karar ve önce kaç adayı eleyeceği ölçülmeli).
+def _scored_label(scored: int, total: int) -> str:
+    if not total:
+        return "pencere yok"
+    if scored == total:
+        return f"{scored}/{total} pencere"
+    frac = scored / total
+    if frac < 0.5:
+        return f"{scored}/{total} pencere — ÇOĞU SAYI ÜRETMEDİ, ortalama zayıf"
+    return f"{scored}/{total} pencere sayı üretti"
 
 
 # ---------------------------------------------------------------------------
@@ -1456,5 +1492,19 @@ def run_multi_symbol(
         "generalization_label": label,
         "avg_sharpe": avg_sharpe,
         "primary_symbol": primary_symbol,
+        # Sepet BUGÜNÜN likiditesine göre elle seçilmiş sabit bir liste
+        # (auto.robustness.EXTERNAL_PEER_BASKET / Bybit tarafında en hacimliler).
+        # Yani "✓ Generalizable" bir ÜST SINIR: borsadan düşmüş, likiditesini
+        # yitirmiş ya da mega-cap kümesinden çıkmış hiçbir isim bu testin içine
+        # girmiyor. Düzeltmek nokta-zaman (point-in-time) evren verisi ister ve
+        # bu depoda öyle bir kaynak YOK — ölçemediğimiz bir yanlılığı sayıya
+        # dökmek yerine artefakta yazıyoruz. Alan sabit: okuyucu (ve sonraki
+        # denetim) hangi seçim kuralının uygulandığını varsaymak zorunda kalmasın.
+        "peer_basket_selection": "fixed_liquid_today",
+        "peer_survivorship_note": (
+            "Akran sepeti bugün likit olanlardan seçilmiş sabit bir listedir; "
+            "düşen/kapanan isimler hiç test edilmez. Bu etiket bir üst sınırdır."
+        ),
+        "symbols": list(symbols),
         "results": results,
     }

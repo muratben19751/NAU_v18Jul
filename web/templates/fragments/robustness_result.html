@@ -128,7 +128,14 @@
           <div class="value" style="color:{% if ws.oos_sharpe_naive is not none %}{% if ws.oos_sharpe_naive > 0 %}#22c55e{% else %}#ef4444{% endif %}{% else %}#7d848f{% endif %}">
             {{ "%.2f"|format(ws.oos_sharpe_naive) if ws.oos_sharpe_naive is not none else '—' }}
           </div>
-          <div class="kpi-sub">Baseline without optimization</div>
+          {#- Paydayı ortalamanın ALTINA yazıyoruz: NaN/None üreten pencereler
+              sessizce düşüyordu ve geriye kalanların ortalaması "OOS Sharpe"
+              diye sunuluyordu. Ölçüldü: gerçek koşularda pencerelerin ancak
+              %60,7'si sayı üretmiş. Ortalamayı okuyan kişi kaç fold'un
+              konuştuğunu da görmeli. #}
+          <div class="kpi-sub"{% if ws.scored_label %} title="Ortalamaya yalnız sayı üreten pencereler girer; işlem açmayan ya da NaN üreten pencere paydadan düşer."{% endif %}>
+            {% if ws.scored_label %}{{ ws.scored_label }}{% else %}Baseline without optimization{% endif %}
+          </div>
         </div>
 
         {# WFO Efficiency — >= 0.5 yeşil, 0.2-0.5 sarı, < 0.2 kırmızı #}

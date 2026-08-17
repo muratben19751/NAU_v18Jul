@@ -688,3 +688,25 @@ def test_the_wfo_and_peer_thresholds_are_the_same_number():
     from backtest_robustness import MIN_PEER_TRADES
 
     assert WFO_MIN_TRADES == MIN_PEER_TRADES == MIN_DECISION_TRADES
+
+
+def test_the_verdict_carries_the_basket_it_was_measured_on(monkeypatch):
+    """Akran sepeti BUGÜN likit olanlardan elle seçilmiş sabit bir liste, yani
+    "✓ Generalizable" bir ÜST SINIR: borsadan düşmüş ya da mega-cap kümesinden
+    çıkmış hiçbir isim testin içine girmiyor.
+
+    Düzeltmek nokta-zaman (point-in-time) evren verisi ister ve bu depoda öyle
+    bir kaynak yok (ölçmeyi denedim: dış hisse kataloğu bu kutuda mevcut değil).
+    Ölçemediğimiz bir yanlılığı sayıya dökmek yerine artefakta yazıyoruz —
+    ölçülmemiş bir düzeltme, yanlılığın kendisinden daha kötü olurdu.
+    """
+    out = _run(
+        {
+            "AAA": {"n_trades": 9, "excess_return_fraction": 0.1, "sharpe": 1.0},
+            "BBB": {"n_trades": 9, "excess_return_fraction": 0.1, "sharpe": 1.0},
+        }
+    )
+
+    assert out["peer_basket_selection"] == "fixed_liquid_today"
+    assert "üst sınır" in out["peer_survivorship_note"]
+    assert set(out["symbols"]) == {"AAA", "BBB"}, "hangi sepet ölçüldü, artefaktta"
