@@ -8,6 +8,8 @@ DAVRANIŞI değil VAADİ sınıyor:
    dayanıyor — ``tests/browser/conftest.py``).
 2. max-dd hedefinde varsayılan kapı geçilebilir mi (eşik pozitifti, metrik
    negatif; hiçbir gerçek sonuç geçemiyordu).
+3. Geçersiz blok rolü reddediliyor mu (kaydedilip runtime'da sessizce yok
+   sayılıyordu).
 
 Wiki References
 ---------------
@@ -24,6 +26,10 @@ from pathlib import Path
 import pytest
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
+
+# Compose ekranındaki gerçek bir katalog bloğu — rol testinin 400'ü rolden
+# gelmeli, "Unknown block"tan değil.
+_BLOCK = "rsi_threshold"
 
 # ---------------------------------------------------------------------------
 # 1. NAU_STUDIO_DB — store kendi yolunu uydurmasın
@@ -139,3 +145,34 @@ def _cfg(*, gate_min: float):
         gate_enabled=True,
         gate_min_objective=gate_min,
     )
+
+
+# ---------------------------------------------------------------------------
+# 3. Blok rolü whitelist'i
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def compose_client():
+    from fastapi.testclient import TestClient
+
+    from server import app
+
+    return TestClient(app)
+
+
+def test_unknown_block_role_is_rejected(compose_client):
+    """``BlockRole = Literal["entry", "exit"]`` — motor spec'i TAM olarak bu
+    iki değere göre bölüyor. ``bogus`` rollü blok eskiden kaydediliyor, sonra
+    sinyal hesabına hiç katılmıyordu: ekranda duran ölü bir blok."""
+    r = compose_client.post("/strategy/drafts", data={"type": _BLOCK, "role": "bogus"})
+    assert r.status_code == 400
+    # Reddin SEBEBİ rol olmalı — geçerli bir blok tipi kullanılıyor, yoksa
+    # test kendi "Unknown block" 400'ünü doğrulayıp yeşil kalırdı.
+    assert "role" in r.text.lower() and "bogus" in r.text
+
+
+@pytest.mark.parametrize("role", ["entry", "exit"])
+def test_valid_block_roles_still_pass(compose_client, role):
+    r = compose_client.post("/strategy/drafts", data={"type": _BLOCK, "role": role})
+    assert r.status_code == 200

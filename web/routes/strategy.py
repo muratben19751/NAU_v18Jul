@@ -347,6 +347,17 @@ async def add_draft(request: Request):
         return HTMLResponse(
             "<div class='empty-state'>Unknown block.</div>", status_code=400
         )
+    # `BlockRole = Literal["entry", "exit"]` — motor spec'i TAM olarak bu iki
+    # değere göre bölüyor (`composer.py`, entry/exit listeleri). `role` buraya
+    # doğrulanmadan geliyordu: `role=bogus` bir blok, başka geçerli bir entry
+    # varsa spec doğrulamasından (`en az bir entry`) ve kayıttan geçiyor, sonra
+    # sinyal hesabına HİÇ katılmıyordu — ekranda duran ama hiçbir şey yapmayan
+    # bir blok, hata mesajı olmadan. Aynı whitelist bu dosyada `role_hint` için
+    # zaten uygulanıyordu; eksik halka form yoluydu (DeepR 2026-08-17 [ORTA]).
+    if role not in ("entry", "exit"):
+        return error_html(
+            "Unknown block role: {role} (expected 'entry' or 'exit').", role=role
+        )
 
     # Katalogdaki min/max SUNUCU TARAFINDA uygulanır. Burası yalnız
     # `int()`/`float()` çeviriyordu; sınırlar sadece HTML input attribute'u
