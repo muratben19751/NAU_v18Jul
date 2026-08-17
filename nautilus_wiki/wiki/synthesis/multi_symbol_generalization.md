@@ -11,7 +11,8 @@ related:
   - wiki/synthesis/auto_kapi_ve_geri_bildirim.md
   - wiki/synthesis/auto_arama_ekonomisi.md
   - wiki/synthesis/webapp_module_map.md
-last_updated: 2026-08-16
+  - wiki/synthesis/nau_bulgu_kapatma_turu_2026_08_17.md
+last_updated: 2026-08-17
 ---
 
 # Çok-sembol genellemesi
@@ -153,8 +154,48 @@ dışlama, venue çözümlemesi, sepet yedekliliği, ve üstünlük ölçütün�
 (negatif excess'e rağmen Calmar geçişi, kârlılık tabanı, fail-closed geri düşme,
 absolute modu).
 
+
+## Sepet nominal 7, etkin ~2 (ölçüldü 2026-08-17)
+
+Peer sayısı bir güven ifadesidir: `pass_rate >= 0.7` "beş bağımsız testin dördü
+geçti" diye okunur. Sepetin İÇ korelasyonu ölçülünce o okuma tutmuyor —
+`equity_catalog`'taki günlük serilerle, log-getiri korelasyon matrisinin
+özdeğerlerinden `(Σλ)²/Σλ²`:
+
+| sepet | gün | ort ρ | PC1 | etkin / nominal |
+|---|---|---|---|---|
+| 7'li (tam) | 497 | 0,54 | %62 | **2,37 / 7** |
+| GOOGL'suz 6 | 4.173 | 0,63 | %70 | **1,95 / 6** |
+| QQQ'suz 5 | 5.761 | 0,58 | %67 | **2,07 / 5** |
+| yalnız üç ETF | 4.173 | 0,82 | %88 | **1,27 / 3** |
+| yalnız üç mega-cap | 5.761 | 0,46 | %64 | **2,11 / 3** |
+
+22 yıllık pencerede sonuç değişmiyor. SPY↔QQQ **0,95** — ikisi pratikte aynı
+seri, ve `PEER_SAMPLE_SIZE = 5` üç ETF'i birlikte seçerse etkin sayı 1,3'e
+iniyor. Yani bir strateji "beş sembolde genelleşti" derken çoğunlukla TEK
+piyasa faktörüne beş kez sorulmuş oluyor.
+
+İki veri kusuru aynı ölçümden çıktı:
+
+* **GOOGL'ın yalnız 498 günlük barı var** (2024-08-06'dan), diğerlerinin 5.762
+  (2003'ten). Yedi sembol birlikte istendiğinde ortak pencere 22 yıldan 497
+  güne düşüyor — sepet sessizce heterojen.
+* **QQQ 4.174 bar** ve yükleyici `split suspicion: 1 bar |getiri|>%40
+  (2011-03-23) — seri düzeltilmemiş olabilir` uyarısı veriyor. Uyarı var ama
+  sembolün sepete girmesini engellemiyor.
+
+Survivorship (sepet bugün likit olanlardan seçili, düşen isimler hiç test
+edilmiyor) hâlâ geçerli ve artefakta beyan olarak yazılı
+(`peer_basket_selection`, `peer_survivorship_note`); ölçmek nokta-zaman evren
+verisi ister. Ama ETKİN BAĞIMSIZLIK ölçülebilir çıktı ve daha bağlayıcı.
+Seçenekler: sepeti düşük korelasyonlu isimlerle genişletmek, `pass_rate`'i
+etkin sayıyla ağırlıklandırmak, ya da en ucuzu — `effective_symbols`'ü
+artefakta ve ekrana yazıp etiketin ne kadar bilgi taşıdığını görünür kılmak.
+Karar verilmedi; bkz. [[nau_bulgu_kapatma_turu_2026_08_17]].
+
 <!-- BACKLINKS:BEGIN -->
 ## Referenced by
 
+- [[nau_bulgu_kapatma_turu_2026_08_17]]
 - [[webapp_module_map]]
 <!-- BACKLINKS:END -->

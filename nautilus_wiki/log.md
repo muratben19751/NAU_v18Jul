@@ -1626,3 +1626,18 @@ listesindeki bellek tavanı maddesi çoktan kapalıydı.
   en yüksek 1.184 (50.000 değil). Üstelik artık 3072 MB tavanın altında.
 - "Varsayılan para tavanı $5": kod öyle, DAĞITIM öyle değil —
   `ecosystem.config.js` `AGENT_DEFAULT_MAX_COST_USD: "20"` pinliyor.
+
+## 2026-08-17 — bulgu kapatma turu + kendi işine review
+
+İki denetimin doğrulanmış 14 bulgusu kapatıldı (f0bd66d..60cc0d8, 11 commit),
+ardından kendi işine yapılan review'ün 10 maddesi. Üç ölçüm düzeltmenin TÜRÜNÜ
+değiştirdi; iki iddia geri çekildi (biri "kapı canlıda açık" — kanıtların ikisi
+de araç varsayılanıydı, biri "dış hisse verisi yok" — yanlış katalogda arandım).
+
+Peer sepeti ölçüldü: nominal 7 sembol, ETKİN ~2 bağımsız bahis (SPY↔QQQ 0,95;
+PC1 varyansın %62-70'i). GOOGL'ın 498 barı var, diğerlerinin 5.762; QQQ
+düzeltilmemiş olabilir. Kapı kararı kullanıcıya bırakıldı.
+
+- wiki/synthesis/nau_bulgu_kapatma_turu_2026_08_17.md (yeni)
+- wiki/synthesis/multi_symbol_generalization.md (etkin bağımsızlık ölçümü)
+- wiki/synthesis/webapp_module_map.md (5 satır: runner, serve, backtest_robustness, app_constants, web/shared)
