@@ -660,6 +660,7 @@ tek çağıran açılış yolu.
 
 - [[nau_deepr_ikinci_tur_2026_08_08]]
 - [[nau_guvenlik_dayaniklilik_duzeltmeleri]]
+- [[nau_soz_verip_yapmayan_yollar_2026_08_17]]
 - [[portfolio]]
 - [[webapp_module_map]]
 <!-- BACKLINKS:END -->

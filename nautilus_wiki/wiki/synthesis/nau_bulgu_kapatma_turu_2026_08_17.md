@@ -200,9 +200,17 @@ kademeli büyüme israfı artırırdı).
 
 Canlı doğrulama: [[nau_auto_kosusu_755b7880_2026_08_17]].
 
+Devamı: aynı gün ÜÇÜNCÜ bir rapordan 12 bulgu daha kapatıldı
+([[nau_soz_verip_yapmayan_yollar_2026_08_17]]). O turun ortak imzası farklı —
+burada çoğu bulgu "koruma yok"tu, orada hepsi "koruma VAR ama uygulanmıyor":
+ayar okunmuyor, eşik ulaşılamıyor, filtre sessizce düşüyor. Ayrıca aynı turda
+raporun dört maddesi bayat çıktı, yani rapor okumanın ilk adımının analiz değil
+HEAD'e karşı çapraz kontrol olduğu bir kez daha ölçüldü.
+
 <!-- BACKLINKS:BEGIN -->
 ## Referenced by
 
 - [[multi_symbol_generalization]]
+- [[nau_soz_verip_yapmayan_yollar_2026_08_17]]
 - [[webapp_module_map]]
 <!-- BACKLINKS:END -->

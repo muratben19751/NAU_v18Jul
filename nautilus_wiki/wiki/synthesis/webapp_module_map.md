@@ -236,6 +236,7 @@ Karpathy'nin "Explorations always add up in the knowledge base" prensibi:
 - [[nau_guvenlik_dayaniklilik_duzeltmeleri]]
 - [[nau_mimari_denetimi]]
 - [[nau_performans_denetimi]]
+- [[nau_soz_verip_yapmayan_yollar_2026_08_17]]
 - [[parquet_data_catalog]]
 - [[portfolio]]
 - [[strategy_studio]]

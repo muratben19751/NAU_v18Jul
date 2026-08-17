@@ -1674,3 +1674,15 @@ AÇIK KALAN İKİ ÇELİŞKİ (ikisi de ölçülmüş, ikisi de düzeltilmedi):
 Ayrıca kayda geçti: koşu sürerken `backtest_robustness.py` değişti ve spawn
 çocuğu diskten yeniden import ettiği için yeni kod aynı koşuda çalıştı —
 `run_env.sha` artık çalışan kodu tarif etmiyor.
+
+## 2026-08-17 — söz verip yapmayan yollar turu senkronlandı
+
+`2b3c392..9d6602f` on iki düzeltme wiki'ye girdi:
+[[nau_soz_verip_yapmayan_yollar_2026_08_17]]. Önceki kapatma turundan
+([[nau_bulgu_kapatma_turu_2026_08_17]]) ayrımı: orada çoğu bulgu "koruma yok"tu,
+burada hepsi "koruma VAR ama uygulanmıyor" — ayar okunmuyor, eşik ulaşılamıyor,
+filtre sessizce düşüyor, rozet kapıya ulaşmıyor.
+
+Kapanmayan boşluk, açıkça kaydedildi: holdout aritmetiği (`OOS_HOLDOUT_DAYS=60`
+ile `HOLDOUT_MIN_TRADES=20` birlikte sağlanamıyor) ve ölçümsüz sekiz performans
+maddesi. Lint: 0/0/0/0/0/0.
