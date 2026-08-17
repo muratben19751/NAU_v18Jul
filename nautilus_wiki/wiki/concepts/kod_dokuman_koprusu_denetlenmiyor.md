@@ -1,7 +1,7 @@
 ---
-title: Kod-doküman köprüsünün kod yakası denetlenmiyor
+title: Kod-doküman köprüsünün kod yakası (artık denetleniyor)
 type: concept
-summary: `wiki_tools lint` yalnız wiki/ altındaki .md'leri tarar; modül başlıklarındaki `Wiki References` bağlarını görmez. Ölçüldü 2026-08-18: lint `broken_links (0)` derken kod yakasında 373 bağın 32'si çözülmüyordu.
+summary: Lint uzun süre yalnız wiki/ altındaki .md'leri taradı, modül başlıklarındaki Wiki References bağlarını görmedi — broken_links (0) derken kod yakasında 373 bağın 30'u kırıktı. 2026-08-18'de tarama lint'e eklendi ve çıkış koduna dahil edildi.
 sources: []
 last_updated: 2026-08-18
 ---
@@ -63,15 +63,32 @@ hatayı taşıyordu ve düzeltildi; kalan 28 başka oturumların dosyalarında d
 ve toplu düzenleme wiki-sync'in kapsamı dışında — ölçüm burada, karar
 kullanıcının.
 
-## Kapatma yolu
+## Kapatıldı: tarama lint'in içinde (2026-08-18)
 
-Tarama on satırlık: modüllerin ilk ~6 KB'ını oku, `Wiki References` geçenlerde
-`[[...]]` yakala, `wiki/**/*.md` dosya adlarına karşı çöz. Doğru yeri lint'in
-kendisi — teşhis aracı köprünün iki yakasını da görmeli, yoksa "temiz" kelimesi
-köprünün yarısı için geçerli.
+`wiki_tools lint` artık köprünün iki yakasını da görüyor —
+`_code_bridge_links()` + yeni `code_broken_links` kategorisi. Üç tasarım kararı
+ve gerekçeleri:
 
-Yanlış pozitifler önceden bilinmeli (bkz. yukarıdaki iki sınıf): gürültülü bir
-denetim, denetimsizlikten daha hızlı terk edilir.
+* **Docstring `ast` ile okunuyor, bayt kesimiyle değil.** İlk elle taramam
+  dosyanın ilk 6 KB'ını alıyordu; keyfi bir kesim uzun başlıklarda bağ kaybeder,
+  kısa dosyalarda da docstring dışındaki metni bağ sayar. `ast.get_docstring`
+  köprü bloğunun yaşadığı yeri tam verir.
+* **Gövde sayfa tarafıyla AYNI süzgeçten geçiyor** (`_bare_targets`), yani kod
+  çiti ve satır-içi backtick elenmiş oluyor. Bunun bedava kazancı: elle taramada
+  ayıklamak zorunda kaldığım 10 "docstring örneği" yanlış pozitifi kendiliğinden
+  düştü — `wiki_helper.py` ve `web/routes/wiki.py` wikilink SÖZDİZİMİNİ
+  anlatıyor, artık listede yoklar. Süzgeci paylaşmak, kuralı iki kez yazmamak
+  demek.
+* **Çıkış kodu kod yakasını da sayıyor** (`return 2`). Raporda gösterip yeşil
+  yanmak, bu denetimin kapatmak için var olduğu deseni birebir yeniden
+  üretirdi: sorunu YAZAN ama yine de "temiz" diyen araç.
+
+Ölçüm aracın kendi ağzından: **30 kırık** (elle saydığım 28'in üstüne, dosya
+adını sayfa sanan 2 kullanım daha — niyet ne olursa olsun bağ çözülmüyor, o
+yüzden aracın sayısı doğru olan).
+
+Karşılığında `lint` bugün **2 ile çıkıyor**. Bu bir gerileme değil, ölçümün
+görünür hâle gelmesi: sayı zaten oradaydı, yalnız kimse bakmıyordu.
 
 İlgili: [[webapp_module_map]] · [[nau_soz_verip_yapmayan_yollar_2026_08_17]]
 

@@ -26,6 +26,7 @@ Design notes
 from __future__ import annotations
 
 import argparse
+import ast
 import re
 import sys
 from collections import defaultdict
@@ -143,6 +144,57 @@ def _stem_index() -> dict[str, Path]:
     for p in _all_source_pages():
         idx.setdefault(p.stem, p)
     return idx
+
+
+# Kod ağacında taranmayacak yerler: sanal ortam, geçici worktree'ler, pytest
+# çöplüğü ve wiki'nin kendisi (o zaten .md tarafından taranıyor).
+_CODE_SKIP_PARTS = frozenset({".venv", "venv", ".tmp", "worktrees", "node_modules"})
+CODE_ROOT = WIKI_ROOT.parent
+
+
+def _module_header(path: Path) -> str:
+    """Modülün DOCSTRING'i — yoksa boş dize.
+
+    Bayt kesimi (ilk N karakter) yerine `ast` kullanılıyor: köprü bloğu
+    docstring'in içinde yaşıyor ve keyfi bir kesim uzun başlıklarda bağ
+    kaybeder, kısa dosyalarda da docstring dışındaki `[[...]]` metinlerini
+    yanlışlıkla bağ sayar.
+    """
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8", errors="replace"))
+    except (OSError, SyntaxError, ValueError):
+        return ""
+    return ast.get_docstring(tree) or ""
+
+
+def _code_bridge_links() -> list[tuple[str, str]]:
+    """(modül yolu, hedef) — kod yakasındaki HER `Wiki References` bağı.
+
+    Köprü iki yönlü: sayfalar koda atıfta bulunur, modüller de docstring'lerindeki
+    `Wiki References` bloğuyla sayfalara. `lint` uzun süre yalnız `wiki/` altını
+    taradı, yani köprünün yarısı denetimsizdi ve "broken_links (0)" cümlesinin
+    öznesi sistem değil ARACIN KAPSAMI oldu. Ölçüldü 2026-08-18: lint altı
+    kategoride de sıfır verirken kod yakasında 373 bağın 28'i çözülmüyordu;
+    tamamı, aynı ajanın kişisel bilgi tabanındaki sayfa adlarını bu depoya
+    kopyalamasından (ör. `[[deepr_skill]]` ×11) — iki vault'un ad uzayı ayrı
+    olduğu için bağ orada çözülüyor, burada çözülmüyordu.
+
+    Yalnız `Wiki References` geçen docstring'ler taranır: niyet beyanı olmayan
+    bir `[[...]]` metnini bağ saymak, gürültülü bir denetim üretir ve gürültülü
+    denetim denetimsizlikten daha hızlı terk edilir. Aynı sebeple gövde
+    `_bare_targets`'tan geçirilir — kod çiti ve satır-içi backtick içindeki
+    örnekler (`` `[[slug]]` `` gibi sözdizimi anlatan metinler) elenir.
+    """
+    out: list[tuple[str, str]] = []
+    for path in sorted(CODE_ROOT.rglob("*.py")):
+        if _CODE_SKIP_PARTS & set(path.parts) or WIKI_ROOT in path.parents:
+            continue
+        doc = _module_header(path)
+        if "Wiki References" not in doc:
+            continue
+        rel = path.relative_to(CODE_ROOT).as_posix()
+        out.extend((rel, tgt) for tgt in _bare_targets(doc))
+    return out
 
 
 def _bare_targets(text: str) -> list[str]:
@@ -352,6 +404,10 @@ def cmd_lint(write: bool = False, date_iso: str | None = None) -> int:
         "missing_frontmatter": [],
         "stale": [],  # last_updated > 180 days is impossible to compute deterministically w/o Date; leave empty
         "stubs": [],
+        # Köprünün KOD yakası (bkz. _code_bridge_links). Ayrı kategori, çünkü
+        # ayrı bir düzeltme yeri: `broken_links` bir sayfayı, bu bir modülün
+        # docstring'ini gösterir.
+        "code_broken_links": [],
     }
     idx = _stem_index()
     stems = set(idx.keys())
@@ -380,6 +436,13 @@ def cmd_lint(write: bool = False, date_iso: str | None = None) -> int:
         if p.stem not in incoming:
             report["orphans"].append(str(p.relative_to(WIKI_ROOT)))
 
+    # Köprünün kod yakası. Bir modülün `Wiki References` bağı sayfa yakasındaki
+    # kırık bağla AYNI arızadır — biri okuyucuyu var olmayan bir sayfaya
+    # gönderir, öteki de. Bu yüzden çıkış kodunda da aynı ağırlıkta sayılır.
+    for rel, tgt in _code_bridge_links():
+        if tgt not in stems:
+            report["code_broken_links"].append(f"{rel} → [[{tgt}]]")
+
     # print
     for key, items in report.items():
         print(f"# {key} ({len(items)})")
@@ -404,7 +467,11 @@ def cmd_lint(write: bool = False, date_iso: str | None = None) -> int:
             lines.append("")
         out.write_text("\n".join(lines), encoding="utf-8")
         print(f"Wrote {out}")
-    return 0 if not report["broken_links"] else 2
+    # Kırık bağ kırık bağdır — hangi yakada olduğu düzeltme yerini değiştirir,
+    # ağırlığını değil. Kod yakasını rapora koyup çıkış kodunun dışında bırakmak,
+    # tam da bu denetimin kapatmak için var olduğu deseni yeniden üretirdi:
+    # sorunu YAZAN ama yine de yeşil yanan bir araç.
+    return 0 if not (report["broken_links"] or report["code_broken_links"]) else 2
 
 
 def cmd_stub(slug: str, kind: str, title: str) -> int:

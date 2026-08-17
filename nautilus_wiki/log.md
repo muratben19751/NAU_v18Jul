@@ -1714,3 +1714,15 @@ proje modülüne kopyalanması; en sık `deepr_skill` ×11).
 - Bu turda açılmış 3 test dosyasının kırık bağı düzeltildi; kalan 28 başka
   oturumların dosyalarında — toplu düzenleme wiki-sync kapsamı dışında,
   kullanıcıya raporlandı.
+
+## 2026-08-18 — köprünün kod yakası artık lint'in içinde
+
+`_code_bridge_links()` + `code_broken_links` kategorisi eklendi; çıkış kodu da
+sayıyor (rapora yazıp yeşil yanmak, kapatılmak istenen desenin ta kendisiydi).
+Docstring `ast` ile okunuyor, gövde sayfa tarafıyla aynı `_bare_targets`
+süzgecinden geçiyor — bunun yan kazancı, elle taramada ayıklanan 10 "docstring
+örneği" yanlış pozitifinin kendiliğinden düşmesi. Aracın kendi ölçümü: 30 kırık.
+Lint bugün 2 ile çıkıyor; sayı zaten oradaydı, artık görünüyor.
+
+- wiki/concepts/kod_dokuman_koprusu_denetlenmiyor.md (kapatma bölümü)
+- tools/wiki_tools.py · tests/test_wiki_lint_scans_the_code_side.py (8 test)
