@@ -37,6 +37,26 @@ from .schema import StrategyDefinition
 
 DEFAULT_GATE_DSR = 0.8
 
+# Eşik HEDEFE göre değişir, çünkü metriklerin ÖLÇEĞİ ve İŞARETİ farklı.
+# `max_dd_pct` negatif yüzde olarak üretilir (-8.0 = %8 düşüş), dolayısıyla
+# `+0.8`'lik ortak varsayılan hiçbir gerçek max-dd sonucunun geçemeyeceği bir
+# eşikti: pozitif bir maksimum düşüş yoktur. `max_dd` hedefi seçen herkes,
+# kapıyı elle negatif bir sayıya çekmediği sürece, mükemmel bir koşuyla bile
+# "OOS MAX_DD -8.00 below required 0.80" görüyordu (DeepR 2026-08-17 [ORTA]).
+#
+# Karşılaştırmanın YÖNÜ (`value < threshold`) doğru ve öyle kalıyor: max-dd'de
+# de büyük olan iyidir (-5, -20'den iyidir). Yanlış olan yalnız varsayılandı.
+_DEFAULT_GATE_MIN: dict[str, float] = {
+    "sharpe": 0.8,
+    "max_dd": -20.0,  # "düşüş %20'den kötü olmasın"
+}
+
+
+def default_gate_min(objective: str) -> float:
+    """Bu hedef için makul varsayılan kapı eşiği (bilinmeyen hedef → DSR)."""
+    return _DEFAULT_GATE_MIN.get(objective, DEFAULT_GATE_DSR)
+
+
 # Bumped when the artifact's shape changes in a way a runner must notice.
 # v1 carried only condition *counts* under "compiled" — not runnable; v2
 # carries the lowered spec. A runner must refuse a version it does not know

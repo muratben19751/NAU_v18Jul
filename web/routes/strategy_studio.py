@@ -62,9 +62,9 @@ from strategy_studio.backtest import (
 )
 from strategy_studio.compiler import CompileError, compile_strategy
 from strategy_studio.deploy import (
-    DEFAULT_GATE_DSR,
     DeployBlocked,
     DeployConfig,
+    default_gate_min,
     prepare_deployment,
 )
 from strategy_studio.graph import to_graph
@@ -1649,7 +1649,7 @@ def route_deploy_modal(request: Request, strategy_id: str):
                 defn,
                 metrics=metrics,
                 objective_value=objective_value,
-                gate_default=DEFAULT_GATE_DSR,
+                gate_default=default_gate_min(defn.walkforward.objective),
                 unrunnable=unrunnable,
                 has_draft=store.load_draft(strategy_id) is not None,
             )
@@ -1667,13 +1667,18 @@ def route_deploy(
     capital: float = Form(10000.0),
     kill_switch: str = Form("3"),
     gate_enabled: bool = Form(False),
-    gate_min: float = Form(DEFAULT_GATE_DSR),
+    # Varsayılan `None`: doğru eşik HEDEFE bağlı (max_dd negatif ölçekte), ve
+    # hedef ancak `defn` yüklendikten sonra bilinir — sabit bir `Form(...)`
+    # varsayılanı bu bilgiye erişemez.
+    gate_min: float | None = Form(None),
     confirm_name: str = Form(""),
 ):
     try:
         defn = store.load(strategy_id)  # deploy compiles the SAVED version
     except KeyError:
         raise HTTPException(404, f"strategy '{strategy_id}' not found") from None
+    if gate_min is None:
+        gate_min = default_gate_min(defn.walkforward.objective)
     if environment == "live" and confirm_name.strip() != defn.name:
         return PlainTextResponse(
             "live deploy requires typing the exact strategy name to confirm",

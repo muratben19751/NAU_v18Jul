@@ -6,6 +6,8 @@ DAVRANIŞI değil VAADİ sınıyor:
 
 1. ``NAU_STUDIO_DB`` gerçekten depoyu taşıyor mu (test izolasyonu bu söze
    dayanıyor — ``tests/browser/conftest.py``).
+2. max-dd hedefinde varsayılan kapı geçilebilir mi (eşik pozitifti, metrik
+   negatif; hiçbir gerçek sonuç geçemiyordu).
 
 Wiki References
 ---------------
@@ -18,6 +20,8 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+
+import pytest
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -59,3 +63,79 @@ def test_studio_db_default_is_unchanged_when_env_is_unset(monkeypatch):
 
     assert StrategyStore().db_path == str(studio_db_path())
     assert studio_db_path().name == "studio.db"
+
+
+# ---------------------------------------------------------------------------
+# 2. max_dd hedefinde varsayılan kapı geçilebilir olmalı
+# ---------------------------------------------------------------------------
+
+
+def test_default_gate_for_max_dd_is_on_the_metrics_own_scale():
+    from strategy_studio.deploy import default_gate_min
+
+    assert default_gate_min("max_dd") < 0, (
+        "max_dd_pct negatif üretiliyor; pozitif eşik hiçbir gerçek sonucun "
+        "geçemeyeceği bir kapıdır"
+    )
+    assert default_gate_min("sharpe") == 0.8
+    assert default_gate_min("bilinmeyen-hedef") == 0.8  # DSR'ye düşer
+
+
+def test_a_healthy_max_dd_run_clears_the_default_gate():
+    """Asıl regresyon: -8%'lik gayet iyi bir düşüş, eşik +0.8 iken
+    ``-8.00 below required 0.80`` diye reddediliyordu."""
+    from scripts.seed_studio import build_engine_fixture
+    from strategy_studio.deploy import check_gate, default_gate_min
+
+    defn = build_engine_fixture()
+    defn.walkforward.objective = "max_dd"
+    metrics = _metrics(max_dd_pct=-8.0)
+    cfg = _cfg(gate_min=default_gate_min("max_dd"))
+
+    check_gate(defn, metrics, cfg)  # atmamalı
+
+
+def test_a_catastrophic_max_dd_still_blocks():
+    """Kapı gevşetilmedi, ÖLÇEĞİ düzeltildi: -%60 hâlâ reddedilmeli."""
+    from scripts.seed_studio import build_engine_fixture
+    from strategy_studio.deploy import (
+        DeployBlocked,
+        check_gate,
+        default_gate_min,
+    )
+
+    defn = build_engine_fixture()
+    defn.walkforward.objective = "max_dd"
+    cfg = _cfg(gate_min=default_gate_min("max_dd"))
+
+    with pytest.raises(DeployBlocked, match="MAX_DD"):
+        check_gate(defn, _metrics(max_dd_pct=-60.0), cfg)
+
+
+def _metrics(**over):
+    from strategy_studio.backtest import BacktestMetrics
+
+    base = dict(
+        net_pnl_pct=12.0,
+        sharpe=1.2,
+        dsr=0.9,
+        max_dd_pct=-8.0,
+        trades=42,
+        win_rate_pct=55.0,
+        profit_factor=1.4,
+    )
+    base.update(over)
+    return BacktestMetrics(**base)
+
+
+def _cfg(*, gate_min: float):
+    from strategy_studio.deploy import DeployConfig
+
+    return DeployConfig(
+        environment="paper",
+        instruments="active",
+        capital=10_000.0,
+        kill_switch_daily_pct=None,
+        gate_enabled=True,
+        gate_min_objective=gate_min,
+    )
