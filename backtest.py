@@ -1687,12 +1687,29 @@ def run_composed_backtest(
         engine.add_data(bars)
 
         # Multi-timeframe trend filter: load and add secondary bars if requested
+        #
+        # FAIL CLOSED (DeepR 2026-08-17 [YÜKSEK]). Buradaki her arıza
+        # yutuluyordu: `secondary_bar_type_obj = None` ile koşu sürüyor,
+        # strateji trend bias'ı olmadığı için filtreyi HİÇ uygulamıyor, sonuç
+        # yine "başarılı" olarak ve trend filtreli spec adıyla kaydediliyordu.
+        # Sonra o sonuç aday seçimine ve yayına giriyordu — yani ekranda yazan
+        # strateji ile ölçülen strateji farklıydı ve hiçbir yerde iz yoktu.
+        # Progress mesajı iz DEĞİL: akış geçici, kayıt kalıcı.
+        #
+        # `to_nautilus`'ın `UnsupportedStrategy` duruşu ile aynı: çeviremediği
+        # kuralı sessizce düşürmek yerine reddediyor, çünkü aksi hâlde EKRANDA
+        # OLANDAN BAŞKA bir stratejinin metriklerini döndürürdü.
         secondary_bar_type_obj = None
         if getattr(spec, "trend_filter", False) and getattr(
             spec, "trend_interval", None
         ):
+            _trend_interval = spec.trend_interval
+            # Ana TF ile aynı olduğu için BİLEREK atlandı mı, yoksa veri mi
+            # gelmedi — ikisi de `trend_df is None` ile bitiyordu, ayırt
+            # edilmeleri şart (biri meşru, öbürü arıza).
+            _same_tf = False
+            trend_df = None
             try:
-                _trend_interval = spec.trend_interval
                 _p(f"Loading trend filter data · interval={_trend_interval}…")
                 _trend_start = bars_df.index[0].to_pydatetime()
                 _trend_end = bars_df.index[-1].to_pydatetime()
@@ -1702,7 +1719,8 @@ def run_composed_backtest(
                     _trend_end = _trend_end.replace(tzinfo=UTC)
                 # External-catalog Equity (venue != POLYGON — not the index
                 # proxy): trend bars also come from the same external catalog.
-                # If the catalog has no trend slice, ValueError → single-TF fallback.
+                # Katalogda trend dilimi yoksa ValueError → koşu BAŞARISIZ olur
+                # (eskiden sessizce tek-TF'e düşüyordu; bkz. yukarıdaki not).
                 _is_ext_equity = (
                     isinstance(active_instrument, Equity)
                     and active_instrument.id.venue != POLYGON
@@ -1737,7 +1755,7 @@ def run_composed_backtest(
                         f"Trend TF ({_trend_interval}) is the same as the main TF — "
                         "skipping trend filter, continuing with single TF"
                     )
-                    trend_df = None
+                    _same_tf = True
                 elif _is_ext_equity:
                     from data import load_external_bars as _load_ext
 
@@ -1773,21 +1791,33 @@ def run_composed_backtest(
                         start=_trend_start,
                         end=_trend_end,
                     )
-                if trend_df is not None and not trend_df.empty:
-                    secondary_bar_type_obj = _sec_bar_type
-                    trend_bars = _bars_from_df(
-                        secondary_bar_type_obj, active_instrument, _prepare_df(trend_df)
-                    )
-                    if trend_bars:
-                        engine.add_data(trend_bars)
-                        _p(
-                            f"Trend bars added · {len(trend_bars):,} bars · {_trend_interval}"
-                        )
             except Exception as _te:
-                _p(
-                    f"Failed to load trend filter data: {_te} — continuing with single TF"
+                raise RuntimeError(
+                    f"trend filter ({_trend_interval}) was requested but its data "
+                    f"could not be loaded: {_te}"
+                ) from _te
+
+            # Doğrulama try'ın DIŞINDA: içeride olsaydı kendi `raise`'imi kendi
+            # `except`'im yakalar ve düzeltme hiç yürürlüğe girmezdi.
+            if not _same_tf:
+                if trend_df is None or trend_df.empty:
+                    raise RuntimeError(
+                        f"trend filter ({_trend_interval}) was requested but the "
+                        "loader returned no bars for the run's date range"
+                    )
+                trend_bars = _bars_from_df(
+                    _sec_bar_type, active_instrument, _prepare_df(trend_df)
                 )
-                secondary_bar_type_obj = None
+                if not trend_bars:
+                    # Eskiden `secondary_bar_type_obj` BURADA da atanıyordu:
+                    # strateji hiç gelmeyecek bir ikinci akışı bekliyordu.
+                    raise RuntimeError(
+                        f"trend filter ({_trend_interval}) was requested but no "
+                        "valid bars survived OHLC validation"
+                    )
+                secondary_bar_type_obj = _sec_bar_type
+                engine.add_data(trend_bars)
+                _p(f"Trend bars added · {len(trend_bars):,} bars · {_trend_interval}")
 
         cfg = ComposedStrategyConfig(
             instrument_id=active_instrument_id,
