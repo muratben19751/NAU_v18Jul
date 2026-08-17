@@ -46,7 +46,7 @@ from typing import Any, Literal
 import pandas as pd
 import requests
 
-from app_constants import DATA_DIR
+from app_constants import DATA_DIR, MAX_DATE_RANGE_DAYS
 from nau_data.atomic_io import (
     REPLACE_RETRY_WAITS,
     atomic_to_parquet,
@@ -531,6 +531,17 @@ def load_index_bars(
         raise ValueError(f"granularity must be one of {list(_GRAN_RULE)}")
     if start > end:
         raise ValueError(f"start {start} is after end {end}")
+    # HTTP sınırında da kontrol var (`web.shared.invalid_date_range`), ama
+    # aşağıdaki döngü çağıranın kim olduğunu bilmiyor: script'ten, testten ya
+    # da ileride eklenecek bir uçtan da girilebilir. Döngünün SINIRLI olması
+    # kendi sorumluluğu — hem 3,6 milyon `date` nesnesi kurmasın diye, hem de
+    # `date.max`'a varan bir aralıkta `d += timedelta(days=1)` adımı
+    # `OverflowError` ile patlamasın diye (DeepR 2026-08-17 [YÜKSEK]).
+    if (end - start).days > MAX_DATE_RANGE_DAYS:
+        raise ValueError(
+            f"date range {start}..{end} spans {(end - start).days:,} days, "
+            f"over the {MAX_DATE_RANGE_DAYS:,}-day limit"
+        )
 
     INDEX_CACHE_DIR.mkdir(parents=True, exist_ok=True)
     safe = _ticker_to_filename(ticker)

@@ -113,6 +113,25 @@ def studio_db_path() -> Path:
 STUDIO_DB_PATH = studio_db_path()
 
 
+# Bir tarih aralığının kabul edilebilir azami genişliği (gün).
+#
+# DeepR 2026-08-17 [YÜKSEK]: `0001-01-01`–`9999-12-31` biçim ve sıra
+# kontrolünden geçiyordu (ikisi de tek tek geçerli, sıraları da doğru), sonra
+# yükleyici gün gün ilerleyen bir liste kuruyordu: 3.652.059 `date` nesnesi,
+# ardından `date.max + 1 gün` adımında `OverflowError`. Yani istek ne veri
+# döndürüyordu ne de temiz bir hata — önce RAM/CPU yiyor, sonra 500 oluyordu.
+#
+# NEDEN GÜN CİNSİNDEN BİR TAVAN, NEDEN TABAN TARİH DEĞİL: kaynaklar farklı
+# tarihlerde başlıyor (Bybit 2019, US index'ler 1960'lar) ve her birine ayrı
+# taban koymak üç yerde ıraksayan üç kural demekti. Genişlik tavanı hepsine
+# aynı cümleyi söylüyor.
+#
+# 100 YIL: hiçbir gerçek isteği reddetmeyecek kadar geniş (en uzun index
+# geçmişi ~66 yıl), patolojik olanı kesecek kadar dar. 36.525 `date` nesnesi
+# önemsiz; 3,6 milyon değil.
+MAX_DATE_RANGE_DAYS = 36_525
+
+
 # On Windows, when a CONSOLE application (claude CLI, bash/gunzip/awk) is launched,
 # a terminal window opens and closes on every call — even if the server runs
 # consoleless via pythonw, because a consoleless parent creates a NEW window for a

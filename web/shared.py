@@ -35,7 +35,7 @@ from pathlib import Path
 from fastapi.responses import HTMLResponse
 from markupsafe import Markup, escape
 
-from app_constants import DATA_DIR
+from app_constants import DATA_DIR, MAX_DATE_RANGE_DAYS
 
 try:
     import markdown as _md
@@ -215,6 +215,13 @@ def invalid_date_range(start: str, end: str) -> str | None:
         return "Dates must be in YYYY-MM-DD format."
     if sd and ed and sd > ed:
         return "End date cannot be before the start date."
+    # Genişlik kontrolü sıradan SONRA: ters aralığa önce "ters" demek, sonra
+    # "çok geniş" demekten daha yardımcı. Kural neden burada — bkz.
+    # `app_constants.MAX_DATE_RANGE_DAYS`: biçim ve sıra tek tek geçerli
+    # olabilir, aralık yine de yükleyiciyi gün gün milyonlarca adım yürütür.
+    if sd and ed and (ed - sd).days > MAX_DATE_RANGE_DAYS:
+        years = MAX_DATE_RANGE_DAYS // 365
+        return f"Date range is too wide (max ~{years} years)."
     return None
 
 
