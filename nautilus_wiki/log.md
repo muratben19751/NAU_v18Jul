@@ -1817,3 +1817,28 @@ sabitle 20 olurdu); WFO uyarısı "muhtemelen susacak" dedi ve sustu.
 
 Açık uç: katalog'a hâlâ hiçbir strateji eklenmedi — tıkanma artık kapıda değil
 üretimde (adaylar ya az işlem yapıyor ya tek sembole özel).
+
+## 2026-08-18 (4) — kabul ölçütü üreticiye söylendi + WFO gerekçesi tek yerde
+
+Son senkrondan (1691e5a) sonra iki kod commit'i:
+
+1. **`c128adf` — ACCEPTANCE CRITERIA prompt'a girdi.** Sebep ölçüldü: 199 adayın
+   al-tut Calmar medyanı ×0,23 ve RASTGELE fallback kompozisyonları (medyan
+   ×0,40, ≥×1'de 13 aday) üç Claude modelini de geçiyordu — ve `research-only`
+   damgası yüzünden tanım gereği yayımlanamıyorlardı. Sistem kapıya en yakın
+   adaylarını kendi eliyordu. Kök sebep: kapı 2026-08-15'te risk-ayarlıya
+   çevrilirken üreticinin prompt'u hiç güncellenmemiş. Bir kabul ölçütünün İKİ
+   yakası var — yargılayan ve üreten. Kontrol kolu `AGENT_OBJECTIVE_IN_PROMPT=0`,
+   koşan kol kayıtta (`objective_in_prompt`).
+2. **`bf03689` — WFO ret gerekçesi tek yerde.** Satır hem suite'e hem kapıya
+   eklenmişti; suite'teki kopya kaldırıldı çünkü orada `penalized` ipucu yok,
+   yani kapının hükmüyle sönümlenmiş-Sharpe bacağında ıraksayabilirdi.
+
+**Doğrulama geçişinde kendi sayılarım bayat çıktı.** İlk yazımda 173 adaylık bir
+kesit raporlamıştım; sayım anında son koşu HÂLÂ KOŞUYORDU ve tekrar ölçüldüğünde
+199'a çıkmıştı. Dağılım anlamlı oynadı: Haiku n=11 → 37 iken medyanı 0,14 →
+0,20'ye çıktı, yani "Haiku en kötü" cümlesi zayıfladı (artık Sonnet'in üstünde).
+Sayfaya **ölçüm kesiti damgası** eklendi. Ders: devam eden bir koşudan alınan
+sayı, kesiti yazılmadan raporlanmamalı.
+
+Lint yedi kategoride de sıfır.

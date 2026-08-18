@@ -26,6 +26,7 @@ Hepsi QQQC.NASDAQ, 3 timeframe (1-HOUR / 4-HOUR / 1-DAY), sürekli mod.
 | `8aa18365` | `claude-opus-5` | 3 | `winless_limit` — üç gerçek ret |
 | `85c6330c` | `or:qwen3.8-27b` | 1+ | elle durduruldu |
 | `9016d12a` | `claude-sonnet-5` | 3 | `winless_limit` — **mühürlü kapı koştu** |
+| `568f2838` | `claude-haiku-4-5` | 1+ | WFO alfası: 6/6 kârlı ama 1/6 al-tut'u geçiyor |
 
 ## 1. Fallback'in kendisi koşuyu öldürdü — ve %40'lık bir yazı-turaydı
 
@@ -123,6 +124,43 @@ etiketi bile ~1,6 bağımsız gözlemin üstünde duruyor. Ayrıntı:
 Geçen semboller de öğretici: SPY ve IWM (endeksler) geçiyor, AAPL/MSFT/NVDA
 düşüyor. "5 sembolde sınandı" cümlesi bu pencerede fazlasıyla cömert.
 
+## 6. WFO düzeltmesinin en çıplak hâli (`568f2838`, tur 1)
+
+Düzeltme aynı gün canlıda şu satırı verdi:
+
+    → 1/6 valid windows beat buy&hold (saved spec) · 6/6 merely profitable
+    ✗ Walk-Forward: alpha in only 1/6 windows (<50%)
+
+**Altı pencerenin altısı kârlı, yalnız biri al-tut'u geçiyor.** Eski kodla bu
+satır `WFO: 6/6` yazardı — kusursuz bir skor — ve aday yine elenirdi, gerekçesiz.
+Boğa piyasasında "kârlı pencere" ile "alfa üreten pencere" arasındaki farkın
+ölçülmüş en keskin örneği.
+
+(Aynı tur bir kusur da gösterdi: gerekçe iki kez basılıyordu, çünkü satır hem
+suite'e hem kapıya eklenmişti. Suite'teki kopya kaldırıldı — orada `penalized`
+ipucu yok, yani sönümlenmiş-Sharpe bacağında kapıyla ıraksayabilirdi.)
+
+Bu tur ayrıca **kontrol kolu**: yeni ACCEPTANCE CRITERIA prompt'u henüz
+yürürlükte değildi (ana süreç, restart yapılmadı). Bazı: 30 aday, 1 nitelenen,
+en iyi ×1,44.
+
+## 7. Model profilleri — iki çürütülmüş beklenti
+
+| model | işlem medyanı | iterasyon süresi | Calmar medyanı | n |
+|---|---:|---:|---:|---:|
+| Opus 5 | 296 | ~1,4 dk | 0,26 | 45 |
+| Haiku 4.5 | ~172 | **~5,1 dk** | 0,20 | 37 |
+| Sonnet 5 | ~26 | ~1,4 dk | 0,14 | 45 |
+
+İki tahminim de ölçümle çürüdü. **"Küçük model daha basit/yavaş strateji
+üretir"**: Haiku, Sonnet'ten on kat fazla işlem yapan stratejiler üretti.
+**"Ucuz model daha hızlı tur demek"**: Haiku iterasyon başına dört kat YAVAŞ,
+çünkü ürettiği yüksek frekanslı spec'lerin backtest'i pahalı — LLM çağrısı ucuz,
+sonucu değil. 4 saatlik tavanda Haiku 2-3 tur, diğerleri 3+ tur veriyor.
+
+Sabit kalan tek şey: her üç modelde de **15 adaydan 1'i** sıralamayı geçti. Kapı
+model seçimine duyarsız; darboğaz sabit.
+
 ## Kalan açık uç
 
 **Katalog'a hâlâ hiçbir strateji eklenmedi.** Kapı artık dürüst konuşuyor ve
@@ -132,6 +170,7 @@ yapıyor ya tek sembole özel çıkıyor.
 <!-- BACKLINKS:BEGIN -->
 ## Referenced by
 
+- [[auto_arama_ekonomisi]]
 - [[multi_symbol_generalization]]
 - [[nau_holdout_dogrulama_turu_2026_08_18]]
 - [[webapp_module_map]]

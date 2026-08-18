@@ -12,7 +12,7 @@ related:
   - wiki/synthesis/auto_mission_control.md
   - wiki/synthesis/webapp_module_map.md
   - wiki/synthesis/nau_performans_denetimi.md
-last_updated: 2026-08-16
+last_updated: 2026-08-18
 ---
 
 # AUTO aramasının ekonomisi
@@ -152,6 +152,81 @@ gerektirir.
 Ölçülen etki: `5e89d42a` 66 dakikada **2 tur** tamamladı (eski tavanla 0-1) ve
 para tavanında temiz kapandı. 20 USD ≈ 4,4 saat, yani bağlayıcı tavan artık SÜRE.
 Testler: `tests/test_budget_has_two_ceilings.py`.
+
+## Çıtaya uzaklığın haritası: 199 aday (2026-08-18)
+
+"Hiçbir aday geçemiyor" cümlesi bu sayfada bir kez boyutlandırmaya bağlanmıştı.
+Bu kez kapının ölçüsü doğrudan sayıldı — beş koşunun defterindeki **199 adayın**
+al-tut'a göre Calmar oranı (`calmar_ratio_vs_benchmark`).
+
+> **Ölçüm kesiti:** son koşu (`568f2838`) sayım anında HÂLÂ KOŞUYORDU. Sayılar
+> 199 adaylık kesittir, nihai değil. İlk yazımda kesit 173'tü ve dağılım o
+> aralıkta anlamlı biçimde oynadı (Haiku n=11 → 37 iken medyanı 0,14 → 0,20'ye
+> çıktı). Devam eden bir koşudan alınan sayı, kesiti yazılmadan raporlanmamalı.
+
+| | ×al-tut |
+|---|---|
+| min | −0,35 |
+| p25 | 0,00 |
+| **medyan** | **0,23** |
+| p75 | 0,60 |
+| p90 | 1,00 |
+| max | 1,88 |
+
+| bant | aday | pay |
+|---|---:|---:|
+| **≥×1,00 (geçen)** | 20 | **%10** |
+| ×0,90–0,99 (kılpayı kaçıran) | 15 | %8 |
+| ×0,70–0,89 | 7 | %4 |
+| ×0,40–0,69 | 28 | %14 |
+| ×0,00–0,39 | 96 | %48 |
+| negatif | 33 | %17 |
+
+Dağılımın şekli iki ayrı şey söylüyor ve karıştırılmamalı: **kütle çok uzakta**
+(%65'i ×0,40'ın altında — eşik ayarı bunu kurtarmaz) ama **bir küme çok yakın**
+(%8'i ×0,90–0,99). Çıtayı ×0,90'a indirmek geçen sayısını 20'den 35'e çıkarırdı
+(+%75) ve tam olarak "al-tut'tan biraz daha kötü" olanı yayımlamak demekti. Bant
+bir fırsat değil, **aramanın ne kadar yaklaştığının ölçüsü.**
+
+Frekans ekseninde temiz bir ilişki YOK — geçme oranı bantlara göre %12 (<20
+işlem, n=59), %4 (20-59, n=27), %8 (60-199, n=51), %14 (200-599, n=44), %11
+(≥600, n=18). Komisyonun yüksek frekansı ezmesini beklerken en kötü bant 20-59
+çıktı: az işlem hem istatistiki güç vermiyor hem çıtayı geçmiyor.
+
+## Aptal taban zeki yolu geçiyordu — ve yayımlanamıyordu
+
+Aynı 173 adayın üreticiye göre kırılımı beklenmedik çıktı:
+
+| üretici | n | medyan | ≥×1,00 |
+|---|---:|---:|---:|
+| **rastgele fallback** | 72 | **0,40** | **13** |
+| Opus 5 | 45 | 0,26 | 4 |
+| Haiku 4.5 | 37 | 0,20 | 1 |
+| Sonnet 5 | 45 | 0,14 | 2 |
+
+LLM erişilemediğinde devreye giren rastgele kompozisyonlar üç modelin hepsini
+geçti — ve `research-only` damgası yüzünden **tanım gereği yayımlanamıyorlar.**
+Yani sistem kapıya en yakın adaylarını kendi eliyle eliyordu.
+
+Sebep prompt'ta duruyordu: kapı 2026-08-15'te risk-ayarlıya çevrildi, ÜRETİCİNİN
+sistem mesajı hiç güncellenmedi. Bir kabul ölçütünün iki yakası var —
+yargılayan ve üreten; yalnız birini güncellemek sistemi kendi kendine
+çeliştirir ve fark "model yetersiz" gibi görünür.
+
+**Düzeltme:** `COMPOSED_SYSTEM_PROMPT`'a ACCEPTANCE CRITERIA bloğu
+(`agent.OBJECTIVE_IN_PROMPT`, `AGENT_OBJECTIVE_IN_PROMPT=0` ile kapatılır).
+Yazılanlar: birincil çıtanın al-tut Calmar'ı olduğu + ölçülen gerçeklik ("medyan
+öneri onun ~%20'sine ulaşıyor"), 20 işlem tabanı, ve göremediği OOS zinciri.
+
+İki şey KASITLI dışarıda: **skor formülü** (`T/(T+20)` çarpanı doğrudan
+şişirilebilir ve frekans-Calmar ilişkisi ölçümde bulunmadı) ve **"basit daha
+iyidir"in yasa hâli** (örneklem dengesiz: rastgele n=72 iki koşudan, haiku
+n=11) — sadelik ve drawdown önceliği hipotez olarak, "unless you have a specific
+reason" kaydıyla girdi. Oynanabilir bir hedef, ölçütü bozar.
+
+Hangi kolun koştuğu koşu kaydında (`objective_in_prompt`) duruyor; aksi hâlde iki
+koşuyu karşılaştıran kişi neyin değiştiğini bilemez. Ölçüm:
+[[nau_auto_kosulari_2026_08_18]].
 
 <!-- BACKLINKS:BEGIN -->
 ## Referenced by
