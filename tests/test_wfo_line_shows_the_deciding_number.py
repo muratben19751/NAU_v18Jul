@@ -131,6 +131,28 @@ def test_all_three_consumers_read_one_source():
     assert 'get("pnl", 0) > 0' not in scan, "elenme satırı hâlâ PnL sayıyor"
 
 
+def test_the_reason_is_printed_exactly_once():
+    """Gerekçe TEK yerde basılır: kararın verildiği yerde.
+
+    Ölçülen belirti (koşu 568f2838, tur 1): aynı satır iki kez göründü, çünkü
+    hem suite hem kapı basıyordu. Suite'teki kopyanın ikinci bir sakıncası da
+    vardı — orada `penalized` ipucu YOK, yani sönümlenmiş-Sharpe bacağında
+    kapıyla ıraksayabilirdi.
+    """
+    import inspect
+
+    import auto.robustness as ar
+    import web.routes.agent_backtest as ab
+
+    suite = inspect.getsource(ar.run_full_robustness)
+    gate = inspect.getsource(ab._robustness_tally)
+
+    assert "✗ Walk-Forward: {v.reason}" not in suite, "suite gerekçeyi de basıyor"
+    assert 'f"  ✗ Walk-Forward: {_wf.reason}"' in gate, "kapı gerekçeyi basmıyor"
+    # Görüntülenen oran suite'te KALIR: `display` `penalized`e bağlı değil.
+    assert "v.display" in suite
+
+
 def test_the_rejection_reason_reaches_the_operator():
     """Sessiz `failed += 1` dört yeşil ölçüt ve açıklamasız bir ❌ üretiyordu."""
     import web.routes.agent_backtest as ab

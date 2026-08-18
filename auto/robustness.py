@@ -706,8 +706,19 @@ def run_full_robustness(
                 f"average test PnL={avg_pnl:+.2f} USDT · "
                 f"{pos_opt}/{len(wfo)} when re-optimized per window (diagnostic)"
             )
-            if not v.ok and v.measured:
-                pf(f"  ✗ Walk-Forward: {v.reason}")
+            # RET GEREKÇESİ BURADA BASILMAZ, kapıda basılır. İki sebep:
+            #
+            # 1. Karar kapıda veriliyor; gerekçeyi kararın verildiği yerden
+            #    yazmak bugün üç kez düzeltilen ilkenin ta kendisi.
+            # 2. Buradaki çağrı `penalized` ipucunu VEREMİYOR — sönümlenmiş OOS
+            #    Sharpe payload'ın toplu alanlarından (`oos_sharpe_naive_penalized`)
+            #    çözülüyor ve o alanlar bu aşamada henüz yok. Yani bu noktadaki
+            #    `ok`/`reason`, kapının vereceği hükümle Sharpe bacağında
+            #    IRAKSAYABİLİR. Yalnız `display` güvenli: alfa oranı `penalized`e
+            #    bağlı değil.
+            #
+            # Ölçülen belirti (koşu 568f2838, tur 1): aynı gerekçe iki kez
+            # basılıyordu, çünkü satır hem burada hem kapıda ekliydi.
 
         # 4) Monte Carlo (already vectorized numpy — no pool needed)
         mc: dict = {"error": "No trade data."}
