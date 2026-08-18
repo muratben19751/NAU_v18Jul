@@ -537,13 +537,45 @@ def _fallback_composed() -> dict:
 
     rng = _fallback_rng()
 
-    # Exclude exit-only blocks (e.g. atr_stop) from entry selection to avoid
-    # _validate_composed forcing role="exit" → zero entry blocks → ValueError.
+    # Uygun tipler KATALOGUN İLAN ETTİĞİ ROLDEN türetilir, elle yazılmış bir
+    # listeden değil.
+    #
+    # Eski hâli `exit_only = {"atr_stop"}` diye TEK isimlik bir kümeydi ve
+    # yorumu doğru sebebi yazıyordu ("rol zorlanır → sıfır entry → ValueError")
+    # ama kapsamı yalnız built-in'leri biliyordu. Oysa `BLOCK_CATALOG` çalışma
+    # anında custom blokları da içeriyor ve onların meta'sında `role` İLAN
+    # EDİLİYOR; `_coerce_block` ilan edilen rolle çelişen bloğu (haklı olarak)
+    # sessizce çevirmek yerine DÜŞÜRÜYOR.
+    #
+    # ÖLÇÜLDÜ (bu kutudaki canlı katalog, 2026-08-18): 408 blok — 71 built-in
+    # (rolsüz), 175 `entry`, **162 `exit`**. Yani fallback girişini 407 tip
+    # arasından seçerken **%40 ihtimalle** exit-only bir blok seçiyordu; o
+    # blok düşünce entry kalmıyor ve `_validate_composed` ValueError atıyordu.
+    # Bu bir kenar durum değil, yazı-tura: AUTO koşusu 72029368'i öldüren şey
+    # tam olarak buydu (44 fallback, biri round 3'ün ilk önerisinde patladı ve
+    # `_propose_initial_strategy` onu yakalamadığı için TÜM oturum düştü).
+    #
+    # Eksik EXIT ölümcül değil (aşağıdaki onarım bir tane ekliyor); eksik ENTRY
+    # ölümcül. Yine de iki taraf da aynı kuraldan türetiliyor — ikisini farklı
+    # yerden türetmek bu hatanın ikinci yarısını açık bırakırdı.
     exit_only = {"atr_stop"}
-    all_types = list(BLOCK_CATALOG.keys())
-    entry_types = [t for t in all_types if t not in exit_only]
+
+    def _eligible(role: str) -> list[str]:
+        opposite = "exit" if role == "entry" else "entry"
+        out = [
+            t
+            for t, meta in BLOCK_CATALOG.items()
+            if (meta.get("role") or role) != opposite
+            and not (role == "entry" and t in exit_only)
+        ]
+        # Katalog beklenmedik biçimde boşsa built-in'lere düş: onların rolü
+        # ilan edilmemiştir, yani her iki tarafta da geçerlidirler.
+        return out or [t for t in BLOCK_CATALOG if not BLOCK_CATALOG[t].get("role")]
+
+    entry_types = _eligible("entry")
+    exit_types = _eligible("exit")
     entry_type = rng.choice(entry_types)
-    exit_type = rng.choice([t for t in all_types if t != entry_type] or all_types)
+    exit_type = rng.choice([t for t in exit_types if t != entry_type] or exit_types)
 
     def _rand_params(btype: str) -> dict:
         p = {}
@@ -563,20 +595,50 @@ def _fallback_composed() -> dict:
                 params["fast"], params["slow"] = 10, 40
         return params
 
-    e_params = _fix_fast_slow(entry_type, _rand_params(entry_type))
-    x_params = _fix_fast_slow(exit_type, _rand_params(exit_type))
+    def _compose(e_type: str, x_type: str) -> dict:
+        return {
+            "name": f"Random {e_type}/{x_type}",
+            "description": "Fallback random composition (Claude unavailable).",
+            "blocks": [
+                {
+                    "type": e_type,
+                    "role": "entry",
+                    "params": _fix_fast_slow(e_type, _rand_params(e_type)),
+                },
+                {
+                    "type": x_type,
+                    "role": "exit",
+                    "params": _fix_fast_slow(x_type, _rand_params(x_type)),
+                },
+            ],
+            "strategy_options": dict(_STRATEGY_OPTION_DEFAULTS),
+        }
 
-    result = {
-        "name": f"Random {entry_type}/{exit_type}",
-        "description": "Fallback random composition (Claude unavailable).",
-        "blocks": [
-            {"type": entry_type, "role": "entry", "params": e_params},
-            {"type": exit_type, "role": "exit", "params": x_params},
-        ],
-        "strategy_options": dict(_STRATEGY_OPTION_DEFAULTS),
-    }
     # Run _validate_composed — fix the role of exit-only blocks like atr_stop
-    return _validate_composed(result)
+    try:
+        return _validate_composed(_compose(entry_type, exit_type))
+    except ValueError as exc:
+        # SON SAVUNMA HATTI GERİ DÜŞEMEZ: bu fonksiyon zaten LLM'in düştüğü
+        # yerde çağrılıyor, yani buradan atılan bir istisna koşunun tamamını
+        # öldürüyor (ölçüldü: koşu 72029368, round 3). Built-in'ler rol İLAN
+        # ETMEZ, dolayısıyla her iki tarafta da geçerlidirler — katalog ne
+        # kadar bozulursa bozulsun bu kompozisyon doğrulanır.
+        #
+        # İkinci basamak SESSİZ DEĞİL: sessiz bir fallback, düzeltmeye
+        # çalıştığı arızadan tehlikelidir — sebep log'a yazılır.
+        builtins = [t for t in BLOCK_CATALOG if not BLOCK_CATALOG[t].get("role")]
+        if not builtins:
+            raise
+        logging.warning(
+            "fallback composition (%s/%s) did not validate (%s) — "
+            "retrying with builtin blocks only",
+            entry_type,
+            exit_type,
+            exc,
+        )
+        b_entry = rng.choice([t for t in builtins if t not in exit_only] or builtins)
+        b_exit = rng.choice([t for t in builtins if t != b_entry] or builtins)
+        return _validate_composed(_compose(b_entry, b_exit))
 
 
 _STRATEGY_OPTION_DEFAULTS: dict = {
