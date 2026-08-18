@@ -4,7 +4,7 @@ functions — DeepR audit (2026-08-08) flagged these as untested despite
 AUTO block entry/exit lifecycle (see its docstring: role is deliberately
 read from the *name*, not LLM metadata).
 
-Wiki References: [[deepr_skill]]
+Wiki References: [[nau_deepr_toplu_sertlestirme_2026_08]]
 """
 
 from __future__ import annotations

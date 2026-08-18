@@ -16,7 +16,7 @@ kırılır — CI'daki `uv sync --locked` adımına kalmadan, push'tan önce.
 
 Ağ erişimi yok: yalnızca depodaki iki dosya okunur.
 
-Wiki References: [[deepr_skill]]
+Wiki References: [[nau_deepr_dorduncu_tur_2026_08_11]]
 """
 
 from __future__ import annotations

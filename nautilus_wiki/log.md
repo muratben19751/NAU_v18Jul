@@ -1766,3 +1766,25 @@ Araç tarafında: `wiki_tools lint` Windows'ta çıktı basarken çöküyordu
 
 Kod yakası kırık bağ: 30 → 29 (`auto/robustness.py`'nin çapraz-vault bağı
 kaldırıldı). Kalanı ayrı bir turda.
+
+## 2026-08-18 (2) — köprünün kod yakası kapandı: 29 → 0
+
+Dünkü tarama 373 bağın 30'unun çözülmediğini ölçmüştü; hepsi kapandı ve
+mekanizma üç sınıfa ayrıldı:
+
+* **Gerçek NAU kavramı, sayfası yoktu (4 sayfa açıldı).** Birden çok modül
+  aynı sayfayı istiyordu, yani bağ haklıydı, eksik olan içerikti:
+  `ticker_kimlik_degil_o_gunun_etiketi` (4 modül), `surec_yoneticisi_ortami_dondurur`
+  (3), `nau_deepr_mimari_katman_ayrimi` (3), `nau_token_tuketim_izleme` (3).
+  Sayfalar koddan yazıldı, kişisel vault'tan kopyalanmadı.
+* **Yanlış hedef (11 bağ).** `[[deepr_skill]]` bir aracın kişisel vault
+  sayfasıydı; bulguyu KAYDEDEN sayfa bu depoda zaten vardı
+  (`nau_deepr_dorduncu_tur_2026_08_11`, `nau_deepr_toplu_sertlestirme_2026_08`,
+  `nau_bulgu_kapatma_turu_2026_08_17`). Bağlar oraya çevrildi.
+* **Wikilink yanlış araçtı (3 bağ).** `[[test_auto_layer_is_web_free]]` bir
+  sayfayı değil bir MODÜLÜ gösteriyordu; kod yolu olarak yazıldı.
+
+Kalan tekil kişisel-vault bağları (thread-local kirlenmesi, max_tokens/üslup,
+sessiz fallback) sözcük olarak korundu, bağ olarak kaldırıldı.
+
+Lint bugün ilk kez yedi kategoride de sıfır — `code_broken_links` dahil.

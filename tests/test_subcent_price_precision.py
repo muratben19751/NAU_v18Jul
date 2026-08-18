@@ -17,7 +17,7 @@ Düzeltme, wiki'deki Equity `size_precision=0` tuzağıyla TUTARLI iki katman:
   (b) buna rağmen pozitif bir fiyat sıfıra düşerse dönüşüm REDDEDİLİR
       (`PricePrecisionError`) — sessiz yuvarlama artık mümkün değil.
 
-Wiki References: [[index_backtest_via_equity_proxy]], [[deepr_skill]]
+Wiki References: [[index_backtest_via_equity_proxy]], [[nau_deepr_dorduncu_tur_2026_08_11]]
 """
 
 from __future__ import annotations

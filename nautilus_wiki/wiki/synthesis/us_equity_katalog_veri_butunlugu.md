@@ -218,11 +218,14 @@ yardımcıya bağlandı. Aynı gerekçe gün sınırı hesabı için de geçerli
 **damgalama sözleşmesine dair her karar tek bir modülde durmalı.**
 
 Bkz: [[parquet_data_catalog]], [[bar_aggregation_and_type_syntax]], [[dst]],
-[[instruments]], [[index_backtest_via_equity_proxy]]
+[[instruments]], [[index_backtest_via_equity_proxy]],
+[[ticker_kimlik_degil_o_gunun_etiketi]] (aynı serinin yıllar içinde ad
+değiştirmesi — kataloğun ikiye böldüğü enstrümanlar ve dikiş denetimi)
 
 <!-- BACKLINKS:BEGIN -->
 ## Referenced by
 
 - [[index_backtest_via_equity_proxy]]
 - [[nau_deepr_dorduncu_tur_2026_08_11]]
+- [[ticker_kimlik_degil_o_gunun_etiketi]]
 <!-- BACKLINKS:END -->

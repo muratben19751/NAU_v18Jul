@@ -18,7 +18,7 @@ değiştiriyor. İki somut sonuç vardı:
 Bu dosya sızıntının her iki yüzünü de pinler. Testler gerçek dosya sistemine
 (tmp_path) yazar; gerçek `~/.cache` store'una asla dokunulmaz.
 
-Wiki References: [[nau_performans_denetimi]], [[deepr_skill]]
+Wiki References: [[nau_performans_denetimi]], [[nau_deepr_dorduncu_tur_2026_08_11]]
 """
 
 from __future__ import annotations

@@ -15,7 +15,9 @@ dışında da geçiyor (`env_int("NAUTILUS_WF_FOLDS", 3)`, alt süreçlere geçi
 `env` sözlükleri, hata mesajları). Aranan şey "şu ada bu kod tabanında bir yerde
 değiniliyor mu" — kaynağı `nau_config.py`'nin kendisi olmamak şartıyla.
 
-Kardeş kurallar: [[test_auto_layer_is_web_free]], [[test_web_layer_has_no_cycle]].
+Kardeş kurallar: `tests/test_auto_layer_is_web_free.py` ve
+`tests/test_web_layer_has_no_cycle.py` (bunlar sayfa değil MODÜL — wikilink
+sözdizimi burada yanlış araçtı, bağ çözülmüyordu).
 
 Wiki References: [[webapp_module_map]], [[surec_yoneticisi_ortami_dondurur]]
 """

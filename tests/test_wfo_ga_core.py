@@ -20,7 +20,7 @@ gizlenebilir).
 Testler saf fonksiyonlar üzerinde koşar — backtest çalıştırılmaz, kataloğa veya
 studio.db'ye dokunulmaz.
 
-Wiki References: [[webapp_module_map]], [[auto_arama_ekonomisi]], [[deepr_skill]]
+Wiki References: [[webapp_module_map]], [[auto_arama_ekonomisi]], [[nau_deepr_dorduncu_tur_2026_08_11]]
 """
 
 from __future__ import annotations

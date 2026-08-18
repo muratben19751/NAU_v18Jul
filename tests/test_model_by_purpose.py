@@ -11,7 +11,8 @@ kanıtlamaz — kanıt, sağlayıcıya GİDEN model adıdır.
 
 Wiki References
 ---------------
-See: [[model_secici_ve_gorunurluk]], [[max_tokens_tavani_modelin_uslubuna_baglidir]].
+See: [[model_secici_ve_gorunurluk]], [[llm_maliyet_kaldiraclari]] (max_tokens
+tavanı modelin üslubuna bağlıdır — ölçüm orada).
 """
 
 from __future__ import annotations

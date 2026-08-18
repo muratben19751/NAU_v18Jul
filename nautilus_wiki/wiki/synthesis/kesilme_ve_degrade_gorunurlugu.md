@@ -172,5 +172,6 @@ tavan kesilmeyi çözerken duvar saatini zorlar. Ölçüm: [[07_yerel_llm_hibrit
 
 - [[llm_maliyet_kaldiraclari]]
 - [[model_secici_ve_gorunurluk]]
+- [[surec_yoneticisi_ortami_dondurur]]
 - [[webapp_module_map]]
 <!-- BACKLINKS:END -->

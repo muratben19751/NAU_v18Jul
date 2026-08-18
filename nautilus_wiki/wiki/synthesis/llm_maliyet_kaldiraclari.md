@@ -320,6 +320,10 @@ vardı, yukarı yolu yoktu) → 16.000'e çekildi; `AGENT_CUSTOM_BLOCK_TOKEN_LIM
 **Canlı doğrulama:** koşu 755b7880'in üç turunda `TruncatedResponse` YOK
 ([[nau_auto_kosusu_755b7880_2026_08_17]]).
 
+Bu sayfanın tüm sayıları tek bir kalıcı defterden çıkıyor —
+[[nau_token_tuketim_izleme]] (neden bellek-içi sayaç yetmedi, neden yazılan
+model İSTENEN değil YANITLAYAN model).
+
 <!-- BACKLINKS:BEGIN -->
 ## Referenced by
 
@@ -327,5 +331,6 @@ vardı, yukarı yolu yoktu) → 16.000'e çekildi; `AGENT_CUSTOM_BLOCK_TOKEN_LIM
 - [[model_secici_ve_gorunurluk]]
 - [[nau_auto_kosusu_755b7880_2026_08_17]]
 - [[nau_bulgu_kapatma_turu_2026_08_17]]
+- [[nau_token_tuketim_izleme]]
 - [[webapp_module_map]]
 <!-- BACKLINKS:END -->

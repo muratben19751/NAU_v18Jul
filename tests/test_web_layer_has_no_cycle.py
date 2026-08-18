@@ -16,7 +16,7 @@ denetler, çünkü fonksiyon-içi import çalışma zamanına kadar görünmez:
      kapısını ve startup lifespan'ini ayağa kaldırmasın (gerileme kanıtı:
      eskiden bu iddia yanlıştı).
 
-Kardeş kural: [[test_auto_layer_is_web_free]] — aynı duruşun motor katmanı için
+Kardeş kural: `tests/test_auto_layer_is_web_free.py` — aynı duruşun motor katmanı için
 olan hâli.
 
 Wiki References: [[webapp_module_map]], [[nau_deepr_mimari_katman_ayrimi]]

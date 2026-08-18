@@ -377,5 +377,6 @@ de (listede var → seçili, yok → `""`) sabitler.
 - [[auto_mission_control]]
 - [[kesilme_ve_degrade_gorunurlugu]]
 - [[llm_maliyet_kaldiraclari]]
+- [[surec_yoneticisi_ortami_dondurur]]
 - [[webapp_module_map]]
 <!-- BACKLINKS:END -->

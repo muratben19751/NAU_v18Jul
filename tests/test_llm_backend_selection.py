@@ -18,7 +18,7 @@ live in llm_dispatch.py's own namespace, so this fixture and the monkeypatch
 targets below point there directly); an autouse fixture resets it before and
 after every test in this file so one test's build never leaks into the next
 (the exact class of bug this session's own thread-local/BLOCK_CATALOG
-findings warn about -- see [[thread_local_testte_sonraki_testi_kirletir]]).
+findings warn about -- thread-local durum sonraki testi kirletir).
 
 Wiki References
 ---------------

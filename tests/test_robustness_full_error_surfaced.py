@@ -19,7 +19,7 @@ altyapı patlamıştı. Bu dosya üç katmanı da bağlar:
      yazılmalı,
   3. şablon  — ikisi GÖRSEL olarak ayrılmalı (nötr boş-durum vs kırmızı hata).
 
-Wiki References: [[deepr_skill]]
+Wiki References: [[nau_deepr_dorduncu_tur_2026_08_11]]
 """
 
 from __future__ import annotations

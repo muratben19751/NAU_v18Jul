@@ -289,5 +289,6 @@ PLAUSIBLE/CONFIRMED) → Synthesize. Aynı çok-ajanlı çekişmeli desen [[weba
 - [[nau_deepr_dorduncu_tur_2026_08_11]]
 - [[nau_guvenlik_dayaniklilik_duzeltmeleri]]
 - [[nau_mimari_denetimi]]
+- [[nau_token_tuketim_izleme]]
 - [[webapp_module_map]]
 <!-- BACKLINKS:END -->

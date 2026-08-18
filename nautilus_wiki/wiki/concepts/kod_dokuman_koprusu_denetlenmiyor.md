@@ -95,6 +95,7 @@ görünür hâle gelmesi: sayı zaten oradaydı, yalnız kimse bakmıyordu.
 <!-- BACKLINKS:BEGIN -->
 ## Referenced by
 
+- [[nau_deepr_mimari_katman_ayrimi]]
 - [[nau_holdout_dogrulama_turu_2026_08_18]]
 - [[webapp_module_map]]
 <!-- BACKLINKS:END -->

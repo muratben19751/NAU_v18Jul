@@ -241,6 +241,7 @@ Ayrıntı ve kapatma yolu: [[kod_dokuman_koprusu_denetlenmiyor]].
 - [[import_aninda_yakalanan_referans]]
 - [[kod_dokuman_koprusu_denetlenmiyor]]
 - [[llm_maliyet_kaldiraclari]]
+- [[nau_deepr_mimari_katman_ayrimi]]
 - [[nau_deepr_toplu_sertlestirme_2026_08]]
 - [[nau_guvenlik_dayaniklilik_duzeltmeleri]]
 - [[nau_mimari_denetimi]]
@@ -249,5 +250,6 @@ Ayrıntı ve kapatma yolu: [[kod_dokuman_koprusu_denetlenmiyor]].
 - [[parquet_data_catalog]]
 - [[portfolio]]
 - [[strategy_studio]]
+- [[surec_yoneticisi_ortami_dondurur]]
 - [[v1_to_v2_migration_lessons]]
 <!-- BACKLINKS:END -->

@@ -29,7 +29,7 @@ Atlanan testler artık SESSİZ değil: `pyproject.toml`'daki `addopts` `-ra`
 taşıyor (her skip'in gerekçesi özet satırında basılır) ve `ci.yml` skip
 sayısını iş özetine yazar.
 
-Wiki References: [[deepr_skill]]
+Wiki References: [[nau_deepr_dorduncu_tur_2026_08_11]]
 """
 
 from __future__ import annotations

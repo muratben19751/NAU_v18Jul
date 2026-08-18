@@ -11,7 +11,7 @@
 
 Wiki References
 ---------------
-Bkz: [[strategy_studio]], [[review_raporu_uretildigi_anda_bayatlar]]
+Bkz: [[strategy_studio]], [[nau_bulgu_kapatma_turu_2026_08_17]]
 """
 
 from __future__ import annotations

@@ -6,7 +6,8 @@ ayrı kusuru taşıyordu:
   1. **Sessizlik.** LLM hiç konuşmasa bile ekranda gayet normal duran bir cümle
      çıkıyordu: `degraded` bayrağı yok, log yok. Ölçüm sırasında bunu ayırt
      edebilmek için şablon metnini birebir yeniden üretmek gerekti — yani
-     dışarıdan ayırt EDİLEMEZ durumdaydı ([[makul_fallback_sessiz_fallbacktan_tehlikelidir]]).
+     dışarıdan ayırt EDİLEMEZ durumdaydı (makul bir fallback, sessiz fallback'tan tehlikelidir —
+     bkz. [[kesilme_ve_degrade_gorunurlugu]]).
   2. **STOP'u yutması.** `LLMCallCancelled` de `Exception`tır. Koşu iptal
      edilirken anlatı üretiliyorsa iptal, başarılı görünen bir cümleye
      dönüşüyordu — `llm_client._raise_if_llm_control_abort`'un tam olarak

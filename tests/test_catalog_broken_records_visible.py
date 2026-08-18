@@ -12,7 +12,7 @@ yani bir kayıt parse edilemediği turda kaydetme yapılırsa o kayıt DİSKTEN 
 siliniyordu. Karantina dosyası tam olarak bunun için var — ham JSON kaydı,
 gerekçesiyle birlikte, `<katalog dizini>/quarantine/` altına yazılır.
 
-Wiki References: [[deepr_skill]]
+Wiki References: [[nau_deepr_dorduncu_tur_2026_08_11]]
 """
 
 from __future__ import annotations

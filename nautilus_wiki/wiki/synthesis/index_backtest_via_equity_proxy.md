@@ -131,6 +131,7 @@ Volume yerine tick-count kullanmak, tick-based likidite filtreleri için yeterin
 <!-- BACKLINKS:BEGIN -->
 ## Referenced by
 
+- [[ticker_kimlik_degil_o_gunun_etiketi]]
 - [[us_equity_katalog_veri_butunlugu]]
 - [[v1_to_v2_migration_lessons]]
 - [[webapp_module_map]]

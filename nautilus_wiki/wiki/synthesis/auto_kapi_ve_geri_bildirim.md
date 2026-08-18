@@ -359,5 +359,6 @@ alfa kapısı üç turda 0/15 → 2/15 → 3/15 açıldı, **eşiğe hiç dokunu
 - [[auto_arama_ekonomisi]]
 - [[multi_symbol_generalization]]
 - [[nau_deepr_dorduncu_tur_2026_08_11]]
+- [[nau_deepr_mimari_katman_ayrimi]]
 - [[webapp_module_map]]
 <!-- BACKLINKS:END -->

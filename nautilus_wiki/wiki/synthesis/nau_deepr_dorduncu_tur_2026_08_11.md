@@ -108,8 +108,12 @@ kurulu ortamdan üretildi).
 * `TestRunUnitsTimeout` kararsızlığı bütçe büyütülerek giderildi ama altındaki
   `parallel_exec.run_units` havuz-timeout yarışı incelenmedi.
 
+Mimari bulgusunun kapanışı ayrı bir sayfada: [[nau_deepr_mimari_katman_ayrimi]]
+(`auto/` paketi, bağımlılığın yönü ve sınırı denetleyen iki AST testi).
+
 <!-- BACKLINKS:BEGIN -->
 ## Referenced by
 
 - [[index_backtest_via_equity_proxy]]
+- [[nau_deepr_mimari_katman_ayrimi]]
 <!-- BACKLINKS:END -->

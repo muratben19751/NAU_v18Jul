@@ -13,7 +13,7 @@ not an invoice (see ``token_ledger._PRICES_PER_MTOK``).
 
 Wiki References
 ---------------
-See: [[webapp_module_map]] (bu modülün satırı), [[nau_token_tuketim_izleme_2026_07]]
+See: [[webapp_module_map]] (bu modülün satırı), [[nau_token_tuketim_izleme]]
 (ledger'ın neden kalıcı ve tek-kaynak olduğu).
 """
 
