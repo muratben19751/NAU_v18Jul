@@ -8,7 +8,7 @@ related:
   - wiki/synthesis/auto_kapi_ve_geri_bildirim.md
   - wiki/synthesis/nau_holdout_dogrulama_turu_2026_08_18.md
   - wiki/synthesis/multi_symbol_generalization.md
-last_updated: 2026-08-18
+last_updated: 2026-08-19
 ---
 
 # AUTO koşuları 2026-08-18
@@ -22,9 +22,9 @@ Hepsi QQQC.NASDAQ, 3 timeframe (1-HOUR / 4-HOUR / 1-DAY), sürekli mod.
 
 | koşu | model | tur | sonuç |
 |---|---|---|---|
-| `72029368` | `or:qwen3.8-27b` | 3 | **öldü** — fallback `ValueError` |
+| `72029368` | `or:qwen3.8-27b` ⚠ | 3 | **öldü** — fallback `ValueError` |
 | `8aa18365` | `claude-opus-5` | 3 | `winless_limit` — üç gerçek ret |
-| `85c6330c` | `or:qwen3.8-27b` | 1+ | elle durduruldu |
+| `85c6330c` | `or:qwen3.8-27b` ⚠ | 1+ | elle durduruldu |
 | `9016d12a` | `claude-sonnet-5` | 3 | `winless_limit` — **mühürlü kapı koştu** |
 | `568f2838` | `claude-haiku-4-5` | 1+ | WFO alfası: 6/6 kârlı ama 1/6 al-tut'u geçiyor |
 
@@ -160,6 +160,35 @@ sonucu değil. 4 saatlik tavanda Haiku 2-3 tur, diğerleri 3+ tur veriyor.
 
 Sabit kalan tek şey: her üç modelde de **15 adaydan 1'i** sıralamayı geçti. Kapı
 model seçimine duyarsız; darboğaz sabit.
+
+## 8. `or:` koşuları GEÇERSİZ — model hiç konuşmamış (2026-08-19 düzeltmesi)
+
+Yukarıdaki tabloda ⚠ ile işaretli iki koşu, model karşılaştırmasına GİRMEMELİ.
+`or:qwen3.8-27b` pini yerel bir uca (`OPENROUTER_BASE_URL=127.0.0.1:8080`)
+bakıyordu ve o uç hiç ayakta değildi; her çağrı `_OpenRouterProcessError`
+verip rastgele kompozisyona düştü (26 ve 66 fallback). Yani o koşuların
+adayları bir MODELİN değil rastgele aramanın ürünü.
+
+Bu, daha önce bu sayfada ve [[auto_arama_ekonomisi]]'nde "rastgele fallback üç
+Claude modelini de geçiyor" diye raporlanan bulgunun kaynağı — bulgu geçerli
+(rastgele taban gerçekten daha iyi skorladı), ama "qwen'in adayları" diye bir
+küme YOK. Teşhis gecikmesinin sebebi hata mesajının sarmalayıcının adını
+taşıması: ayrıntı [[model_secici_ve_gorunurluk]].
+
+## 9. Prompt A/B: iki kol, 45'er aday (2026-08-18)
+
+| | eski prompt (`568f2838`) | hedefli prompt (`57cef74a`) |
+|---|---|---|
+| model | Haiku 4.5 | Haiku 4.5 |
+| aday | 45 | 45 |
+| Calmar medyanı | 0,26 | **0,37** |
+| çıtayı geçen | 2 (%4) | **4 (%9)** |
+| MC medyan DD | −%26,1 | **−%32,6** |
+| robustluğa giren TF | 1-DAY + 4-HOUR | **4/4 günlük** |
+| tur süresi | 104 dk | 56 dk |
+
+Sıralama kazandı, dayanıklılık kaybetti. Prompt bu ölçüme göre yumuşatıldı;
+gerekçe ve kural [[auto_arama_ekonomisi]]'nde.
 
 ## Kalan açık uç
 

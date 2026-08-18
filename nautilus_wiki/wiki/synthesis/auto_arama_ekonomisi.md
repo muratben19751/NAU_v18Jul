@@ -12,7 +12,7 @@ related:
   - wiki/synthesis/auto_mission_control.md
   - wiki/synthesis/webapp_module_map.md
   - wiki/synthesis/nau_performans_denetimi.md
-last_updated: 2026-08-18
+last_updated: 2026-08-19
 ---
 
 # AUTO aramasının ekonomisi
@@ -199,10 +199,17 @@ Aynı 173 adayın üreticiye göre kırılımı beklenmedik çıktı:
 
 | üretici | n | medyan | ≥×1,00 |
 |---|---:|---:|---:|
-| **rastgele fallback** | 72 | **0,40** | **13** |
+| **rastgele fallback** | 117 | **0,46** | **20** |
+| Haiku 4.5 (hedefli prompt) | 45 | 0,37 | 4 |
 | Opus 5 | 45 | 0,26 | 4 |
-| Haiku 4.5 | 37 | 0,20 | 1 |
+| Haiku 4.5 (eski prompt) | 45 | 0,26 | 2 |
 | Sonnet 5 | 45 | 0,14 | 2 |
+
+> **Kesit notu:** "rastgele" satırı üç `or:qwen` koşusundan geliyor ve o
+> koşularda yerel model ucu hiç ayakta değildi — yani orada bir MODEL yok,
+> rastgele arama var (bkz. [[model_secici_ve_gorunurluk]]). Bu, bulguyu
+> zayıflatmıyor GÜÇLENDİRİYOR: karşılaştırma "zayıf model vs güçlü model" değil,
+> **"hiç model yok vs model"** — ve modelsiz taban hâlâ önde.
 
 LLM erişilemediğinde devreye giren rastgele kompozisyonlar üç modelin hepsini
 geçti — ve `research-only` damgası yüzünden **tanım gereği yayımlanamıyorlar.**
@@ -228,10 +235,74 @@ Hangi kolun koştuğu koşu kaydında (`objective_in_prompt`) duruyor; aksi hâl
 koşuyu karşılaştıran kişi neyin değiştiğini bilemez. Ölçüm:
 [[nau_auto_kosulari_2026_08_18]].
 
+## A/B sonucu: hedefi söylemek işe yaradı, ve söylediğin şeyi aldın (2026-08-18)
+
+Kabul ölçütünün prompt'a yazılması ölçüldü. Aynı model (Haiku 4.5), aynı
+enstrüman, aynı kapılar, **45'er aday**; değişen tek şey sistem mesajı.
+
+| | eski prompt | hedefli prompt |
+|---|---|---|
+| Calmar medyanı | 0,26 | **0,37** |
+| çıtayı geçen | 2 (%4) | **4 (%9)** |
+| nitelenen | 2 | **4** |
+| tur süresi | 104 dk | 56 dk |
+
+Sıralama tarafı net iyileşti. **Ama iki yan etki de ölçüldü:**
+
+* Robustluğa giren dört adayın **dördü de günlük bara** kaydı (eski kolda 1-DAY
+  ve 4-HOUR karışıktı); WFO pencereleri 33-39 aya çıktı, geçerli pencere 6-8'e
+  indi.
+* Monte Carlo medyan düşüşü −%26,1'den **−%32,6**'ya kötüleşti
+  (−39,5 / −25,8 / −42,0 / −14,5).
+
+Hikâye tutarlı: az işlem, eğitim penceresinde düşük GERÇEKLEŞMİŞ drawdown
+demek. Calmar tek bir yolun düşüşünü ölçer, Monte Carlo alternatif yolları sorar.
+Model ölçülen metriği iyileştirirken ölçülmeyen kırılganlığı artırdı.
+
+**Prompt buna göre yumuşatıldı (`41ec2ed`):** "FEWER CONDITIONS / prefer 2-3
+blocks" tamamen kaldırıldı (kanıtı zaten dengesiz bir örneklemdi ve yan etkiyi
+besliyordu); "drawdown control" kaldı ama yanına ödülün yan etkisini yakalayan
+ölçüt eklendi ("Calmar tek bir gerçekleşmiş yoldan hesaplanır; az işlemli bir
+strateji Monte Carlo'nun yıktığı gurur verici bir sayı üretebilir") ve frekans
+açıkça nötrlendi ("Fast and slow ideas both pass and both fail here").
+
+**Genel kural:** bir hedefi üreticiye söylemek onu iyileştirir — ve söylenmeyen
+komşu boyutu bozabilir. Ödülü yazarken ödülün YAN ETKİSİNİ yakalayan ölçütü de
+yaz.
+
+## İpucu (hint) bir DARALTMA aracıdır — bağlama gücü ölçüldü
+
+Kullanıcının her koşuda yazdığı serbest metin, üreticiye *"bunu strateji
+fikrine dahil et"* diye giriyor. Üretilen aday ADLARININ kaçı ipucunun
+ailesinde kalmış:
+
+| ipucu | bağlama |
+|---|---|
+| `anchor vwap` | **24/24 (%100)** |
+| `ema ve sma ve adx` | **24/24 (%100)** |
+| `hh ll vwap` | 17/24 (%71) |
+| `Dynamic Swing Anchored VWAP` | 17/27 (%63) |
+
+Sezginin tersi: **en uzun ve en "profesyonel" görünen ipucu en gevşek bağladı.**
+Sıfat zinciri ("dinamik", "swing", "anchored") modele yorum alanı açıyor ve
+model Bollinger/Stochastic/Momentum'a dağılıyor; iki kelimelik somut bir ad ise
+tek nesneye işaret ediyor.
+
+İki pratik sonuç: (1) kesin bir şey istiyorsan KISA ve SOMUT yaz, (2) aramanın
+keşfetmesini istiyorsan ipucunu BOŞ bırak — sistem prompt'undaki çeşitlilik
+kuralı ("indikatör ailelerini döndür") ancak o zaman çalışabiliyor. Ölçülen beş
+koşunun beşinde de ipucu doluydu, yani arama hiç serbest bırakılmadı.
+
+Üçüncü, daha ince nokta: ipucu neyi SÖYLEMEDİĞİNİ de belirler. `anchor vwap`
+çapanın nereye konacağını (seans başı? son swing? hacim patlaması?) modele
+bırakır ve 15 aday 15 farklı çapa seçebilir. Tezi yazmak hem bağlar hem
+belirsizliği kapatır.
+
 <!-- BACKLINKS:BEGIN -->
 ## Referenced by
 
 - [[auto_kapi_ve_geri_bildirim]]
+- [[nau_auto_kosulari_2026_08_18]]
 - [[nau_performans_denetimi]]
 - [[webapp_module_map]]
 <!-- BACKLINKS:END -->

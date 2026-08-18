@@ -1842,3 +1842,29 @@ Sayfaya **ölçüm kesiti damgası** eklendi. Ders: devam eden bir koşudan alı
 sayı, kesiti yazılmadan raporlanmamalı.
 
 Lint yedi kategoride de sıfır.
+
+## 2026-08-19 — prompt A/B sonucu, ipucu bağlama gücü, ve geçersiz koşuların düzeltilmesi
+
+Son senkrondan (79466c3) sonra bir kod commit'i (`41ec2ed`, hedef prompt'unun
+yumuşatılması) ve üç ölçüm wiki'ye geçti.
+
+1. **A/B sonucu.** Kabul ölçütünü prompt'a yazmak Calmar medyanını 0,26→0,37 ve
+   geçme oranını %4→%9 çıkardı (aynı model, 45'er aday). AMA robustluğa giren
+   dört adayın dördü günlük bara kaydı ve MC medyanı −%26,1→−%32,6 kötüleşti.
+   Prompt yumuşatıldı: "fewer conditions" kaldırıldı, drawdown ipucuna yan etkiyi
+   yakalayan ölçüt eklendi, frekans açıkça nötrlendi.
+2. **İpucu bağlama gücü.** `anchor vwap` → %100, `Dynamic Swing Anchored VWAP` →
+   %63. Uzunluk değil somutluk bağlıyor; ipucu bir daraltma aracı.
+3. **DÜZELTME — üç `or:qwen` koşusu model karşılaştırmasına giremez.** Yerel uç
+   (127.0.0.1:8080) hiç ayakta değilmiş; her çağrı düşüp rastgele kompozisyona
+   dönmüş. "qwen'in adayları" diye bir küme YOK. Teşhis üç koşu gecikti çünkü
+   hata sınıfı sarmalayıcının adını taşıyor (`_OpenRouterProcessError`) ve
+   hedefin yerel olduğunu gizledi.
+
+Yeniden ölçüm bulguyu güçlendirdi: rastgele taban n=117, medyan 0,46 — LLM
+kollarının hepsinin üstünde. Karşılaştırma "zayıf model vs güçlü model" değil,
+"hiç model yok vs model".
+
+Not: `ecosystem.config.js` çalışma ağacında değişik (kullanıcı yerel ucu
+llama-server:8080'den Ollama:11434'e çevirmiş, iki model kayıtlı ve uç AYAKTA).
+Bu senkronun commit'ine DAHİL EDİLMEDİ.

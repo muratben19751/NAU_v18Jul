@@ -14,7 +14,7 @@ related:
   - wiki/synthesis/auto_mission_control.md
   - wiki/synthesis/tear_sheet_overlay.md
   - wiki/synthesis/kesilme_ve_degrade_gorunurlugu.md
-last_updated: 2026-08-16
+last_updated: 2026-08-19
 ---
 
 # Model seçici ve model görünürlüğü
@@ -371,12 +371,47 @@ Test bunu ortamdan bağımsız bağlar: `tests/test_studio_page.py` sabiti env'e
 `ecosystem.config.js`'teki pin'e karşı doğrular, ayrıca geri düşmenin iki yönünü
 de (listede var → seçili, yok → `""`) sabitler.
 
+## `or:` öneki İSTEMCİYİ seçer, hedefi değil — ve hata mesajı bunu gizler (2026-08-19)
+
+Üç ayrı AUTO koşusu `or:qwen3.8-27b` ile başladı ve üçünde de her LLM çağrısı
+düştü:
+
+    _OpenRouterProcessError: APIConnectionError: Connection error.
+
+Cümlede "OpenRouter" geçtiği için teşhis üç koşu boyunca yanlış yere baktı
+(sağlayıcı? ağ? "bu model kötü, ürettiği stratejiler zayıf"?). Gerçek yapılandırma
+zaten yereldi:
+
+    OPENROUTER_BASE_URL = http://127.0.0.1:8080/v1
+    OPENROUTER_API_KEY  = local
+
+`or:` öneki yalnız **hangi istemci kodunun** (OpenAI-uyumlu) kullanılacağını
+seçiyor; HEDEF `OPENROUTER_BASE_URL`'de ve o yerel bir uç. Arıza tek satırla
+görülebiliyordu: `curl http://127.0.0.1:8080/v1/models` → bağlantı reddedildi,
+port kapalı. Yerel model sunucusu hiç ayakta değildi.
+
+Ölçülen bedel: o üç koşuda sırasıyla 26, 44 ve 66 kez rastgele kompozisyona
+düşüldü; üretilen her aday `research-only` damgası yiyip yayımlanamaz oldu. Yani
+model hiç konuşmadı ama saatlerce koştuğu sanıldı — ve dağılım analizinde
+"qwen'in adayları" diye raporlanan sayılar aslında RASTGELE arama sonuçlarıydı.
+
+**Ayırt edici soru:** hata sınıfının adı çağrının HEDEFİNİ mi, kullanılan
+İSTEMCİYİ mi anlatıyor? Sarmalayıcı sınıflar (`_XProcessError`) neredeyse her
+zaman sarmalayanın adını taşır. Bağlantı hatasında önce **gerçek `base_url`'ü
+yazdır**, sonra o adrese elle bir istek at.
+
+Aynı ailenin başka yüzü bu sayfada zaten var (zamanaşımı ayarı yerel uca hiç
+ulaşmıyordu, 2026-08-15): orada ayar doğruydu ve YÜRÜTME eskiydi; burada ayar
+doğru ve HEDEF ayakta değil. İkisinde de "ayarı doğrula" yetmedi.
+
 <!-- BACKLINKS:BEGIN -->
 ## Referenced by
 
+- [[auto_arama_ekonomisi]]
 - [[auto_mission_control]]
 - [[kesilme_ve_degrade_gorunurlugu]]
 - [[llm_maliyet_kaldiraclari]]
+- [[nau_auto_kosulari_2026_08_18]]
 - [[surec_yoneticisi_ortami_dondurur]]
 - [[webapp_module_map]]
 <!-- BACKLINKS:END -->
