@@ -2259,7 +2259,10 @@ def _scan_one_candidate(
             passer_entry=None,
         )
 
-    passed = _robustness_passed(rob, strict=strict_mode, run_id=run_id)
+    # Karar VE kapsam aynı çağrıdan: aşağıdaki özet cümlesi kaç ölçütün
+    # gerçekten koşabildiğini söyleyecek, ikinci kez saymadan.
+    tally = _robustness_tally(rob, strict=strict_mode, run_id=run_id)
+    passed = tally.ok
     if cand_spec.id in wstate.degraded_spec_ids:
         passed = False
         _add_step(
@@ -2349,9 +2352,22 @@ def _scan_one_candidate(
             "factor": factor,
             "effective": effective,
         }
+        # Eski cümle "hepsi geçti" (tümü-büyük-harf) diyordu, yani DÖRT ölçüt
+        # geçti anlamına geliyordu; oysa kural "en az
+        # `required` tanesi koşabilmiş ve hiçbiri düşmemiş" diyor. Ölçülen
+        # vakada iki ölçüt hiç koşmamışken cümle "hepsi geçti" yazıyordu
+        # (koşu 9016d12a, tur 1). Sayı artık kararın kendi sayacından geliyor.
+        _passed_txt = (
+            "ALL 4 CRITERIA PASSED"
+            if tally.evaluated == 4
+            else (
+                f"PASSED on {tally.evaluated}/4 criteria "
+                f"(≥{tally.required} required; the rest could not be evaluated)"
+            )
+        )
         _add_step(
             run_id,
-            f"  ✅ ALL TESTS PASSED! "
+            f"  ✅ {_passed_txt} · "
             f"IS/OOS: {split_label} · WFO: {wf_str} · Multi-symbol: {ms_label}",
         )
         _add_step(
@@ -3212,9 +3228,43 @@ def _clamp_spec_trade_size(spec):
     return None if before == after else {"before": before, "after": after}
 
 
+class _GateTally(NamedTuple):
+    """Robustluk kararı VE kapsamı — ikisi aynı çağrıdan.
+
+    `ok` tek başına "geçti" der ama KAÇ ölçütün gerçekten koşabildiğini
+    söylemez. Ölçüldü (koşu 9016d12a, tur 1): bir aday
+    `✅ ALL TESTS PASSED! IS/OOS: ✓ Robust · WFO: — · Multi-symbol: — ` satırıyla
+    kazanan ilan edildi — aynı satırın içinde iki tire varken. Dört ölçütün
+    ikisi hiç koşmamıştı (WFO'nun geçerli penceresi yok, beş akranın beşi de az
+    işlemden sayılmadı) ve kural bunu kabul ediyor (gevşek modda `evaluated ≥ 2`).
+    Yanlış olan kural değil CÜMLEYDİ: "geçti" ile "koşulamadı" aynı kovaya
+    girince kanıtın genişliği, tam da en dar olduğu anda gizleniyordu.
+
+    `evaluated` bu yüzden karardan AYRI değil, kararla BİRLİKTE dönüyor —
+    çağıranın ikinci kez sayması, bugün üç kez düzeltilen ıraksama desenini
+    yeniden üretirdi.
+    """
+
+    ok: bool
+    evaluated: int
+    failed: int
+    required: int
+
+
 def _robustness_passed(
     rob: dict, strict: bool = True, run_id: str | None = None
 ) -> bool:
+    """Robustluk kararı (bool) — sayıları da isteyen `_robustness_tally`yi çağırır.
+
+    İnce sarmalayıcı KASITLI: bu ad testlerin ve çağıranların tarihsel yüzeyi
+    (`assert ab._robustness_passed(...) is True`), ve bool sözleşmesi bozulmasın.
+    """
+    return _robustness_tally(rob, strict=strict, run_id=run_id).ok
+
+
+def _robustness_tally(
+    rob: dict, strict: bool = True, run_id: str | None = None
+) -> _GateTally:
     """Robustness decision — with an evaluated-criteria counter (H4+L18).
 
     The 4 criteria (IS/OOS, WFO, Multi-Symbol, Monte Carlo) are each classified
@@ -3229,8 +3279,9 @@ def _robustness_passed(
     For each skipped criterion (if run_id is given) a warning
     '⚠ <criterion> could not be evaluated: <reason>' is added to the step log.
     """
+    _required = 3 if strict else 2
     if not rob or rob.get("error"):
-        return False
+        return _GateTally(ok=False, evaluated=0, failed=0, required=_required)
 
     def _skip(name: str, why: str) -> None:
         if run_id:
@@ -3326,17 +3377,16 @@ def _robustness_passed(
                 failed += 1
 
     if failed:
-        return False
-    min_required = 3 if strict else 2
-    if evaluated < min_required:
+        return _GateTally(False, evaluated, failed, _required)
+    if evaluated < _required:
         if run_id:
             _add_step(
                 run_id,
                 f"⚠ Only {evaluated}/4 criteria could be evaluated "
-                f"(need ≥{min_required}) — candidate cannot pass",
+                f"(need ≥{_required}) — candidate cannot pass",
             )
-        return False
-    return True
+        return _GateTally(False, evaluated, failed, _required)
+    return _GateTally(True, evaluated, failed, _required)
 
 
 def _holdout_promotion_verdict(

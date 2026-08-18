@@ -790,7 +790,13 @@ class TestScanOneCandidate:
     def test_passing_candidate_positive_score_sign_safety(self, monkeypatch):
         self._quiet(monkeypatch)
         monkeypatch.setattr("sandbox.run_robustness_guarded", lambda *a, **k: {})
-        monkeypatch.setattr(ab, "_robustness_passed", lambda *a, **k: True)
+        # Karar artık `_robustness_tally`den geliyor (bool sarmalayıcı onu çağırır);
+        # tarama da kapsamı aynı çağrıdan okuduğu için yamanacak yer burası.
+        monkeypatch.setattr(
+            ab,
+            "_robustness_tally",
+            lambda *a, **k: ab._GateTally(True, 4, 0, 2),
+        )
         monkeypatch.setattr(ab, "_ms_score_factor", lambda rob: 0.5)
 
         outcome = ab._scan_one_candidate(
@@ -811,7 +817,13 @@ class TestScanOneCandidate:
         — a naive raw*factor would invert this for factor<1."""
         self._quiet(monkeypatch)
         monkeypatch.setattr("sandbox.run_robustness_guarded", lambda *a, **k: {})
-        monkeypatch.setattr(ab, "_robustness_passed", lambda *a, **k: True)
+        # Karar artık `_robustness_tally`den geliyor (bool sarmalayıcı onu çağırır);
+        # tarama da kapsamı aynı çağrıdan okuduğu için yamanacak yer burası.
+        monkeypatch.setattr(
+            ab,
+            "_robustness_tally",
+            lambda *a, **k: ab._GateTally(True, 4, 0, 2),
+        )
         monkeypatch.setattr(ab, "_ms_score_factor", lambda rob: 0.5)
 
         args = self._args(ab._WorkerState())
@@ -827,7 +839,13 @@ class TestScanOneCandidate:
     ):
         self._quiet(monkeypatch)
         monkeypatch.setattr("sandbox.run_robustness_guarded", lambda *a, **k: {})
-        monkeypatch.setattr(ab, "_robustness_passed", lambda *a, **k: True)
+        # Karar artık `_robustness_tally`den geliyor (bool sarmalayıcı onu çağırır);
+        # tarama da kapsamı aynı çağrıdan okuduğu için yamanacak yer burası.
+        monkeypatch.setattr(
+            ab,
+            "_robustness_tally",
+            lambda *a, **k: ab._GateTally(True, 4, 0, 2),
+        )
         monkeypatch.setattr(ab, "_ms_score_factor", lambda rob: 1.0)
 
         wstate = ab._WorkerState()

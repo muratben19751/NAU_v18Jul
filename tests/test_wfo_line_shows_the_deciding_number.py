@@ -122,7 +122,7 @@ def test_all_three_consumers_read_one_source():
     suite = inspect.getsource(ar.run_full_robustness)
     assert "wfo_verdict(" in suite, "adım satırı kararı okumuyor"
 
-    gate = inspect.getsource(ab._robustness_passed)
+    gate = inspect.getsource(ab._robustness_tally)
     assert "_wfo_verdict(" in gate, "kapı yardımcıyı kullanmıyor"
     assert "positive_ratio" not in gate, "kapıda ikinci bir sayım kalmış"
 
@@ -135,7 +135,7 @@ def test_the_rejection_reason_reaches_the_operator():
     """Sessiz `failed += 1` dört yeşil ölçüt ve açıklamasız bir ❌ üretiyordu."""
     import web.routes.agent_backtest as ab
 
-    gate = inspect.getsource(ab._robustness_passed)
+    gate = inspect.getsource(ab._robustness_tally)
     assert re.search(r"✗ Walk-Forward: \{_wf\.reason\}", gate), (
         "WFO reddi operatöre yazılmıyor"
     )
