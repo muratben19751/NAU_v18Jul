@@ -216,6 +216,14 @@ kapıda kendi eliyle eliyordu (1-DAY'de 41 barlık pencerede 20 giriş = barlar�
 %49'u). Pencere örneklemin oranına çevrildi; eşik oynatılmadı. Ölçüm
 [[nau_auto_kosusu_755b7880_2026_08_17]]'de.
 
+Bu eksen KAPANMADI, taşındı (doğrulama 2026-08-18). Pencere oranlı yapılınca
+span sadeleşiyor ve mühür kapısı fiilen "tüm geçmişte ≥ `HOLDOUT_MIN_TRADES` /
+`HOLDOUT_SAMPLE_FRACTION` = 134 işlem" oluyor. Sıralama kapısı ise aynı 20'yi
+**eğitim span'ında** sayıyor; ölçülen oran 0,176, yani 20-113 eğitim-işlemi
+bandındaki her aday sıralamayı geçip mühürde aritmetik olarak ölüyor — koşunun
+kazananı (52) tam o bantta. Eşiğin de pencereyle ölçeklenmesi gerekirdi:
+`20 × mühürlü/eğitim ≈ 3,5`. Ayrıntı: [[nau_holdout_dogrulama_turu_2026_08_18]].
+
 Genel kural: iki kapı aynı adayı farklı BİRİMLERDE ölçüyorsa, aralarındaki
 dönüşüm katsayısını adlandır ve boru hattının onu bir yöne itip itmediğini sor.
 

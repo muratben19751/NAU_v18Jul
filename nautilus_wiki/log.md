@@ -1726,3 +1726,19 @@ Lint bugün 2 ile çıkıyor; sayı zaten oradaydı, artık görünüyor.
 
 - wiki/concepts/kod_dokuman_koprusu_denetlenmiyor.md (kapatma bölümü)
 - tools/wiki_tools.py · tests/test_wiki_lint_scans_the_code_side.py (8 test)
+
+## 2026-08-18 — 2db813b doğrulandı: aritmetik doğru, düzeltme eksik, bir regresyon
+
+44 ajanlı denetim (4 mercek + bulgu başına çürütme ajanı): 32 onaylandı, 8 çürütüldü.
+Onaylananların dört tanesi yapısal: (1) span sadeleşiyor, kapı gizlice "ömür boyu
+>=134 işlem" oluyor ve daha derin katalog onu ASLA açmıyor; (2) holdout_feasibility
+yalnız <60 barlık pencerede konuşuyor, yeni pencere ~857 bar — üstelik bir test
+n=862 için sessizliği assert ediyor; (3) sıralama (eğitim span'ı) ile mühür
+(mühürlü span) 5,7 kat ıraksıyor, 20-113 bandındaki adaylar doğmadan ölüyor;
+(4) REGRESYON — 1254 günlük mühür 730 günlük peer penceresinin %100'ünü yuttu.
+Ayrıca ekranda ve run_config'te hâlâ 60 gün yazıyor (karar anında 20,7x yanlış).
+
+- wiki/synthesis/nau_holdout_dogrulama_turu_2026_08_18.md (yeni)
+- wiki/synthesis/nau_auto_kosusu_755b7880_2026_08_17.md (düzeltme eksik notu)
+- wiki/synthesis/auto_kapi_ve_geri_bildirim.md (frekans ekseni kapanmadı, taşındı)
+- wiki/synthesis/multi_symbol_generalization.md (regresyon)

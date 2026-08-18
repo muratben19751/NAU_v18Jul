@@ -226,6 +226,18 @@ Canlı davranış: [[nau_auto_kosusu_755b7880_2026_08_17]] — iki aday
 `⚠ Limited` (2/5 ve 3/5) ile zincire devam etti, biri `✗` almadı.
 Bkz. [[nau_bulgu_kapatma_turu_2026_08_17]].
 
+## REGRESYON: mühür peer penceresini yuttu (2026-08-18)
+
+Mühürlü holdout penceresi 60 günden örneklemin %15'ine (QQQC'de 1254 gün)
+çıkarılınca, peer penceresi (`ms_days = 730`) taşınmadı. Katalog peer'ları
+birincil seriyle aynı tarihte bittiği için çok-sembol kanıtının **%100'ü** artık
+mühürlü dönemin içinde — eskiden ~%8'i (60/730).
+
+Bu bilgilendirme amaçlı bir test değil: kesin ret verirse IS/OOS + WFO + MC
+kısa devre oluyor ve seçim skorunu 0,15-1,0 aralığında (6,7 kat) çarpıyor.
+Peer penceresi mühürle birlikte hareket etmeli ya da peer'lar mühür öncesine
+kesilmeli. Ayrıntı: [[nau_holdout_dogrulama_turu_2026_08_18]].
+
 <!-- BACKLINKS:BEGIN -->
 ## Referenced by
 
