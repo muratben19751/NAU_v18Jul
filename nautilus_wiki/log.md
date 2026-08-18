@@ -1788,3 +1788,32 @@ Kalan tekil kişisel-vault bağları (thread-local kirlenmesi, max_tokens/üslup
 sessiz fallback) sözcük olarak korundu, bağ olarak kaldırıldı.
 
 Lint bugün ilk kez yedi kategoride de sıfır — `code_broken_links` dahil.
+
+## 2026-08-18 (3) — canlı koşular: kapı sınandı, üç düzeltme daha
+
+Sabahki beş düzeltme aynı gün dört AUTO koşusuyla sınandı
+(bkz. `nau_auto_kosulari_2026_08_18`). Koşular üç yeni kusur gösterdi ve üçü de
+kapatıldı:
+
+1. **`_fallback_composed` bir koşuyu öldürdü.** Giriş bloğu elle yazılmış bir
+   listeden seçiliyordu; katalogdaki 408 bloğun 162'si `exit` ilan ettiği için
+   her fallback ~%40 ihtimalle `ValueError` ile TÜM oturumu düşürüyordu.
+   Uygunluk artık `meta["role"]`den türüyor + built-in geri düşüşü (sessiz
+   değil). Canlı doğrulama: aynı modelle 26 fallback, sıfır patlama.
+2. **WFO satırı kararın saydığı sayıyı göstermiyordu.** Ekran KÂRLI pencereleri
+   (37/60), kapı AL-TUT'U GEÇEN pencereleri (28/60) sayıyordu → gerekçesi
+   ekranda görünmeyen retler. `wfo_verdict()` tek kaynak oldu; üç tüketici onu
+   okuyor, ret gerekçesi operatöre yazılıyor.
+3. **"ALL TESTS PASSED" kapsamını söylemiyordu.** Dört ölçütün ikisi hiç
+   koşmamışken cümle "hepsi geçti" diyordu. `_robustness_tally` kararı ve
+   sayaçlarını birlikte döndürüyor; cümle `PASSED on 2/4 criteria (≥2 required)`.
+
+**Mühürlü kapı ilk kez koştu** (beş koşu / on üç turda) ve sabahki üç düzeltme
+doğrulandı: tahmin ~3,9 giriş dedi, gerçek 4; eşik oransal olduğu için 5 (eski
+sabitle 20 olurdu); WFO uyarısı "muhtemelen susacak" dedi ve sustu.
+
+Ölçülen yan bulgu: akran sepetinin etkin bağımsızlığı pencere mühre çapalanınca
+2,32 → 1,5-1,6'ya düştü (pencere 2022 ayı piyasasına kaydı).
+
+Açık uç: katalog'a hâlâ hiçbir strateji eklenmedi — tıkanma artık kapıda değil
+üretimde (adaylar ya az işlem yapıyor ya tek sembole özel).

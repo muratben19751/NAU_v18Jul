@@ -173,10 +173,30 @@ dayanabilir"in tek kopyası), tavan eski sabit — oran hiçbir koşulda kapıy�
 eskisinden sert yapmıyor. Ölçülen kazanan (52 işlem / 5.159 bar) artık mühürde
 ~8,7 giriş beklentisiyle giriyor, eşik 5.
 
+## Canlıda doğrulandı (aynı gün, koşu 9016d12a)
+
+Beş koşu ve on üç tur boyunca hiçbir aday robustluk zincirini geçemediği için
+mühürlü kapı hiç açılmamıştı. `9016d12a` turu 1'de açıldı:
+
+* **Tahmin 3,9 giriş — gerçek 4.** Eğitim hızından (4.899 barda 22 giriş)
+  mühürlü pencereyi (862 bar) öngörme aritmetiği tuttu.
+* **Eşik 5'ti**, eski sabitle 20 olurdu. Ret artık adayın hızı hakkında:
+  `only 4 holdout trades; need 5`.
+* **WFO uyarısı** pencereyi 48/16 aya genişletip taban sınırına dayandı ve
+  "muhtemelen susacak" dedi — sustu.
+* Kayıt yargılandığı eşiği taşıyor: `min_trades_required: 5, train_bars: 4899,
+  train_trades: 22`.
+
+Bedava bir doğrulama daha: mühürde `excess −%71` (al-tut +%144, strateji +%73),
+yani ölçülebilseydi de reddedilecekti.
+
+Koşuların tamamı: [[nau_auto_kosulari_2026_08_18]].
+
 <!-- BACKLINKS:BEGIN -->
 ## Referenced by
 
 - [[auto_kapi_ve_geri_bildirim]]
 - [[multi_symbol_generalization]]
+- [[nau_auto_kosulari_2026_08_18]]
 - [[nau_auto_kosusu_755b7880_2026_08_17]]
 <!-- BACKLINKS:END -->

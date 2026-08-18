@@ -5,7 +5,11 @@ Returns a dict:
 
 Wiki References
 ---------------
-See: [[model_secici_ve_gorunurluk]] (model seçici, canlı OpenRouter kataloğu,
+See: [[nau_auto_kosulari_2026_08_18]] (`_fallback_composed` bir AUTO koşusunu
+öldürüyordu: giriş bloğu elle yazılmış bir listeden seçiliyordu, oysa katalog
+custom blokların rolünü META'DA ilan ediyor — 408 bloğun 162'si `exit`, yani
+her fallback ~%40 ihtimalle ölümcül bir yazı-turaydı),
+[[model_secici_ve_gorunurluk]] (model seçici, canlı OpenRouter kataloğu,
 ücretsiz filtresi, model adının çözülmesi, `model_unavailable_reason` ile kapıda
 ret — listelenebilir ≠ çalıştırılabilir), [[llm_maliyet_kaldiraclari]] (defter
 denetimi + maliyet kaldıraçları; `_ClaudeCLIMessages.create`'in `max_tokens`'ı

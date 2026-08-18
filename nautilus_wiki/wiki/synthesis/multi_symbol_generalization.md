@@ -238,9 +238,33 @@ kısa devre oluyor ve seçim skorunu 0,15-1,0 aralığında (6,7 kat) çarpıyor
 Peer penceresi mühürle birlikte hareket etmeli ya da peer'lar mühür öncesine
 kesilmeli. Ayrıntı: [[nau_holdout_dogrulama_turu_2026_08_18]].
 
+## Etkin bağımsızlık SEPETİN değil PENCERENİN özelliği (2026-08-18)
+
+Peer penceresi mühre çapalanınca (bkz. [[nau_holdout_dogrulama_turu_2026_08_18]])
+serinin sonundan eğitim çerçevesinin sonuna kaydı: 2021-02 → 2023-02. Aynı beş
+sembol, aynı 730 günlük genişlik, aynı ölçü — **etkin bağımsız sembol 2,32 →
+1,5-1,6.**
+
+Sebep pencerenin içine 2022 ayı piyasasının girmesi: düşüşte her şey birlikte
+düşer, korelasyon fırlar, katılım oranı çöker. Sezgi tersini söyler ("stresli
+dönemde sınandı, daha güçlü kanıt"), oysa çeşitlilik tam da orada kaybolur.
+
+İki sonuç:
+
+1. **"Sepet katsayısı" diye saklanacak bir sayı yok.** Ölçüm testin KENDİ
+   penceresinde yapılmalı; başka bir pencereden gelen sayı başka bir sepeti
+   anlatır.
+2. `pass_rate = %80 ✓ Generalizable` bile ~1,6 bağımsız gözlemin üstünde
+   duruyor. Hangi sembollerin geçtiği de ayrı bir uyarı: ölçülen koşularda geçen
+   ikisi SPY ve IWM (endeksler), düşenler AAPL/MSFT/NVDA — yani "fit edildiği
+   şeyde ve onun kuzeninde çalışıyor".
+
+Koşu ayrıntıları: [[nau_auto_kosulari_2026_08_18]].
+
 <!-- BACKLINKS:BEGIN -->
 ## Referenced by
 
+- [[nau_auto_kosulari_2026_08_18]]
 - [[nau_auto_kosusu_755b7880_2026_08_17]]
 - [[nau_bulgu_kapatma_turu_2026_08_17]]
 - [[webapp_module_map]]

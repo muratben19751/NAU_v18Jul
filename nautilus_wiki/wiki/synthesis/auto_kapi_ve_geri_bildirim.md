@@ -13,7 +13,7 @@ related:
   - wiki/synthesis/auto_arama_ekonomisi.md
   - wiki/synthesis/auto_mission_control.md
   - wiki/synthesis/webapp_module_map.md
-last_updated: 2026-08-17
+last_updated: 2026-08-18
 ---
 
 # AUTO'nun kapısı ve geri bildirimi
@@ -352,12 +352,83 @@ yazılmış bir tarif, kural değiştiğinde sessizce yalan söyler.
 Kapının canlı davranışı için bkz. [[nau_auto_kosusu_755b7880_2026_08_17]]:
 alfa kapısı üç turda 0/15 → 2/15 → 3/15 açıldı, **eşiğe hiç dokunulmadan**.
 
+## Ekrandaki sayı kararın sayısı değildi — WFO (2026-08-18)
+
+Kapının WFO bacağı üç ayrı yerde sayılıyordu ve **ikisi başka şeyi sayıyordu.**
+Ölçüldü (koşu `8aa18365`, tur 3, artefaktdan):
+
+| | |
+|---|---|
+| geçerli pencere | 60 |
+| **PnL'i pozitif** — adım satırı + elenme satırı | 37/60 = %62 |
+| **al-tut'u geçen** — kapının kendisi | 28/60 = **%47** |
+
+Aday `❌ Failed — IS/OOS: ✓ · WFO: 37/60 · MC −%21,5 · Multi-symbol: ✓` satırıyla
+elendi: dört ölçüt de çıtayı geçiyor görünürken. Gerekçesi EKRANDA OLMAYAN bir
+ret. Aynı turun ikinci adayı da aynı sebeple düştü (alfa 0/2, ekranda 1/2), yani
+2/2 — ve ben de sebebi ilk bakışta ekrandaki en kötü kaleme (`⚠ Limited`)
+yazdım, yanlış.
+
+Neden ıraksıyorlar: 22 yıllık boğada bir pencerede **kâr etmek kolay**, al-tut'u
+geçmek değil. Karar alfayı istiyor, ekran kârlılığı gösteriyordu.
+
+Düzeltme: `auto.robustness.wfo_verdict` — karar VE sayıları tek NamedTuple'da.
+Üç tüketici de onu okuyor; `display` kararın oranını veriyor. Kârlılık sayısı
+teşhis olarak yanında duruyor (`28/60 beat buy&hold · 37/60 merely profitable`)
+çünkü aradaki fark "boğayı mı taşıyor, alfa mı üretiyor" sorusunun cevabı.
+Ayrıca sessiz `failed += 1` kaldırıldı: ret artık gerekçesiyle yazılıyor.
+
+Kural DEĞİŞMEDİ — aynı eşik, aynı fail-closed davranış (ölçülemeyen alfa olumlu
+sayılmaz), aynı sönümlenmiş-Sharpe koşulu. Değişen tek şey kaç yerde
+hesaplandığı ve ne yazdığı. İlke zaten bu depoda yazılıydı
+(`_holdout_promotion_verdict`: *"gerekçe metni boolean ile TAM OLARAK aynı
+bayraklardan türetilmelidir"*); WFO bacağı onu uygulamıyordu.
+
+## Geçiş cümlesi kendi kapsamını söylemiyordu (2026-08-18)
+
+Koşu `9016d12a`, tur 1'de bir aday şu satırla kazanan ilan edildi:
+
+    ✅ ALL TESTS PASSED! IS/OOS: ✓ Robust · WFO: — · Multi-symbol: — (yetersiz veri)
+
+Aynı satırın içinde iki TİRE var. WFO'nun tek geçerli penceresi yok, beş akranın
+beşi de az işlemden sayılmamış: **dört ölçütün ikisi hiç koşmadı.** Kural
+dürüsttü (gevşek modda `evaluated ≥ 2`), yanlış olan cümleydi — "geçti" ile
+"koşulamadı" aynı kovaya girince kanıtın genişliği tam da EN DAR olduğu anda
+gizleniyor.
+
+Artık `✅ PASSED on 2/4 criteria (≥2 required; the rest could not be evaluated)`.
+Sayı ikinci kez hesaplanmıyor: `_robustness_passed` ikiye ayrıldı —
+`_robustness_tally` kararı ve sayaçlarını birlikte döndürüyor, eski ad ince bir
+bool sarmalayıcı olarak kaldı (çağıranların `is True` sözleşmesi bozulmasın).
+
+Bölme bir yan ders de verdi: eski adı hedefleyen beş test hedefini kaybetti.
+Üçü monkeypatch'ti ve GÜRÜLTÜLÜ kırıldı; ikisi `inspect.getsource` denetimiydi
+ve **sessizce anlamsızlaşacaktı** — iki satırlık kabukta aradıkları kusur zaten
+bulunmaz, yani yeşil kalırlardı.
+
+## Kapının canlı sınavı: mühürlü holdout ilk kez koştu (2026-08-18)
+
+Beş koşu ve on üç tur boyunca hiçbir aday robustluk zincirini geçemediği için
+mühürlü kapı hiç açılmamıştı. `9016d12a` turu 1'de açıldı ve
+[[nau_holdout_dogrulama_turu_2026_08_18]] turunun üç düzeltmesi de doğrulandı:
+
+* **WFO uyarısı** pencereyi adayın hızından 48/16 aya genişletti, taban
+  sınırına dayandı ve *"muhtemelen susacak"* dedi — sustu (geçerli pencere yok).
+* **Mühürlü tahmin** koşudan ÖNCE `~3,9 giriş` dedi; gerçekleşen **4**.
+* **Oransal eşik** 5'ti (eski sabit 20 olurdu). Ret artık adayın hızı hakkında:
+  `only 4 holdout trades; need 5`. Mühürde `excess −%71` — al-tut +%144 yaparken
+  strateji +%73'te kalmış, yani ölçülebilseydi de reddedilecekti.
+
+Kayıt artık yargılandığı eşiği taşıyor: `min_trades_required: 5, train_bars:
+4899, train_trades: 22`.
+
 <!-- BACKLINKS:BEGIN -->
 ## Referenced by
 
 - [[auto_360_canli_review_iyilestirmeleri]]
 - [[auto_arama_ekonomisi]]
 - [[multi_symbol_generalization]]
+- [[nau_auto_kosulari_2026_08_18]]
 - [[nau_deepr_dorduncu_tur_2026_08_11]]
 - [[nau_deepr_mimari_katman_ayrimi]]
 - [[webapp_module_map]]
