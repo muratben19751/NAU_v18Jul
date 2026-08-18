@@ -371,6 +371,25 @@ _DEFAULT_MARKET_CONTEXT = (
 # Kapatma kolu var ve bilinçli: `AGENT_OBJECTIVE_IN_PROMPT=0` kontrol kolunu
 # geri getirir. Hangi kolun koştuğu koşu kaydına yazılır (`objective_in_prompt`)
 # — aksi hâlde iki koşuyu karşılaştıran kişi neyin değiştiğini bilemez.
+#
+# A/B ÖLÇÜLDÜ (2026-08-18, aynı model/enstrüman, 45'er aday):
+#
+#                       eski prompt   yeni prompt
+#   Calmar medyanı         0,26          0,37
+#   çıtayı geçen           2 (%4)        4 (%9)
+#
+# Sıralama kazancı net. AMA yan etki de ölçüldü ve prompt bu yüzden YUMUŞATILDI:
+# robustluğa giren dört adayın DÖRDÜ günlük bara kaydı ve Monte Carlo medyan
+# düşüşü −%26,1'den −%32,6'ya kötüleşti. Sebep tutarlı: az işlem, eğitim
+# penceresinde düşük GERÇEKLEŞMİŞ drawdown demek — Calmar tek bir yolu ölçer,
+# Monte Carlo alternatif yolları sorar. Model ölçülen metriği iyileştirirken
+# ölçülmeyen kırılganlığı artırdı.
+#
+# İki hipotez cümlesinden "fewer conditions" TAMAMEN kaldırıldı (kanıtı zaten
+# dengesiz bir örneklemdi ve yan etkiyi besliyordu); "drawdown control" kaldı
+# ama yanına ödülün YAN ETKİSİNİ yakalayan ölçüt eklendi ve frekans açıkça
+# nötrlendi. Ders: bir hedefi üreticiye söylemek onu iyileştirir ve söylenmeyen
+# komşu boyutu bozabilir.
 OBJECTIVE_IN_PROMPT = os.environ.get("AGENT_OBJECTIVE_IN_PROMPT", "1") != "0"
 
 _OBJECTIVE_BLOCK = """
@@ -393,14 +412,19 @@ not for a plausible-looking strategy:
    sealed tail of the sample that needs at least a handful of entries. A spec
    that only works on one instrument or one period fails here.
 
-Two design consequences follow from the measurements, and they are hypotheses to
-try rather than rules to obey:
+One design consequence follows from the measurements, and it is a hypothesis to
+try rather than a rule to obey:
 
-- DRAWDOWN CONTROL usually moves Calmar more than extra return does. A tight,
-  well-reasoned exit (or a bracket stop) is worth more than another entry filter.
-- FEWER CONDITIONS have been scoring better than heavily-filtered ones. Prefer
-  2-3 blocks with a clear thesis over 4 blocks of stacked confirmation, unless
-  you have a specific reason for the extra condition.
+- DRAWDOWN CONTROL often moves Calmar more than extra return does, so a tight,
+  well-reasoned exit can be worth more than another entry filter. Do not read
+  this as "trade less": Calmar is computed from the ONE drawdown path that
+  happened, and a strategy with few trades can post a flattering figure that the
+  Monte Carlo trade-order shuffle then destroys. A low trade count is not a way
+  to win this bar — it is a way to lose criterion 2 and the sealed tail.
+
+Aim for the trading frequency the thesis actually implies. Fast and slow ideas
+both pass and both fail here; nothing in these criteria rewards one over the
+other.
 """
 
 COMPOSED_SYSTEM_PROMPT = """You are a quantitative trading research agent designing {market_context}.

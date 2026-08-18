@@ -82,11 +82,30 @@ def test_the_score_formula_is_deliberately_withheld():
     assert "0.7" not in text or "0.7×Calmar" not in text
 
 
-def test_simplicity_is_offered_as_a_hypothesis_not_a_law():
-    """Rastgele tabanın üstünlüğü sadeliği İMA ediyor; örneklem dengesiz."""
+def test_the_remaining_hint_is_a_hypothesis_not_a_law():
+    """Kalan tek ipucu hipotez olarak duruyor."""
     text = _render(agent)
-    assert "hypotheses to" in text
-    assert "unless" in text, "koşulsuz bir 'az blok kullan' emri aşırı kısıtlar"
+    assert "hypothesis to" in text
+
+
+def test_frequency_is_explicitly_neutral():
+    """A/B ölçtü: prompt modeli yavaş stratejilere itiyordu, MC kötüleşiyordu.
+
+    Robustluğa giren dört adayın dördü günlük bara kaydı ve Monte Carlo medyan
+    düşüşü −%26,1'den −%32,6'ya indi. Az işlem, eğitim penceresinde düşük
+    GERÇEKLEŞMİŞ drawdown demek — Calmar tek yolu, MC alternatif yolları ölçer.
+    """
+    text = _render(agent)
+    assert "Do not read" in text and 'trade less' in text
+    assert "Monte Carlo trade-order shuffle" in text
+    assert "Fast and slow ideas" in text, "frekans nötrlüğü açıkça söylenmiyor"
+
+
+def test_the_fewer_conditions_push_is_gone():
+    """Yan etkiyi besleyen ve kanıtı dengesiz olan cümle kaldırıldı."""
+    text = _render(agent)
+    assert "FEWER CONDITIONS" not in text
+    assert "2-3 blocks" not in text
 
 
 def test_the_control_arm_can_be_restored(with_flag):
