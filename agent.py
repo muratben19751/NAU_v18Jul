@@ -344,6 +344,62 @@ _DEFAULT_MARKET_CONTEXT = (
     "crypto trading strategies on Bybit (BTCUSDT USDT perp, 1-minute bars)"
 )
 
+# Kabul ölçütü PROMPT'A YAZILIR — hedefi söylemeden hedef tutturulamaz.
+#
+# ÖLÇÜLDÜ (beş AUTO koşusu, 173 aday, 2026-08-18): kapının ölçüsü al-tut'a göre
+# Calmar oranı; adayların medyanı ×0,21 ve yalnız %11'i ×1,00'ı geçti. Daha
+# rahatsız edici olan kırılım: LLM erişilemediğinde devreye giren RASTGELE
+# fallback kompozisyonları medyan ×0,40 / p90 ×1,01 ile üç Claude modelinin
+# hepsini (×0,14-0,26) geçti — ve onlar `research-only` damgası yüzünden tanım
+# gereği yayımlanamıyor. Yani sistem kapıya en yakın adaylarını kendi eliyordu.
+#
+# En olası açıklama prompt'ta duruyordu: sistem mesajı ne kabul ölçütünü ne de
+# reddin en sık sebebini söylüyor, yalnız "makul bir strateji üret" diyor. Model
+# hedefi bilmeden hedefe nişan alamaz.
+#
+# İki şey KASITLI olarak yazılmıyor:
+#   * Skor formülü (`(0.7×Calmar + 0.3×Sharpe) × T/(T+20)`) — işlem sayısını
+#     ödüllendiren çarpan doğrudan oynanabilir ve ölçüm frekans ile Calmar
+#     arasında ilişki BULMADI (bantlar: %12/%4/%8/%15/%20, n=10'a kadar düşüyor).
+#   * "Basit daha iyidir" bir YASA gibi — rastgele tabanın üstünlüğü bunu ima
+#     ediyor ama örneklem dengesiz (rastgele n=72 iki koşudan, haiku n=11).
+#     Bu yüzden sadelik bir HİPOTEZ olarak, deneme yönergesi biçiminde giriyor.
+#
+# Kapatma kolu var ve bilinçli: `AGENT_OBJECTIVE_IN_PROMPT=0` kontrol kolunu
+# geri getirir. Hangi kolun koştuğu koşu kaydına yazılır (`objective_in_prompt`)
+# — aksi hâlde iki koşuyu karşılaştıran kişi neyin değiştiğini bilemez.
+OBJECTIVE_IN_PROMPT = os.environ.get("AGENT_OBJECTIVE_IN_PROMPT", "1") != "0"
+
+_OBJECTIVE_BLOCK = """
+ACCEPTANCE CRITERIA — this is what the candidate is judged on. Design FOR these,
+not for a plausible-looking strategy:
+
+1. RISK-ADJUSTED SUPERIORITY OVER BUY-AND-HOLD is the primary bar. The gate
+   compares your strategy's Calmar ratio (annualised return / max drawdown)
+   against buy-and-hold on the SAME instrument and window, and requires
+   strategy_calmar > benchmark_calmar with positive CAGR. Measured reality: the
+   median proposal reaches only ~20% of the buy-and-hold Calmar and ~1 in 9
+   clears the bar. Beating the raw return is NOT enough — a strategy that earns
+   less than buy-and-hold per unit of drawdown is rejected.
+2. AT LEAST 20 closed trades in the training window, otherwise the result is
+   discarded as statistically unusable regardless of profit.
+3. It must also survive out-of-sample checks that you cannot see: the same spec
+   is run on 5 peer instruments, on rolling walk-forward windows (over half of
+   them must beat buy-and-hold too, not merely be profitable), on a Monte Carlo
+   trade-order shuffle (median drawdown must stay under 25%), and finally on a
+   sealed tail of the sample that needs at least a handful of entries. A spec
+   that only works on one instrument or one period fails here.
+
+Two design consequences follow from the measurements, and they are hypotheses to
+try rather than rules to obey:
+
+- DRAWDOWN CONTROL usually moves Calmar more than extra return does. A tight,
+  well-reasoned exit (or a bracket stop) is worth more than another entry filter.
+- FEWER CONDITIONS have been scoring better than heavily-filtered ones. Prefer
+  2-3 blocks with a clear thesis over 4 blocks of stacked confirmation, unless
+  you have a specific reason for the extra condition.
+"""
+
 COMPOSED_SYSTEM_PROMPT = """You are a quantitative trading research agent designing {market_context}.
 
 You must return a JSON object describing a complete "composed strategy" for the Nautilus backtest engine:
@@ -390,6 +446,7 @@ RULES:
 - Prefer diverse ideas: do NOT copy an existing catalog strategy verbatim; look at history and try something with a plausibly different behavior (different lookbacks, different combinations, mix indicator + non-indicator blocks, try shorts + bracket occasionally).
 - IMPORTANT: If recent history shows mostly EMA/RSI-based strategies, deliberately choose a DIFFERENT indicator family this time: Bollinger Bands, Price Breakout, Momentum, MACD, or ATR-based approaches. Rotate through all available block types across iterations.
 - Return ONLY the JSON. No markdown, no code fences, no explanation.
+{objective}
 
 BLOCK CATALOG:
 {catalog}
@@ -924,8 +981,10 @@ def propose_composed_strategy(
         if market
         else _DEFAULT_MARKET_CONTEXT
     )
-    system = COMPOSED_SYSTEM_PROMPT.replace("{market_context}", market_context).replace(
-        "{catalog}", _catalog_summary()
+    system = (
+        COMPOSED_SYSTEM_PROMPT.replace("{market_context}", market_context)
+        .replace("{catalog}", _catalog_summary())
+        .replace("{objective}", _OBJECTIVE_BLOCK if OBJECTIVE_IN_PROMPT else "")
     )
     hint_line = (
         f"\nUser hint (incorporate this into the strategy concept): {hint.strip()}"

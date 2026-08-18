@@ -589,6 +589,20 @@ def _make_llm_control(
     return _llm_cancelled, _llm_observer
 
 
+def _objective_in_prompt() -> bool:
+    """`agent.OBJECTIVE_IN_PROMPT` — çağrı anında okunur.
+
+    Modül import'u değil ÇAĞRI anı: bayrak env'den geliyor ve testler onu
+    reload ile değiştiriyor; sabit bir kopya kaydı yalan söylerdi.
+    """
+    try:
+        import agent
+
+        return bool(agent.OBJECTIVE_IN_PROMPT)
+    except Exception:
+        return False
+
+
 def _effective_run_config() -> dict:
     """The constants that decided this run's outcomes, as they actually were.
 
@@ -624,6 +638,10 @@ def _effective_run_config() -> dict:
         "holdout_min_trades_is_ceiling": not _HOLDOUT_MIN_TRADES_PINNED,
         "holdout_min_trades_floor": HOLDOUT_MIN_TRADES_FLOOR,
         "holdout_min_trades_ranking_reference": _MIN_TRADES,
+        # Hangi prompt kolunun koştuğu: kabul ölçütü sistem mesajına yazıldı mı?
+        # İki koşuyu karşılaştıran kişi neyin değiştiğini kayıttan görmeli
+        # (bkz. agent.OBJECTIVE_IN_PROMPT ölçümü, 173 aday).
+        "objective_in_prompt": _objective_in_prompt(),
         "holdout_requires": {
             "positive_pnl": HOLDOUT_REQUIRE_POSITIVE_PNL,
             "positive_sharpe": HOLDOUT_REQUIRE_POSITIVE_SHARPE,

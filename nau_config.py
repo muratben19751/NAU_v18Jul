@@ -410,6 +410,15 @@ _AGENT = [
         "OLMALI — eski davranış).",
     ),
     _v(
+        "AGENT_OBJECTIVE_IN_PROMPT",
+        "bool",
+        "1",
+        "agent",
+        "Kabul ölçütünü (Calmar > al-tut, 20 işlem, OOS zinciri) strateji "
+        "üreticinin sistem mesajına yaz. 0 = kontrol kolu (eski prompt). "
+        "Hangi kolun koştuğu koşu kaydında `objective_in_prompt` olarak durur.",
+    ),
+    _v(
         "AGENT_HOLDOUT_MIN_TRADES",
         "int",
         "20",
