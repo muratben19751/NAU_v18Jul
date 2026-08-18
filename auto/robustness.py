@@ -31,6 +31,7 @@ from __future__ import annotations
 import math
 from collections.abc import Callable
 from pathlib import Path
+from typing import NamedTuple
 
 from app_constants import MIN_DECISION_TRADES
 
@@ -193,7 +194,9 @@ WFO_BASE_STEP_MONTHS = 3
 WFO_MIN_WINDOWS = 8
 
 
-def wfo_window_months(bars_df, n_trades: int | None) -> tuple[int, int, int, str | None]:
+def wfo_window_months(
+    bars_df, n_trades: int | None
+) -> tuple[int, int, int, str | None]:
     """(train, test, step) ay + uyarı — pencere adayın ÖLÇÜLEN hızından türer.
 
     Soru şu: ``WFO_MIN_TRADES`` girişin bu adayın kendi hızıyla düşebileceği
@@ -264,6 +267,141 @@ def valid_wfo_windows(wfo: list[dict]) -> list[dict]:
         if (wfo_test(w).get("n_trades") or w.get("test_n_trades") or 0)
         >= WFO_MIN_TRADES
     ]
+
+
+class WfoVerdict(NamedTuple):
+    """WFO ölçütünün kararı VE o kararın sayıları — tek kaynaktan.
+
+    Ekrana basılan sayı ile karar veren sayı ayrı yerlerde hesaplanınca
+    ıraksadılar ve bunu kimse fark etmedi, çünkü ekran makul görünmeye devam
+    etti. ÖLÇÜLDÜ (koşu 8aa18365, tur 3, artefaktdan sayıldı):
+
+        geçerli pencere            60
+        PnL'i pozitif  (ekranda)   37/60 = %62   ← çıtayı geçiyor
+        al-tut'u geçen (kapıda)    28/60 = %47   ← çıtanın altında
+
+    Operatör dört ölçütü de yeşil, sonucu ❌ gördü — gerekçesi ekranda olmayan
+    bir ret. 22 yıllık boğada bu iki sayı sistematik ıraksıyor: bir pencerede
+    kâr etmek kolay, al-tut'u geçmek değil.
+
+    Bu depoda ilke zaten yazılıydı (`_holdout_promotion_verdict`: "gerekçe
+    metni boolean ile TAM OLARAK aynı bayraklardan türetilmelidir"); burası onu
+    uygulamıyordu. Artık hem kapı hem iki ekran satırı bu tek çağrıyı okuyor.
+
+    ``pnl_positive`` bilerek DURUYOR ama karar vermiyor: teşhis olarak değerli
+    (ikisi arasındaki fark "boğayı mı taşıyor, alfa mı üretiyor" sorusunun
+    cevabı), karar ölçütü olarak yanıltıcı.
+    """
+
+    measured: bool
+    valid: int
+    alpha_positive: int
+    pnl_positive: int
+    alpha_ratio: float | None
+    penalized_sharpe: float | None
+    ok: bool
+    reason: str
+
+    @property
+    def display(self) -> str:
+        """Ekrana basılacak oran — KARARIN saydığı sayı."""
+        return f"{self.alpha_positive}/{self.valid}" if self.measured else "—"
+
+
+def wfo_verdict(wfo: list[dict], *, penalized: float | None = None) -> WfoVerdict:
+    """WFO ölçütünü uygula ve kararı sayılarıyla birlikte döndür.
+
+    ``penalized``: çağıranın payload'dan çözdüğü sönümlenmiş OOS Sharpe
+    (``oos_sharpe_naive_penalized`` vb.). Verilmezse geçerli pencerelerin
+    Sharpe'larından hesaplanır — hangi serinin okunacağı payload'ın
+    kökenine bağlı olduğu için çözüm çağıranda kalıyor.
+
+    Kural (değişmedi): geçerli pencerelerin en az yarısı AL-TUT'U GEÇMELİ, ve
+    sönümlenmiş OOS Sharpe biliniyorsa pozitif olmalı. Eksik/sonsuz
+    ``excess_return_fraction`` fail-closed: ölçülemeyen alfa, olumlu sayılmaz.
+    """
+    valid = valid_wfo_windows(wfo or [])
+    if not wfo or not valid:
+        return WfoVerdict(
+            measured=False,
+            valid=0,
+            alpha_positive=0,
+            pnl_positive=0,
+            alpha_ratio=None,
+            penalized_sharpe=None,
+            ok=False,
+            reason=(
+                "no windows"
+                if not wfo
+                else f"no valid window with ≥{WFO_MIN_TRADES} trades"
+            ),
+        )
+
+    pnl_positive = sum(1 for w in valid if (wfo_test(w).get("pnl") or 0) > 0)
+
+    excess = []
+    for w in valid:
+        try:
+            excess.append(float(wfo_test(w).get("excess_return_fraction")))
+        except (TypeError, ValueError):
+            excess.append(float("nan"))
+    if any(not math.isfinite(v) for v in excess):
+        return WfoVerdict(
+            measured=True,
+            valid=len(valid),
+            alpha_positive=0,
+            pnl_positive=pnl_positive,
+            alpha_ratio=None,
+            penalized_sharpe=penalized,
+            ok=False,
+            reason="missing slice-local benchmark/excess",
+        )
+
+    alpha_positive = sum(1 for v in excess if v > 0)
+    ratio = alpha_positive / len(valid)
+
+    pen = penalized
+    if pen is None:
+        sh = []
+        for w in valid:
+            raw = wfo_test(w).get("sharpe")
+            try:
+                v = float(raw)
+            except (TypeError, ValueError):
+                continue
+            if math.isfinite(v):
+                sh.append(v)
+        if len(sh) >= 2:
+            mean = sum(sh) / len(sh)
+            var = sum((x - mean) ** 2 for x in sh) / len(sh)
+            pen = mean - 0.5 * (var**0.5)
+    try:
+        pen = float(pen) if pen is not None else None
+        if pen is not None and not math.isfinite(pen):
+            pen = None
+    except (TypeError, ValueError):
+        pen = None
+
+    if ratio < 0.5:
+        reason = f"alpha in only {alpha_positive}/{len(valid)} windows (<50%)"
+        ok = False
+    elif pen is not None and pen <= 0:
+        reason = f"penalized OOS Sharpe {pen:.2f} ≤ 0"
+        ok = False
+    else:
+        reason = "passed"
+        ok = True
+
+    return WfoVerdict(
+        measured=True,
+        valid=len(valid),
+        alpha_positive=alpha_positive,
+        pnl_positive=pnl_positive,
+        alpha_ratio=ratio,
+        penalized_sharpe=pen,
+        ok=ok,
+        reason=reason,
+    )
 
 
 def multi_symbol_definitive_failure(ms: dict | None) -> bool:
@@ -545,8 +683,15 @@ def run_full_robustness(
             # Reported on the SAME series the gate decides on (wfo_test): the
             # unchanged spec's OOS windows. Showing the re-optimized count next
             # to a naive verdict made the two disagree on screen.
+            #
+            # ...ve AYNI ÖLÇÜMLE: bu satır "PnL'i pozitif pencere" sayarken kapı
+            # "al-tut'u geçen pencere" sayıyordu. Ölçüldü (koşu 8aa18365):
+            # ekranda 37/60 (%62, çıtayı geçiyor), kapıda 28/60 (%47, düşüyor).
+            # Artık ikisi de `wfo_verdict`'i okuyor; kârlılık sayısı TEŞHİS
+            # olarak yanında duruyor, çünkü aradaki fark "boğayı mı taşıyor,
+            # alfa mı üretiyor" sorusunun cevabı.
+            v = wfo_verdict(wfo)
             valid_wfo = valid_wfo_windows(wfo)
-            pos = sum(1 for w in valid_wfo if wfo_test(w).get("pnl", 0) > 0)
             avg_pnl = (
                 sum(wfo_test(w).get("pnl", 0) for w in valid_wfo) / len(valid_wfo)
                 if valid_wfo
@@ -556,10 +701,13 @@ def run_full_robustness(
                 1 for w in wfo if (w.get("test_metrics") or {}).get("pnl", 0) > 0
             )
             pf(
-                f"  → {pos}/{len(valid_wfo)} valid windows positive (saved spec) · "
+                f"  → {v.display} valid windows beat buy&hold (saved spec) · "
+                f"{v.pnl_positive}/{v.valid} merely profitable · "
                 f"average test PnL={avg_pnl:+.2f} USDT · "
                 f"{pos_opt}/{len(wfo)} when re-optimized per window (diagnostic)"
             )
+            if not v.ok and v.measured:
+                pf(f"  ✗ Walk-Forward: {v.reason}")
 
         # 4) Monte Carlo (already vectorized numpy — no pool needed)
         mc: dict = {"error": "No trade data."}

@@ -114,7 +114,9 @@ from app_constants import (
 # (DeepR 2026-08-11 [YÜKSEK]: sandbox child'ı sırf suite için tüm router ağacını
 # import ediyordu). Alt tireli takma adlar KASITLI: bu modülün tarihsel import
 # yüzeyi (testler `ab._peer_exclusions`, `ab._MC_DD_LIMIT` … diye erişiyor)
-# taşıma yüzünden değişmesin — davranış birebir korunuyor.
+# taşıma yüzünden değişmesin — davranış birebir korunuyor. `_valid_wfo_windows`
+# ve `_wfo_test` bu modülde ARTIK KULLANILMIYOR (WFO kararı `wfo_verdict`e
+# taşındı); yüzeyi korumak için duruyorlar — susturma direktifi bunun içindir.
 from auto.log_thinning import (
     downsample_indices,
     is_point_series,
@@ -132,8 +134,9 @@ from auto.robustness import peer_exclusions as _peer_exclusions  # noqa: F401
 from auto.robustness import (  # noqa: F401
     split_definitive_failure as _split_definitive_failure,
 )
-from auto.robustness import valid_wfo_windows as _valid_wfo_windows
-from auto.robustness import wfo_test as _wfo_test
+from auto.robustness import valid_wfo_windows as _valid_wfo_windows  # noqa: F401
+from auto.robustness import wfo_test as _wfo_test  # noqa: F401
+from auto.robustness import wfo_verdict as _wfo_verdict
 from nau_provenance import process_rss_bytes
 from web.templating import get_market_info, templates
 
@@ -2268,10 +2271,11 @@ def _scan_one_candidate(
     split_label = (rob.get("split") or {}).get("overfitting_label", "?")
     mc_dd = (rob.get("mc") or {}).get("max_dd_p50", None)
     wfo = rob.get("wfo_windows") or []
-    # Naive series — the one _robustness_passed decided on.
-    valid_wfo = _valid_wfo_windows(wfo)
-    wf_pos = sum(1 for w in valid_wfo if _wfo_test(w).get("pnl", 0) > 0)
-    wf_str = f"{wf_pos}/{len(valid_wfo)}" if valid_wfo else "—"
+    # Naive series — the one _robustness_passed decided on. Bu yorum bir SÖZDÜ
+    # ve kod onu tutmuyordu: kapı al-tut'u geçen pencereleri sayarken bu satır
+    # kârlı olanları sayıyordu (ölçüldü: 28/60 vs 37/60, koşu 8aa18365). Artık
+    # ikisi de aynı çağrıdan geliyor, yani söz yapısal olarak tutuluyor.
+    wf_str = _wfo_verdict(wfo).display
     ms_label = (rob.get("multi_symbol") or {}).get("generalization_label", "—")
 
     try:
@@ -2524,7 +2528,11 @@ def _run_promotion_gate(
                     "train_trades": train_trades,
                 }
                 promotion_passed, promotion_reason = _holdout_promotion_verdict(
-                    _n, _pnl_fr, _sharpe, _excess_fr, metrics=_hm,
+                    _n,
+                    _pnl_fr,
+                    _sharpe,
+                    _excess_fr,
+                    metrics=_hm,
                     min_trades=_req_trades,
                 )
                 if _n < _req_trades:
@@ -3255,76 +3263,31 @@ def _robustness_passed(
             failed += 1
 
     # 2) Walk-Forward: ≥50% valid windows with positive OOS alpha.
-    # Windows with <3 test trades are statistically unreliable → invalid.
+    # Kural + sayıları TEK YERDE: `auto.robustness.wfo_verdict`. Buradaki kopya
+    # ekrana basılan orandan farklı bir şeyi sayıyordu (kapı alfa, ekran PnL) ve
+    # sonuç, gerekçesi ekranda GÖRÜNMEYEN bir retti — ölçüldü, koşu 8aa18365.
     wfo = rob.get("wfo_windows") or []
-    # `test_n_trades` is kept as the fallback count: a window may carry it
-    # without a metrics dict (older payloads, and the parallel path's slim rows).
-    valid_windows = _valid_wfo_windows(wfo)
     # Does this payload actually HAVE the naive series? If it does, the optimized
     # aggregate must never be used (that is the bug being fixed). If it doesn't —
     # a run from before the naive series existed, or a spec with no optimizable
     # parameter, where the optimized run IS the unmodified spec — the optimized
     # aggregate is the only measurement there is, and it means the same thing.
     _has_naive = any((w.get("test_metrics_naive") or {}) for w in wfo)
-    if not wfo or not valid_windows:
-        _skip(
-            "Walk-Forward",
-            "no windows" if not wfo else "no valid window with ≥3 trades",
-        )
+    _pen_hint = rob.get("oos_sharpe_naive_penalized")
+    if _pen_hint is None and not _has_naive:
+        _pen_hint = rob.get("oos_sharpe_penalized")
+    _wf = _wfo_verdict(wfo, penalized=_pen_hint)
+    if not _wf.measured:
+        _skip("Walk-Forward", _wf.reason)
     else:
         evaluated += 1
-        # M28/M594: NAU dispersion-penalized OOS Sharpe (mean − 0.5·std). The
-        # manual suite produces this in wfo_aggregate; the agent path
-        # (_run_full_robustness) does not call wfo_aggregate, so the field was
-        # empty and this branch was dead code — compute it INLINE from
-        # wfo_windows here. Otherwise fall back to the positive-window ratio.
-        # 2026-08-04: the NAIVE series is read (see _wfo_test) — the optimized
-        # aggregate (`oos_sharpe_penalized`) describes a strategy re-fitted every
-        # window, which is not what gets saved.
-        pen = rob.get("oos_sharpe_naive_penalized")
-        if pen is None and not _has_naive:
-            pen = rob.get("oos_sharpe_penalized")
-        if pen is None:
-            _sh = [
-                float(_wfo_test(w).get("sharpe"))
-                for w in valid_windows
-                if _wfo_test(w).get("sharpe") is not None
-                and math.isfinite(_wfo_test(w).get("sharpe", float("nan")))
-            ]
-            if len(_sh) >= 2:
-                _m = sum(_sh) / len(_sh)
-                _var = sum((s - _m) ** 2 for s in _sh) / len(_sh)
-                pen = _m - 0.5 * (_var**0.5)
-        try:
-            pen = float(pen) if pen is not None else None
-            if pen is not None and not math.isfinite(pen):
-                pen = None
-        except (TypeError, ValueError):
-            pen = None
-        # A positive return in a broad bull market is not a strategy edge.
-        # ``run_walk_forward`` stamps buy-and-hold excess for the exact test
-        # slice.  Missing alpha is a fail-closed robustness error: otherwise
-        # archived/slim rows could silently re-open the old nominal-PnL gate.
-        _excess = []
-        for w in valid_windows:
-            try:
-                value = float(_wfo_test(w).get("excess_return_fraction"))
-            except (TypeError, ValueError):
-                value = float("nan")
-            _excess.append(value)
-        if any(not math.isfinite(value) for value in _excess):
+        if not _wf.ok:
             failed += 1
-            _skip("Walk-Forward alpha", "missing slice-local benchmark/excess")
-            _excess = []
-        positive = sum(1 for value in _excess if value > 0)
-        positive_ratio = positive / len(valid_windows)
-        # UI and gate now implement one contract: at least half of the valid
-        # windows must be profitable. Penalized OOS Sharpe is an additional
-        # stability requirement when available, never an alternative that can
-        # make 0/88 profitable windows pass.
-        wfo_failed = positive_ratio < 0.5 or (pen is not None and pen <= 0)
-        if wfo_failed:
-            failed += 1
+            # Ret gerekçesi kararı VEREN ifadeden geliyor. Eskiden burada sessiz
+            # bir `failed += 1` vardı ve operatör dört yeşil ölçütle birlikte
+            # açıklamasız bir ❌ görüyordu.
+            if run_id:
+                _add_step(run_id, f"  ✗ Walk-Forward: {_wf.reason}")
 
     # 3) Multi-symbol generalizability
     ms = rob.get("multi_symbol") or {}
@@ -3509,9 +3472,7 @@ def holdout_feasibility(
         expected = cr * n_bars
         if expected < req:
             pace = (
-                f"an entry every {1 / cr:,.1f} bars"
-                if cr > 0
-                else "no entries at all"
+                f"an entry every {1 / cr:,.1f} bars" if cr > 0 else "no entries at all"
             )
             return rate, (
                 f"this candidate produced {pace} in training — at that pace the "
