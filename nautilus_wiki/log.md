@@ -1742,3 +1742,27 @@ Ayrıca ekranda ve run_config'te hâlâ 60 gün yazıyor (karar anında 20,7x ya
 - wiki/synthesis/nau_auto_kosusu_755b7880_2026_08_17.md (düzeltme eksik notu)
 - wiki/synthesis/auto_kapi_ve_geri_bildirim.md (frekans ekseni kapanmadı, taşındı)
 - wiki/synthesis/multi_symbol_generalization.md (regresyon)
+
+## 2026-08-18 — mühürlü kapının dört düzeltmesi + WFO penceresi
+
+Doğrulama turunun (bkz. `nau_holdout_dogrulama_turu_2026_08_18`) dört açık
+maddesi kapandı ve beşinci olarak aynı birim hatasının WFO'daki hâli de
+düzeltildi:
+
+1. Peer penceresi mühre çapalandı — `_clip_peer_window` + `end_anchor`.
+   Regresyon ölçülmüştü: 1254 günlük mühür 730 günlük peer penceresinin
+   %100'ünü yutuyordu.
+2. Mühürlü eşik sıralamanın ORANI oldu (`holdout_min_trades`), taban
+   `MIN_DECISION_TRADES`, tavan eski sabit.
+3. Ulaşılabilirlik uyarısı adayın ölçülen hızına bağlandı ve mühürlü koşudan
+   ÖNCE basılıyor.
+4. Formdaki "son 60 gün" ve `run_config` sınır etiketleri düzeltildi.
+5. WFO penceresi (6/2/3 ay sabit) adayın hızından türetiliyor —
+   `wfo_window_months`. Ölçülen koşuda pencere başına beklenen giriş 0,4 → 3,4.
+
+Araç tarafında: `wiki_tools lint` Windows'ta çıktı basarken çöküyordu
+(cp1254 + "→"), yani bulguyu YAZAMADAN 1 ile çıkıyor ve denetimin sinyali
+(çıkış 2) kazayla siliniyordu. stdout/stderr artık UTF-8'e ayarlanıyor.
+
+Kod yakası kırık bağ: 30 → 29 (`auto/robustness.py`'nin çapraz-vault bağı
+kaldırıldı). Kalanı ayrı bir turda.

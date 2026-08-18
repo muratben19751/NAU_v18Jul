@@ -28,7 +28,10 @@ eğrilerinin indirgenmesi; ham hâli olay başına 3,5 MB yazıyordu; ayrıca
 koroutin gövdesinde tam parquet okuduğu için POST /agent/run tüm sunucunun
 HTMX poll'larını donduruyordu; tarih daraltması da yükleyiciye itildi),
 [[webapp_module_map]], [[backtesting_guide]], [[strategy_and_actor]],
-[[nau_deepr_ucuncu_tur_2026_08_09]]
+[[nau_deepr_ucuncu_tur_2026_08_09]],
+[[nau_holdout_dogrulama_turu_2026_08_18]] (mühürlü eşik artık sıralamanın
+ORANI — `holdout_min_trades`; ulaşılabilirlik uyarısı adayın ölçülen hızına
+bağlı ve mühürlü koşudan ÖNCE basılıyor)
 
 `_robustness_passed`'in fail-closed `excess_return_fraction`/`max_dd_p95`
 kuralları (a6ddb5a, 2026-08-07) ile `tests/test_regression_anchors_high.py`
@@ -101,6 +104,7 @@ from fastapi.responses import HTMLResponse
 
 from app_constants import (
     DATA_DIR,
+    MIN_DECISION_TRADES,
     benchmark_gate_mode,
     benchmark_rejection,
     env_float,
@@ -280,6 +284,30 @@ HOLDOUT_WARMUP_BARS = 300
 # promotion decision. Keep the research result visible, but require the same
 # minimum evidence as the main ranking gate before catalog publication.
 HOLDOUT_MIN_TRADES = int(os.environ.get("AGENT_HOLDOUT_MIN_TRADES", "20"))
+
+# ...ama "aynı sayı" AYNI KANIT DEĞİL. `_MIN_TRADES` (20) koşunun EĞİTİM
+# penceresi için yazıldı; mühürlü pencere o örneklemin oranı
+# (`HOLDOUT_SAMPLE_FRACTION`), yani aynı sayıyı istemek aynı kanıtı değil çok
+# daha yüksek bir GİRİŞ HIZINI istemektir. ÖLÇÜLDÜ (QQQC 22 yıl, 1-DAY):
+#
+#   eğitim 5.159 bar / mühür 862 bar → oran 1/6,0
+#   sıralama kapısı  20 giriş / 5.159 bar = ‰3,9
+#   mühürlü kapı     20 giriş /   862 bar = ‰23,2   → **5,7 kat** daha sıkı
+#
+# Sonuç aritmetikti, tesadüf değil: sıralamayı 20-113 işlemle geçen her aday
+# mühürde ölçülemez (o koşunun kazananı 52 işlemle geçmişti ve mühürde beklenen
+# giriş sayısı ~8,7). Kapı adayı elemiyordu, KENDİ BİRİMİNİ eliyordu.
+#
+# Eşik artık sıralama eşiğinin ORANI: aynı hızı iste, aynı sayıyı değil. İki
+# sınır var ve ikisi de bilinçli:
+#   * TABAN — `MIN_DECISION_TRADES` (bu depoda "bir karar kaç gözleme
+#     dayanabilir"in tek kopyası; WFO penceresi ve peer satırı da onu kullanır).
+#     Sharpe iki gözlem ister, tek işlem dağılım üretemez.
+#   * TAVAN — eski sabit. Oran hiçbir koşulda kapıyı ESKİSİNDEN sert yapmasın.
+HOLDOUT_MIN_TRADES_FLOOR = MIN_DECISION_TRADES
+# Operatör env ile açıkça sabitlediyse oran DEVRE DIŞI: pinlenmiş bir sayıyı
+# sessizce ölçeklemek, ayarın "sabit" sözünü bozardı.
+_HOLDOUT_MIN_TRADES_PINNED = "AGENT_HOLDOUT_MIN_TRADES" in os.environ
 HOLDOUT_REQUIRE_POSITIVE_PNL = True
 HOLDOUT_REQUIRE_POSITIVE_SHARPE = True
 HOLDOUT_REQUIRE_POSITIVE_EXCESS = True
@@ -583,9 +611,16 @@ def _effective_run_config() -> dict:
         # olarak ÖLÇÜLEN değer duruyor. Anahtar adı korundu — denetim defterini
         # okuyan mevcut testler ve eski kayıtlar bunu bekliyor.
         "holdout_days": OOS_HOLDOUT_DAYS,
+        # Aynı anahtar ikilisi eşik tarafında da var ve aynı sebeple: "20" artık
+        # TAVAN, gerçek eşik pencere oranından çıkıyor ve koşunun kaydında
+        # `winner_holdout.min_trades_required` olarak ÖLÇÜLEN değer duruyor.
+        "holdout_days_is_floor": True,
         "holdout_sample_fraction": HOLDOUT_SAMPLE_FRACTION,
         "holdout_warmup_bars": HOLDOUT_WARMUP_BARS,
         "holdout_min_trades": HOLDOUT_MIN_TRADES,
+        "holdout_min_trades_is_ceiling": not _HOLDOUT_MIN_TRADES_PINNED,
+        "holdout_min_trades_floor": HOLDOUT_MIN_TRADES_FLOOR,
+        "holdout_min_trades_ranking_reference": _MIN_TRADES,
         "holdout_requires": {
             "positive_pnl": HOLDOUT_REQUIRE_POSITIVE_PNL,
             "positive_sharpe": HOLDOUT_REQUIRE_POSITIVE_SHARPE,
@@ -2357,6 +2392,8 @@ def _run_promotion_gate(
     category: str,
     max_hours: float,
     research_only: bool,
+    train_bars: int | None = None,
+    train_trades: int | None = None,
 ) -> _PromotionGateResult:
     """Phase 5's sealed-holdout promotion gate — the financial-integrity
     checkpoint that decides whether the round's winner may be published to
@@ -2367,6 +2404,11 @@ def _run_promotion_gate(
     Catalog append, the _AGENT_PROGRESS winner-fields write, and the final
     winner/finalist_rejected + session_end logging stay in the caller —
     those are terminal round bookkeeping, not part of the gate decision.
+
+    ``train_bars``/``train_trades``: kazananın EĞİTİM penceresindeki ölçeği.
+    İkisi de kapıyı gevşetmez; birincisi eşiği pencere oranına çevirir
+    (``holdout_min_trades``), ikincisi adayın kendi hızıyla mühürde ne
+    bekleneceğini KOŞMADAN ÖNCE söyler (``holdout_feasibility``).
     """
     from sandbox import run_backtest_guarded
 
@@ -2385,7 +2427,7 @@ def _run_promotion_gate(
     )
     _add_step(run_id, "✓ Robustness result → robustness_log.jsonl")
     # Sealed holdout is a publication gate and each timeframe's slice is
-    # consumed at most once per AUTO session. Reusing the same 60 days
+    # consumed at most once per AUTO session. Reusing the same sealed window
     # for many finalists turns a holdout into another selection set.
     winner_holdout = None
     promotion_passed = False
@@ -2397,6 +2439,26 @@ def _run_promotion_gate(
     elif _hold is not None:
         wstate.holdout_consumed.add(winner_iv)
         _hold_run_df, _hold_start = _hold
+        _sealed = _hold_run_df[_hold_run_df.index >= _hold_start]
+        _sealed_bars = len(_sealed)
+        # Eşik pencere oranına çevrilmiş hâliyle ARTIK sabit değil; kararın
+        # tamamı (verdict, `measured` bayrağı, operatöre yazılan cümle) tek bu
+        # sayıdan beslenmeli, yoksa üçü ıraksar.
+        _req_trades = holdout_min_trades(train_bars, _sealed_bars)
+        # Adayın kendi hızı biliniyor: mühürde ne beklendiğini KOŞMADAN önce
+        # söyle. Eski uyarı adaydan bağımsızdı ve pencere büyüdükçe yapısal
+        # olarak sustu — 862 barda 20 giriş "makul" görünür, oysa yılda 2,3
+        # işlem açan kazanan için ulaşılamaz.
+        _cand_rate = (
+            (train_trades / train_bars)
+            if (train_bars and train_trades is not None and train_bars > 0)
+            else None
+        )
+        _pre_rate, _pre_warn = holdout_feasibility(
+            _sealed_bars, min_trades=_req_trades, candidate_rate=_cand_rate
+        )
+        if _pre_warn:
+            _add_step(run_id, f"⚠ Sealed OOS forecast: {_pre_warn}")
         try:
             _hold_res = run_backtest_guarded(
                 winner_spec,
@@ -2414,9 +2476,7 @@ def _run_promotion_gate(
                 _n, _pnl_fr, _sharpe = _sealed_holdout_stats(
                     _hold_res.trades, int(_hold_start.timestamp())
                 )
-                _sealed = _hold_run_df[_hold_run_df.index >= _hold_start]
                 _sealed_prices = _sealed["close"]
-                _sealed_bars = len(_sealed)
                 _sealed_days = (
                     (_sealed.index[-1] - _sealed.index[0]).days if _sealed_bars else 0
                 )
@@ -2453,26 +2513,32 @@ def _run_promotion_gate(
                     # because a standard deviation needs two). The
                     # sealed holdout is the run's one unbiased forward
                     # estimate — claiming it exists on one trade
-                    # overstates it. Below HOLDOUT_MIN_TRADES the flag
+                    # overstates it. Below the required count the flag
                     # stays False and the count is reported as-is.
-                    "measured": _n >= HOLDOUT_MIN_TRADES,
+                    "measured": _n >= _req_trades,
+                    # Eşik artık veriye bağlı olduğu için ARTEFAKTA yazılıyor:
+                    # sabit bir 20 varsayan bir okuyucu, ölçeklenmiş bir kararı
+                    # yanlış yorumlar. Kayıt kendi eşiğini taşımalı.
+                    "min_trades_required": _req_trades,
+                    "train_bars": train_bars,
+                    "train_trades": train_trades,
                 }
                 promotion_passed, promotion_reason = _holdout_promotion_verdict(
-                    _n, _pnl_fr, _sharpe, _excess_fr, metrics=_hm
+                    _n, _pnl_fr, _sharpe, _excess_fr, metrics=_hm,
+                    min_trades=_req_trades,
                 )
-                if _n < HOLDOUT_MIN_TRADES:
+                if _n < _req_trades:
                     # Mesaj ARİTMETİĞİ de söylüyor: "20 lazımdı, 0 geldi" tek
                     # başına eşiğin sert olduğunu ima ediyordu; asıl bilgi
                     # pencerenin kaç bar olduğu ve bunun hangi giriş sıklığını
                     # gerektirdiği. Operatör eşiği mi yoksa pencereyi mi
                     # değiştireceğine ancak bununla karar verebilir.
-                    _rate, _ = holdout_feasibility(_sealed_bars)
                     _add_step(
                         run_id,
                         f"⚠ Sealed OOS ({_sealed_days}d / {_sealed_bars:,} bar): "
-                        f"{_n} trade — ÖLÇÜLEMEDİ. {HOLDOUT_MIN_TRADES} giriş "
-                        f"gerekiyordu, yani barların %{100 * _rate:.0f}'inde "
-                        f"(her {_sealed_bars / max(HOLDOUT_MIN_TRADES, 1):.1f} "
+                        f"{_n} trade — ÖLÇÜLEMEDİ. {_req_trades} giriş "
+                        f"gerekiyordu, yani barların %{100 * _pre_rate:.0f}'inde "
+                        f"(her {_sealed_bars / max(_req_trades, 1):.1f} "
                         "barda bir) giriş — warmup lead-in dahil",
                     )
                 else:
@@ -3054,8 +3120,10 @@ class _TfLoader:
         except Exception:
             _tl_end(self.run_id, _tl_key, status="fail")
             raise
-        # L32: sealed holdout — the last OOS_HOLDOUT_DAYS days are withheld
-        # from the iteration + robustness phases. Skip if remaining data < 200 bars.
+        # L32: sealed holdout — the trailing window (`holdout_window_days`:
+        # HOLDOUT_SAMPLE_FRACTION of the sample, floored at OOS_HOLDOUT_DAYS)
+        # is withheld from the iteration + robustness phases. Skip if the
+        # remaining data falls under 200 bars.
         trimmed, hold_df = _split_holdout(df)
         if hold_df is not None:
             # Holdout RUN frame = warmup lead-in + sealed slice; the
@@ -3068,17 +3136,20 @@ class _TfLoader:
             df = trimmed
             self.tf_cache[iv] = df
             _win_days = holdout_window_days(pd.concat([df, hold_df]))
+            _req = holdout_min_trades(len(df), len(hold_df))
             _add_step(
                 self.run_id,
                 f"🔒 Sealed holdout separated ({iv}): the last "
                 f"{_win_days} days ({len(hold_df):,} bars) will be "
-                f"withheld until a winner is declared — {len(df):,} bars remaining",
+                f"withheld until a winner is declared — {len(df):,} bars "
+                f"remaining · the gate will ask for {_req} entries in that "
+                "window",
             )
             # Kapının ULAŞILABİLİR olup olmadığı ŞİMDİ biliniyor: pencere kaç
             # bar ve kaç giriş isteniyor. Bunu burada söylemek, aynı bilgiyi
             # zincirin tamamı koştuktan (saatler + dolarlar) sonra vermekten
             # iyidir — eski davranış tam olarak oydu.
-            _rate, _warn = holdout_feasibility(len(hold_df))
+            _rate, _warn = holdout_feasibility(len(hold_df), min_trades=_req)
             if _warn:
                 _add_step(self.run_id, f"⚠ {_warn}")
         else:
@@ -3311,15 +3382,20 @@ def _holdout_promotion_verdict(
     sharpe: float | None,
     excess_pnl_pct: float,
     metrics: dict | None = None,
+    min_trades: int | None = None,
 ) -> tuple[bool, str]:
     """Single publication policy for sealed holdout results — pass/fail AND why.
 
     The reason string must be derived from the exact same HOLDOUT_REQUIRE_*
     flags as the boolean, or the two can disagree: a flag flip changes what
     passes but not the sentence a human reads about why it did or didn't.
+
+    ``min_trades`` verilmezse eski sabit; çağıran pencere ölçeğini biliyorsa
+    ``holdout_min_trades(train_bars, sealed_bars)`` sonucunu geçirir.
     """
-    if n_trades < HOLDOUT_MIN_TRADES:
-        return False, f"only {n_trades} holdout trades; need {HOLDOUT_MIN_TRADES}"
+    req = HOLDOUT_MIN_TRADES if min_trades is None else int(min_trades)
+    if n_trades < req:
+        return False, f"only {n_trades} holdout trades; need {req}"
     if HOLDOUT_REQUIRE_POSITIVE_PNL and pnl_pct <= 0:
         return False, "sealed holdout PnL is not positive"
     if HOLDOUT_REQUIRE_POSITIVE_SHARPE and (sharpe is None or sharpe <= 0):
@@ -3382,22 +3458,73 @@ def holdout_window_days(df) -> int:
     return max(OOS_HOLDOUT_DAYS, int(span_days * HOLDOUT_SAMPLE_FRACTION))
 
 
-def holdout_feasibility(n_bars: int) -> tuple[float, str | None]:
-    """(gereken giriş/bar oranı, uyarı) — ADAYDAN BAĞIMSIZ.
+def holdout_min_trades(train_bars: int | None, sealed_bars: int | None) -> int:
+    """Mühürlü pencerede gereken giriş sayısı — sıralama eşiğinin ORANI.
+
+    Bkz. ``HOLDOUT_MIN_TRADES_FLOOR``: sıralama kapısı 20 girişi EĞİTİM
+    penceresinde istiyor; mühürlü pencerede aynı sayıyı istemek aynı kanıtı
+    değil, pencere oranı kadar (ölçülen koşuda 5,7 kat) daha yüksek bir hızı
+    istemektir. Ölçek bilinmiyorsa (bar sayısı yok) eski sabite düşülür —
+    uydurulmuş bir oran, bilinen bir sabitten kötüdür.
+    """
+    if _HOLDOUT_MIN_TRADES_PINNED:
+        return HOLDOUT_MIN_TRADES
+    if not train_bars or not sealed_bars or train_bars <= 0 or sealed_bars <= 0:
+        return HOLDOUT_MIN_TRADES
+    scaled = round(_MIN_TRADES * sealed_bars / train_bars)
+    return int(max(HOLDOUT_MIN_TRADES_FLOOR, min(HOLDOUT_MIN_TRADES, scaled)))
+
+
+def holdout_feasibility(
+    n_bars: int,
+    *,
+    min_trades: int | None = None,
+    candidate_rate: float | None = None,
+) -> tuple[float, str | None]:
+    """(gereken giriş/bar oranı, uyarı) — aday VERİLMEDEN de cevap verir.
 
     Kapının ulaşılabilirliği mühür anında bilinebilir: pencere kaç bar ve kaç
     giriş isteniyor. Bunu o anda söylemek, aynı bilgiyi zincirin tamamı
     koştuktan saatler sonra vermekten iyidir. Uyarı yalnız uyarıdır — eşiği
     oynatmaz (DeepR/AUTO 755b7880, 2026-08-17).
+
+    İki ayrı soru soruluyor ve ikisi ayrı anlarda cevaplanabiliyor:
+
+    * ``candidate_rate`` YOKKEN (mühür anı, aday henüz yok): istenen hız
+      herhangi bir strateji için makul mü — ``HOLDOUT_PLAUSIBLE_ENTRY_RATE``.
+    * ``candidate_rate`` VARKEN (kazanan belli): BU aday kendi ölçülen hızıyla
+      mühürlü pencerede kaç giriş üretir. Genel makullük eşiği bu soruyu hiç
+      sormuyordu ve pencere büyüdükçe yapısal olarak sustu: 20/862 = ‰23, yani
+      1/3'ün çok altında — uyarı sessiz, kapı yine de ÖLÇÜLEMEDİ veriyordu.
+      Asıl bilgi eşikte değil adayın hızındaydı.
+
+    ``min_trades`` verilmezse eski sabit kullanılır (bkz. ``holdout_min_trades``).
     """
+    req = HOLDOUT_MIN_TRADES if min_trades is None else int(min_trades)
     if n_bars <= 0:
         return 1.0, "sealed window has no bars"
-    rate = HOLDOUT_MIN_TRADES / n_bars
+    rate = req / n_bars
+    if candidate_rate is not None:
+        cr = max(float(candidate_rate), 0.0)
+        expected = cr * n_bars
+        if expected < req:
+            pace = (
+                f"an entry every {1 / cr:,.1f} bars"
+                if cr > 0
+                else "no entries at all"
+            )
+            return rate, (
+                f"this candidate produced {pace} in training — at that pace the "
+                f"{n_bars:,}-bar sealed window yields ~{expected:.1f} entries, "
+                f"below the {req} the gate needs. It will end as ÖLÇÜLEMEDİ "
+                "unless it trades faster out of sample"
+            )
+        return rate, None
     if rate <= HOLDOUT_PLAUSIBLE_ENTRY_RATE:
         return rate, None
-    every = n_bars / HOLDOUT_MIN_TRADES
+    every = n_bars / max(req, 1)
     return rate, (
-        f"the sealed gate needs {HOLDOUT_MIN_TRADES} entries in {n_bars:,} bars "
+        f"the sealed gate needs {req} entries in {n_bars:,} bars "
         f"— an entry every {every:.1f} bars ({rate:.0%} of them). Only a very "
         "high-frequency strategy can reach it on this timeframe; anything "
         "slower will end as ÖLÇÜLEMEDİ after the whole chain has run"
@@ -4254,6 +4381,11 @@ def _agent_worker(
                 category,
                 max_hours,
                 research_only,
+                # Kazananın EĞİTİM ölçeği: mühürlü eşiği pencere oranına
+                # çevirmek ve adayın kendi hızından beklenen giriş sayısını
+                # ÖNDEN söylemek için. `_win_df` zaten mühürlenmiş çerçeve.
+                train_bars=len(_win_df),
+                train_trades=(winner_result.metrics or {}).get("n_trades"),
             )
             winner_holdout = gate.winner_holdout
             promotion_passed = gate.promotion_passed

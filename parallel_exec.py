@@ -26,6 +26,13 @@ tunes the per-worker RAM budget.
 
 This module keeps its top level import-light: spawn re-imports it in every
 worker, so pandas/nautilus/composer are imported lazily inside functions.
+
+Wiki References
+---------------
+See: [[nau_holdout_dogrulama_turu_2026_08_18]] (multi-symbol biriminin peer
+penceresi mühre çapalanır — bu modül `end_ms`'i okumayıp kendi kesimini
+yaptığında mühürlü kuyruk paralel yoldan geri geliyordu),
+[[multi_symbol_generalization]], [[webapp_module_map]]
 """
 
 from __future__ import annotations
@@ -195,8 +202,21 @@ def _run_unit(unit: dict) -> dict:
 
                 df = load_external_bars(sym, unit["interval"])
                 if not df.empty:
-                    # Window relative to the data's own end — catalog does not go to now().
-                    df = df[df.index >= df.index[-1] - timedelta(days=days)]
+                    # Kesim SIRALI YOLLA AYNI fonksiyondan geçiyor. Bu dal
+                    # kendi kopyasını taşıyordu ve `end_ms`'i okumuyordu: sıralı
+                    # yol mühre göre kesilse bile paralel yol serinin kendi
+                    # sonuna göre kesip mühürlü kuyruğu peer testine geri
+                    # sokuyordu. İki kopya = iki farklı pencere.
+                    from backtest_robustness import _clip_peer_window
+
+                    end_ms = unit.get("end_ms")
+                    df = _clip_peer_window(
+                        df,
+                        days,
+                        datetime.fromtimestamp(end_ms / 1000, UTC)
+                        if end_ms is not None
+                        else None,
+                    )
                 recipe = {
                     "source": "external",
                     "instrument_id": sym,

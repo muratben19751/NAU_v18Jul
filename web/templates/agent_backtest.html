@@ -164,7 +164,8 @@
 
       <p class="small text-muted" style="margin:0;">
         Each run uses the <b>full date range</b> in the cache
-        (the last 60 days are sealed off as OOS).
+        (the tail is sealed off as OOS &mdash; 15% of the sample, at least 60 days;
+        on a 22-year series that is ~3.4 years, not 60 days).
         The winning strategy is automatically added to the /backtest selector.
         Ranking (NAU fitness): <code>(0.7×Calmar + 0.3×Sharpe) × T/(T+20)</code> ·
         Hybrid mode: even iterations produce a builtin block, odd iterations produce a <b>Claude custom block</b>.

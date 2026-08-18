@@ -132,6 +132,47 @@ Yöntem notu: bu turun kendi dersi, bulguları çürütmeye çalışan ikinci bi
 geçişin işe yaradığı — 40 iddianın 8'i ayakta kalmadı ve ikisi commit'i haksız
 yere suçluyordu.
 
+## Kapatıldı (2026-08-18, aynı gün)
+
+Dördü de yazıldı; beşinci olarak aynı hastalığın WFO'daki hâli de kapandı.
+
+| # | ne yapıldı | nerede |
+|---|---|---|
+| 1 | peer penceresi mühre çapalandı (`end_anchor` → `_clip_peer_window`) | `backtest_robustness.py`, `auto/robustness.py`, `parallel_exec.py` |
+| 2 | eşik oransal: `holdout_min_trades(train, sealed)` | `web/routes/agent_backtest.py` |
+| 3 | uyarı adayın hızına bağlandı + mühürlü koşudan ÖNCE basılıyor | aynı |
+| 4 | form metni + `run_config` sınır etiketleri | `agent_backtest.html`, `_effective_run_config` |
+| 5 | WFO penceresi veriden türetiliyor (`wfo_window_months`) | `auto/robustness.py` |
+
+Uygulamada öğrenilen üç şey, üçü de bir sonraki düzeltmeyi biçimlendirdi.
+
+**Çapa sabit tarih değil, çerçevenin son barı.** Peer penceresini "2021-06-30'a
+kadar kes" diye yazmak regresyonu bugün kapatır, bir sonraki mühür
+değişikliğinde geri getirirdi. Çapa `bars_df.index[-1]`'den türetilince kural
+mührü kendiliğinden takip ediyor — [[kod_dokuman_koprusu_denetlenmiyor]]
+sayfasındaki "kapsamı listeden değil tanımdan türet" dersinin veri tarafındaki
+yüzü.
+
+**İki kopya iki farklı pencere demekti.** Sıralı yol düzeltilse bile paralel
+worker kendi kesim ifadesini taşıyordu ve `end_ms`'i hiç okumuyordu — yani
+mühür paralel yoldan geri gelirdi. Kesim tek fonksiyona indirildi
+(`_clip_peer_window`) ve test ÇAĞRI YERİNİ sayıyor: elle kopyalanan bir kesim
+geri gelirse kırılıyor.
+
+**Aynı birim hatası üçüncü bir yerde daha duruyordu.** Mühürlü kapı takvim
+penceresi + sayım eşiği çelişkisiydi; WFO'da aynısı vardı ve daha eskiydi:
+6/2/3 ay sabit pencere, `WFO_MIN_TRADES` sayım eşiği. Diskteki 178 pencerenin
+işlem dağılımı {0: 70, 1: 88, 2: 20} — hiçbiri 3'e bile ulaşmamış. Ölçüt hiç
+konuşmamış ama GA maliyeti her koşuda ödenmişti. Pencere artık adayın ölçülen
+hızından türüyor (ölçülen koşuda 2 ay → 11 ay, pencere başına beklenen giriş
+0,4 → 3,4) ve ulaşılamayacaksa bunu ÖNDEN söylüyor.
+
+Eşik iki sınırla kuşatıldı ve ikisi de bilinçli: taban
+`app_constants.MIN_DECISION_TRADES` (bu depoda "bir karar kaç gözleme
+dayanabilir"in tek kopyası), tavan eski sabit — oran hiçbir koşulda kapıyı
+eskisinden sert yapmıyor. Ölçülen kazanan (52 işlem / 5.159 bar) artık mühürde
+~8,7 giriş beklentisiyle giriyor, eşik 5.
+
 <!-- BACKLINKS:BEGIN -->
 ## Referenced by
 

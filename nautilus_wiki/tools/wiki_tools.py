@@ -522,6 +522,16 @@ def cmd_stub(slug: str, kind: str, title: str) -> int:
 
 
 def main(argv: list[str]) -> int:
+    # Windows konsolu cp125x ile açılır ve rapor satırları "→", "·", Türkçe
+    # harfler taşır. Guard olmadan `lint` sayıyı BASIP listeyi yazarken
+    # UnicodeEncodeError ile çöküyordu — üstelik çıkış kodu 2 (bulgu var)
+    # yerine 1 (çöktü) oluyordu, yani denetimin sinyali kazayla siliniyordu.
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):
+            pass
+
     ap = argparse.ArgumentParser(prog="wiki_tools")
     sub = ap.add_subparsers(dest="cmd", required=True)
 

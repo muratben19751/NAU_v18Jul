@@ -110,15 +110,29 @@ def test_feasibility_needs_no_candidate():
 
     Bu yüzden uyarı LLM masrafı BAŞLAMADAN önce basılabiliyor; eski davranış
     aynı bilgiyi zincirin tamamı koştuktan sonra veriyordu (127 dk, $9,19).
+
+    Önceki hâli imzayı ``["n_bars"]`` diye çiviliyordu; o, korunması gereken
+    şeyin (aday olmadan da cevap verebilmek) yerine bir uygulama ayrıntısını
+    dondurmaktı — aynı fonksiyona adaya bağlı İKİNCİ bir soru eklenemiyordu.
+    Test artık DAVRANIŞI tutuyor: tek argümanla çağrılabiliyor mu.
     """
     import inspect
 
     from web.routes.agent_backtest import holdout_feasibility
 
+    rate, warn = holdout_feasibility(41)
+    assert rate > 0 and warn, "aday verilmeden cevap üretilemedi"
+
     sig = inspect.signature(holdout_feasibility)
-    assert list(sig.parameters) == ["n_bars"], (
-        "ulaşılabilirlik adaya bağlanmış — o zaman önden söylenemez"
-    )
+    extra = [n for n in sig.parameters if n != "n_bars"]
+    for name in extra:
+        prm = sig.parameters[name]
+        assert prm.default is not inspect.Parameter.empty, (
+            f"{name} zorunlu — ulaşılabilirlik adaya bağlanmış, önden söylenemez"
+        )
+        assert prm.kind is inspect.Parameter.KEYWORD_ONLY, (
+            f"{name} pozisyonel — çağıran yanlışlıkla aday bağlayabilir"
+        )
 
 
 def test_zero_bar_window_is_reported_not_crashed():
@@ -143,8 +157,18 @@ def test_reported_cadence_matches_the_arithmetic(n_bars):
 
 
 def test_the_min_trades_threshold_is_untouched():
-    """Pencere büyüdü, EŞİK aynı: bu bir gevşetme değil, birim düzeltmesi."""
+    """Varsayılan eşik ÖLÇEK VERİLMEDİĞİNDE hâlâ eski sabit.
+
+    Eski hâli `HOLDOUT_MIN_TRADES - 1` ile çağırıyordu, yani sabit ne olursa
+    olsun geçiyordu — `AGENT_HOLDOUT_MIN_TRADES=3` ile de yeşildi. Ayırt edici
+    olması için sayı ARTIK LİTERAL: 19 reddedilmeli, 20 bu bacakta takılmamalı.
+    """
     from web.routes.agent_backtest import HOLDOUT_MIN_TRADES, _holdout_promotion_verdict
 
-    ok, why = _holdout_promotion_verdict(HOLDOUT_MIN_TRADES - 1, 0.1, 1.0, 0.1)
-    assert not ok and "need" in why
+    assert HOLDOUT_MIN_TRADES == 20, "varsayılan sabit değişti — testi güncelle"
+
+    ok, why = _holdout_promotion_verdict(19, 0.1, 1.0, 0.1)
+    assert not ok and "need 20" in why
+
+    ok, why = _holdout_promotion_verdict(20, 0.1, 1.0, 0.1)
+    assert ok, f"20 işlem sayım bacağında takıldı: {why}"

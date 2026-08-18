@@ -22,11 +22,13 @@ Wiki References
 See: [[auto_kapi_ve_geri_bildirim]] (kapı hangi seriyi okur — `wfo_test`, neden
 `test_metrics_naive`), [[multi_symbol_generalization]] (dikiş-farkındalıklı peer
 dışlama), [[webapp_module_map]], [[backtesting_guide]],
-[[nau_deepr_mimari_katman_ayrimi]]
+[[nau_holdout_dogrulama_turu_2026_08_18]] (peer penceresinin mühür çapası ve
+WFO penceresinin adayın hızından türetilmesi — `wfo_window_months`)
 """
 
 from __future__ import annotations
 
+import math
 from collections.abc import Callable
 from pathlib import Path
 
@@ -167,6 +169,91 @@ def wfo_test(w: dict) -> dict:
 # diyordu: aynı soruya ("bu kadar işlemden sonuç çıkar mı?") iki cevap. Ölçüm
 # ve gerekçe app_constants.MIN_DECISION_TRADES'te.
 WFO_MIN_TRADES = MIN_DECISION_TRADES
+
+
+# WFO penceresi TAKVİMDE sabit (6 ay eğitim / 2 ay test / 3 ay adım), eşiği ise
+# SAYIMDA — mühürlü kapıyla birebir aynı birim uyuşmazlığı. Dönüşüm katsayısı
+# yine stratejinin işlem hızı ve yine serbest bir değişken.
+#
+# ÖLÇÜLDÜ (diskteki AUTO artefaktları, 178 WFO penceresi): pencere başına işlem
+# dağılımı {0: 70, 1: 88, 2: 20}. Hiçbir pencere 3'e bile ulaşmamış, yani
+# ölçütün eşiği (5) hiçbir koşuda ulaşılabilir olmamış: WFO fiilen hiç
+# konuşmadı — ama GA maliyeti her koşuda ödendi. Kapı bunu dürüstçe "ölçülmedi"
+# sayıyor (bkz. agent_backtest `_skip("Walk-Forward", ...)`), yani sonuç yanlış
+# değil YOK; ödenen bedel gerçek.
+#
+# Taban KORUNUYOR: kısa TF'lerde (1m/5m kripto) pencere zaten yeterince bar
+# taşıyor ve davranış değişmiyor — genişletme yalnız gerektiğinde devreye girer.
+WFO_BASE_TRAIN_MONTHS = 6
+WFO_BASE_TEST_MONTHS = 2
+WFO_BASE_STEP_MONTHS = 3
+# Pencereyi büyütmenin bedeli pencere SAYISI. Altına inilmeyecek sayı: bir
+# oranın ("pencerelerin %50'si pozitif") altında en az bu kadar gözlem olmalı,
+# yoksa ölçüt bu kez de az-örneklemden konuşamaz.
+WFO_MIN_WINDOWS = 8
+
+
+def wfo_window_months(bars_df, n_trades: int | None) -> tuple[int, int, int, str | None]:
+    """(train, test, step) ay + uyarı — pencere adayın ÖLÇÜLEN hızından türer.
+
+    Soru şu: ``WFO_MIN_TRADES`` girişin bu adayın kendi hızıyla düşebileceği
+    en dar test penceresi kaç ay? Cevap tabandan küçükse taban kullanılır
+    (kısa TF davranışı değişmez); büyükse pencere büyür ve eğitim/adım aynı
+    oranda (3× ve 1,5×) ölçeklenir — böylece "6/2/3"ün şekli korunur.
+
+    İki sınır var:
+
+    * ``WFO_MIN_WINDOWS`` — pencereyi büyütmek pencere sayısını düşürür. Oranı
+      8 gözlemin altına indirecek bir genişleme yapılmaz; o noktada uyarı
+      verilir, çünkü ölçüt yine susacaktır ve bunu ÖNDEN söylemek zincirin
+      sonunda "0/0 geçerli pencere" yazmaktan iyidir.
+    * Hız ölçülemiyorsa (``n_trades`` yok ya da 0) taban kullanılır —
+      uydurulmuş bir oran, bilinen bir sabitten kötüdür.
+
+    Uyarı yalnız uyarıdır; hiçbir eşiği oynatmaz.
+    """
+    base = (WFO_BASE_TRAIN_MONTHS, WFO_BASE_TEST_MONTHS, WFO_BASE_STEP_MONTHS)
+    try:
+        n_bars = len(bars_df)
+        span_days = (bars_df.index[-1] - bars_df.index[0]).days
+    except Exception:
+        return (*base, None)
+    if not n_bars or span_days <= 0 or not n_trades:
+        return (*base, None)
+
+    total_months = span_days / 30.44
+    bars_per_month = n_bars / total_months
+    rate = n_trades / n_bars  # giriş / bar
+    need_bars = WFO_MIN_TRADES / rate
+    want_test = max(WFO_BASE_TEST_MONTHS, math.ceil(need_bars / bars_per_month))
+    if want_test == WFO_BASE_TEST_MONTHS:
+        return (*base, None)
+
+    # Bir T aylık test penceresi için toplam gereksinim:
+    #   3T (eğitim) + T (test) + 1,5T × (W−1) adım  ≤  total_months
+    def _windows_for(t: int) -> int:
+        train, step = 3 * t, max(1, round(1.5 * t))
+        return int((total_months - train - t) // step) + 1
+
+    test_m = want_test
+    while test_m > WFO_BASE_TEST_MONTHS and _windows_for(test_m) < WFO_MIN_WINDOWS:
+        test_m -= 1
+    train_m, step_m = 3 * test_m, max(1, round(1.5 * test_m))
+
+    expected = test_m * bars_per_month * rate
+    note = None
+    if expected < WFO_MIN_TRADES:
+        # Cümledeki her sayı DOĞRULANABİLİR olmalı: pencere sayısı da yazılıyor,
+        # çünkü genişleme iki ayrı sınırdan biriyle durmuş olabilir (taban ya da
+        # WFO_MIN_WINDOWS) ve operatör hangisi olduğunu görmeden karar veremez.
+        note = (
+            f"Walk-Forward: this candidate opened an entry every {1 / rate:,.0f} "
+            f"bars — a {test_m}-month test window ({_windows_for(test_m)} windows) "
+            f"yields ~{expected:.1f} entries, under the {WFO_MIN_TRADES} a window "
+            "needs to count. The criterion will probably stay silent, and the "
+            "GA cost is paid either way"
+        )
+    return train_m, test_m, step_m, note
 
 
 def valid_wfo_windows(wfo: list[dict]) -> list[dict]:
@@ -358,6 +445,12 @@ def run_full_robustness(
             days=ms_days,
             progress_fn=pf,
             source=source,
+            # Peer penceresi MÜHRÜN peşinden gitsin. `bars_df` çağırana göre
+            # zaten mühürlenmiş (kırpılmış) eğitim çerçevesi; son barı vermek,
+            # mühür kuralı ne zaman değişirse değişsin peer testinin onunla
+            # birlikte geriye kaymasını sağlar — sabit bir tarih yazmak, bir
+            # sonraki mühür değişikliğinde aynı sızıntıyı geri getirirdi.
+            end_anchor=(bars_df.index[-1] if len(bars_df) else None),
         )
         pf(
             f"  → positive on {ms.get('symbols_positive', 0)}/{ms.get('symbols_valid', 0)} symbols · "
@@ -422,8 +515,17 @@ def run_full_robustness(
             }
 
         # 3) Walk-Forward
+        # Pencere ADAYIN HIZINDAN türetiliyor (bkz. wfo_window_months): sabit
+        # 6/2/3 ay, günlük barda test penceresini ~42 bara indiriyordu ve
+        # `WFO_MIN_TRADES` oraya asla düşmüyordu.
+        _wf_train, _wf_test, _wf_step, _wf_note = wfo_window_months(
+            bars_df, len(trades) if trades else None
+        )
+        if _wf_note:
+            pf(f"  ⚠ {_wf_note}")
         pf(
-            "📈 Walk-Forward — rolling-window OOS test. Each window has 6 months training + 2 months test. "
+            f"📈 Walk-Forward — rolling-window OOS test. Each window has {_wf_train} "
+            f"months training + {_wf_test} months test. "
             "≥50% of windows must have positive PnL."
         )
         wfo = _stage(
@@ -434,9 +536,9 @@ def run_full_robustness(
             instrument,
             bar_type,
             venue,
-            train_months=6,
-            test_months=2,
-            step_months=3,  # 2→3: ~24 windows instead of 35, 30% faster
+            train_months=_wf_train,
+            test_months=_wf_test,
+            step_months=_wf_step,
             progress_fn=pf,
         )
         if wfo:

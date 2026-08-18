@@ -8,7 +8,9 @@ Wiki References
 See: [[backtesting_guide]], [[backtest_node]],
 [[multi_symbol_generalization]] (peer seçimi + üstünlük ölçütü — `peer_is_superior`
 burada, KARARI VEREN kural app_constants.benchmark_rejection'da: iki kapı tek kopya),
-[[auto_kapi_ve_geri_bildirim]] (kapının felsefesi ve ortak anahtar)
+[[auto_kapi_ve_geri_bildirim]] (kapının felsefesi ve ortak anahtar),
+[[nau_holdout_dogrulama_turu_2026_08_18]] (peer penceresi mühürle birlikte
+hareket eder — `_clip_peer_window` + `run_multi_symbol(end_anchor=...)`)
 """
 
 from __future__ import annotations
@@ -108,8 +110,52 @@ def effective_symbol_count(closes: dict[str, object]) -> float | None:
         return None
 
 
+def _as_utc_datetime(ts):
+    """pandas Timestamp / datetime / None → tz-aware ``datetime`` (UTC) ya da None.
+
+    Çağıran çerçevenin son barını (`df.index[-1]`, bir pandas Timestamp)
+    veriyor; `load_bybit_bars` ise düz `datetime` bekliyor. Naive bir damga
+    UTC sayılır — bu depodaki tüm bar indeksleri UTC.
+    """
+    if ts is None:
+        return None
+    try:
+        dt = ts.to_pydatetime() if hasattr(ts, "to_pydatetime") else ts
+        return dt if dt.tzinfo is not None else dt.replace(tzinfo=UTC)
+    except Exception:
+        return None
+
+
+def _clip_peer_window(df, days: int, end_dt):
+    """Akran serisini AYNI pencereye kes: [end_dt - days, end_dt].
+
+    ``end_dt`` mühürden ÖNCEKİ son eğitim barıdır (bkz. ``run_multi_symbol``'ün
+    ``end_anchor``'ı), serinin kendi sonu değil. Fark, mühür büyüdükçe büyüyen
+    bir sızıntıydı: dış katalog dalı pencereyi serinin KENDİ sonuna göre
+    kesiyordu, yani mühürlü kuyruk peer testinin içindeydi.
+
+    ÖLÇÜLDÜ (QQQC, 22 yıl, 1-DAY): mühür 60 günken 730 günlük peer penceresinin
+    ~%8'i mühürlünün içindeydi; mühür örneklemin oranına çevrilince (1254 gün)
+    pencerenin **%100'ü** mühürlü bölgeye düştü. Yani çok-sembol kapısı,
+    adayın görmesi yasak olan veriden karar veriyordu.
+    """
+    if df is None or len(df) == 0:
+        return df
+    if end_dt is not None:
+        df = df[df.index <= end_dt]
+        if len(df) == 0:
+            return df
+    return df[df.index >= df.index[-1] - timedelta(days=days)]
+
+
 def _peer_closes(
-    symbols, interval: str, source: str, category: str, days: int, start_dt, end_dt
+    symbols,
+    interval: str,
+    source: str,
+    category: str,
+    days: int,
+    start_dt,
+    end_dt,
 ) -> dict:
     """Etkin sembol sayımı için kapanış serileri — backtest YOK, yalnız veri.
 
@@ -130,7 +176,7 @@ def _peer_closes(
                 df = load_external_bars(sym, interval)
                 if df is None or df.empty:
                     continue
-                df = df[df.index >= df.index[-1] - timedelta(days=days)]
+                df = _clip_peer_window(df, days, end_dt)
             else:
                 from data import load_bybit_bars
 
@@ -1325,6 +1371,7 @@ def run_multi_symbol(
     progress_fn=None,
     run_many=None,
     source: str = "bybit",
+    end_anchor=None,
 ) -> dict:
     """Measures generalizability by testing the strategy on multiple symbols.
 
@@ -1339,7 +1386,14 @@ def run_multi_symbol(
 
     ``source="external"``: symbols are external-catalog instrument ids
     (e.g. "SPY.ARCA"), ``interval`` is the catalog DSL (e.g. "1-DAY"), and the
-    window is cut relative to the data's own end (the catalog does not run up to "now").
+    window is cut relative to ``end_anchor`` (the catalog does not run up to "now").
+
+    ``end_anchor``: the peer window ENDS here instead of at "now" / the peer
+    series' own last bar. Çağıran, adayın eğitim çerçevesinin son barını verir;
+    böylece mühürlü kuyruk peer testinin dışında kalır ve pencere mühür
+    büyüdükçe onunla birlikte geriye kayar (bkz. ``_clip_peer_window``).
+    ``None`` = eski davranış (kesim serinin kendi sonuna göre) — mühürsüz
+    çağıranlar için.
 
     Returns: {
         symbols_tested: int,
@@ -1452,7 +1506,10 @@ def run_multi_symbol(
             "error": str(err),
         }
 
-    end_dt = datetime.now(UTC)
+    # Pencerenin SONU: mühürden önceki son eğitim barı (verilmişse). Eskiden
+    # burası koşulsuz `now()` idi ve dış katalog dalı zaten seri sonuna göre
+    # kesiyordu — iki yol da mührü görmüyordu.
+    end_dt = _as_utc_datetime(end_anchor) or datetime.now(UTC)
     start_dt = end_dt - timedelta(days=days)
     cur = "USD" if source == "external" else "USDT"
 
@@ -1479,6 +1536,9 @@ def run_multi_symbol(
                 # to its own now(), the symbols in one batch (and the sequential↔parallel
                 # paths) would be tested over SLIGHTLY different time windows. With
                 # start/end_ms all symbols run over the SAME window.
+                # Dış katalogda da GÖNDERİLİYOR: worker eskiden bu iki alanı
+                # yalnız bybit dalında okuyup external dalda seriyi kendi sonuna
+                # göre kesiyordu, yani mühürlü kuyruk paralel yolda geri geliyordu.
                 "start_ms": int(start_dt.timestamp() * 1000),
                 "end_ms": int(end_dt.timestamp() * 1000),
                 "source": source,
@@ -1511,9 +1571,10 @@ def run_multi_symbol(
 
                     df = load_external_bars(sym, interval)
                     if not df.empty:
-                        # Cut the window relative to the data's own end — the catalog
-                        # does not run up to "now", so a now()-based slice would be empty.
-                        df = df[df.index >= df.index[-1] - timedelta(days=days)]
+                        # Kesim `end_anchor`'a göre: katalog "now"a kadar
+                        # gitmiyor, ama serinin KENDİ sonu da doğru değil —
+                        # o son, mühürlü kuyruğun içinde.
+                        df = _clip_peer_window(df, days, end_dt)
                 else:
                     df = load_bybit_bars(
                         symbol=sym,
