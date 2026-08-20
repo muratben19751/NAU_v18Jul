@@ -623,6 +623,16 @@ _ENGINE = [
         "İşçi başına bellek tavanı; işçi sayısı buna göre kırpılır.",
     ),
     _v(
+        "NAUTILUS_WFO_POOLED_T",
+        "float",
+        "2.0",
+        "auto.robustness",
+        "Payda sınırının altındaki adaylar için havuzlanmış alfa RET eşiği "
+        "(t = ort/(std/√n)). Yalnız reddeder, asla geçirmez — bu yüzden boş "
+        "dağılım kalibrasyonu gerektirmez. Ölçüldü 2026-08-20: arşivdeki 26 "
+        "adayın 25'inin ortalama alfası negatif, 8'i t ≤ −2 ile kesin negatif.",
+    ),
+    _v(
         "NAUTILUS_WFO_MIN_WINDOWS",
         "int",
         "10",

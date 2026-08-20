@@ -192,6 +192,43 @@ WFO_MIN_TRADES = MIN_DECISION_TRADES
 # geçişi %3-6'ya indirirken adayları ölçülebilir bırakıyor.
 WFO_MIN_VALID_WINDOWS = int(os.environ.get("NAUTILUS_WFO_MIN_WINDOWS", "10"))
 
+# Payda sınırının ALTINDAKİ adaylar için ikinci bir RET yolu — geçiş yolu DEĞİL.
+#
+# Oy saymak 3-7 pencerede anlamsız, ama aynı pencerelerin ortalama alfasını ve
+# saçılımını değerlendirmek anlamlı: t = ort(alfa) / (std/√n). Bu eşik kapıyı
+# hiçbir koşulda AÇAMADIĞI için boş dağılım kalibrasyonu gerektirmez (eşiği
+# açan bir ölçüt için o adım zorunluydu — bkz. WFO_MIN_VALID_WINDOWS notu).
+#
+# ÖLÇÜLDÜ (arşivdeki 26 aday, 2026-08-20): 25'inin ortalama alfası negatif,
+# hiçbiri p<0,10'a ulaşmıyor. Payda sınırının altında kalan ve t ≤ −2 ile
+# KESİN negatif çıkan 8 aday var — onlara "yargılayamadım" demek yanlıştı.
+#
+# p yerine doğrudan t: bu kutuda scipy yok ve n=3-7'de normal yaklaşım kaba.
+# t eşiği dağılım varsayımı gerektirmez.
+WFO_POOLED_T_REJECT = float(os.environ.get("NAUTILUS_WFO_POOLED_T", "2.0"))
+WFO_POOLED_MIN_WINDOWS = 3  # std ve t için asgari; altında havuzlama yapılmaz
+
+
+def pooled_alpha_stats(values: list[float]) -> tuple[float, float, float] | None:
+    """(ortalama, std, t) — hesaplanamıyorsa None.
+
+    std sıfırsa t tanımsızdır (sıfıra bölme); o durumda None döner ve çağıran
+    "havuzlanamadı" yolunu izler. Sabit alfa serisi gerçek veride görülmedi ama
+    fail-closed davranmak, sonsuz bir t üretmekten iyidir.
+    """
+    n = len(values)
+    if n < WFO_POOLED_MIN_WINDOWS:
+        return None
+    mean = sum(values) / n
+    var = sum((v - mean) ** 2 for v in values) / (n - 1)
+    sd = math.sqrt(var)
+    # `sd <= 0` YETMEZ: sabit bir seride kayan nokta artığı kalıyor
+    # (ölçüldü: [0.05]*3 → sd=8,5e-18 → t=1,0e16, yani sonsuza yakın bir
+    # "kesinlik"). Eşik verinin ÖLÇEĞİNE göre olmalı, mutlak sıfıra göre değil.
+    if sd <= max(1e-12, abs(mean) * 1e-9):
+        return None
+    return mean, sd, mean / (sd / math.sqrt(n))
+
 
 # WFO penceresi TAKVİMDE sabit (6 ay eğitim / 2 ay test / 3 ay adım), eşiği ise
 # SAYIMDA — mühürlü kapıyla birebir aynı birim uyuşmazlığı. Dönüşüm katsayısı
@@ -403,6 +440,21 @@ def wfo_verdict(wfo: list[dict], *, penalized: float | None = None) -> WfoVerdic
     # kanıtın terfiyle ödüllendirilmemesi için `measured` True kalır (ekranda
     # gerçek oran görünsün) ve `ok` False olur.
     if len(valid) < WFO_MIN_VALID_WINDOWS:
+        # Oy sayımı bu paydada anlamsız; ama havuzlanmış alfa KESİN negatifse
+        # "yargılayamadım" demek yanlış olur — o bir performans reddidir.
+        _pooled = pooled_alpha_stats(excess)
+        if _pooled is not None and _pooled[2] <= -WFO_POOLED_T_REJECT:
+            _mean, _sd, _t = _pooled
+            _reason = (
+                f"pooled alpha {100 * _mean:+.1f}%/yr over {len(valid)} windows "
+                f"(t={_t:.1f}) — negative beyond doubt"
+            )
+        else:
+            _reason = (
+                f"only {len(valid)} valid windows — "
+                f"{WFO_MIN_VALID_WINDOWS} needed to judge "
+                f"(not a performance rejection)"
+            )
         return WfoVerdict(
             measured=True,
             valid=len(valid),
@@ -411,11 +463,7 @@ def wfo_verdict(wfo: list[dict], *, penalized: float | None = None) -> WfoVerdic
             alpha_ratio=ratio,
             penalized_sharpe=penalized,
             ok=False,
-            reason=(
-                f"only {len(valid)} valid windows — "
-                f"{WFO_MIN_VALID_WINDOWS} needed to judge "
-                f"(not a performance rejection)"
-            ),
+            reason=_reason,
         )
 
     pen = penalized

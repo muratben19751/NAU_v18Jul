@@ -330,3 +330,62 @@ def test_the_floor_is_registered_as_an_env_knob():
     assert ar.WFO_MIN_VALID_WINDOWS == 10
     src = inspect.getsource(ar)
     assert "NAUTILUS_WFO_MIN_WINDOWS" in src
+
+
+def test_pooled_alpha_turns_unjudgeable_into_a_real_rejection():
+    """Payda sınırının altında oy saymak anlamsız — ama ortalama anlamlı olabilir.
+
+    ÖLÇÜLDÜ (arşivdeki 26 aday, 2026-08-20): 25'inin ortalama alfası negatif,
+    hiçbiri p<0,10'a ulaşmıyor. Payda sınırının altında kalıp t ≤ −2 ile KESİN
+    negatif çıkan 8 aday vardı (ör. 3 pencerede t=−4,60); onlara "yargılayamadım"
+    demek yanlıştı — o bir performans reddidir ve öyle raporlanmalı.
+    """
+    # Sepet DEĞİŞKEN olmalı: `_basket` tek tip pencere üretiyor ve sabit bir
+    # seride std sıfırdır — havuzlama (haklı olarak) atlanır. Gerçek WFO
+    # pencereleri hiçbir zaman aynı alfayı vermez.
+    losses = [-0.18, -0.09, -0.14, -0.21, -0.07, -0.16, -0.12]
+    windows = [
+        _window(n_trades=WFO_MIN_TRADES + 1, pnl=-100.0, excess=x) for x in losses
+    ]
+    v = wfo_verdict(windows)
+    assert not v.ok
+    assert "pooled alpha" in v.reason and "t=" in v.reason, v.reason
+    assert "needed to judge" not in v.reason
+
+
+def test_pooled_alpha_stays_silent_when_the_evidence_is_weak():
+    """Belirsiz bir kısa seride eski mesaj kalmalı — uydurma kesinlik üretme."""
+    windows = _basket(n_alpha=3, n_loss=3)
+    v = wfo_verdict(windows)
+    assert not v.ok
+    assert "needed to judge" in v.reason, v.reason
+
+
+def test_pooled_alpha_can_never_open_the_gate():
+    """Bu yol YALNIZ ret; geçiş yolu olsaydı boş dağılım kalibrasyonu şarttı.
+
+    Kalibrasyonsuz bir GEÇİŞ ölçütü, dün payda sınırını koyarken kaçındığımız
+    hatanın ta kendisi olurdu. Kaynağı tutuyoruz: sınırın altındaki dal
+    `ok=False` dışında bir şey döndüremez.
+    """
+    import inspect
+
+    import auto.robustness as ar
+
+    src = inspect.getsource(ar.wfo_verdict)
+    branch = src[src.index("if len(valid) < WFO_MIN_VALID_WINDOWS"):]
+    branch = branch[: branch.index("return WfoVerdict") + 400]
+    assert "ok=False" in branch and "ok=True" not in branch
+
+    # Mükemmel ama kısa bir sepet de geçmemeli.
+    assert not wfo_verdict(_basket(n_alpha=5)).ok
+
+
+def test_pooled_stats_are_fail_closed_on_a_degenerate_series():
+    """std=0 → t tanımsız; sonsuz bir t üretmek yerine havuzlama atlanır."""
+    import auto.robustness as ar
+
+    assert ar.pooled_alpha_stats([0.05, 0.05, 0.05]) is None
+    assert ar.pooled_alpha_stats([0.05, 0.06]) is None  # n < 3
+    out = ar.pooled_alpha_stats([-0.1, -0.2, -0.15, -0.12])
+    assert out is not None and out[2] < 0
