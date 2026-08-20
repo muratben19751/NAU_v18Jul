@@ -1048,6 +1048,7 @@ Design a new {market_target} composed strategy as specified. Return JSON only.""
         return _validate_composed(data), usage
     except Exception as e:
         _raise_if_llm_control_abort(e)
+        logging.warning("propose_composed_strategy failed: %s", e, exc_info=True)
         fb = _fallback_composed()
         fb["description"] = (
             fb.get("description", "") + f" · fallback ({type(e).__name__})"
@@ -1406,9 +1407,9 @@ PREFERRED CONCEPTS (proven to produce trades):
 - MUST also define `max_lookback(params)` at module level returning the number of bars the block needs (e.g. `def max_lookback(params): return int(params.get("period", 14)) * 2 + 10`). Without it the price window is silently clipped to 55 bars and long-period indicators miscompute (M16).
 - No try/except, no with, no async, no lambda, no yield, no global/nonlocal, no delete.
 - No dunder access (anything starting with `_`) — not on attributes, not on names.
-- Only these built-ins may be called: abs, min, max, sum, len, round, sorted, range, int, float, bool, str, list, tuple, dict, set, any, all, enumerate, zip, reversed, isinstance.
+- Only these built-ins may be called: {allowed_builtins}.
 - Helper functions defined in the same `code` string may call each other — that is allowed.
-- Only these attributes may be accessed: .params, .role, .type, .get, .keys, .values, .items, .value, .upper, .lower, .middle, .initialized, .is_net_long, .is_net_short, .is_flat, math/statistics module functions.
+- Only these attributes may be accessed: {allowed_attrs}.
 
 STYLE:
 - Keep each function short (helper 3-15 lines, evaluate 5-20 lines).
@@ -1504,7 +1505,7 @@ def _custom_block_system_prompt(role_hint: str) -> str:
         "meta.help. Use at most 3 parameters and no helper unless essential; "
         "keep code at most 60 lines and the entire response under 1,800 tokens."
     )
-    return CUSTOM_BLOCK_SYSTEM_PROMPT + lock + compact
+    return _render_block_prompt(CUSTOM_BLOCK_SYSTEM_PROMPT) + lock + compact
 
 
 def _env_bounded(name: str, default, *, lo=None, hi=None, cast=int):
@@ -1523,6 +1524,91 @@ def _env_bounded(name: str, default, *, lo=None, hi=None, cast=int):
         v = min(cast(hi), v)
     return v
 
+
+
+def _render_block_prompt(prompt: str) -> str:
+    """İzin listelerini KAYNAKTAN doldur — elle yazılan kopya ıraksıyordu.
+
+    Ölçülen çelişki (2026-08-20): prompt üç satır yukarıda "`ind.calc_atr`
+    kullan, elle yazma" derken beyaz liste satırı yalnız 15 attribute sayıyordu
+    ve `.calc_atr` orada YOKTU. Yani modele aynı sayfada hem kullan hem kullanma
+    deniyordu. `codegate` gerçekte 74 attribute'a izin veriyor (`.calc_adx`,
+    `.ema`, `.sma`, `.append`, `.setdefault`, math/statistics adları dahil).
+
+    Elle yazılmış bir liste, dayattığı listeden ayrı yaşadığı sürece çürür;
+    tek çare aynı kümeden türetmek. `tests/test_block_prompt_matches_codegate.py`
+    ikisinin ayrışmasını kırmızıya çevirir.
+    """
+    from codegate import _ALLOWED_BUILTINS
+
+    builtins_ = ", ".join(sorted(_ALLOWED_BUILTINS))
+    return prompt.replace("{allowed_attrs}", _allowed_attrs_line()).replace(
+        "{allowed_builtins}", builtins_
+    )
+
+
+def _allowed_attrs_line() -> str:
+    """İzin verilen attribute'lar, TEK kaynaktan — prompt ve retry aynı listeyi görsün."""
+    from codegate import _ALLOWED_ATTRS
+
+    return ", ".join("." + a for a in sorted(_ALLOWED_ATTRS))
+
+
+def _synthesize_max_lookback(code: str, meta: dict) -> str | None:
+    """Eksik `max_lookback(params)`'ı meta ŞEMASINDAN türetip ekle.
+
+    ÖLÇÜLDÜ (40 çağrı, yerel qwen2.5-coder:14b, 2026-08-20): 13 başarısızlığın
+    6'sı yalnızca bu fonksiyonun unutulmasıydı — prompt onu açıkça istemesine ve
+    yeniden-deneme mesajı hatayı birebir taşımasına rağmen. Eksik olan bilgi
+    değil UYUM; daha fazla prompt metni bunu kapatmıyor.
+
+    M16'nın korktuğu şey fonksiyon yokken pencerenin sessizce 55 bara
+    kırpılmasıydı. Şemadan türetilmiş bir tavan ondan da, bloğu tamamen
+    kaybetmekten de iyidir. Türetilen kod codegate'in TÜM denetimlerinden
+    yeniden geçer.
+
+    ÖNEMLİ — `meta["params"]` bir DEĞER sözlüğü değil ŞEMADIR:
+
+        {"period": {"type": "int", "min": 5, "max": 30, "default": 14}}
+
+    İlk sürümüm `isinstance(v, (int, float))` diye baktığı için onarım hiç
+    ateşlemedi; testi de aynı yanlış varsayımla yazdığım için o da yakalamadı.
+    Kurgu artık GERÇEK şemadan türetiliyor (bkz. testteki şema doğrulaması).
+
+    None döner: kod zaten tanımlıyorsa ya da şemada tamsayı parametre yoksa —
+    o durumda uydurmak yerine ret doğru.
+    """
+    if "def max_lookback" in code:
+        return None
+    params = (meta or {}).get("params")
+    if not isinstance(params, dict):
+        return None
+
+    picks: list[tuple[str, int]] = []
+    for name, spec in params.items():
+        if not isinstance(name, str) or not name.isidentifier():
+            continue
+        if isinstance(spec, dict):
+            if str(spec.get("type")) != "int":
+                continue
+            raw = spec.get("max", spec.get("default"))
+        else:
+            raw = spec
+        try:
+            v = int(float(raw))
+        except (TypeError, ValueError):
+            continue
+        if 0 < v < 10_000:
+            picks.append((name, v))
+    if not picks:
+        return None
+
+    lookup = " ".join(f'int(params.get("{n}", {v})),' for n, v in picks)
+    # Ters bölü yerine chr(10): bu dosya heredoc'larla düzenleniyor ve
+    # kaçış dizileri o yolda hayatta kalmıyor.
+    nl = chr(10)
+    head = nl + nl + nl + "def max_lookback(params):" + nl
+    return code.rstrip() + head + "    return max(" + lookup + " 1) * 2 + 10" + nl
 
 def _call_claude_for_block(
     user_prompt: str,
@@ -2105,6 +2191,29 @@ Return the JSON only."""
             # literal returns the semantics are unambiguous: an exit condition
             # firing means ``exit``. Repair locally and re-run every safety gate
             # instead of paying for another full generation call.
+            # Eksik `max_lookback` bir tasarim hatasi degil, bir UNUTMA —
+            # ve parametrelerden turetilebilir. Onarip tum kapilari yeniden kos.
+            if "max_lookback" in last_error:
+                _ml = _synthesize_max_lookback(code, meta)
+                if _ml is not None:
+                    try:
+                        _validate_generated_code(_ml)
+                        _test_execute_generated(
+                            _ml,
+                            meta=meta,
+                            require_max_lookback=True,
+                            role_hint=role_hint,
+                        )
+                    except GeneratedCodeError as _ml_err:
+                        last_error = f"{last_error}; max_lookback repair failed: {_ml_err}"
+                    else:
+                        return {
+                            "name": name,
+                            "meta": meta,
+                            "code": _ml,
+                            "usage": _acc_usage,
+                            "repair": "max_lookback_synthesized",
+                        }
             if role_hint == "exit" and "role contract" in last_error:
                 repaired = _repair_exit_return_literals(code)
                 if repaired is not None:
@@ -2130,9 +2239,11 @@ Return the JSON only."""
                 f"Your last code was REJECTED with this error:\n\n{last_error}\n\n"
                 f"ROLE CONTRACT (still mandatory): {role_contract}\n"
                 "Fix the code and return the same JSON schema. Remember: no imports, "
-                "no leading underscore names, no try/with/lambda/global/nonlocal, only whitelisted "
-                "attributes (.params/.role/.value/.upper/.lower/.middle/.initialized/.get/.keys/"
-                ".values/.items) and only whitelisted builtins."
+                "no leading underscore names, no try/with/lambda/global/nonlocal, "
+                # Bu liste de ELLE yazilmisti ve ana prompt'takiyle ayni sekilde
+                # iraksamisti — kaynaktan turetiliyor (bkz. _render_block_prompt).
+                f"only these attributes: {_allowed_attrs_line()}, "
+                "and only whitelisted builtins."
             ):
                 break
             continue
