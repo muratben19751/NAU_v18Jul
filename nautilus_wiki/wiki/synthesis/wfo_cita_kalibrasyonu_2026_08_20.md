@@ -142,6 +142,75 @@ alpha in only 3/13 windows (<50%)
 Kod tarafı: `auto/robustness.py` (`wfo_verdict`, `WFO_MIN_VALID_WINDOWS`),
 `tests/test_wfo_line_shows_the_deciding_number.py`.
 
+## Saha doğrulaması: sınır iki turda iki kez tetiklendi (koşu b78e7749)
+
+Düzeltmelerden saatler sonra, aynı model + aynı ipucuyla koşan `b78e7749`'da:
+
+| tur | aday | WFO | gerekçe |
+|---|---|---|---|
+| 1 | Volume-Driven Momentum Breakout [1-DAY] | **3/6** | `only 6 valid windows — 10 needed to judge` |
+| 2 | ATR+Momentum Drive [1-DAY] | 1/7 | `only 7 valid windows — 10 needed to judge` |
+
+**Tur 1 tam çıtadaydı: 3/6 = %50.** Eski kuralla GEÇERDİ. Aynı adayın Monte
+Carlo medyan düşüşü **−%44,8**; altı pencereden çıkan "%50" ciddi biçimde riskli
+bir adayı sertifikalayacaktı. Tur 2'de sınır kararı değiştirmedi (1/7 zaten
+düşerdi) ama gerekçeyi düzeltti: "kötü" değil, "yargılanamadı".
+
+Küçük paydada oranın tam eşiğe oturması tesadüf değil: `1/2`, `2/4`, `3/6` —
+hepsi %50. **Eşiğe EŞİT çıkan bir oran, ölçümün kaba olduğunun işaretidir.**
+İki bağımsız vaka (arşivden `4f7849df` 1/2, canlıdan `b78e7749` 3/6) aynı şeyi
+söylüyor.
+
+Düzeltilmiş başlık satırı da canlıda göründü:
+
+```
+📈 Walk-Forward — … ≥50% of windows must beat buy&hold (positive excess return);
+   merely profitable windows do not count.
+```
+
+## Sınırın altında kalmanın sebebi aday değil, aritmetik
+
+İki turun ikisinde de aday **1-DAY** ve yavaş. Zincir şöyle işliyor:
+
+`yavaş aday → pencere adayın hızından türetiliyor → pencere uzuyor (39 ay
+eğitim / 13 ay test) → toplam pencere azalıyor → 5 işlem eşiğini geçen pencere
+daha da azalıyor → payda sınırının altında kalınıyor.`
+
+Sayı: aday **98 barda bir** işlem açıyor. Sınır 10 pencere × 5 işlem = **en az
+50 işlem, üstelik pencerelere dağılmış** istiyor; adayın 19,5 yıldaki toplam
+işlem sayısı da o civarda. Yani yavaş bir strateji için WFO, hangi pencere
+ayarı seçilirse seçilsin **fizibilitenin sınırında**.
+
+Bir düzeltme: "yalnız 6 pencere üretildi" değil — **14 pencere üretildi, 6'sı
+geçerli sayıldı**; kalan 8'i 5 işlem eşiğine takıldı.
+
+### "WFO'yu daha ince zaman diliminde koştur" bedava değil
+
+Cazip çözüm, WFO'yu adayın seçtiği dilimde değil en ince dilimde (1-HOUR)
+koşturmak: ölçüldü, strateji başına geçerli pencere medyanı saatlikte **26**,
+günlükte **5**.
+
+Ama blok parametreleri **bar cinsinden**, takvim cinsinden değil:
+`ma_cross(fast=10, slow=30)`, `atr_stop(period=14)`. Günlük barda 10 gün,
+saatlik barda 10 saat. ABD hissesinde gün ≈ 6,5 saatlik bar olduğuna göre aynı
+spec'i saatlikte koşturmak onu **~6,5 kat hızlandırılmış BAŞKA bir strateji**
+yapar; WFO sonucu sıralamayı geçen adaya ait olmaz.
+
+Üç seçenek ve tavsiyeler:
+
+1. **Adımı küçült, dilimi değiştirme** (`39/13/7` → 14 yerine 26 pencere).
+   Kapıyı sayısal olarak açar ama **bilgi kazancı yok**: örtüşen pencereler aynı
+   işlemleri tekrar sayar, "kanıt" artmış görünür.
+2. **İnce dilime geç ve periyotları ölçekle** (günlük `SMA(20)` → saatlik
+   `SMA(130)`). Sorunun geçerli çözümü; yaklaşık, çünkü eşik/çarpan tipi
+   parametreler ölçeklenmez. Doğrulanabilir: ölçeklenmiş spec benzer işlem
+   sayısı ve sonucu üretiyor mu?
+3. **Az gözlemli aday için ölçütü değiştir**: "pencerelerin yarısı" oylaması
+   yerine tüm test pencerelerindeki **havuzlanmış alfa** + anlamlılık testi.
+   6 pencere oy için az, havuzlanmış tahmin için yeterli olabilir.
+
+Karar verilmedi; koşu sürerken `auto/robustness.py`'ye dokunulmuyor.
+
 <!-- BACKLINKS:BEGIN -->
 ## Referenced by
 

@@ -1904,3 +1904,19 @@ karışmıştı. Payda sınırını geçen 12 adayın gerçek dağılımı %10-4
 rastgele medyanı %23. Yani adaylar şanstan belirgin iyi, sadece %50'ye
 yetişemiyor. Sayı doğrulanmadan yazılan bir aralık, bulgunun işaretini ters
 çevirebiliyordu.
+
+## 2026-08-20 (2) — payda sınırı sahada doğrulandı; WFO'nun fizibilite sınırı
+
+Koşu `b78e7749` (14B, aynı ipucu, bugünün kapısıyla): tur 1'de aday **3/6 = %50**
+ile tam çıtadaydı ve eski kuralla GEÇERDİ; yeni payda sınırı reddetti. Aynı adayın
+MC medyan düşüşü −%44,8. Tur 2'de 1/7 — sınır kararı değiştirmedi, gerekçeyi
+düzeltti. Küçük paydada oranın tam eşiğe oturması (1/2, 2/4, 3/6 hepsi %50)
+ölçümün kaba olduğunun işareti.
+
+Yeni bulgu: sınırın altında kalmanın sebebi aday zayıflığı değil aritmetik.
+Aday 98 barda bir işlem açıyor; sınır 10×5 = 50 dağılmış işlem istiyor ve adayın
+19,5 yıldaki toplamı o civarda. Ayrıca "6 pencere üretildi" yanlıştı — **14
+üretildi, 6'sı geçerli**. "WFO'yu 1-HOUR'da koştur" bedava değil: blok
+parametreleri BAR cinsinden, aynı spec saatlikte ~6,5 kat hızlı başka bir
+strateji olur. Üç seçenek [[wfo_cita_kalibrasyonu_2026_08_20]]'de; karar
+verilmedi, koşu sürerken koda dokunulmuyor. Tur 3 devam ediyor.
