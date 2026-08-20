@@ -14,7 +14,7 @@ related:
   - wiki/synthesis/auto_mission_control.md
   - wiki/synthesis/tear_sheet_overlay.md
   - wiki/synthesis/kesilme_ve_degrade_gorunurlugu.md
-last_updated: 2026-08-19
+last_updated: 2026-08-20
 ---
 
 # Model seçici ve model görünürlüğü
@@ -403,6 +403,30 @@ yazdır**, sonra o adrese elle bir istek at.
 Aynı ailenin başka yüzü bu sayfada zaten var (zamanaşımı ayarı yerel uca hiç
 ulaşmıyordu, 2026-08-15): orada ayar doğruydu ve YÜRÜTME eskiydi; burada ayar
 doğru ve HEDEF ayakta değil. İkisinde de "ayarı doğrula" yetmedi.
+
+## Yerel uç Ollama'ya taşındı — ve pin'in ikinci tuzağı (2026-08-19/20)
+
+`OPENROUTER_BASE_URL` artık `127.0.0.1:11434/v1` (Ollama), pin ise
+`qwen2.5-coder:14b,qwen2.5-coder:32b,gemma4:26b`. Taşıma sırasında bu sayfanın
+anlattığı tuzakların ikisi de tekrar ısırdı, biri yeni:
+
+* **`pm2 restart <ad>` ecosystem dosyasını okumaz** — saklanan ortamı yeniden
+  kullanır. Süreç 30 dk önce yeniden başlamış olmasına rağmen hâlâ `:8080`
+  gösteriyordu. Gereken: `pm2 delete <ad> && pm2 start ecosystem.config.js
+  --only <ad>` (bkz. [[surec_yoneticisi_ortami_dondurur]]).
+* **Yerel sunucuyu "yeniden başlattım" demek başlatmış olmak değil.** İkinci
+  `ollama serve` portu dolu bulup sessizce ölmüş, eski süreç (aynı PID, aynı
+  başlangıç saati) hizmet vermeye devam etmişti. Doğrulama komuta değil
+  **portu dinleyen PID'e** bakmalı.
+* **YENİ: pin modeli seçer, bağlamı seçmez.** Model listede görünüp 200
+  döndürse bile sunucunun varsayılan bağlam penceresi prompt'tan küçükse istek
+  sessizce kırpılır. Ölçüm ve parmak izi:
+  [[nau_yerel_model_secimi_2026_08_20]].
+
+Model seçicinin görünürlük sözleşmesi de burada bir kez daha işe yaradı:
+`AUTO_DEFAULT_MODEL` pin listesinde bulunmak zorunda olduğu için
+(`tests/test_studio_page.py`), pin'e 14B eklenirken 32B listede tutuldu ve test
+yeşil kaldı.
 
 <!-- BACKLINKS:BEGIN -->
 ## Referenced by

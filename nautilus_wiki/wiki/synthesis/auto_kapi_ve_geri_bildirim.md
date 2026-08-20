@@ -13,7 +13,7 @@ related:
   - wiki/synthesis/auto_arama_ekonomisi.md
   - wiki/synthesis/auto_mission_control.md
   - wiki/synthesis/webapp_module_map.md
-last_updated: 2026-08-18
+last_updated: 2026-08-20
 ---
 
 # AUTO'nun kapısı ve geri bildirimi
@@ -422,6 +422,40 @@ mühürlü kapı hiç açılmamıştı. `9016d12a` turu 1'de açıldı ve
 Kayıt artık yargılandığı eşiği taşıyor: `min_trades_required: 5, train_bars:
 4899, train_trades: 22`.
 
+## Kapının üç düzeltmesi ve çıtanın ölçülmesi (2026-08-20)
+
+Beş koşu üst üste aynı yerde takıldı — adaylar dört ölçütün üçünden geçip
+**yalnız WFO'dan** düşüyordu (payda sınırını geçen 12 adayın alfa oranı
+%10-47, medyan %34; rastgele tabanın medyanı %23). Çıta ölçüldü ve üç şey çıktı; ayrıntı ve sayılar
+[[wfo_cita_kalibrasyonu_2026_08_20]]'de.
+
+**1. Açıklama satırı yanlış ölçütü öğretiyordu.** Adım başlığı "≥50% of windows
+must have positive PnL" diyordu, karar ise AL-TUT'U GEÇEN pencereleri sayıyor.
+Operatöre önce yanlış kural söyleniyor, sonra o kurala göre okunamayan bir sayı
+(`1/7`) gösteriliyordu. Bu, aynı gün düzeltilen "ekrandaki sayı kararın sayısı
+değildi" hatasının başlık satırındaki ikizi — sonuç satırı düzeltilmiş ama
+başlık atlanmıştı.
+
+**2. Kapı, "karar ölçütü olamaz" diye belgelenmiş alandan karar veriyordu.**
+`app_constants` iki karşılaştırma üretiyor ve ikisi aynı sözlükte duruyor:
+
+| alan | benchmark tabanı |
+|---|---|
+| `excess_return_fraction` | `gross_buy_and_hold_no_costs` — brüt, kümülatif |
+| `annualized_alpha` | `round_trip_cost_and_optional_dividends` — iki taraf da net |
+
+Birincisinin docstring'i *"geriye uyumluluk için duruyor ama KARAR ölçütü
+olamaz"* diyordu; `wfo_verdict` yine onu okuyordu. Kapı ikincisine çevrildi.
+**Etkisi önceden ölçüldü: 54 artefakt, 973 pencere, ayrışan pencere sayısı 2** —
+maliyet %0,02, pencere getirileri ±%1-20. Yani doğruluk düzeltmesi, kalibrasyon
+değil; kod içine bu sayı yazıldı ki "kapıyı düzelttik, artık geçerler" beklentisi
+doğmasın.
+
+**3. Oranın paydasında alt sınır yoktu.** `1/2 = %50` ile bir aday gerçekten
+geçmişti (koşu `4f7849df`). `WFO_MIN_VALID_WINDOWS = 10` geldi; sınırın altı
+"atlama" değil **ret** — çünkü kapıda `measured=False` `_skip()`e düşüyor,
+`failed` artmıyor ve aday kalan üç ölçütle terfi edebilirdi.
+
 <!-- BACKLINKS:BEGIN -->
 ## Referenced by
 
@@ -432,4 +466,5 @@ Kayıt artık yargılandığı eşiği taşıyor: `min_trades_required: 5, train
 - [[nau_deepr_dorduncu_tur_2026_08_11]]
 - [[nau_deepr_mimari_katman_ayrimi]]
 - [[webapp_module_map]]
+- [[wfo_cita_kalibrasyonu_2026_08_20]]
 <!-- BACKLINKS:END -->

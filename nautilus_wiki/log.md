@@ -1868,3 +1868,39 @@ kollarının hepsinin üstünde. Karşılaştırma "zayıf model vs güçlü mod
 Not: `ecosystem.config.js` çalışma ağacında değişik (kullanıcı yerel ucu
 llama-server:8080'den Ollama:11434'e çevirmiş, iki model kayıtlı ve uç AYAKTA).
 Bu senkronun commit'ine DAHİL EDİLMEDİ.
+
+## 2026-08-20 — WFO çıtası ölçüldü, yerel model seçildi, üç kapı düzeltmesi
+
+**Kapı.** Üç düzeltme girdi: (1) adım başlığı kararın ölçüsünü söylüyor (kârlılık
+değil, al-tut'u geçmek); (2) kapı maliyet-eşli `annualized_alpha`'dan okuyor —
+kod tabanının "karar ölçütü olamaz" diye belgelediği `excess_return_fraction`'dan
+değil, etkisi 973 pencerede 2 oy; (3) oranın paydasına alt sınır geldi
+(`WFO_MIN_VALID_WINDOWS=10`) — `1/2 = %50` ile bir aday gerçekten geçmişti.
+
+**Çıta ölçüldü.** 3.000 rastgele strateji, iki zaman dilimi: medyan %23 (filtreden
+bağımsız), %50'ye ulaşan oranı sağlam örneklemde %1-3. Eşik %50'de KALDI — boş
+dağılımın p97-99'u. Adaylarımız %14-37, yani rastgelenin medyan-p90 bandında:
+kapı haksız değil, stratejiler al-tut'u yenmiyor. Yeni sayfa:
+[[wfo_cita_kalibrasyonu_2026_08_20]].
+
+**Yerel model.** Uç Ollama'ya taşındı; 32B 16 GB karta sığmıyor (426 sn),
+gemma4:26b bütçenin tamamını `reasoning`'e harcayıp BOŞ içerik döndürüyor,
+14B 31 sn'de geçerli JSON üretiyor ve seçildi. Varsayılan 4.096 bağlam prompt'u
+(7.787 token) sessizce yarıya kırpıyordu. Yeni sayfa:
+[[nau_yerel_model_secimi_2026_08_20]].
+
+**Düzeltme.** 2026-08-19'da yazılan "karşılaştırma *hiç model yok vs model*"
+cümlesi yanlıştı: `_fallback_composed` 408 bloğun 337'si önceki LLM koşularından
+gelen bir katalogdan seçiyor. [[auto_arama_ekonomisi]]'ne düzeltme olarak işlendi;
+Calmar tarafında iki tabanın ayrımı henüz yeniden ölçülmedi (açık uç).
+
+**custom_block.** `claude.exe` 500 baytlık bir yer tutucuydu (npm postinstall
+koşmamış); Windows bunu "sürüm uyumsuz" diye raporluyordu. Onarım sonrası aynı
+model/ipucuyla sıralamayı geçen aday 1/15 → 3/15.
+
+**Doğrulama geçişinde düzeltme:** kalibrasyon sayfasına ilk yazılan "adaylar
+%14-37, rastgeleden farksız" cümlesi yanlıştı — hesaba yetersiz paydalı adaylar
+karışmıştı. Payda sınırını geçen 12 adayın gerçek dağılımı %10-47, **medyan %34**;
+rastgele medyanı %23. Yani adaylar şanstan belirgin iyi, sadece %50'ye
+yetişemiyor. Sayı doğrulanmadan yazılan bir aralık, bulgunun işaretini ters
+çevirebiliyordu.

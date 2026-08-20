@@ -12,7 +12,7 @@ related:
   - wiki/synthesis/auto_mission_control.md
   - wiki/synthesis/webapp_module_map.md
   - wiki/synthesis/nau_performans_denetimi.md
-last_updated: 2026-08-19
+last_updated: 2026-08-20
 ---
 
 # AUTO aramasının ekonomisi
@@ -298,6 +298,30 @@ koşunun beşinde de ipucu doluydu, yani arama hiç serbest bırakılmadı.
 bırakır ve 15 aday 15 farklı çapa seçebilir. Tezi yazmak hem bağlar hem
 belirsizliği kapatır.
 
+## DÜZELTME: "rastgele taban" rastgele değildi (2026-08-20)
+
+Yukarıdaki "aptal taban zeki yolu geçiyor" bulgusu — rastgele fallback
+kompozisyonlarının Calmar dağılımında üç Claude modelini de geçmesi — ölçülmüş
+bir gerçek. Ama ondan çıkarılan yorum ("karşılaştırma *hiç model yok vs model*")
+**yanlıştı.**
+
+`_fallback_composed` bloklarını `BLOCK_CATALOG`'dan seçiyor. Katalog canlı
+kutuda **408 blok** içeriyor ve bunun **337'si `agnt_*`**, yani önceki
+koşularda LLM'in ürettiği ve diske kalıcılaşmış bloklar. Yalnız 71'i dahili.
+
+Yani "rastgele taban" aslında **geri dönüştürülmüş model çıktısının rastgele
+yeniden birleştirilmesi**. Doğru okuma: *"taze model çıktısı"* vs *"geçmiş model
+çıktısı, rastgele kombinasyonla"*. İkincisinin kazanması "model gereksiz"
+demiyor; daha çok, tek bir çağrının ürettiği kombinasyonun, birikmiş blok
+havuzundan rastgele seçime göre daha dar olduğunu düşündürüyor.
+
+İki taban ayrı ölçüldüğünde WFO çıtasında aralarında anlamlı fark çıkmadı
+(medyan %23 vs %23) — bkz. [[wfo_cita_kalibrasyonu_2026_08_20]]. Calmar
+tarafında ayrım henüz yeniden ölçülmedi; **açık uç.**
+
+Ders, bulgunun kendisinden bağımsız: **"rastgele" diye adlandırılan bir taban,
+neyin arasından rastgele seçtiği yazılmadıkça bir taban değildir.**
+
 <!-- BACKLINKS:BEGIN -->
 ## Referenced by
 
@@ -305,4 +329,5 @@ belirsizliği kapatır.
 - [[nau_auto_kosulari_2026_08_18]]
 - [[nau_performans_denetimi]]
 - [[webapp_module_map]]
+- [[wfo_cita_kalibrasyonu_2026_08_20]]
 <!-- BACKLINKS:END -->

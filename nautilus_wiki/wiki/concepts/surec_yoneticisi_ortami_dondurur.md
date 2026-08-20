@@ -67,5 +67,6 @@ neden bilinçli olduğu).
 <!-- BACKLINKS:BEGIN -->
 ## Referenced by
 
+- [[model_secici_ve_gorunurluk]]
 - [[nau_deepr_mimari_katman_ayrimi]]
 <!-- BACKLINKS:END -->
