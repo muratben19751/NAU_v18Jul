@@ -26,29 +26,32 @@ module.exports = {
         OPENROUTER_API_KEY: "ollama",
         // Pin listenin YERİNE geçer: ağa çıkmaz, ücretsiz filtresinden muaftır.
         NAUTILUS_OPENROUTER_MODELS: "qwen2.5-coder:14b,qwen2.5-coder:32b,gemma4:26b",
-        // custom_block yolunun kendi deadline'ı; varsayılan 75 s, izin verilen
-        // tavan 120 s (agent.py `_call_claude_for_block`). Ölçüldü 2026-08-15:
-        // yerel Qwen3.8-27B'de custom_block başarısı 75 s'de 2/8, 120 s'de 4/8.
-        // Sebep AGENT_CUSTOM_BLOCK_MAX_TOKENS'ın 1800'lük SERT tavanı (hi=1_800):
-        // düşünen model onu her çağrıda aşıyor, kesilme 7200'e retry doğuruyor,
-        // retry de deadline'ı yiyor. Claude'a etkisi yok — o 75 s'in çok altında
-        // bitiriyor; bu yalnız yavaş sağlayıcıda hata tespitini geciktirir.
+        // custom_block yolunun kendi deadline'ı. 2026-08-15'te bu değer 1.800'lük
+        // SERT token tavanının doğurduğu retry'ları karşılamak için 120'ye
+        // çekilmişti; o tavan 08-17'de kalktı (varsayılan 6.000 / hi 16.000).
+        // Bugünkü ölçümde yerel 14B'nin en yavaş çağrısı 15,3 sn — yani 120 artık
+        // bir zorunluluk değil, bol pay. Düşürmeden önce yeniden ölçün.
         AGENT_CUSTOM_BLOCK_TIMEOUT: "120",
-        // HİBRİT: koşu yerel uca pinlense bile `custom_block` Claude'da kalır.
-        // Ölçüm 2026-08-15 — yerel Qwen3.8-27B: composed 10/10, custom_block
-        // 4/8. Sebep o yolun terse bir modele göre kalibre edilmiş 1800'lük
-        // SERT tavanı; blok kodu ayrıca codegate'in AST + rol sözleşmesinden
-        // geçmek zorunda. Hacim işi ucuz uçta, sözleşmesi katı iş güvenilir uçta.
+        // PİN KALDIRILDI (2026-08-20). Dört yolun DÖRDÜ de yerel uçta.
         //
-        // Dört yolun DÖRDÜ de ölçüldü (2026-08-15, yerel Qwen3.8-27B):
-        //   narrative    6/6   3.2-11.3 s   → yerelde
-        //   idea         8/8   28.7-189 s   → yerelde
-        //   composed    10/10  27-222 s     → yerelde
-        //   custom_block 4/8   20-226 s     → CLAUDE'DA (aşağıdaki eşleme)
-        // Desen: çıktının sözleşmesi katılaştıkça (düz metin → JSON → codegate'ten
-        // geçen Python) yerel modelin başarısı düşüyor. Bu liste ölçümdür, tahmin
-        // değil; değiştirmeden önce yeniden ölçün.
-        NAUTILUS_MODEL_BY_PURPOSE: "custom_block=claude-fable-5",
+        // Eski hâli `custom_block=claude-fable-5` idi ve gerekçesi 2026-08-15
+        // ölçümüydü (yerel Qwen3.8-27B: custom_block 4/8). O ölçümün SEBEBİ
+        // 1.800'lük sert token tavanıydı ve tavan 08-17'de kalktı — yani karar
+        // ayakta kalırken dayanağı düşmüştü. Yeniden ölçüldü, aynı 8 blok tarifi:
+        //
+        //   yerel qwen2.5-coder:14b   6/8    5,6 - 15,3 sn
+        //   claude-fable-5            6/8   49,1 - 174,1 sn  (biri zaman aşımı)
+        //
+        // Başarı EŞİT; süre tamamen ayrışık — yerelin en yavaşı, Claude'un en
+        // hızlısından 3 kat hızlı, hiç örtüşme yok. Pin sıfır fayda karşılığında
+        // ~6 kat gecikme ödetiyordu.
+        //
+        // Yerelin iki başarısızlığı da YAPISAL sözleşme ihlaliydi
+        // (`max_lookback(params)` eksik, `.calc_donchian` beyaz listede değil),
+        // model kapasitesi değil — prompt'ta netleştirilebilir.
+        //
+        // Not: n=8, yani "oranlar eşit" zayıf bir iddia; güçlü olan hız farkı.
+        // Bir amacı tekrar pinleyecekseniz ÖNCE ölçün ve ölçümü buraya yazın.
         // Genel LLM çağrı deadline'ı (varsayılan 120 s). Ölçüm 2026-08-15:
         // yerel `idea` üretimleri 28.7-189.2 s arasında sürdü ve en uzunu TEK
         // çağrıydı (9.932 çıktı token'ı) — 120 s ile 8 üretimin 1'i (~%12)
