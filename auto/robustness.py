@@ -29,6 +29,7 @@ WFO penceresinin adayın hızından türetilmesi — `wfo_window_months`)
 from __future__ import annotations
 
 import math
+import os
 from collections.abc import Callable
 from pathlib import Path
 from typing import NamedTuple
@@ -172,6 +173,26 @@ def wfo_test(w: dict) -> dict:
 WFO_MIN_TRADES = MIN_DECISION_TRADES
 
 
+# Oranın PAYDASI için alt sınır. "Geçerli pencerelerin ≥%50'si al-tut'u geçmeli"
+# kuralı, paydaya sınır konmazsa 2 pencerenin 1'iyle sağlanır — yani yazı-tura.
+#
+# ÖLÇÜLDÜ (3.000 rastgele strateji, QQQC 22 yıl, 2026-08-20): çıtayı tutturan
+# rastgele strateji oranı, payda sınırına göre —
+#
+#   en az pencere │ 1-HOUR │ 1-DAY
+#   ──────────────┼────────┼──────
+#     1 (eski hâl)│   %10  │  %29
+#     5           │    %4  │  %14
+#    10           │    %3  │   %6
+#    15           │    %2  │   %1
+#
+# Medyan her iki seride de %23'te SABİT kaldı (beceriksizliğin gerçek seviyesi);
+# eriyen yalnız kuyruktu, yani yüksek oranlar beceri değil az-örneklem gürültüsü.
+# 15 daha güvenli ama gerçek adayların çoğunun 7-17 penceresi var; 10, yanlış
+# geçişi %3-6'ya indirirken adayları ölçülebilir bırakıyor.
+WFO_MIN_VALID_WINDOWS = int(os.environ.get("NAUTILUS_WFO_MIN_WINDOWS", "10"))
+
+
 # WFO penceresi TAKVİMDE sabit (6 ay eğitim / 2 ay test / 3 ay adım), eşiği ise
 # SAYIMDA — mühürlü kapıyla birebir aynı birim uyuşmazlığı. Dönüşüm katsayısı
 # yine stratejinin işlem hızı ve yine serbest bir değişken.
@@ -261,12 +282,16 @@ def wfo_window_months(
 
 def valid_wfo_windows(wfo: list[dict]) -> list[dict]:
     """WFO windows with enough trades in their decision metric to count."""
-    return [
-        w
-        for w in wfo
-        if (wfo_test(w).get("n_trades") or w.get("test_n_trades") or 0)
-        >= WFO_MIN_TRADES
-    ]
+    def _trades(w: dict) -> int:
+        tm = wfo_test(w)
+        if "n_trades" in tm and tm["n_trades"] is not None:
+            try:
+                return int(tm["n_trades"])
+            except (ValueError, TypeError):
+                return 0
+        return int(w.get("test_n_trades") or 0)
+
+    return [w for w in wfo if _trades(w) >= WFO_MIN_TRADES]
 
 
 class WfoVerdict(NamedTuple):
@@ -316,9 +341,21 @@ def wfo_verdict(wfo: list[dict], *, penalized: float | None = None) -> WfoVerdic
     Sharpe'larından hesaplanır — hangi serinin okunacağı payload'ın
     kökenine bağlı olduğu için çözüm çağıranda kalıyor.
 
-    Kural (değişmedi): geçerli pencerelerin en az yarısı AL-TUT'U GEÇMELİ, ve
-    sönümlenmiş OOS Sharpe biliniyorsa pozitif olmalı. Eksik/sonsuz
-    ``excess_return_fraction`` fail-closed: ölçülemeyen alfa, olumlu sayılmaz.
+    Kural: geçerli pencerelerin en az yarısı AL-TUT'U GEÇMELİ, ve sönümlenmiş
+    OOS Sharpe biliniyorsa pozitif olmalı. Eksik/sonsuz alfa fail-closed:
+    ölçülemeyen alfa, olumlu sayılmaz.
+
+    Alfa ``annualized_alpha``'dan okunur, ``excess_return_fraction``'dan DEĞİL.
+    İkisi de aynı sözlükte duruyor ama birincisi bu iş için yazıldı: iki bacak
+    da net (kıyasa ``BENCHMARK_ROUND_TRIP_COST_FRACTION`` düşülür, temettü
+    eklenir) ve yıllıklandırılmış olduğu için pencere uzunluğundan bağımsız.
+    İkincisi `app_constants` içinde "geriye uyumluluk için duruyor ama KARAR
+    ölçütü olamaz" diye belgelenmişti — kapı yine de onu okuyordu.
+
+    Ölçülen etki (54 artefakt, 973 pencere): iki alanın ayrıştığı pencere
+    sayısı **2**. Yani bu bir doğruluk düzeltmesi, kalibrasyon değil — maliyet
+    %0,02, pencere getirileri ±%1-20 bandında. Bu sayı burada yazılı ki
+    "kapıyı düzelttik, artık adaylar geçer" beklentisi doğmasın.
     """
     valid = valid_wfo_windows(wfo or [])
     if not wfo or not valid:
@@ -342,7 +379,7 @@ def wfo_verdict(wfo: list[dict], *, penalized: float | None = None) -> WfoVerdic
     excess = []
     for w in valid:
         try:
-            excess.append(float(wfo_test(w).get("excess_return_fraction")))
+            excess.append(float(wfo_test(w).get("annualized_alpha")))
         except (TypeError, ValueError):
             excess.append(float("nan"))
     if any(not math.isfinite(v) for v in excess):
@@ -354,11 +391,32 @@ def wfo_verdict(wfo: list[dict], *, penalized: float | None = None) -> WfoVerdic
             alpha_ratio=None,
             penalized_sharpe=penalized,
             ok=False,
-            reason="missing slice-local benchmark/excess",
+            reason="missing slice-local annualized alpha",
         )
 
     alpha_positive = sum(1 for v in excess if v > 0)
     ratio = alpha_positive / len(valid)
+
+    # Payda yetersizse oran anlamsız. Bu bir PERFORMANS reddi değil, KANITLAMA
+    # eksikliğidir — ama sonucu yine rettir: kapıda "ölçülemedi" `_skip`e düşer,
+    # `failed` artmaz ve aday kalan 3 ölçütle TERFİ EDEBİLİRDİ. Yetersiz
+    # kanıtın terfiyle ödüllendirilmemesi için `measured` True kalır (ekranda
+    # gerçek oran görünsün) ve `ok` False olur.
+    if len(valid) < WFO_MIN_VALID_WINDOWS:
+        return WfoVerdict(
+            measured=True,
+            valid=len(valid),
+            alpha_positive=alpha_positive,
+            pnl_positive=pnl_positive,
+            alpha_ratio=ratio,
+            penalized_sharpe=penalized,
+            ok=False,
+            reason=(
+                f"only {len(valid)} valid windows — "
+                f"{WFO_MIN_VALID_WINDOWS} needed to judge "
+                f"(not a performance rejection)"
+            ),
+        )
 
     pen = penalized
     if pen is None:
@@ -661,10 +719,15 @@ def run_full_robustness(
         )
         if _wf_note:
             pf(f"  ⚠ {_wf_note}")
+        # Açıklama, KARARIN ölçüsünü söylemeli. Eskiden "positive PnL" yazıyordu
+        # ama kapı `wfo_verdict` ile AL-TUT'U GEÇEN pencereleri sayıyor; 22 yıllık
+        # boğada ikisi sistematik ıraksıyor (ölçüldü: 37 kârlı / 28 alfalı, 60
+        # pencere) ve operatör ekrandaki oranı yanlış ölçüte göre okuyordu.
         pf(
             f"📈 Walk-Forward — rolling-window OOS test. Each window has {_wf_train} "
             f"months training + {_wf_test} months test. "
-            "≥50% of windows must have positive PnL."
+            "≥50% of windows must beat buy&hold (positive excess return); "
+            "merely profitable windows do not count."
         )
         wfo = _stage(
             "Walk-Forward",

@@ -697,10 +697,15 @@ def test_wfo_requires_positive_excess_not_just_positive_pnl():
             "test_metrics": {
                 "pnl": 100.0,
                 "excess_return_fraction": -0.01,
+                "annualized_alpha": -0.01,
                 "sharpe": 1.0,
             },
         }
-        for _ in range(4)
+        # Payda sınırı (WFO_MIN_VALID_WINDOWS=10): 4 pencere artık
+        # 'yargılamaya yetmez' diye REDDEDİLİYOR. Bu testler WFO'yu
+        # değil MC/kapsam ölçütlerini sınıyor, o yüzden sepet sınırın
+        # üstüne çıkarıldı — iddia değişmedi, kurgu güncellendi.
+        for _ in range(12)
     ]
     rob = {
         "split": {"overfitting_label": "✓ Robust"},
@@ -717,9 +722,17 @@ def test_strict_mc_rejects_unsafe_drawdown_tail():
     windows = [
         {
             "test_n_trades": 5,
-            "test_metrics": {"excess_return_fraction": 0.01, "sharpe": 1.0},
+            "test_metrics": {
+                "excess_return_fraction": 0.01,
+                "annualized_alpha": 0.01,
+                "sharpe": 1.0,
+            },
         }
-        for _ in range(4)
+        # Payda sınırı (WFO_MIN_VALID_WINDOWS=10): 4 pencere artık
+        # 'yargılamaya yetmez' diye REDDEDİLİYOR. Bu testler WFO'yu
+        # değil MC/kapsam ölçütlerini sınıyor, o yüzden sepet sınırın
+        # üstüne çıkarıldı — iddia değişmedi, kurgu güncellendi.
+        for _ in range(12)
     ]
     rob = {
         "split": {"overfitting_label": "✓ Robust"},
@@ -737,9 +750,17 @@ def test_strict_mc_requires_tail_metric():
     windows = [
         {
             "test_n_trades": 5,
-            "test_metrics": {"excess_return_fraction": 0.01, "sharpe": 1.0},
+            "test_metrics": {
+                "excess_return_fraction": 0.01,
+                "annualized_alpha": 0.01,
+                "sharpe": 1.0,
+            },
         }
-        for _ in range(4)
+        # Payda sınırı (WFO_MIN_VALID_WINDOWS=10): 4 pencere artık
+        # 'yargılamaya yetmez' diye REDDEDİLİYOR. Bu testler WFO'yu
+        # değil MC/kapsam ölçütlerini sınıyor, o yüzden sepet sınırın
+        # üstüne çıkarıldı — iddia değişmedi, kurgu güncellendi.
+        for _ in range(12)
     ]
     rob = {
         "split": {"overfitting_label": "✓ Robust"},

@@ -623,6 +623,16 @@ _ENGINE = [
         "İşçi başına bellek tavanı; işçi sayısı buna göre kırpılır.",
     ),
     _v(
+        "NAUTILUS_WFO_MIN_WINDOWS",
+        "int",
+        "10",
+        "auto.robustness",
+        "WFO oranının paydası için alt sınır: bu kadar geçerli pencere yoksa "
+        "oran anlamsızdır ve aday reddedilir (performans reddi değil, kanıt "
+        "yetersizliği). Ölçüldü 2026-08-20: sınır yokken rastgele stratejilerin "
+        "%29'u %50 çıtasını tutturuyordu, 10 pencere şartıyla %3-6.",
+    ),
+    _v(
         "NAUTILUS_WFO_POP_SIZE",
         "int",
         "4",

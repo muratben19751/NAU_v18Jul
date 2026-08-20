@@ -36,8 +36,16 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def _window(*, n_trades: int, pnl: float, excess: float | None, sharpe: float = 0.5):
+    """`excess` artık ALFA anlamına gelir ve maliyet-eşli alana yazılır.
+
+    Eski alan da bilerek doldurulur: kapı ona geri dönerse testler yeşil
+    kalmasın diye DEĞİL — tersine, gerçek payload'da ikisi birlikte durduğu
+    için kurgu da öyle olmalı; kaynağı `test_alpha_is_read_from_the_cost_matched_field`
+    tutar.
+    """
     metrics = {"n_trades": n_trades, "pnl": pnl, "sharpe": sharpe}
     if excess is not None:
+        metrics["annualized_alpha"] = excess
         metrics["excess_return_fraction"] = excess
     return {"test_metrics_naive": metrics, "test_n_trades": n_trades}
 
@@ -89,12 +97,14 @@ def test_enough_alpha_passes():
     assert v.ok and v.reason == "passed" and v.display == "6/10"
 
 
-def test_missing_excess_is_fail_closed():
+def test_missing_alpha_is_fail_closed():
     """Ölçülemeyen alfa olumlu sayılmaz — arşiv/slim satırlar kapıyı açmasın."""
     windows = _basket(n_alpha=9, n_profit_only=0)
     windows.append(_window(n_trades=WFO_MIN_TRADES + 1, pnl=10.0, excess=None))
     v = wfo_verdict(windows)
-    assert not v.ok and "excess" in v.reason
+    assert not v.ok
+    # Gerekçe eksik ÖLÇÜMÜ adlandırmalı; "9/10 yetmedi" gibi okunmamalı.
+    assert "missing" in v.reason and "alpha" in v.reason
 
 
 def test_a_nonpositive_penalized_sharpe_still_blocks():
@@ -175,3 +185,148 @@ def test_the_profitable_count_survives_as_a_diagnostic():
     assert "merely profitable" in suite
     v = wfo_verdict(_basket(n_alpha=2, n_profit_only=6, n_loss=2))
     assert v.pnl_positive == 8 and v.alpha_positive == 2
+
+
+def test_the_step_header_states_the_deciding_criterion():
+    """Başlık satırı da kararın ölçüsünü söylemeli, sonuç satırı gibi.
+
+    Ölçülen belirti (koşu ff2bf7de, 2026-08-19, tur 1): sonuç satırı düzeltilmiş
+    ve doğru sayıyı basıyordu —
+
+        ✗ Walk-Forward: alpha in only 1/7 windows (<50%)
+
+    ama iki satır YUKARIDAKİ açıklama hâlâ eski ölçütü öğretiyordu:
+
+        📈 Walk-Forward — … ≥50% of windows must have positive PnL.
+
+    Yani operatöre önce yanlış kural söyleniyor, sonra o kurala göre okunamayan
+    bir sayı gösteriliyordu. Bir turda ikisini birden okuyan kişi `1/7`'yi
+    "7 pencerenin 1'i kârlıymış" diye anlar — oysa 7'sinin çoğu kârlı olabilir.
+
+    Düzeltmenin tek yerde olmaması bu ailenin imzası: aynı ölçüt üç yerde
+    (başlık, sonuç, kapı) yazılıyorsa üçü de aynı kaynaktan türemeli ya da
+    hiçbiri türemiyorsa hepsi elle senkron tutulmalı — ikincisi çürür.
+    """
+    import inspect
+
+    import auto.robustness as ar
+
+    suite = inspect.getsource(ar.run_full_robustness)
+    header = [
+        ln for ln in suite.splitlines() if "Walk-Forward — rolling-window" in ln
+    ]
+    assert header, "WFO açıklama satırı bulunamadı"
+
+    # Başlığın gövdesi: pf(...) çağrısının tamamı.
+    start = suite.index(header[0])
+    block = suite[start : start + 500]
+
+    assert "positive PnL" not in block, "başlık hâlâ kârlılığı ölçüt gibi söylüyor"
+    assert "beat buy&hold" in block, "başlık asıl ölçütü (al-tut'u geçmek) söylemiyor"
+    # Kârlılık sayısı ekranda kalıyor ama ÖLÇÜT olmadığı açıkça yazılmalı.
+    assert "merely profitable" in block
+
+
+def test_alpha_is_read_from_the_cost_matched_field():
+    """Kapı, iki bacağı da NET olan alandan okumalı.
+
+    `app_constants` iki karşılaştırma üretiyor ve ikisi aynı sözlükte duruyor:
+
+        excess_return_fraction  → benchmark_cost_basis: gross_buy_and_hold_no_costs
+        annualized_alpha        → benchmark_net_cost_basis: round_trip_cost_...
+
+    Birincisinin docstring'i "geriye uyumluluk için duruyor ama KARAR ölçütü
+    olamaz" diyordu — büyüklüğü pencere uzunluğuna bağlı ve iki bacağı farklı
+    maliyet tabanında. Kapı yine de onu okuyordu; doğru alan iki satır ötedeydi.
+
+    Ölçülen etki (54 artefakt, 973 pencere): ayrışan pencere sayısı 2. Bu test
+    davranışı değil KAYNAĞI tutuyor — düzeltme sonuçları değiştirsin diye değil,
+    doğru olan bu olduğu için yapıldı.
+    """
+    import inspect
+
+    import auto.robustness as ar
+
+    src = inspect.getsource(ar.wfo_verdict)
+    assert 'get("annualized_alpha")' in src, "kapı maliyet-eşli alanı okumuyor"
+    assert 'get("excess_return_fraction")' not in src, (
+        "brüt kıyaslı eski alan karara geri sızmış"
+    )
+
+
+def test_a_missing_annualized_alpha_is_fail_closed():
+    """Alan bazı pencerelerde HİÇ damgalanmıyor; yokluk olumlu sayılmamalı.
+
+    `_stamp_annualized_comparison` `window_years` ya da benchmark drawdown
+    hesaplanamazsa erken dönüyor — o pencerede `excess_return_fraction` var,
+    `annualized_alpha` yok. Eksik ölçüm "alfa yok" değil "ölçülemedi"dir ve
+    kapıyı açmamalıdır.
+    """
+    windows = _basket(n_alpha=9, n_profit_only=0)
+    blind = _window(n_trades=WFO_MIN_TRADES + 1, pnl=10.0, excess=0.5)
+    blind["test_metrics_naive"].pop("annualized_alpha", None)
+    windows.append(blind)
+    v = wfo_verdict(windows)
+    assert not v.ok
+    assert "alpha" in v.reason
+
+
+def test_a_two_window_coin_flip_no_longer_passes():
+    """ÖLÇÜLEN VAKA: koşu 4f7849df, aday 1/2 pencere = %50 → WFO'dan GEÇTİ.
+
+    Oran kuralının paydası sınırsızdı: iki geçerli pencerenin birinde al-tut
+    geçilince oran tam %50 çıkıyor ve çıta sağlanıyordu. Diskteki 32 adayın
+    taranmasında bu, kararı değişen TEK aday — yani kural teorik bir açık
+    değil, gerçekleşmiş bir açıktı.
+
+    Ölçüm (3.000 rastgele strateji): payda sınırı yokken rastgele stratejilerin
+    %29'u (1-DAY) çıtayı tutturuyor; 10 pencere şartıyla %3-6'ya iniyor. Medyan
+    her iki hâlde de %23 — yani eriyen şey beceri değil, az-örneklem gürültüsü.
+    """
+    v = wfo_verdict(_basket(n_alpha=1, n_profit_only=0, n_loss=1))
+    assert v.valid == 2 and v.alpha_positive == 1
+    assert v.alpha_ratio == pytest.approx(0.5), "vaka yeniden üretilemedi"
+    assert not v.ok, "yazı-tura hâlâ kapıyı açıyor"
+
+
+def test_the_floor_rejects_even_a_perfect_short_basket():
+    """Az pencerede %100 de kanıt değildir — 3/3, 10 pencerelik kanıt sayılmaz."""
+    v = wfo_verdict(_basket(n_alpha=3))
+    assert v.alpha_ratio == pytest.approx(1.0)
+    assert not v.ok
+
+
+def test_the_floor_reason_is_not_a_performance_verdict():
+    """Gerekçe iki farklı reddi ayırmalı: 'kötü' ile 'yargılayamadım'."""
+    thin = wfo_verdict(_basket(n_alpha=1, n_loss=1))
+    assert "needed to judge" in thin.reason
+    assert "not a performance rejection" in thin.reason
+    # Gerçek performans reddinin metni karışmamalı.
+    real = wfo_verdict(_basket(n_alpha=3, n_loss=9))
+    assert "alpha in only" in real.reason and "needed to judge" not in real.reason
+
+
+def test_an_undersized_basket_is_a_failure_not_a_skip():
+    """KRİTİK: kapıda 'ölçülemedi' RET DEĞİL, ATLAMA anlamına geliyor.
+
+    `_robustness_tally` `measured=False` gördüğünde `_skip(...)` çağırıyor ve
+    `failed` artmıyor; sıkı modda 3 ölçüt yeterli olduğu için aday kalan
+    IS/OOS + çok-sembol + Monte Carlo ile TERFİ EDEBİLİRDİ. Yani yetersiz
+    pencereyi "ölçemedim" diye işaretlemek kapıyı GEVŞETİRDİ.
+
+    Bu yüzden `measured` True kalır (ekranda gerçek oran görünür) ve `ok`
+    False olur — kanıtlayamayan aday terfi etmez.
+    """
+    v = wfo_verdict(_basket(n_alpha=1, n_loss=1))
+    assert v.measured is True, "atlamaya düşerse aday 3 ölçütle terfi eder"
+    assert v.ok is False
+    assert v.display == "1/2", "gerçek oran gizlenmemeli"
+
+
+def test_the_floor_is_registered_as_an_env_knob():
+    """Ölçüme dayanan bir sabit, ölçüm değişince ayarlanabilir olmalı."""
+    import auto.robustness as ar
+
+    assert ar.WFO_MIN_VALID_WINDOWS == 10
+    src = inspect.getsource(ar)
+    assert "NAUTILUS_WFO_MIN_WINDOWS" in src

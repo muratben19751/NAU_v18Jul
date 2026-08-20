@@ -15,17 +15,17 @@ module.exports = {
       autorestart: true,
       env: {
         PYTHONUNBUFFERED: "1",
-        // Yerel LLM ucu (llama-server, Qwen3.8-27B). Varsayılan backend
-        // DEĞİŞMİYOR — Claude yolu olduğu gibi duruyor; bu üçlü yalnız model
-        // seçicisine "OR · qwen3.8-27b" satırını ekler ve o satır seçilince
-        // koşu localhost'a pinlenir (set_thread_model → "or:<id>").
-        //
-        // DİKKAT: OPENROUTER_BASE_URL localhost'a bakarken GERÇEK openrouter.ai
-        // uçları erişilemez olur — ikisi aynı anda kullanılamaz.
-        OPENROUTER_BASE_URL: "http://127.0.0.1:8080/v1",
-        OPENROUTER_API_KEY: "local", // llama-server anahtar doğrulamıyor, boş olamıyor
+        // Yerel LLM ucu: Ollama. ÖLÇÜLDÜ 2026-08-20 (aynı prompt, RTX 5080/16 GB):
+        //   qwen2.5-coder:14b   31 sn   geçerli JSON     ← SEÇİLEN (varsayılan pin başı)
+        //   qwen2.5-coder:32b  426 sn   geçerli JSON     (20,7 GB, karta sığmıyor, %37 CPU)
+        //   gemma4:26b         633 sn   content BOŞ      (bütçeyi `reasoning` alanına yazıyor)
+        // Sunucu OLLAMA_CONTEXT_LENGTH=16384 ile başlatılmalı: varsayılan 4.096,
+        // 7.787 token'lık composed prompt'u sessizce yarıya kırpıyor ve arıza
+        // "model şema tutturamadı" diye görünüyor.
+        OPENROUTER_BASE_URL: "http://127.0.0.1:11434/v1",
+        OPENROUTER_API_KEY: "ollama",
         // Pin listenin YERİNE geçer: ağa çıkmaz, ücretsiz filtresinden muaftır.
-        NAUTILUS_OPENROUTER_MODELS: "qwen3.8-27b",
+        NAUTILUS_OPENROUTER_MODELS: "qwen2.5-coder:14b,qwen2.5-coder:32b,gemma4:26b",
         // custom_block yolunun kendi deadline'ı; varsayılan 75 s, izin verilen
         // tavan 120 s (agent.py `_call_claude_for_block`). Ölçüldü 2026-08-15:
         // yerel Qwen3.8-27B'de custom_block başarısı 75 s'de 2/8, 120 s'de 4/8.

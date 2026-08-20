@@ -183,22 +183,38 @@ class TestRobustnessPassed:
         # 3 criteria are ACTUALLY evaluated (IS/OOS, WFO, MC), none of them failed.
         # The a6ddb5a hardening (2026-08-07) added two fail-closed strict
         # requirements this fixture predates (see _robustness_passed):
-        #   - every valid WFO window needs excess_return_fraction (missing
+        #   - every valid WFO window needs annualized_alpha (missing
         #     alpha is an error, not a free pass — a pnl-negative window with
         #     positive excess is exactly the case that field exists for: beat
         #     the benchmark, lost nominal $);
         #   - strict mode needs mc.max_dd_p95 (the adverse-tail check) too.
         return {
             "split": {"overfitting_label": "✓ Robust"},
+            # Payda sınırı (WFO_MIN_VALID_WINDOWS=10): iki pencerelik bir sepet
+            # artık "yargılamaya yetmez" diye reddediliyor — ölçülen vaka koşu
+            # 4f7849df'de 1/2 pencereyle %50 yapıp GEÇMİŞTİ. Bu sınıf WFO'yu
+            # değil kapı sayacını sınadığı için sepet sınırın üstüne çıkarıldı.
             "wfo_windows": [
                 {
                     "test_n_trades": 5,
-                    "test_metrics": {"pnl": 1.0, "excess_return_fraction": 0.05},
-                },
+                    "test_metrics": {
+                        "pnl": 1.0,
+                        "excess_return_fraction": 0.05,
+                        "annualized_alpha": 0.05,
+                    },
+                }
+                for _ in range(7)
+            ]
+            + [
                 {
                     "test_n_trades": 5,
-                    "test_metrics": {"pnl": -1.0, "excess_return_fraction": 0.02},
-                },
+                    "test_metrics": {
+                        "pnl": -1.0,
+                        "excess_return_fraction": 0.02,
+                        "annualized_alpha": 0.02,
+                    },
+                }
+                for _ in range(5)
             ],
             "oos_sharpe_penalized": 1.0,
             "mc": {"max_dd_p50": -10.0, "max_dd_p95": -15.0},

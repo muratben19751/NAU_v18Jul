@@ -41,10 +41,13 @@ def _rob(*, wfo=True, ms=True, split=True, mc=True) -> dict:
                     "pnl": 100.0,
                     "sharpe": 0.5,
                     "excess_return_fraction": 0.05,
+                    "annualized_alpha": 0.05,
                 },
                 "test_n_trades": 20,
             }
-            for _ in range(6)
+            # WFO payda sınırı 10; sepet onun üstünde olmalı ki bu
+            # test WFO'yu değil kapsam mesajını ölçsün.
+            for _ in range(12)
         ]
     if ms:
         out["multi_symbol"] = {"generalization_label": "✓ Generalizable"}
