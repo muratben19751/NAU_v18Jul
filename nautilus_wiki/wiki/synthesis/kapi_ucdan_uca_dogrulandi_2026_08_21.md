@@ -77,6 +77,58 @@ kapsamını söyler" mesajı tam bu vakayı görünür kılmak içindi.
 En iyi varyant (MA 50/200, Calmar 0,29) ise sıralama kapısına bile giremedi:
 **13 < `_MIN_TRADES` (20)**.
 
+## Açık sorunun ilk yarısı cevaplandı: bar bazlı kanıt yolu
+
+Yukarıdaki "düşük frekanslı stratejilere ayrı doğrulama yolu mu gerekir"
+sorusunun **teknik** yarısı ölçüldü ve cevabı EVET: yol kurulabilir.
+
+`auto.robustness.exposure_drawdown_evidence(bars_df, trades)` — gözlenen
+maksimum düşüşü, **aynı süreyi piyasada geçiren** rastgele maskelerin
+dağılımına karşı sınar. Null, maskeyi dairesel KAYDIRIR: maruziyet süresini ve
+her iki serinin otokorelasyonunu korur, yalnız hizalamayı bozar. Böylece
+*"bu maske özel mi, yoksa bu kadar zaman piyasada kalmak zaten yeter mi"*
+ayrışır. (Naif bir t-testi otokorelasyon yüzünden anlamlılığı abartırdı.)
+
+Ölçüm (QQQC 19 yıl, 4.899 bar):
+
+| MA | maxDD | rastgele, aynı maruziyet | p |
+|---|---|---|---|
+| 5/250 | %25 | %51 | **0,005** |
+| 50/100 | %28 | %49 | **0,019** |
+| 50/200 | %28 | %49 | **0,033** |
+| 20/100 | %28 | %47 | 0,139 |
+
+**İşlem sayısı kısıtı burada hiç doğmuyor**: 13 işlemlik bir aday da 4.899 bar
+üzerinden yargılanabiliyor. Kapının bugünkü tıkanıklığı ("20 işlemi 10
+pencereye bölemiyorum") bar bazlı ölçümde yok.
+
+### Ama KARAR VERMİYOR — ve bu ölçüme dayalı bir tercih
+
+Aynı test, bilerek seçilmiş KÖTÜ parametrelendirmelerde de anlamlı çıkıyor
+(MA 80/90 → p=0,021). Yani test *"MA ailesi düşüşten kaçar"* diyor —
+trend takibinin bilinen özelliği — ama *"bu ayar iyidir"* demiyor. **Aile
+içinde ayırt etmiyor**, dolayısıyla kapıyı açsaydı zayıf ayarları da
+geçirirdi. Bu, `WFO_MIN_VALID_WINDOWS` ve kazanılabilirlik ölçüsünde uygulanan
+ilkenin aynısı: kalibre edilmemiş bir ölçüt raporlar, karar vermez.
+
+Calmar bacağı da ölçüldü ve **eklenmedi** (p 0,08-0,44): düşüşten kaçmak
+getiriden feragat ettiriyor, ikisi netleşince üstünlük gürültüye karışıyor.
+
+### Kalan açık soru artık teknik değil
+
+Bu teşhis bir gün karar verecekse, önce **aile içinde ayırt eden** bir ölçüte
+ihtiyacı var — ve o henüz yok. Karar gerektiren soru buraya taşındı.
+
+### Yol boyunca iki ölçüm hatası (ikisi de tekrar edilebilir)
+
+1. **"Calmar üstünlüğü sadece az yatırımdan geliyor"** sanıldı. Kontrol
+   çürüttü: sabit maruziyet %100'den %30'a inerken Calmar **0,20-0,22'de
+   SABİT** kalıyor — CAGR ve düşüş orantılı küçülüyor, oran değişmiyor.
+2. **Ortalama bar getirisiyle ölçüldü** — yanlış istatistik. Strateji
+   ortalamada daha KÖTÜ barlarda (içeri 5,15 bp / dışarı 5,95 bp) ama
+   kümelenmiş düşüşlerden kaçarak maxDD'yi eziyor. **İddia neyse istatistik
+   o olmalı.**
+
 ## Kalan sınır — ve o bir kusur değil
 
 Bu seride al-tut'u geçen yaklaşım **19 yılda 13-20 işlem** yapıyor; doğrulama

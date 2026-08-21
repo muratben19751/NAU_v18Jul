@@ -1938,3 +1938,19 @@ kesişmiyor. Yeni sayfa: [[kapi_ucdan_uca_dogrulandi_2026_08_21]].
 Yol boyunca: altı sinyal ailesi %27-33 bandında (rastgele %23, tavan %58),
 kesişimler daha kötü, ve pozisyon boyutu tuzağına ikinci kez düşüldü (sabit
 10 hisse → getiri %10-23 görünüyordu; `percent_equity` ile %313).
+
+## 2026-08-21 (2) — düşük frekans için bar bazlı kanıt yolu
+
+"Ayrı doğrulama yolu gerekir mi" sorusunun teknik yarısı cevaplandı: EVET,
+kurulabilir. `exposure_drawdown_evidence` gözlenen maxDD'yi aynı maruziyetli
+rastgele maskelere karşı sınıyor (dairesel kaydırma null'ı). QQQC 19 yıl:
+MA kesişmeleri %25-28 düşüş, rastgele %47-53, p 0,005-0,139 — 13 işlemlik bir
+aday da 4.899 bar üzerinden yargılanabiliyor.
+
+KARAR VERMİYOR: aynı test kötü ayarlarda da anlamlı (80/90 → p=0,021), yani
+aile içinde ayırt etmiyor. Calmar bacağı ölçüldü ve eklenmedi (p 0,08-0,44).
+Kalan soru artık teknik değil: aile içinde ayırt eden bir ölçüt gerekiyor.
+
+İki ölçüm hatası kayda geçti: (1) Calmar üstünlüğü "az yatırım"a bağlandı —
+sabit maruziyette Calmar 0,20-0,22'de sabit çıktı; (2) ortalama bar getirisiyle
+ölçüldü — iddia düşüş kaçınması olduğu için yanlış istatistikti.
