@@ -116,17 +116,27 @@ def test_it_never_decides_only_reports():
 def test_the_diagnostic_deliberately_reports_only_the_stable_property():
     """Kapsam bir tercih değil, ÖLÇÜM sonucu.
 
-    "Aile içinde ayırt eden bir ölçüt tasarla" isteği ölçümle kapandı. 29 MA
-    parametrelendirmesi, eğitim serisinin iki yarısında ayrı ayrı (QQQC,
-    2003-2013 / 2013-2023):
+    "Aile içinde ayırt eden bir ölçüt tasarla" isteği ölçümle kapandı. ~30 MA
+    parametrelendirmesi, eğitim serisinin iki yarısında ayrı ayrı (2003-2013 /
+    2013-2023), boşluksuz 1-DAY serisi olan ÜÇ enstrümanda — sıra korelasyonu,
+    köşeli parantezde %95 bootstrap güven aralığı:
 
-      parametre SIRASI (Calmar)  ρ = −0,06   → KALICI DEĞİL
-      parametre SIRASI (maxDD)   ρ = +0,08   → KALICI DEĞİL
-      aile MEDYAN Calmar         0,17 → 0,29 → KALICI DEĞİL (rejime bağlı)
-      aile MEDYAN maxDD          %29 → %27   → KALICI
+                    Calmar rho              maxDD rho
+      QQQC (n=29)   -0,06 [-0,44, +0,33]    +0,08 [-0,30, +0,43]
+      SPY  (n=31)   +0,01 [-0,34, +0,36]    -0,34 [-0,60, -0,02]
+      IBM  (n=32)   -0,50 [-0,71, -0,18]    -0,44 [-0,71, -0,07]
 
-    Somut hâli: ilk yarının en iyisi (MA 50/100, Calmar 0,29) ikinci yarıda
-    29 parametre arasında **19.** sırada. Diğer ilk-beş: 7., 22., 26., 12.
+    Altı ölçümün HİÇBİRİNDE güven aralığı pozitif tarafta durmuyor; üçünde
+    tamamen negatif tarafta. IBM'de ilk yarının şampiyonu (MA 50/100, Calmar
+    0,49) ikinci yarıda 32 parametre arasında 29. ve Calmar'ı NEGATİF (-0,15).
+
+    Seçmenin bedeli de doğrudan ölçüldü — şampiyonu seçmek vs hiç seçmeyip aile
+    MEDYANINI almak, ikinci yarıda: QQQC -0,03 · SPY -0,00 · IBM -0,02 Calmar.
+    Seçim hiçbir şey kazandırmıyor: ŞAMPİYON GELECEKTE MEDYANDIR.
+
+    Aile düzeyinde de yalnız düşüş kalıcı: medyan Calmar 0,17 → 0,29 (rejime
+    bağlı — ilk on yıl 2008'i içeriyor, ikincisi güçlü boğa), medyan maxDD
+    %29 → %27.
 
     Üç sonuç, üçü de bu teşhisin kapsamını belirliyor:
 

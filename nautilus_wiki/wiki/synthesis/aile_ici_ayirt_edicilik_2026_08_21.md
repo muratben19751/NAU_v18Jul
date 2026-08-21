@@ -1,7 +1,7 @@
 ---
 title: Aile içi ayırt edici ölçüt tasarlanamaz — çünkü ölçeceği şey yok
 type: synthesis
-summary: Aynı sinyal ailesi içinde parametre seçimini haklı çıkaracak bir ölçüt arandı; 29 MA parametrelendirmesi eğitim serisinin iki yarısında ölçüldüğünde sıra korelasyonu Calmar'da −0,06, maxDD'de +0,08 çıktı. İlk yarının en iyisi ikinci yarıda 19/29. Aile medyan Calmar'ı bile kalıcı değil (0,17→0,29, rejime bağlı); kalıcı olan tek şey aile medyan düşüşü (%29→%27). Sonuç: kapı parametreye kredi veremez, risk-ayarlı üstünlüğü aile düzeyinde bile sertifikalayamaz, yalnız düşüşten kaçınmayı raporlayabilir.
+summary: Aynı sinyal ailesi içinde parametre seçimini haklı çıkaracak bir ölçüt arandı; üç enstrümanda (QQQC/SPY/IBM, ~30 MA parametrelendirmesi, 2003-2013 vs 2013-2023) sıra korelasyonunun altı ölçümünde de güven aralığı pozitif tarafta durmadı, üçünde tamamen negatif (IBM Calmar ρ = −0,50). Seçmenin bedeli de ölçüldü: şampiyonu seçmek, aile medyanını almaya kıyasla −0,03/−0,00/−0,02 Calmar — yani sıfır. Ayırt edici ölçüt yazılmadı; yerine geçen dürüst tasarım söndürücü: adayın beklentisi kendi sayısı değil ailesinin medyanı.
 key_concepts:
   - kapi_ucdan_uca_dogrulandi_2026_08_21
   - auto_kapi_ve_geri_bildirim
@@ -34,7 +34,26 @@ tanımıdır — in-sample zirve kanıt değildir. O yüzden asıl soru şu oldu
 Ölçüm: 29 MA parametrelendirmesi (fast 10-120 × slow 50-300), QQQC 1-DAY eğitim
 serisinin iki yarısında ayrı ayrı — 2003-2013 (2,449 bar) ve 2013-2023 (2,450 bar).
 
-## Sonuç: üç katman, üç ayrı cevap
+## Sonuç, üç enstrümanda tekrarlandı
+
+Tek seride kurulan bir iddia bu projede yeterli sayılmıyor; ölçüm boşluksuz
+1-DAY serisi olan üç enstrümanda tekrarlandı (aynı pencereler, 2003-2013 /
+2013-2023). Parantez içi %95 bootstrap güven aralığı:
+
+| enstrüman | n | Calmar ρ | maxDD ρ |
+|---|---|---|---|
+| QQQC | 29 | −0,06 [−0,44, +0,33] | +0,08 [−0,30, +0,43] |
+| SPY | 31 | +0,01 [−0,34, +0,36] | **−0,34** [−0,60, −0,02] |
+| IBM | 32 | **−0,50** [−0,71, −0,18] | **−0,44** [−0,71, −0,07] |
+
+**Altı ölçümün hiçbirinde güven aralığı pozitif tarafta durmuyor; üçünde
+tamamen NEGATİF tarafta.** Yani in-sample en iyiyi seçmek yalnız işe yaramıyor
+değil — bu serilerde hafifçe ters yönde bilgi taşıyor (ortalamaya dönüş).
+
+IBM en keskin örnek: ilk yarının şampiyonu MA 50/100 (Calmar 0,49) ikinci
+yarıda 32 parametre arasında **29.** ve Calmar'ı **negatif** (−0,15).
+
+## Üç katman, üç ayrı cevap
 
 | katman | yarı 1 | yarı 2 | kalıcı mı |
 |---|---|---|---|
@@ -68,10 +87,33 @@ yarı1'in en iyi 5'i → yarı2'deki sırası (29 parametre içinde)
 3. **Düşüşten kaçınma sertifikalanabilir.** Hem zamanda kalıcı (%29→%27) hem
    rastgele maskelere karşı anlamlı (p 0,005-0,033).
 
-## Tasarımın cevabı: ölçüt YAZILMAMALI
+## Seçimin bedeli ölçüldü: sıfır
+
+Asıl soru "sıralama kalıcı mı" değil, "seçmek bir şey KAZANDIRIYOR mu"dur. İlk
+yarının şampiyonunu seçmek ile hiç seçmeyip **aile medyanını** almak, ikinci
+yarıda karşılaştırıldı:
+
+| enstrüman | seçilen | yarı2 Calmar | aile medyanı | fark |
+|---|---|---|---|---|
+| QQQC | MA 50/100 | +0,26 | +0,29 | **−0,03** |
+| SPY | MA 50/150 | +0,11 | +0,12 | **−0,00** |
+| IBM | MA 50/100 | −0,15 | −0,13 | **−0,02** |
+
+Üçünde de fark sıfır ya da hafif negatif. **Şampiyon, gelecekte medyandır.**
+
+Bu, istenen "ayırt edici ölçütün" yerine geçebilecek tek dürüst tasarımı da
+veriyor ve o ayırt edici değil **söndürücü** bir ölçüttür: bir adayın
+raporlanacak beklentisi kendi backtest sayısı değil, **ailesinin medyanıdır.**
+Adayın kendi sayısı in-sample seçim gürültüsü içerir; medyan içermez.
+
+## Tasarımın cevabı: ayırt eden ölçüt YAZILMAMALI
 
 İstenen ölçüt tasarlanmadı — iyi bir fikir bulunamadığı için değil, **ölçeceği
-büyüklük bu veride var olmadığı için.** Bu bir başarısızlık değil, bir ölçüm
+büyüklük bu veride var olmadığı için.** Doğru ifade "kalıcılık tam sıfır" değil:
+n≈30 ve parametreler bağlaşık olduğu için tek ölçümün güven aralığı geniş; ölçüm
+**güçlü kalıcılığı** dışlıyor. Bir parametre seçicisinin seçim yanlılığını
+yenmesi için tam da güçlü kalıcılık gerekir, o yüzden sonuç değişmiyor — ama
+dürüst cümle "kullanılabilir kalıcılık yok". Bu bir başarısızlık değil, bir ölçüm
 sonucu: `exposure_drawdown_evidence` bugünkü dar kapsamıyla (yalnız düşüş,
 yalnız teşhis) doğru kapsamdaymış.
 
