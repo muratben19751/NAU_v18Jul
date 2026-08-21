@@ -244,6 +244,148 @@ def test_refuses_rather_than_guessing():
     assert family_median_expectation(_spec(), _bars(), n_siblings=3) is None
 
 
+# ---------------------------------------------------------------------------
+# Hiçbir atlama SESSİZ değil
+# ---------------------------------------------------------------------------
+#
+# Bu ölçümün ateşlememesi bir kez zaten "ölçülemedi" gibi göründü: paralel
+# birimlere aralık verilmemişti, 20/20 kardeş in-band hata döndü ve fonksiyon
+# sessizce None verdi. Yapısal test bağlantıyı görüyordu, ateşlemediğini değil.
+# Aynı belirsizlik BİLİNÇLİ atlamalar için de geçerliydi — 1-DAKİKA bir koşuda
+# operatör satırın neden hiç çıkmadığını bilemezdi. Aşağısı onu kapatıyor.
+
+
+def _skips_with_reason(spec, bars, **kw) -> str:
+    lines: list[str] = []
+    out = family_median_expectation(spec, bars, progress_fn=lines.append, **kw)
+    assert out is None, "bu yol ölçüm yapmamalıydı"
+    assert len(lines) == 1, f"tam bir sebep satırı bekleniyordu, {len(lines)} geldi"
+    return lines[0]
+
+
+def test_an_oversized_frame_says_so_with_the_numbers():
+    idx = pd.date_range(
+        "2010-01-01", periods=ar.FAMILY_MAX_BARS + 1, freq="1min", tz="UTC"
+    )
+    big = pd.DataFrame({"close": np.ones(len(idx))}, index=idx)
+    msg = _skips_with_reason(_spec(), big)
+    # Sebep, KARAR VEREN sayıyı taşımalı — "atlandı" tek başına teşhis değil.
+    assert f"{len(idx):,}" in msg and f"{ar.FAMILY_MAX_BARS:,}" in msg
+    assert "NAUTILUS_FAMILY_SIBLINGS" in msg, "operatöre çıkış yolu gösterilmeli"
+
+
+def test_a_custom_block_says_which_block():
+    d = _spec().to_dict()
+    d["blocks"][0]["type"] = "totally_not_a_builtin_block"
+    msg = _skips_with_reason(ComposedStrategySpec.from_dict(d), _bars())
+    assert "totally_not_a_builtin_block" in msg, "hangi blok olduğu yazılmalı"
+
+
+def test_too_few_siblings_requested_says_the_minimum():
+    msg = _skips_with_reason(_spec(), _bars(), n_siblings=3)
+    assert "3" in msg and str(ar.FAMILY_MIN_VALID) in msg
+
+
+def test_no_bars_says_so():
+    assert "bar yok" in _skips_with_reason(_spec(), pd.DataFrame())
+
+
+def test_the_candidate_runs_in_the_same_batch_as_its_siblings():
+    """Elma-armut kıyası olmasın: aday da kardeşlerle AYNI yoldan koşmalı.
+
+    Ölçüldü: bu proje aynı spec ve aynı barlar için iki yürütme yolunda farklı
+    metrikler veriyor (pnl_pct 3,127 vs 3,192; sharpe 25,42 vs 0,56). Aday
+    doğrudan çağrıyla, kardeşler havuzdan koşarsa söndürme miktarının bir
+    kısmı seçim yanlılığından DEĞİL, yol farkından gelir — ölçüldü, iki yol
+    medyanı 0,164 ve 0,15 veriyordu.
+    """
+    seen: list[str] = []
+
+    def _spy(units):
+        seen.extend(u["key"] for u in units)
+        # Her birime aynı, ölçülebilir bir sonuç ver.
+        return {
+            u["key"]: {
+                "key": u["key"],
+                "metrics": {"n_trades": 12, "pnl_pct": 0.5, "max_dd": -0.2},
+                "error": None,
+            }
+            for u in units
+        }
+
+    ev = family_median_expectation(_spec(), _bars(), n_siblings=10, run_many=_spy)
+    assert ev is not None
+    assert "own" in seen, "aday partiye katılmamış — sayısı başka yoldan gelirdi"
+    assert len([k for k in seen if k.startswith("sib-")]) == 10
+    # Hepsi aynı sonucu döndüğüne göre aday ile medyan BİREBİR eşit olmalı.
+    assert ev["own_calmar"] == ev["median_calmar"]
+
+
+def test_measurable_but_insufficient_reports_the_shortfall():
+    """Kardeşler KOŞTU ama yetmediyse — atlamadan farklı bir cümle.
+
+    Bu tam olarak `irange` hatasının gizlendiği yol: ölçüm denendi, her kardeş
+    hata verdi, sonuç sessiz None'dı.
+    """
+    lines: list[str] = []
+
+    def _all_broken(units):
+        return {
+            u["key"]: {"key": u["key"], "error": "boom", "metrics": {}} for u in units
+        }
+
+    out = family_median_expectation(
+        _spec(), _bars(), run_many=_all_broken, progress_fn=lines.append
+    )
+    assert out is None
+    assert len(lines) == 1
+    assert "0/" in lines[0] and "hata verdi" in lines[0], lines[0]
+
+
+def test_every_none_path_is_accounted_for():
+    """Sessiz `return None` kalmadığının YAPISAL kanıtı.
+
+    İlk hâli `_skip(` ve `return None` sayılarını karşılaştırıyordu ve dişsizdi:
+    bir sebep bildirimini silmek testi kırmıyordu, çünkü toplam sayı yine
+    yetiyordu. Sayma değil, KOMŞULUK denetleniyor — her `return None`'ın hemen
+    önünde bir sebep bildirimi durmalı.
+    """
+    tree = ast.parse(textwrap.dedent(inspect.getsource(family_median_expectation)))
+    fn = tree.body[0]
+
+    def _is_reason(stmt) -> bool:
+        """`_skip(...)` / `progress_fn(...)` çağrısı — ya da onu saran bir `if`."""
+        if isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Call):
+            f = stmt.value.func
+            return getattr(f, "id", None) in {"_skip", "progress_fn"}
+        if isinstance(stmt, ast.If):
+            return any(_is_reason(inner) for inner in stmt.body)
+        return False
+
+    unreported: list[int] = []
+    checked = 0
+    for node in ast.walk(fn):
+        for field in ("body", "orelse", "finalbody"):
+            block = getattr(node, field, None)
+            if not isinstance(block, list):
+                continue
+            for i, stmt in enumerate(block):
+                if not (
+                    isinstance(stmt, ast.Return)
+                    and isinstance(stmt.value, ast.Constant)
+                    and stmt.value.value is None
+                ):
+                    continue
+                checked += 1
+                if i == 0 or not _is_reason(block[i - 1]):
+                    unreported.append(stmt.lineno)
+
+    assert checked >= 5, f"beklenenden az `return None` yolu bulundu: {checked}"
+    assert not unreported, (
+        f"sebep bildirmeden dönen `return None` satırları: {unreported}"
+    )
+
+
 def test_no_bars_no_measurement():
     assert family_median_expectation(_spec(), None) is None
     assert family_median_expectation(_spec(), pd.DataFrame()) is None

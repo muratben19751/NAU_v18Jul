@@ -138,10 +138,19 @@ Tasarım kararları ve gerekçeleri:
 - **Aday SIRASI raporlanmıyor.** "20 kardeş içinde 3." satırı, yukarıda
   çürütülen çıkarımı davet ederdi. Rapor: medyan + IQR + kaç kardeşin
   ölçülebildiği. Teste çivili.
-- **Adayın kendi sayısı burada, aynı çerçevede ve aynı kod yolundan**
-  hesaplanıyor. Başka pencerede ölçülmüş bir sayıyı içeri taşımak elma-armut
-  kıyası doğururdu: söndürme miktarı pencere farkından gelirdi, seçim
-  yanlılığından değil.
+- **Aday, kardeşlerin arasına KATILIYOR** — sayısı aynı partiden geliyor. İlk
+  hâli adayı ayrı bir çağrıyla koşturuyordu ve bu sessizce elma-armut kıyası
+  üretiyordu: ölçüldü, aynı aday aynı çerçevede iki yürütme yolunda 0,164 ve
+  0,15 medyan veriyordu. Fark projenin kendi iki yolundan geliyor — söndürücü
+  ölçüt hiç devrede değilken de var: `pnl_pct` 3,127 vs 3,192, `sharpe` 25,42
+  vs 0,56 (bu sonuncusu ayrı bir mesele, çünkü sharpe sıralama skoruna girer).
+  Aday partiye katıldıktan sonra söndürme miktarı iki yolda da aynı:
+  −0,1215 ve −0,1237.
+- **Hiçbir atlama sessiz değil.** Dev çerçeve, katalog dışı blok, yetersiz
+  kardeş — hepsi sebebini ve KARAR VEREN sayıyı yazıyor. Yapısal bir test her
+  `return None`'ın hemen önünde bir sebep bildirimi arıyor; ilk hâli `_skip`
+  sayısını sayıyordu ve dişsizdi (mutasyon testiyle görüldü), komşuluk
+  denetimine çevrildi.
 - **Geçerlilik çeşitliliği yiyerek sağlanmıyor.** Projede hazır duran
   `_fix_fast_slow` geçersiz çifti sabit 10/40'a çeviriyor; kardeş üretiminde
   kullanılsaydı örneklem tek bir çifte çökerdi. Onun yerine `slow` önce, `fast`

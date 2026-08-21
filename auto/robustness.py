@@ -782,12 +782,31 @@ def family_median_expectation(
     kardeş bulunamaması. Sessizce daralma yok — ``n_valid``/``n_siblings``
     her zaman raporlanır.
     """
+
+    # HİÇBİR atlama sessiz değil. Ölçümün ateşlememesi bir kez zaten
+    # "ölçülemedi" gibi göründü (eksik `irange`); aynı belirsizlik bilinçli
+    # atlamalar için de geçerliydi — 1-DAKİKA bir koşuda operatör satırın neden
+    # hiç çıkmadığını bilemezdi.
+    def _skip(reason: str) -> None:
+        if progress_fn is not None:
+            progress_fn(f"  ⏭ Aile medyanı ölçülmedi: {reason}")
+
     if bars_df is None or not len(bars_df):
+        _skip("bar yok")
         return None
     if len(bars_df) > FAMILY_MAX_BARS:
+        _skip(
+            f"{len(bars_df):,} bar > {FAMILY_MAX_BARS:,} sınırı — "
+            f"{FAMILY_SIBLINGS} kardeş bu çerçevede dakikalar sürerdi "
+            "(NAUTILUS_FAMILY_SIBLINGS ile küçültülebilir)"
+        )
         return None
     n = int(n_siblings if n_siblings is not None else FAMILY_SIBLINGS)
     if n < FAMILY_MIN_VALID:
+        _skip(
+            f"istenen kardeş sayısı {n}, asgari {FAMILY_MIN_VALID} — "
+            "bu kadar az kardeşin medyanı aileyi temsil etmez"
+        )
         return None
 
     # zlib.crc32, `hash()` DEĞİL: Python'da str hash'i PYTHONHASHSEED ile süreç
@@ -798,38 +817,69 @@ def family_median_expectation(
     seed = zlib.crc32(key.encode("utf-8"))
     siblings = _family_siblings(spec, n, seed)
     if not siblings:
+        # Sebebi BURADA türetiliyor: `_family_siblings` liste|None sözleşmesini
+        # koruyor, ama "neden" operatöre borçlu.
+        from composer import BLOCK_CATALOG
+
+        try:
+            unknown = [
+                str(b.get("type"))
+                for b in (spec.to_dict().get("blocks") or [])
+                if b.get("type") not in BLOCK_CATALOG
+            ]
+        except Exception:
+            unknown = []
+        if unknown:
+            _skip(
+                f"katalog dışı blok ({', '.join(sorted(set(unknown)))}) — "
+                "v1 yalnız yerleşik bloklar için: custom blok ayrı sandbox "
+                "semantiği taşıyor"
+            )
+        else:
+            _skip("adayda blok yok")
         return None
 
-    payloads: list[dict] = []
+    # ADAY, kardeşlerin arasına KATILIYOR. Kendi sayısını ayrı bir yoldan
+    # hesaplamak, ölçümü elma-armut kıyasına çevirirdi: havuz yolu birimleri
+    # `instrument`/`bar_type` ile koşturuyor, doğrudan çağrı varsayılanları
+    # kuruyor. Ölçüldü — aynı aday, aynı çerçeve, iki yol: 0,164 ve 0,15.
+    # Söndürme miktarı o farktan gelemez, seçim yanlılığından gelmeli.
+    runs = [("own", spec.to_dict())] + [
+        (f"sib-{i}", sib) for i, sib in enumerate(siblings)
+    ]
+
+    results: dict[str, dict] = {}
     if run_many is not None:
         units = [
             {
-                "key": f"family-{i}",
+                "key": key,
                 "kind": "slice",
                 # `irange` ŞART: `_run_unit`'in slice dalı bunu ya da
                 # start/end'i bekler, yoksa her kardeş in-band KeyError döner
                 # ve ölçüm 0 geçerli kardeşle sessizce None olur. Ölçüldü.
                 "irange": [0, len(bars_df)],
-                "spec": sib,
+                "spec": sd,
                 "iteration_id": 0,
                 "rationale": "family median",
                 "want_equity": False,
             }
-            for i, sib in enumerate(siblings)
+            for key, sd in runs
         ]
-        payloads = list((run_many(units) or {}).values())
+        results = run_many(units) or {}
     else:
         from backtest import run_composed_backtest
         from composer import ComposedStrategySpec
 
-        for sib in siblings:
+        for key, sd in runs:
             try:
                 r = run_composed_backtest(
-                    ComposedStrategySpec.from_dict(sib), bars_df, iteration_id=0
+                    ComposedStrategySpec.from_dict(sd), bars_df, iteration_id=0
                 )
-                payloads.append({"metrics": r.metrics, "error": r.error})
+                results[key] = {"metrics": r.metrics, "error": r.error}
             except Exception as exc:  # bir kardeşin patlaması ölçümü bitirmez
-                payloads.append({"metrics": None, "error": str(exc)[:200]})
+                results[key] = {"metrics": None, "error": str(exc)[:200]}
+
+    payloads = [results.get(key) or {} for key, _ in runs[1:]]
 
     calmars = [
         c
@@ -850,19 +900,10 @@ def family_median_expectation(
             )
         return None
 
-    # Adayın kendi sayısı BURADA, aynı çerçevede ve aynı kod yolundan
-    # hesaplanıyor. Başka yerde başka pencerede ölçülmüş bir sayıyı içeri
-    # taşımak, medyanla elma-armut kıyası doğururdu — söndürme miktarı da
-    # o farktan gelirdi, seçim yanlılığından değil.
+    # Aday da yukarıdaki partide koştu; sayısı oradan geliyor. Çağıran ayrıca
+    # bir metrik verdiyse o kullanılır (kendi sorumluluğunda).
     if candidate_metrics is None:
-        from backtest import run_composed_backtest
-
-        try:
-            candidate_metrics = run_composed_backtest(
-                spec, bars_df, iteration_id=0
-            ).metrics
-        except Exception:
-            candidate_metrics = None
+        candidate_metrics = (results.get("own") or {}).get("metrics")
     own = _calmar_of(candidate_metrics, bars_df)
     calmars.sort()
     return {
