@@ -5,7 +5,7 @@ bars and extracts summary metrics + equity curve.
 
 Wiki References
 ---------------
-See: [[backtest_node]], [[backtesting_guide]], [[environment_contexts]], [[data_wranglers]], [[precision_modes]], [[portfolio]], [[v1_to_v2_migration_lessons]], [[index_backtest_via_equity_proxy]], [[nau_deepr_toplu_sertlestirme_2026_08]]
+See: [[backtest_node]], [[backtesting_guide]], [[environment_contexts]], [[data_wranglers]], [[precision_modes]], [[portfolio]], [[v1_to_v2_migration_lessons]], [[index_backtest_via_equity_proxy]], [[nau_deepr_toplu_sertlestirme_2026_08]], [[yillıklastirma_veriden_okunur_2026_08_21]] (yıllıklaştırma tabanı: enstrüman yoksa VERİDEN okunur — sentetik varsayılan Sharpe'ı 45× şişiriyordu)
 
 Low-level API path; matches the [[backtesting_guide]] "choose BacktestEngine if:" list. `_bars_from_df` is a helper written after `BarDataWrangler.process` was removed in v2 — see [[data_wranglers]] v1→v2 section. Sharpe nan bug: see [[portfolio]] and [[v1_to_v2_migration_lessons]].
 
