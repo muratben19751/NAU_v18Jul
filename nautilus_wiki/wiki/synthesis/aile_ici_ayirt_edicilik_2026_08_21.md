@@ -143,7 +143,8 @@ Tasarım kararları ve gerekçeleri:
   üretiyordu: ölçüldü, aynı aday aynı çerçevede iki yürütme yolunda 0,164 ve
   0,15 medyan veriyordu. Fark projenin kendi iki yolundan geliyor — söndürücü
   ölçüt hiç devrede değilken de var: `pnl_pct` 3,127 vs 3,192, `sharpe` 25,42
-  vs 0,56 (bu sonuncusu ayrı bir mesele, çünkü sharpe sıralama skoruna girer).
+  vs 0,56 — sonuncusu ayrı bir kusurdu ve düzeltildi, bkz.
+  [[yillıklastirma_veriden_okunur_2026_08_21]].
   Aday partiye katıldıktan sonra söndürme miktarı iki yolda da aynı:
   −0,1215 ve −0,1237.
 - **Hiçbir atlama sessiz değil.** Dev çerçeve, katalog dışı blok, yetersiz
@@ -190,4 +191,5 @@ Kod tarafı: `auto/robustness.py::exposure_drawdown_evidence`,
 ## Referenced by
 
 - [[kapi_ucdan_uca_dogrulandi_2026_08_21]]
+- [[yillıklastirma_veriden_okunur_2026_08_21]]
 <!-- BACKLINKS:END -->

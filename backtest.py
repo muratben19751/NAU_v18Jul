@@ -607,6 +607,42 @@ def _parse_money_column(series: pd.Series) -> np.ndarray:
     return result
 
 
+def _observed_bar_seconds(bars_df) -> float:
+    """Barların GERÇEK aralığı (medyan, saniye) — türetilemezse 0.0.
+
+    Yıllıklaştırma tabanının kaynağı; bar tipi sentetik/eksik olduğunda tek
+    dürüst otorite veridir.
+    """
+    if bars_df is None or len(bars_df) < 20:
+        return 0.0
+    try:
+        idx = pd.DatetimeIndex(bars_df.index)
+        sec = float(pd.Series(idx).diff().dt.total_seconds().median())
+    except (TypeError, ValueError, AttributeError):
+        return 0.0
+    return sec if sec and sec > 0 and math.isfinite(sec) else 0.0
+
+
+def _looks_like_24_7(bars_df) -> bool:
+    """Seri hafta sonlarında da işlem görüyor mu — yani kripto mu?
+
+    Ölçüldü: QQQC 1-DAY ve 1-HOUR'da hafta sonu barı oranı %0,0; BTCUSDT 1m'de
+    %28,4 (≈2/7). Ayrım temiz. Yalnız enstrüman BİLİNMİYORKEN kullanılır.
+    En az iki haftalık kapsam yoksa çıkarım yapılmaz; eski varsayım (kripto)
+    korunur — yanlış bir "hisse" tahmini sessizce 252'ye düşürürdü.
+    """
+    if bars_df is None or len(bars_df) < 20:
+        return True
+    try:
+        idx = pd.DatetimeIndex(bars_df.index)
+        span_days = (idx[-1] - idx[0]).total_seconds() / 86400.0
+        if span_days < 14:
+            return True
+        return bool((idx.dayofweek >= 5).mean() > 0.05)
+    except (TypeError, ValueError, AttributeError, IndexError):
+        return True
+
+
 def _periods_per_year(bar_type=None, instrument=None, bars_df=None) -> int:
     """H5/M35/L42: derive the annualization base FROM SOURCE + BAR INTERVAL.
 
@@ -637,9 +673,24 @@ def _periods_per_year(bar_type=None, instrument=None, bars_df=None) -> int:
         bar_sec = step * unit_sec.get(parts[1], 0)
     except (ValueError, IndexError, AttributeError):
         bar_sec = 0.0
+    # Bar tipi bir şey söylemiyorsa VERİNİN KENDİSİ söyler. Eskiden burada
+    # koşulsuz `return 365` vardı ve çağıranlar bu dala hiç düşmüyordu, çünkü
+    # instrument verilmediğinde üstteki katman SENTETİK bir Bybit 1-DAKİKA
+    # enstrümanı kuruyordu: günlük hisse barları 1-dakikalık kripto gibi
+    # yıllıklaştırılıyordu. Ölçüldü — Sharpe 45,7× şişiyordu (öngörülen
+    # sqrt(525.600/252) = 45,67, gözlenen 45,22).
+    if bar_sec <= 0:
+        bar_sec = _observed_bar_seconds(bars_df)
     if bar_sec <= 0:
         return 365
-    is_crypto = isinstance(instrument, CurrencyPair) if instrument is not None else True
+    # Enstrüman yoksa 24/7 olup olmadığı da veriden okunur: hisse serisinde
+    # hafta sonu barı yoktur (ölçüldü: QQQC %0,0), kriptoda ~2/7 vardır
+    # (BTCUSDT %28,4). Kısa serilerde bu çıkarım güvenilmez — eski varsayım
+    # (kripto) korunur.
+    if instrument is not None:
+        is_crypto = isinstance(instrument, CurrencyPair)
+    else:
+        is_crypto = _looks_like_24_7(bars_df)
     if is_crypto:
         return max(1, int(365 * 86400 / bar_sec))
     # M387: equity/index — 252 was wrong for WEEK/MONTH (weekly Sharpe ~2.2×,
@@ -1084,14 +1135,16 @@ def _metrics(
             )
 
     # $ amounts from pnl stats
+    avg_win_stat = _stat(pnl_stats, "Avg Winner")
     avg_win_usd = (
-        float(pnl_stats["Avg Winner"])
-        if "Avg Winner" in pnl_stats
+        avg_win_stat
+        if not np.isnan(avg_win_stat)
         else (avg_win_ret * _sc if not np.isnan(avg_win_ret) else float("nan"))
     )
+    avg_loss_stat = _stat(pnl_stats, "Avg Loser")
     avg_loss_usd = (
-        float(pnl_stats["Avg Loser"])
-        if "Avg Loser" in pnl_stats
+        avg_loss_stat
+        if not np.isnan(avg_loss_stat)
         else (avg_loss_ret * _sc if not np.isnan(avg_loss_ret) else float("nan"))
     )
     max_winner = _stat(pnl_stats, "Max Winner")
@@ -1493,7 +1546,10 @@ def run_backtest(
             engine,
             positions_df,
             mtm_equity=mtm_equity,
-            annualization=_periods_per_year(active_bar_type, instrument, df),
+            # `instrument`/`active_bar_type` burada HER ZAMAN sentetik
+            # (BTCUSDT 1-DAKİKA); yıllıklaştırmaya sokulurlarsa veri ne olursa
+            # olsun kripto-dakika varsayılır. Otorite veridir.
+            annualization=_periods_per_year(None, None, df),
             mtm_ts=getattr(strategy, "_mtm_ts", None),
         )
         equity, equity_dates = _equity_curve(positions_df)
@@ -1849,7 +1905,10 @@ def run_composed_backtest(
             engine,
             positions_df,
             mtm_equity=mtm_equity,
-            annualization=_periods_per_year(active_bar_type, active_instrument, df),
+            # ÇAĞIRANIN verdikleri geçiliyor, `active_*` DEĞİL: çağıran
+            # bir şey vermediyse `active_*` sentetik Bybit 1-DAKİKA olur ve
+            # günlük hisse barlarını kripto-dakika gibi yıllıklaştırırdı.
+            annualization=_periods_per_year(bar_type, instrument, df),
             mtm_ts=getattr(_composed_strategy, "_mtm_ts", None),
             starting_cash=_cap,
             slippage_model_active=bool(getattr(spec, "model_slippage", False)),
