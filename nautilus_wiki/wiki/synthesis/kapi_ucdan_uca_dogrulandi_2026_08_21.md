@@ -143,11 +143,16 @@ stratejiler için ayrı bir doğrulama yolu mu gerekir** (daha uzun seri, daha �
 enstrüman, ya da işlem yerine ZAMAN bazlı pencereleme) — yoksa arama bilinçli
 olarak yüksek frekanslı alt-uzayla mı sınırlanır?
 
+Bu sorunun bir yarısı ölçümle kapandı: aile İÇİNDE ayırt eden bir ölçüt
+tasarlanamaz, çünkü aile içi sıralama zamanda kalıcı değil —
+bkz. [[aile_ici_ayirt_edicilik_2026_08_21]].
+
 Kod tarafı: `auto/robustness.py`, `app_constants.benchmark_rejection`,
 `web/routes/agent_backtest.py` (`_MIN_TRADES`, `_robustness_tally`).
 
 <!-- BACKLINKS:BEGIN -->
 ## Referenced by
 
+- [[aile_ici_ayirt_edicilik_2026_08_21]]
 - [[auto_kapi_ve_geri_bildirim]]
 <!-- BACKLINKS:END -->

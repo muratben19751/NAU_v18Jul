@@ -106,3 +106,84 @@ def test_it_never_decides_only_reports():
     # Ve hiçbir kapı bu fonksiyonu karar için çağırmamalı.
     gate = inspect.getsource(ar.wfo_verdict)
     assert "exposure_drawdown_evidence" not in gate
+
+
+# ---------------------------------------------------------------------------
+# Neden AİLE İÇİ ayırt edici bir ölçüt YOK — ve yazılmamalı
+# ---------------------------------------------------------------------------
+
+
+def test_the_diagnostic_deliberately_reports_only_the_stable_property():
+    """Kapsam bir tercih değil, ÖLÇÜM sonucu.
+
+    "Aile içinde ayırt eden bir ölçüt tasarla" isteği ölçümle kapandı. 29 MA
+    parametrelendirmesi, eğitim serisinin iki yarısında ayrı ayrı (QQQC,
+    2003-2013 / 2013-2023):
+
+      parametre SIRASI (Calmar)  ρ = −0,06   → KALICI DEĞİL
+      parametre SIRASI (maxDD)   ρ = +0,08   → KALICI DEĞİL
+      aile MEDYAN Calmar         0,17 → 0,29 → KALICI DEĞİL (rejime bağlı)
+      aile MEDYAN maxDD          %29 → %27   → KALICI
+
+    Somut hâli: ilk yarının en iyisi (MA 50/100, Calmar 0,29) ikinci yarıda
+    29 parametre arasında **19.** sırada. Diğer ilk-beş: 7., 22., 26., 12.
+
+    Üç sonuç, üçü de bu teşhisin kapsamını belirliyor:
+
+    1. **Parametre seçimine kredi verilemez.** Sıra korelasyonu sıfırken
+       herhangi bir seçici gürültü seçer. (Aynı sebeple WFO'nun pencere başına
+       GA optimizasyonu da her pencerede gürültü seçiyor olabilir — ayrı bir
+       soru, ama aynı ölçümden doğuyor.)
+    2. **Risk-ayarlı üstünlük aile düzeyinde bile sertifikalanamaz**: ilk on
+       yıl 2008'i içeriyor, ikincisi güçlü boğa; Calmar rejime bağlı ve rejim
+       ekstrapole edilemez.
+    3. **Düşüşten kaçınma sertifikalanabilir** — hem zamanda kalıcı hem
+       rastgele maskelere karşı anlamlı.
+
+    Bu test, teşhisin kapsamını genişletmeye çalışan bir sonraki kişiyi
+    yukarıdaki ölçüme yönlendirmek için var.
+    """
+    import ast
+    import inspect
+    import textwrap
+
+    import auto.robustness as ar
+
+    # Docstring ve yorumlar Calmar'dan SÖZ EDER (neden dışlandığını anlatmak
+    # için); iddia edilen şey ÇALIŞAN kodun ne hesapladığı. Bu yüzden gövde
+    # docstring'siz olarak yeniden üretilip öyle kontrol edilir.
+    tree = ast.parse(textwrap.dedent(inspect.getsource(ar.exposure_drawdown_evidence)))
+    fn = tree.body[0]
+    if (
+        fn.body
+        and isinstance(fn.body[0], ast.Expr)
+        and isinstance(fn.body[0].value, ast.Constant)
+        and isinstance(fn.body[0].value.value, str)
+    ):
+        fn.body = fn.body[1:]
+    code = ast.unparse(fn)
+    assert "max_dd" in code and "null_median_dd" in code
+    assert "calmar" not in code.lower(), (
+        "Calmar bacağı eklenmiş — aile düzeyinde bile kalıcı değil (0,17 → 0,29)"
+    )
+    keys = {"time_in_market", "max_dd", "null_median_dd", "p_value", "n_shift"}
+    import numpy as np
+    import pandas as pd
+
+    rng = np.random.default_rng(5)
+    r = rng.normal(0.0004, 0.01, 600)
+    r[250:330] = rng.normal(-0.004, 0.012, 80)
+    idx = pd.date_range("2010-01-01", periods=600, freq="1D", tz="UTC")
+    bars = pd.DataFrame({"close": 100 * np.cumprod(1 + r)}, index=idx)
+    tr = [
+        {
+            "entry_time": int(bars.index[0].timestamp()),
+            "exit_time": int(bars.index[245].timestamp()),
+        },
+        {
+            "entry_time": int(bars.index[335].timestamp()),
+            "exit_time": int(bars.index[599].timestamp()),
+        },
+    ]
+    ev = ar.exposure_drawdown_evidence(bars, tr, n_shift=100)
+    assert set(ev) == keys, f"rapor yüzeyi genişlemiş: {set(ev) ^ keys}"
