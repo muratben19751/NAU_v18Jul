@@ -137,6 +137,7 @@ from auto.robustness import (  # noqa: F401
 from auto.robustness import valid_wfo_windows as _valid_wfo_windows  # noqa: F401
 from auto.robustness import wfo_test as _wfo_test  # noqa: F401
 from auto.robustness import wfo_verdict as _wfo_verdict
+from llm_client import LLMCallCancelled
 from nau_provenance import process_rss_bytes
 from web.templating import get_market_info, templates
 
@@ -1493,12 +1494,68 @@ def _budget_breach(state: dict) -> str | None:
 
     used = _token_usage(state)
     cap = int(state.get("max_total_tokens") or 0)
-    if not spent:  # None ya da 0.0 → parayı göremiyoruz
+    if not _cost_is_visible(state, spent):
         cap = min(cap, BLIND_MAX_TOKENS) if cap > 0 else BLIND_MAX_TOKENS
     if cap > 0 and used >= cap:
         return f"token ceiling ({cap:,}) reached at {used:,}"
     return None
 
+
+
+def _endpoint_is_local() -> bool:
+    """`OPENROUTER_BASE_URL` bu makineyi mi gösteriyor?
+
+    `or:` ÖNEKİ YETMEZ — o istemciyi seçer, hedefi değil (ölçüldü 2026-08-19:
+    üç koşu boyunca `_OpenRouterProcessError` "sağlayıcı arızası" sanıldı, oysa
+    adres kapalı bir localhost portuydu). Hedef yapılandırmadadır.
+    """
+    from urllib.parse import urlparse
+
+    raw = os.environ.get("OPENROUTER_BASE_URL", "")
+    if not raw:
+        return False
+    host = (urlparse(raw).hostname or "").lower()
+    return host in {"localhost", "127.0.0.1", "::1", "0.0.0.0"}
+
+
+def _cost_is_visible(state: dict, spent: float | None) -> bool:
+    """Maliyeti GÖREBİLİYOR muyuz — "sıfır" ile "bilinmiyor" ayrı şeylerdir.
+
+    Token tavanının gevşek (kaçak-döngü) sürümü ancak para tavanı işini
+    yapabildiğinde geçerli; fiyatı bilinmeyen PARALI bir uçta gevşetmek
+    faturayı korumasız bırakırdı. Eski kontrol `if not spent:` idi ve 0.0'ı da
+    "göremiyorum" sayıyordu.
+
+    Ama YEREL bir uçta maliyet bilinmez değil, **sıfır olduğu bilinir**. Bu
+    ayrım ölçüldü (koşu 32877fc0, 2026-08-20): dört yol da yerele alındıktan
+    sonra koşu 252.419 token'da, 1,3 turda kesildi — hiç para harcamadan.
+    Sıkı tavan var olmayan bir faturayı koruyordu.
+
+    Görünür sayılır: (a) fiyatlanmış bir harcama varsa, ya da (b) koşudaki TÜM
+    modeller yerel uca gidiyorsa. Karışık koşuda (b) geçmez — bir tek paralı
+    çağrı bile varsa sıkı tavana geri dönülür.
+    """
+    if spent:
+        return True
+    by = state.get("by_model") or {}
+    if not by or not _endpoint_is_local():
+        return False
+
+    # "Yerel model" testi ÖNEKLE yapılamaz: `or:` seçim katmanında kalıyor,
+    # deftere ham id geçiyor (ölçüldü koşu 400c7922: `model` alanı
+    # 'qwen2.5-coder:14b', önek yok). İlk sürümüm `startswith("or:")` diye
+    # baktığı için hiç ateşlemedi — ve testleri de aynı yanlış şekille
+    # yazdığım için onlar da yeşil kaldı.
+    #
+    # Doğru ayrım fiyat TABLOSUNDAN türer: tablo bir modeli fiyatlayabiliyorsa
+    # o model paralıdır (Claude ailesi). Fiyatlayamıyorsa ve uç yerelse,
+    # maliyeti bilinmiyor değil SIFIRDIR.
+    import token_ledger
+
+    return all(
+        token_ledger.cost_usd({"input": 1, "output": 1}, str(name)) is None
+        for name in by
+    )
 
 def _enforce_token_budget(run_id: str) -> None:
     """Stop before another LLM call once the persisted per-run ceiling is hit."""
@@ -2233,6 +2290,26 @@ def _scan_one_candidate(
     )
     _set_phase(run_id, 4, f"{rank_i + 1}/{n_eligible} trying: {cand_spec.name}")
 
+    if cand_spec.id in wstate.degraded_spec_ids:
+        _add_step(
+            run_id,
+            f"  ⏭ Skipping robustness for degraded/fallback candidate: {cand_spec.name}",
+        )
+        return _ScanOutcome(
+            passed=False,
+            log_entry={
+                "rank": rank_i + 1,
+                "name": cand_spec.name,
+                "score": round(_score(cand_result), 3),
+                "passed": False,
+                "overfitting_label": "degraded_candidate",
+                "mc_dd_p50": None,
+                "wf_pass": "—",
+                "ms_label": "—",
+            },
+            passer_entry=None,
+        )
+
     _rob_key = f"rob-r{run_number}-c{rank_i + 1}"
     _tl_begin(
         run_id,
@@ -2258,6 +2335,10 @@ def _scan_one_candidate(
                 wstate.worker_t0, max_hours, ROBUSTNESS_TIMEOUT_S
             ),
         )
+    except (LLMCallCancelled, AgentBudgetReached):
+        _rob_progress.close_open("fail")
+        _tl_end(run_id, _rob_key, status="fail")
+        raise
     except Exception as rob_exc:
         _rob_progress.close_open("fail")
         _tl_end(run_id, _rob_key, status="fail")
@@ -2607,6 +2688,8 @@ def _run_promotion_gate(
                     run_id,
                     f"⚠ Sealed OOS run returned an error: {_hold_res.error}",
                 )
+        except (LLMCallCancelled, AgentBudgetReached):
+            raise
         except Exception as _hold_err:
             promotion_reason = f"sealed holdout exception: {_hold_err}"
             _add_step(run_id, f"⚠ Could not run sealed OOS: {_hold_err}")
@@ -2706,7 +2789,7 @@ def _run_backtest_iteration(
     # "pnl=-8514" with no idea the spec had been scored on 15m bars.
     r.bars_info = dict(iter_bars_info)
     wstate.seen_candidate_fingerprints.add(_candidate_fingerprint(spec))
-    if int((r.metrics or {}).get("n_trades") or 0) == 0:
+    if r.error is None and int((r.metrics or {}).get("n_trades") or 0) == 0:
         wstate.zero_trade_families.add(_candidate_fingerprint(spec, family=True))
     # The returned ts is this iteration's key into the backtest log
     # — the cockpit card links its tear sheet with it.
@@ -2983,7 +3066,7 @@ def _propose_next_strategy(
         # kazanan havuzuna giremez — spec'i degraded olarak işaretle ki
         # tekrarlanan aday bir "kazanan" olarak ilan edilemesin.
         _mark_degraded(run_id, type(e).__name__, "strategy proposal (reused previous)")
-        wstate.degraded_spec_ids.add(spec.id)
+        wstate.degraded_spec_ids.add(getattr(spec, "id", None) or "unknown")
         _add_step(
             run_id,
             f"  ⚠ Could not get proposal: {e} — continuing with previous strategy",
@@ -3462,7 +3545,7 @@ def _ms_score_factor(rob: dict | None) -> float:
     # among-passers selection. Treat insufficient-data as neutral.
     # ('yetersiz' substring is produced by backtest_robustness.py; kept verbatim.)
     ms_label = ms.get("generalization_label", "") or ""
-    insufficient = ("yetersiz" in ms_label) or ms.get("n_valid", 1) == 0
+    insufficient = ("yetersiz" in ms_label) or ms.get("symbols_valid", ms.get("n_valid", 1)) == 0
     try:
         if pr is None or insufficient:
             x = 0.0  # neutral → factor 0.575
@@ -3645,6 +3728,11 @@ def _index_insert(
                 sc = None
         _AGENT_INDEX_DB.parent.mkdir(parents=True, exist_ok=True)
         con = sqlite3.connect(str(_AGENT_INDEX_DB), timeout=5.0)
+        try:
+            con.execute("PRAGMA journal_mode = WAL")
+            con.execute("PRAGMA synchronous = NORMAL")
+        except Exception:
+            pass
         try:
             with con:
                 con.execute(
