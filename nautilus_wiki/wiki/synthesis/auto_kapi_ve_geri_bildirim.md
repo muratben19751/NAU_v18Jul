@@ -456,6 +456,14 @@ geçmişti (koşu `4f7849df`). `WFO_MIN_VALID_WINDOWS = 10` geldi; sınırın al
 "atlama" değil **ret** — çünkü kapıda `measured=False` `_skip()`e düşüyor,
 `failed` artmıyor ve aday kalan üç ölçütle terfi edebilirdi.
 
+## Uçtan uca doğrulama: kapı doğru geçiriyor, doğru reddediyor (2026-08-21)
+
+WFO'nun "al-tut'u geçti" tanımı sistemin ortak kuralına (`benchmark_rejection`)
+hizalandı — dört ay boyunca terk edilmiş bir kuralı uyguluyordu. Ardından kapı
+uçtan uca sınandı ve ilk kez al-tut'u risk-ayarlı geçen bir strateji bulundu.
+Sonuç, kalan sınır ve karar gerektiren soru:
+[[kapi_ucdan_uca_dogrulandi_2026_08_21]].
+
 <!-- BACKLINKS:BEGIN -->
 ## Referenced by
 

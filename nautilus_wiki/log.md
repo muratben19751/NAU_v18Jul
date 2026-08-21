@@ -1920,3 +1920,21 @@ Aday 98 barda bir işlem açıyor; sınır 10×5 = 50 dağılmış işlem istiyo
 parametreleri BAR cinsinden, aynı spec saatlikte ~6,5 kat hızlı başka bir
 strateji olur. Üç seçenek [[wfo_cita_kalibrasyonu_2026_08_20]]'de; karar
 verilmedi, koşu sürerken koda dokunulmuyor. Tur 3 devam ediyor.
+
+## 2026-08-21 — kapı uçtan uca doğrulandı
+
+WFO'nun "al-tut'u geçti" tanımı sistemin ortak kuralına hizalandı (dört ay
+boyunca terk edilmiş pozitif-alfa kuralını uyguluyordu; 14 aday / 358 pencere,
+çıtayı geçen 0/14 → 2/14). Ardından kapı uçtan uca sınandı: al-tut'u risk-ayarlı
+geçen ilk strateji bulundu (MA 50/100 — %313 getiri / %27 düşüş, Calmar 0,28 vs
+0,22) ve kapı onu gevşek modda GEÇİRDİ, sıkı modda REDDETTİ. Ret doğru: dört
+ölçütten yalnız ikisi ölçülebiliyordu. 5 tekrar, 5'i birebir aynı — karar
+deterministik.
+
+Kalan sınır yapısal ve artık ölçülü: bu seride al-tut'u geçen yaklaşım 19 yılda
+13-20 işlem yapıyor, doğrulama makinesi pencere başına 5 işlem istiyor. İkisi
+kesişmiyor. Yeni sayfa: [[kapi_ucdan_uca_dogrulandi_2026_08_21]].
+
+Yol boyunca: altı sinyal ailesi %27-33 bandında (rastgele %23, tavan %58),
+kesişimler daha kötü, ve pozisyon boyutu tuzağına ikinci kez düşüldü (sabit
+10 hisse → getiri %10-23 görünüyordu; `percent_equity` ile %313).

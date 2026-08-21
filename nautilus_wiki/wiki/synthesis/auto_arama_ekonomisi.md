@@ -326,6 +326,7 @@ neyin arasından rastgele seçtiği yazılmadıkça bir taban değildir.**
 ## Referenced by
 
 - [[auto_kapi_ve_geri_bildirim]]
+- [[kapi_ucdan_uca_dogrulandi_2026_08_21]]
 - [[nau_auto_kosulari_2026_08_18]]
 - [[nau_performans_denetimi]]
 - [[webapp_module_map]]
