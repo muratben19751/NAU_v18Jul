@@ -389,3 +389,70 @@ def test_pooled_stats_are_fail_closed_on_a_degenerate_series():
     assert ar.pooled_alpha_stats([0.05, 0.06]) is None  # n < 3
     out = ar.pooled_alpha_stats([-0.1, -0.2, -0.15, -0.12])
     assert out is not None and out[2] < 0
+
+
+# ---------------------------------------------------------------------------
+# Çıtanın ZORLUĞU da görünür olmalı
+# ---------------------------------------------------------------------------
+
+
+def _bench(ret: float, dd: float):
+    return {"benchmark_return_fraction": ret, "benchmark_max_dd": dd}
+
+
+def test_a_smoothly_rising_window_is_not_winnable_long_only():
+    """Pürüzsüz yükselişte piyasadan her çıkış kayıptır — kaldıraçsız geçilemez."""
+    from auto.robustness import wfo_window_is_winnable
+
+    assert wfo_window_is_winnable(_bench(0.20, -0.03)) is False
+    assert wfo_window_is_winnable(_bench(0.05, -0.18)) is True   # dalgalı
+    assert wfo_window_is_winnable(_bench(-0.10, -0.25)) is True  # negatif
+    assert wfo_window_is_winnable({"benchmark_return_fraction": 0.1}) is None
+    assert wfo_window_is_winnable({}) is None
+
+
+def test_the_verdict_reports_how_many_windows_were_winnable():
+    """ÖLÇÜLDÜ (QQQC 19 yıl): kazanılabilir oran pencere ayarına göre %63→%39.
+
+    Yani %50 çıtası uzun pencerelerde KUSURSUZ zamanlamayla bile aşılamaz. Ve
+    pencereyi adayın hızından türettiğimiz için yavaş adaylar tam o rejime
+    giriyor. Arşivdeki 14 adayın 3'ünde çıta bu yüzden ulaşılamazdı — geri
+    kalan 11'inde ise pencereler yeterliydi ve kusur adaydaydı. Bu ayrım
+    ekranda görünmezse ikisi aynı ❌ olarak okunur.
+    """
+    hard = [
+        _window(n_trades=WFO_MIN_TRADES + 1, pnl=1.0, excess=-0.01) for _ in range(12)
+    ]
+    for w in hard:  # hepsi pürüzsüz yükseliş → kazanılamaz
+        w["test_metrics_naive"].update(_bench(0.20, -0.02))
+    v = wfo_verdict(hard)
+    assert v.winnable == 0
+    assert "winnable long-only" in v.reason
+
+    easy = [
+        _window(n_trades=WFO_MIN_TRADES + 1, pnl=1.0, excess=-0.01) for _ in range(12)
+    ]
+    for w in easy:
+        w["test_metrics_naive"].update(_bench(0.04, -0.15))
+    assert wfo_verdict(easy).winnable == 12
+
+
+def test_winnability_never_changes_the_decision():
+    """Bu bir VEKİL; karar vermez, kararın zorluğunu görünür kılar.
+
+    Karar verseydi kalibrasyonu gerekirdi — ve "kazanılabilir" tanımı ölçülmüş
+    bir teorem değil, makul bir yaklaşımdır.
+    """
+    base = _basket(n_alpha=7, n_loss=5)          # 7/12 → geçer
+    for w in base:
+        w["test_metrics_naive"].update(_bench(0.20, -0.02))  # hiçbiri kazanılamaz
+    v = wfo_verdict(base)
+    assert v.winnable == 0
+    assert v.ok is True, "vekil kararı ezmemeli"
+
+
+def test_missing_benchmark_fields_leave_winnable_unknown():
+    """Ölçülemeyen zorluk 0 diye raporlanmamalı — 0 bir iddiadır."""
+    v = wfo_verdict(_basket(n_alpha=3, n_loss=9))
+    assert v.winnable is None
+    assert "winnable long-only" not in v.reason

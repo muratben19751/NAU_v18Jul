@@ -331,6 +331,42 @@ def valid_wfo_windows(wfo: list[dict]) -> list[dict]:
     return [w for w in wfo if _trades(w) >= WFO_MIN_TRADES]
 
 
+
+def wfo_window_is_winnable(metrics: dict) -> bool | None:
+    """Bu pencerede LONG-ONLY bir strateji al-tut'u geçebilir mi? None = bilinmiyor.
+
+    Al-tut negatifse geçmek kolaydır. Pozitifse ancak pencere İÇİNDEKİ düşüş
+    getirisi kadar büyükse — yani yol dalgalıysa — zamanlamayla öne geçilebilir.
+    Pürüzsüz yükselen bir pencerede kaldıraçsız long-only bir strateji tam
+    yatırımlı olanı geçemez: piyasadan her çıkışı ona kayıptır.
+
+    ÖLÇÜLDÜ (2026-08-20, QQQC 19 yıl, günlük): kazanılabilir pencere oranı
+    pencere ayarına göre %63 (6/2/3) → %55 (12/4/4) → %46 (24/8/8) → %39
+    (33/11/11). Yani ÇITA (%50) uzun pencerelerde yapısal olarak ulaşılamaz —
+    kusursuz zamanlamayla bile. Ve pencereyi adayın hızından türettiğimiz için
+    (bkz. wfo_window_months) YAVAŞ adaylar tam da o rejime giriyor.
+
+    Enstrümana da bağlı (7 enstrüman, 55'er pencere): kazanılabilir oran
+    IBM %65, IWM %67, QQQC %55, SPY %51, AAPL %49 — enstrümanın kendi
+    Sharpe'ı ile korelasyon −0,67. Pürüzsüz trend, geçilmesi zor trenddir.
+
+    Bu bir VEKİLDİR, teorem değil: dalgalı bir pencerede kazanmanın mümkün
+    olduğunu söyler, garanti etmez. Bu yüzden karar vermez — yalnız kararın
+    yanında GÖRÜNÜR, "aday zayıf" ile "bu pencerede kimse geçemez" ayrışsın.
+    """
+    if not metrics:
+        return None
+    ret = metrics.get("benchmark_return_fraction")
+    dd = metrics.get("benchmark_max_dd")
+    try:
+        ret = float(ret)
+        dd = abs(float(dd))
+    except (TypeError, ValueError):
+        return None
+    if not (math.isfinite(ret) and math.isfinite(dd)):
+        return None
+    return ret <= 0 or dd >= ret
+
 class WfoVerdict(NamedTuple):
     """WFO ölçütünün kararı VE o kararın sayıları — tek kaynaktan.
 
@@ -363,6 +399,9 @@ class WfoVerdict(NamedTuple):
     penalized_sharpe: float | None
     ok: bool
     reason: str
+    # Kaç pencere long-only bir stratejiyle KAZANILABİLİR durumdaydı — karar
+    # vermez, kararın zorluğunu görünür kılar. None ölçülemedi demektir.
+    winnable: int | None = None
 
     @property
     def display(self) -> str:
@@ -434,6 +473,9 @@ def wfo_verdict(wfo: list[dict], *, penalized: float | None = None) -> WfoVerdic
     alpha_positive = sum(1 for v in excess if v > 0)
     ratio = alpha_positive / len(valid)
 
+    _w = [wfo_window_is_winnable(wfo_test(w)) for w in valid]
+    winnable = sum(1 for v in _w if v) if all(v is not None for v in _w) else None
+
     # Payda yetersizse oran anlamsız. Bu bir PERFORMANS reddi değil, KANITLAMA
     # eksikliğidir — ama sonucu yine rettir: kapıda "ölçülemedi" `_skip`e düşer,
     # `failed` artmaz ve aday kalan 3 ölçütle TERFİ EDEBİLİRDİ. Yetersiz
@@ -462,6 +504,7 @@ def wfo_verdict(wfo: list[dict], *, penalized: float | None = None) -> WfoVerdic
             pnl_positive=pnl_positive,
             alpha_ratio=ratio,
             penalized_sharpe=penalized,
+            winnable=winnable,
             ok=False,
             reason=_reason,
         )
@@ -490,6 +533,11 @@ def wfo_verdict(wfo: list[dict], *, penalized: float | None = None) -> WfoVerdic
 
     if ratio < 0.5:
         reason = f"alpha in only {alpha_positive}/{len(valid)} windows (<50%)"
+        if winnable is not None:
+            # Zorluğu görünür kıl: %50 çıtası kazanılabilir pencere oranının
+            # üstündeyse hiçbir long-only aday geçemez, ve bu bir ADAY kusuru
+            # değildir.
+            reason += f" · {winnable}/{len(valid)} were winnable long-only"
         ok = False
     elif pen is not None and pen <= 0:
         reason = f"penalized OOS Sharpe {pen:.2f} ≤ 0"
@@ -507,6 +555,7 @@ def wfo_verdict(wfo: list[dict], *, penalized: float | None = None) -> WfoVerdic
         penalized_sharpe=pen,
         ok=ok,
         reason=reason,
+        winnable=winnable,
     )
 
 
