@@ -104,7 +104,7 @@ def test_missing_alpha_is_fail_closed():
     v = wfo_verdict(windows)
     assert not v.ok
     # Gerekçe eksik ÖLÇÜMÜ adlandırmalı; "9/10 yetmedi" gibi okunmamalı.
-    assert "missing" in v.reason and "alpha" in v.reason
+    assert "missing" in v.reason and "benchmark" in v.reason
 
 
 def test_a_nonpositive_penalized_sharpe_still_blocks():
@@ -212,9 +212,7 @@ def test_the_step_header_states_the_deciding_criterion():
     import auto.robustness as ar
 
     suite = inspect.getsource(ar.run_full_robustness)
-    header = [
-        ln for ln in suite.splitlines() if "Walk-Forward — rolling-window" in ln
-    ]
+    header = [ln for ln in suite.splitlines() if "Walk-Forward — rolling-window" in ln]
     assert header, "WFO açıklama satırı bulunamadı"
 
     # Başlığın gövdesi: pf(...) çağrısının tamamı.
@@ -245,16 +243,22 @@ def test_alpha_is_read_from_the_cost_matched_field():
     """
     import inspect
 
+    import app_constants
     import auto.robustness as ar
 
+    # Karar artık ORTAK kuraldan geçiyor; maliyet-eşliliği o kural sağlıyor.
     src = inspect.getsource(ar.wfo_verdict)
-    assert 'get("annualized_alpha")' in src, "kapı maliyet-eşli alanı okumuyor"
-    assert 'get("excess_return_fraction")' not in src, (
-        "brüt kıyaslı eski alan karara geri sızmış"
+    assert "benchmark_rejection" in src
+    shared = inspect.getsource(app_constants.benchmark_rejection)
+    assert 'get("annualized_alpha")' in shared, (
+        "ortak kural maliyet-eşli alanı okumuyor"
     )
+    # `excess_return_fraction` yalnız ESKİ KAYIT geri düşmesi olarak geçebilir,
+    # birincil ölçüt olarak değil — ortak kural bunu belgeliyor.
+    assert "legacy_excess" in shared
 
 
-def test_a_missing_annualized_alpha_is_fail_closed():
+def test_a_missing_annualized_alpha_falls_back_to_the_stricter_legacy_rule():
     """Alan bazı pencerelerde HİÇ damgalanmıyor; yokluk olumlu sayılmamalı.
 
     `_stamp_annualized_comparison` `window_years` ya da benchmark drawdown
@@ -262,13 +266,21 @@ def test_a_missing_annualized_alpha_is_fail_closed():
     `annualized_alpha` yok. Eksik ölçüm "alfa yok" değil "ölçülemedi"dir ve
     kapıyı açmamalıdır.
     """
+    # Ortak kural (`benchmark_rejection`) yıllıklandırma alanı yoksa ESKİ
+    # kümülatif kurala düşüyor ve bu daha SIKI: 23 yıllık seride al-tut %2093
+    # yaptığı için o eşik fiilen aşılamıyordu. Yani geri düşme kapıyı açmıyor.
     windows = _basket(n_alpha=9, n_profit_only=0)
     blind = _window(n_trades=WFO_MIN_TRADES + 1, pnl=10.0, excess=0.5)
     blind["test_metrics_naive"].pop("annualized_alpha", None)
-    windows.append(blind)
-    v = wfo_verdict(windows)
-    assert not v.ok
-    assert "alpha" in v.reason
+    # Kümülatif fark POZİTİF olduğu için o pencere kazanç sayılır — geri düşme
+    # kapıyı AÇMIYOR, çünkü eski kural daha sıkı (23 yıllık seride al-tut %2093).
+    assert wfo_verdict(windows + [blind]).measured is True
+    # Ama hiçbir kıyas alanı yoksa üstünlük ÖLÇÜLMEMİŞTİR ve olumlu sayılmaz.
+    naked = _window(n_trades=WFO_MIN_TRADES + 1, pnl=10.0, excess=None)
+    naked["test_metrics_naive"].pop("annualized_alpha", None)
+    v2 = wfo_verdict(_basket(n_alpha=9) + [naked])
+    assert not v2.ok
+    assert "missing" in v2.reason
 
 
 def test_a_two_window_coin_flip_no_longer_passes():
@@ -303,7 +315,8 @@ def test_the_floor_reason_is_not_a_performance_verdict():
     assert "not a performance rejection" in thin.reason
     # Gerçek performans reddinin metni karışmamalı.
     real = wfo_verdict(_basket(n_alpha=3, n_loss=9))
-    assert "alpha in only" in real.reason and "needed to judge" not in real.reason
+    assert "beat buy&hold in only" in real.reason
+    assert "needed to judge" not in real.reason
 
 
 def test_an_undersized_basket_is_a_failure_not_a_skip():
@@ -373,7 +386,7 @@ def test_pooled_alpha_can_never_open_the_gate():
     import auto.robustness as ar
 
     src = inspect.getsource(ar.wfo_verdict)
-    branch = src[src.index("if len(valid) < WFO_MIN_VALID_WINDOWS"):]
+    branch = src[src.index("if len(valid) < WFO_MIN_VALID_WINDOWS") :]
     branch = branch[: branch.index("return WfoVerdict") + 400]
     assert "ok=False" in branch and "ok=True" not in branch
 
@@ -405,7 +418,7 @@ def test_a_smoothly_rising_window_is_not_winnable_long_only():
     from auto.robustness import wfo_window_is_winnable
 
     assert wfo_window_is_winnable(_bench(0.20, -0.03)) is False
-    assert wfo_window_is_winnable(_bench(0.05, -0.18)) is True   # dalgalı
+    assert wfo_window_is_winnable(_bench(0.05, -0.18)) is True  # dalgalı
     assert wfo_window_is_winnable(_bench(-0.10, -0.25)) is True  # negatif
     assert wfo_window_is_winnable({"benchmark_return_fraction": 0.1}) is None
     assert wfo_window_is_winnable({}) is None
@@ -443,7 +456,7 @@ def test_winnability_never_changes_the_decision():
     Karar verseydi kalibrasyonu gerekirdi — ve "kazanılabilir" tanımı ölçülmüş
     bir teorem değil, makul bir yaklaşımdır.
     """
-    base = _basket(n_alpha=7, n_loss=5)          # 7/12 → geçer
+    base = _basket(n_alpha=7, n_loss=5)  # 7/12 → geçer
     for w in base:
         w["test_metrics_naive"].update(_bench(0.20, -0.02))  # hiçbiri kazanılamaz
     v = wfo_verdict(base)
@@ -456,3 +469,62 @@ def test_missing_benchmark_fields_leave_winnable_unknown():
     v = wfo_verdict(_basket(n_alpha=3, n_loss=9))
     assert v.winnable is None
     assert "winnable long-only" not in v.reason
+
+
+def test_wfo_uses_the_SAME_benchmark_rule_as_the_other_gates():
+    """ "Al-tut'u geçti" TANIMI sistemde tek olmalı — üç kapı, tek ölçü.
+
+    `benchmark_rejection` ortak kural; sıralama kapısı ve çok-sembol kapısı onu
+    kullanıyor. `risk_adjusted` modunda ölçü Calmar üstünlüğü + pozitif CAGR ve
+    docstring'i açıkça "alfanın POZİTİF olması şart değil" diyor — aynı getiriyi
+    yarı düşüşle üretmek de üstünlüktür.
+
+    WFO bu fonksiyonu HİÇ çağırmıyordu; 2026-08-16'da terk edilen `absolute`
+    kuralını (pozitif alfa) uygulamaya devam ediyordu. Yani aynı cümle — "al-tut'u
+    geçti" — sistemde iki farklı şey ölçüyordu.
+
+    ÖLÇÜLDÜ (14 aday, 358 pencere): alfa kuralı 124 pencere (%35), ortak kural
+    141 (%39); %50 çıtasını geçen aday **0/14 → 2/14**. Ve geçen ikisi tam kapıyı
+    yine geçemedi — ama artık Monte Carlo'dan düşüyorlar, yani kapı doğru sebeple
+    reddediyor.
+    """
+    import inspect
+
+    import auto.robustness as ar
+
+    src = inspect.getsource(ar.wfo_verdict)
+    assert "benchmark_rejection" in src, "WFO ortak kuralı kullanmıyor"
+    code_only = chr(10).join(line.split("#", 1)[0] for line in src.splitlines())
+    # KARAR ortak kuraldan gelmeli. `annualized_alpha` kodda hâlâ geçiyor ama
+    # yalnız HAVUZLANMIŞ istatistiğin büyüklükleri için — oy sayımı için değil.
+    assert "beats.append" in code_only and "alphas.append" in code_only, (
+        "karar ile büyüklük ayrılmamış"
+    )
+    assert "sum(1 for v in excess if v > 0)" in code_only
+    assert "excess = beats" in code_only, "oy sayımı ortak kuraldan beslenmiyor"
+
+
+def test_a_lower_return_but_calmar_superior_window_counts_as_a_win():
+    """Ortak kuralın ayırt edici vakası: negatif alfa, üstün Calmar."""
+    from app_constants import benchmark_gate_mode
+
+    if benchmark_gate_mode() != "risk_adjusted":
+        import pytest as _pytest
+
+        _pytest.skip("bu ölçüt yalnız risk_adjusted modunda geçerli")
+    m = {
+        "n_trades": WFO_MIN_TRADES + 1,
+        "pnl": 100.0,
+        "sharpe": 0.5,
+        "annualized_alpha": -0.02,  # al-tut'tan AZ kazandı
+        "strategy_cagr": 0.08,  # ama kârlı
+        "strategy_calmar": 1.60,  # ve düşüşü çok daha küçük
+        "benchmark_calmar": 0.90,
+    }
+    windows = [
+        {"test_metrics_naive": dict(m), "test_n_trades": m["n_trades"]}
+        for _ in range(12)
+    ]
+    v = wfo_verdict(windows)
+    assert v.alpha_positive == 12, "Calmar üstünlüğü kazanç sayılmıyor"
+    assert v.ok is True

@@ -319,6 +319,7 @@ def wfo_window_months(
 
 def valid_wfo_windows(wfo: list[dict]) -> list[dict]:
     """WFO windows with enough trades in their decision metric to count."""
+
     def _trades(w: dict) -> int:
         tm = wfo_test(w)
         if "n_trades" in tm and tm["n_trades"] is not None:
@@ -329,7 +330,6 @@ def valid_wfo_windows(wfo: list[dict]) -> list[dict]:
         return int(w.get("test_n_trades") or 0)
 
     return [w for w in wfo if _trades(w) >= WFO_MIN_TRADES]
-
 
 
 def wfo_window_is_winnable(metrics: dict) -> bool | None:
@@ -366,6 +366,7 @@ def wfo_window_is_winnable(metrics: dict) -> bool | None:
     if not (math.isfinite(ret) and math.isfinite(dd)):
         return None
     return ret <= 0 or dd >= ret
+
 
 class WfoVerdict(NamedTuple):
     """WFO ölçütünün kararı VE o kararın sayıları — tek kaynaktan.
@@ -452,12 +453,41 @@ def wfo_verdict(wfo: list[dict], *, penalized: float | None = None) -> WfoVerdic
 
     pnl_positive = sum(1 for w in valid if (wfo_test(w).get("pnl") or 0) > 0)
 
-    excess = []
+    # "Al-tut'u geçti" TANIMI sistemde TEK yerde: `benchmark_rejection`.
+    # Sıralama kapısı ve çok-sembol kapısı onu kullanıyor; WFO kullanmıyordu ve
+    # 2026-08-16'da TERK EDİLEN kuralı (pozitif alfa) uygulamaya devam ediyordu.
+    # `risk_adjusted` modunda ölçü Calmar üstünlüğü + pozitif CAGR: aynı getiriyi
+    # yarı düşüşle üretmek de bir üstünlüktür ve alfanın pozitif olması şart
+    # değildir. Üç kapı, iki tanım — tam da bu dosyada üç kez düzelttiğim
+    # "ekrandaki ölçü kararın ölçüsü değil" ailesinin alt-sistemler arası hâli.
+    #
+    # ÖLÇÜLDÜ (14 aday, 358 pencere, 2026-08-20): alfa kuralı 124 pencere (%35),
+    # ortak kural 141 (%39); %50 çıtasını geçen aday 0/14 → **2/14**.
+    # İKİ AYRI ŞEY, ayrı tutulmalı:
+    #   `beats`  — pencere al-tut'u GEÇTİ mi (ortak kural; oy sayımı bunu sayar)
+    #   `alphas` — alfanın BÜYÜKLÜĞÜ (havuzlanmış t istatistiği bunu kullanır)
+    # İlk hizalamada ikisini birleştirip ±1 işaretleri üretmiştim; havuzlanmış
+    # alfa o işaretler üzerinden t hesaplayınca anlamsız bir kesinlik çıkıyordu.
+    # Kendi testim yakaladı.
+    from app_constants import benchmark_rejection
+
+    beats: list[float] = []
+    alphas: list[float] = []
     for w in valid:
+        m = wfo_test(w)
+        rej = (
+            benchmark_rejection(m, (m or {}).get("excess_return_fraction"))
+            if m
+            else "no_benchmark"
+        )
+        beats.append(
+            float("nan") if rej == "no_benchmark" else (1.0 if rej is None else -1.0)
+        )
         try:
-            excess.append(float(wfo_test(w).get("annualized_alpha")))
+            alphas.append(float((m or {}).get("annualized_alpha")))
         except (TypeError, ValueError):
-            excess.append(float("nan"))
+            alphas.append(float("nan"))
+    excess = beats
     if any(not math.isfinite(v) for v in excess):
         return WfoVerdict(
             measured=True,
@@ -467,7 +497,7 @@ def wfo_verdict(wfo: list[dict], *, penalized: float | None = None) -> WfoVerdic
             alpha_ratio=None,
             penalized_sharpe=penalized,
             ok=False,
-            reason="missing slice-local annualized alpha",
+            reason="missing slice-local benchmark comparison",
         )
 
     alpha_positive = sum(1 for v in excess if v > 0)
@@ -484,7 +514,7 @@ def wfo_verdict(wfo: list[dict], *, penalized: float | None = None) -> WfoVerdic
     if len(valid) < WFO_MIN_VALID_WINDOWS:
         # Oy sayımı bu paydada anlamsız; ama havuzlanmış alfa KESİN negatifse
         # "yargılayamadım" demek yanlış olur — o bir performans reddidir.
-        _pooled = pooled_alpha_stats(excess)
+        _pooled = pooled_alpha_stats([a for a in alphas if math.isfinite(a)])
         if _pooled is not None and _pooled[2] <= -WFO_POOLED_T_REJECT:
             _mean, _sd, _t = _pooled
             _reason = (
@@ -532,7 +562,7 @@ def wfo_verdict(wfo: list[dict], *, penalized: float | None = None) -> WfoVerdic
         pen = None
 
     if ratio < 0.5:
-        reason = f"alpha in only {alpha_positive}/{len(valid)} windows (<50%)"
+        reason = f"beat buy&hold in only {alpha_positive}/{len(valid)} windows (<50%)"
         if winnable is not None:
             # Zorluğu görünür kıl: %50 çıtası kazanılabilir pencere oranının
             # üstündeyse hiçbir long-only aday geçemez, ve bu bir ADAY kusuru
