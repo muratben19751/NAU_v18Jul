@@ -589,6 +589,82 @@ def wfo_verdict(wfo: list[dict], *, penalized: float | None = None) -> WfoVerdic
     )
 
 
+def exposure_drawdown_evidence(
+    bars_df, trades: list[dict] | None, *, n_shift: int = 500
+) -> dict | None:
+    """DÜŞÜK FREKANS teşhisi: düşüşten kaçınma, BAR bazında ölçülür.
+
+    Neden gerekli: WFO pencere başına ≥5 işlem ister, sıralama ≥20. 19 yılda
+    13-20 işlem yapan bir rejim filtresi bu makinede ÖLÇÜLEMEZ — kapı ona
+    "yetersiz kanıt" der ve haklıdır, ama söyleyecek başka sözü de yoktur.
+    Oysa aynı stratejinin iddiası zaten işlemlerde değil MARUZİYETTEDİR ve o
+    4.899 bar üzerinden ölçülebilir.
+
+    Ölçüt: gözlenen maksimum düşüş, AYNI SÜREYİ piyasada geçiren rastgele
+    maskelerin dağılımına karşı. Null, maskeyi dairesel KAYDIRIR — maruziyet
+    süresini ve her iki serinin otokorelasyonunu korur, yalnız hizalamayı
+    bozar. Böylece "bu maske özel mi, yoksa bu kadar zaman piyasada kalmak
+    zaten yeter mi" ayrılır. (Naif bir t-testi otokorelasyon yüzünden
+    anlamlılığı abartırdı.)
+
+    ÖLÇÜLDÜ (QQQC 19 yıl, 2026-08-21): MA kesişmeleri %25-28 düşüş yaşarken
+    aynı maruziyetli rastgele maskeler %47-53 — p 0,005-0,139.
+
+    KARAR VERMEZ, ve bu bilinçli: aynı ölçüm bilerek seçilmiş KÖTÜ
+    parametrelendirmelerde de anlamlı çıkıyor (80/90 → p=0,021). Yani test
+    "MA ailesi düşüşten kaçar" diyor, "bu ayar iyidir" demiyor — aile içinde
+    ayırt etmiyor. Kapıyı açsaydı zayıf ayarları da geçirirdi.
+
+    Calmar bacağı da ölçüldü ve ANLAMLI ÇIKMADI (p 0,08-0,44): düşüşten kaçmak
+    getiriden feragat ettiriyor, ikisi netleşince üstünlük gürültüye karışıyor.
+    Bu yüzden burada yalnız düşüş raporlanır.
+
+    None döner: bar/işlem yok, ya da maruziyet uç değerde (neredeyse hep içeride
+    veya hep dışarıda) — o hâlde karşılaştırılacak bir null yoktur.
+    """
+    if bars_df is None or len(bars_df) < 120 or not trades:
+        return None
+    try:
+        import numpy as np
+    except Exception:
+        return None
+
+    close = bars_df.get("close")
+    if close is None:
+        return None
+    ret = np.nan_to_num(close.pct_change().to_numpy(copy=True))
+    secs = np.array([int(t.timestamp()) for t in bars_df.index])
+    mask = np.zeros(len(secs), dtype=bool)
+    for tr in trades:
+        a, b = tr.get("entry_time"), tr.get("exit_time")
+        if a is None or b is None:
+            continue
+        mask |= (secs >= a) & (secs <= b)
+    n_in = int(mask.sum())
+    if n_in < 60 or n_in > len(mask) - 60:
+        return None
+
+    def _dd(m) -> float:
+        eq = np.cumprod(1.0 + np.where(m, ret, 0.0))
+        return abs(float((eq / np.maximum.accumulate(eq) - 1.0).min()))
+
+    obs = _dd(mask)
+    rng = np.random.default_rng(0)  # deterministik: aynı aday aynı p almalı
+    null = np.array(
+        [
+            _dd(np.roll(mask, int(k)))
+            for k in rng.integers(1, len(mask) - 1, size=n_shift)
+        ]
+    )
+    return {
+        "time_in_market": n_in / len(mask),
+        "max_dd": obs,
+        "null_median_dd": float(np.median(null)),
+        "p_value": float((null <= obs).mean()),
+        "n_shift": int(n_shift),
+    }
+
+
 def multi_symbol_definitive_failure(ms: dict | None) -> bool:
     """True only for an evaluated, explicit symbol-specific rejection."""
 
