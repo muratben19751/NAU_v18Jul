@@ -84,14 +84,28 @@ ve yeni kod aynı tabanı veriyor. Ayrıca dosyayı hiçbir test/CI adımı okum
 bu kurulumda katalog boş (0 spec) ve pencere göreli (`now() - 7 gün`) —
 yeniden hesaplamak ne bir kusuru düzeltir ne kıyaslanabilir bir sayı üretir.
 
-Ama ölçüm başka bir şey gösterdi: kayıttaki altı satırın altısı da **negatif
-PnL ile POZİTİF Sharpe** (+3,5…+4,6) taşıyor. Bugünkü kodla aynı büyüklükte
+Ama ölçüm başka bir şey gösterdi — ve ilk raporum dosyanın boyutunu yanlış
+okuduğu için deseni olduğundan küçük göstermişti. Dosyada **6 değil 496 kayıt**
+var; 479'u ölçülebilir, 466'sı zararda ve bunların **461'i (%99) POZİTİF
+Sharpe** taşıyor, +0,30'dan **+71,91**'e kadar. Bugünkü kodla aynı büyüklükte
 bir kripto penceresinde sınandı — zararda olan dört koşunun dördünde de Sharpe
 NEGATİF (-0,06 / -23,6 / -10,7 / -22,5). Yani dosya, o tarihte var olup
 sonradan düzeltilmiş ayrı bir kusurun da fotoğrafını taşıyor. Bu, dosyayı
 yeniden hesaplamak için değil, **çıpa sanmamak** için bir sebep:
 yeniden üretilemeyen bir taban çizgisi bir çıpa değil, bir fotoğraftır — ve
 fotoğraf, o anki kusurları da kaydeder.
+
+**Sonraki adım:** dosya `regression_baseline_2026-07-23_historical.json` adıyla
+korundu ve `capture_baseline.py` gerçek bir çıpa üretecek şekilde yeniden
+yazıldı. Bir taban çizgisinin çıpa olabilmesi için dört şey birden gerekiyor:
+girdi sabit (sabit tohumlu sentetik çerçeve, ağsız ve önbeleksiz), konfigürasyon
+sabit (spec'ler değişebilen katalogdan değil betiğin içinden), yürütme yolu
+kayıtlı (aynı girdi iki yolda farklı sayı verebiliyor — bu sayfanın konusu tam
+olarak o), ve onu **okuyan** bir test. Dördü de kuruldu:
+`tests/test_regression_baseline_is_an_anchor.py`. Çerçeve/spec/koşucu tek yerde
+yaşıyor ve test onları içeri alıyor; ikinci bir kopya bırakılmadı çünkü iki kopya
+kaçınılmaz olarak ayrışır. Eski kayıttaki desenin geri gelmediğini bekleyen bir
+bekçi testi de eklendi: zararda olan bir çıpa satırı pozitif Sharpe taşıyamaz.
 
 Genel ders: **bir arıza raporunun şiddeti de ölçülmeli.** "Kapıyı bozuyor"
 demek kolay ve yanlış olduğunda düzeltmenin aciliyetini de, kapsamını da
