@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import os
 import tempfile
+from pathlib import Path
 
 from app_constants import env_float as _env_float
 
@@ -153,7 +154,21 @@ def _worker_init(snapshot_path: str, recipe: dict) -> None:
 
     from sandbox import _build_instrument_bar_type
 
-    _G["df"] = pd.read_parquet(snapshot_path)
+    try:
+        _G["df"] = pd.read_parquet(snapshot_path)
+    except FileNotFoundError:
+        # KAPANIŞ YARIŞI, veri hatası değil: `shutdown(wait=False)` hemen
+        # dönüyor ve çağıran anlık görüntüyü siliyor; o sırada başlatılmakta
+        # olan işçi dosyayı bulamıyor. Snapshot'ın varlığı kurulumda
+        # doğrulandığı için burada yokluk YALNIZCA bunu ifade edebilir.
+        #
+        # Yükseltmek `concurrent.futures`'a çok satırlı bir "Exception in
+        # initializer" yığını bastırıyordu — ölçüm bozulmuyordu ama log'da
+        # gerçek hatayı maskeleyen bir gürültü oluşuyordu (ölçüldü 2026-08-21:
+        # erken dönen üç robustluk koşusunda 9 sahte yığın).
+        _G["df"] = None
+        _G["torn_down"] = True
+        return
     # The snapshot frame doubles as the price-scale hint: an unlisted sub-cent
     # symbol must not get the 2-decimal Bybit default here either, or every
     # worker would backtest an all-zero series (DeepR 2026-08-11 [YÜKSEK]).
@@ -329,6 +344,14 @@ class BacktestPool:
         from concurrent.futures import ProcessPoolExecutor
 
         self.max_workers = max_workers or get_worker_count()
+        # Anlık görüntü BURADA, bir kez ve GÜRÜLTÜLÜ doğrulanır. Böylece işçi
+        # tarafında dosyanın yokluğu tek bir anlama gelebilir: havuz kapanıyor
+        # (bkz. `_worker_init`). Doğrulama olmadan iki farklı arıza — eksik
+        # snapshot ve kapanış yarışı — aynı hata mesajını üretiyordu.
+        if not Path(snapshot_path).exists():
+            raise FileNotFoundError(
+                f"backtest pool snapshot missing at construction: {snapshot_path}"
+            )
         # M23: when the pool is rebuilt after a timeout the same initargs are needed.
         self._init_args = (snapshot_path, recipe)
         self._pool = ProcessPoolExecutor(
