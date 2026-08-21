@@ -10,6 +10,27 @@ CI adımı ``regression_baseline.json``'ı okumaz; okusaydı ilk koşuda kırıl
 Wiki'deki "bit-identical parity" iddiası bu dosyaya dayanıyor ve o iddia
 migrasyon anında ölçülmüş bir gözlemdir, süregelen bir garanti değil.
 
+ÖLÇÜLDÜ 2026-08-21 — bu dosya üç ayrı sebeple yeniden hesaplanmadı:
+
+1. **Yıllıklaştırma düzeltmesinden ETKİLENMEDİ.** Betik BTCUSDT 1-DAKİKA
+   barlarıyla koşuyor; sentetik Bybit 1-DAKİKA varsayılanı onun için zaten
+   doğruydu. Yeni kod da aynı tabanı veriyor (1 dk aralık + hafta sonu barı →
+   kripto → 525.600). Sharpe'ın 45× şiştiği kusur GÜNLÜK HİSSE verisine
+   özgüydü.
+2. **Bu kurulumda katalog BOŞ.** `load_catalog()` 0 spec döndürüyor; dosyadaki
+   altı "Random ..." spec'i artık mevcut değil. Betik bugün koşsa boş bir
+   sonuç yazardı.
+3. **Pencere göreli** (aşağıda): bugün koşmak başka bir veri aralığının
+   sayılarını üretir, 2026-07-23'teki kayıtla kıyaslanamaz.
+
+Ve dosyadaki sayılar bugünkü kodun davranışını YANSITMIYOR: altı kaydın altısı
+da negatif PnL ile POZİTİF Sharpe (+3,5…+4,6) taşıyor. Bugünkü kodla aynı
+büyüklükte bir kripto penceresinde ölçüldü — zararda olan dört koşunun
+dördünde de Sharpe NEGATİF çıktı (-0,06 / -23,6 / -10,7 / -22,5). Yani kayıt,
+o tarihte var olup sonradan düzeltilmiş bir işaret/şişme kusurunun da
+fotoğrafını taşıyor (kodda H610 notu ~725× büyüklüğünde böyle bir şişmeyi
+anlatıyor).
+
 Uygulanan çıpa ``tests/test_engine_numeric_anchor.py``'de: sabit tohumlu,
 ağsız, cache'siz bir çerçeve üzerinde tam PnL/işlem/Sharpe. Motorun cevabı bir
 pandas/numpy/nautilus yükseltmesiyle kayarsa CI orada kırılır. Bu betiği

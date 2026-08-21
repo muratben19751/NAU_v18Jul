@@ -78,6 +78,21 @@ geçiriyor. Yani aktif bir kapı bozucu değildi — instrument geçirmeyen ça�
 `capture_baseline.py` tam o yoldan geçtiği için kayıtlı taban çizgileri şişik
 Sharpe taşıyor olabilir; yeniden hesaplanmaları ayrı bir karar.
 
+`capture_baseline.py` iddiası da ölçüldü ve **çürüdü**: betik BTCUSDT
+1-DAKİKA barlarıyla koşuyor, yani sentetik varsayılan onun için zaten doğruydu
+ve yeni kod aynı tabanı veriyor. Ayrıca dosyayı hiçbir test/CI adımı okumuyor,
+bu kurulumda katalog boş (0 spec) ve pencere göreli (`now() - 7 gün`) —
+yeniden hesaplamak ne bir kusuru düzeltir ne kıyaslanabilir bir sayı üretir.
+
+Ama ölçüm başka bir şey gösterdi: kayıttaki altı satırın altısı da **negatif
+PnL ile POZİTİF Sharpe** (+3,5…+4,6) taşıyor. Bugünkü kodla aynı büyüklükte
+bir kripto penceresinde sınandı — zararda olan dört koşunun dördünde de Sharpe
+NEGATİF (-0,06 / -23,6 / -10,7 / -22,5). Yani dosya, o tarihte var olup
+sonradan düzeltilmiş ayrı bir kusurun da fotoğrafını taşıyor. Bu, dosyayı
+yeniden hesaplamak için değil, **çıpa sanmamak** için bir sebep:
+yeniden üretilemeyen bir taban çizgisi bir çıpa değil, bir fotoğraftır — ve
+fotoğraf, o anki kusurları da kaydeder.
+
 Genel ders: **bir arıza raporunun şiddeti de ölçülmeli.** "Kapıyı bozuyor"
 demek kolay ve yanlış olduğunda düzeltmenin aciliyetini de, kapsamını da
 çarpıtır.
