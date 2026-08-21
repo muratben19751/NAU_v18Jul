@@ -633,6 +633,19 @@ _ENGINE = [
         "adayın 25'inin ortalama alfası negatif, 8'i t ≤ −2 ile kesin negatif.",
     ),
     _v(
+        "NAUTILUS_FAMILY_SIBLINGS",
+        "int",
+        "20",
+        "auto.robustness",
+        "Söndürücü ölçüt için kaç kardeş parametrelendirme koşulacağı. Adayın "
+        "kendi backtest sayısı in-sample seçim gürültüsü taşır; AYNI ailenin "
+        "medyanı taşımaz — raporlanacak beklenti odur. Ölçüldü 2026-08-21 "
+        "(QQQC/SPY/IBM): aile içi parametre sıralaması zamanda kalıcı değil ve "
+        "ilk yarının şampiyonunu seçmek, aile medyanını almaya kıyasla ikinci "
+        "yarıda sıfır kazandırıyor. Maliyet doğrusal: tek backtest 1-DAY'de "
+        "0,27 sn, 1-HOUR'da 1,30 sn. Yalnız RAPOR — kapıya girmez.",
+    ),
+    _v(
         "NAUTILUS_WFO_MIN_WINDOWS",
         "int",
         "10",

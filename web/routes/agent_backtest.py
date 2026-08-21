@@ -2372,6 +2372,15 @@ def _scan_one_candidate(
 
     split_label = (rob.get("split") or {}).get("overfitting_label", "?")
     mc_dd = (rob.get("mc") or {}).get("max_dd_p50", None)
+    # Söndürücü ölçüt (yalnız rapor): adayın kendi Calmar'ı seçim yanlılığı
+    # taşır, AİLESİNİN medyanı taşımaz. Ölçüldü 2026-08-21: ilk yarının
+    # şampiyonunu seçmek ikinci yarıda aile medyanına kıyasla sıfır kazandırdı
+    # (üç enstrüman). Aday SIRASI bilerek gösterilmiyor — sıralamanın kalıcı
+    # olmadığı tam da ölçülen şey.
+    # Satırın kendisi robustness çocuğundan canlı akışa zaten düşüyor
+    # (auto/robustness.py, 👪). Burada İKİNCİ kez basmak aynı bilgiyi iki
+    # satıra bölerdi; onun yerine sayılar kalıcı kayda geçiyor.
+    family = rob.get("family") or {}
     wfo = rob.get("wfo_windows") or []
     # Naive series — the one _robustness_passed decided on. Bu yorum bir SÖZDÜ
     # ve kod onu tutmuyordu: kapı al-tut'u geçen pencereleri sayarken bu satır
@@ -2427,6 +2436,8 @@ def _scan_one_candidate(
         "mc_dd_p50": round(mc_dd, 1) if mc_dd is not None else None,
         "wf_pass": wf_str,
         "ms_label": ms_label,
+        "family_median_calmar": family.get("median_calmar"),
+        "own_calmar": family.get("own_calmar"),
     }
 
     _rob_progress.close_open("ok")

@@ -28,8 +28,11 @@ WFO penceresinin adayın hızından türetilmesi — `wfo_window_months`)
 
 from __future__ import annotations
 
+import copy
 import math
 import os
+import statistics
+import zlib
 from collections.abc import Callable
 from pathlib import Path
 from typing import NamedTuple
@@ -665,6 +668,215 @@ def exposure_drawdown_evidence(
     }
 
 
+# ── Söndürücü ölçüt: bir adayın beklentisi, AİLESİNİN medyanıdır ────────────
+#
+# Ölçüldü (2026-08-21, üç enstrüman × ~30 MA parametrelendirmesi, serinin iki
+# yarısı): aile içi parametre sıralaması zamanda kalıcı DEĞİL — altı ölçümün
+# hiçbirinde güven aralığı pozitif tarafta durmadı, üçünde tamamen negatif.
+# Doğrudan sorunun cevabı daha da net: ilk yarının şampiyonunu seçmek, hiç
+# seçmeyip aile medyanını almaya kıyasla ikinci yarıda -0,03 / -0,00 / -0,02
+# Calmar getirdi. Yani ŞAMPİYON GELECEKTE MEDYANDIR.
+#
+# Bundan AYIRT EDİCİ bir ölçüt çıkmaz (o tam olarak çürütülen şey), ama
+# SÖNDÜRÜCÜ bir ölçüt çıkar: adayın kendi backtest sayısı in-sample seçim
+# gürültüsü taşır, ailesinin medyanı taşımaz. Rapora yazılması gereken sayı
+# ikincisidir.
+#
+# Bkz. nautilus_wiki/wiki/synthesis/aile_ici_ayirt_edicilik_2026_08_21.md
+
+FAMILY_SIBLINGS = int(os.environ.get("NAUTILUS_FAMILY_SIBLINGS", "20"))
+FAMILY_MIN_VALID = 8  # bu sayının altında medyan raporlanmaz
+FAMILY_MIN_TRADES = 3  # kardeş "ölçüldü" sayılsın diye asgari işlem
+FAMILY_MAX_BARS = 200_000  # üstünde atlanır: 20 kardeş × dev çerçeve = dakikalar
+
+
+def _family_siblings(spec, n: int, seed: int) -> list[dict] | None:
+    """``spec``'in AYNI ailesinden ``n`` kardeş üret — yapı sabit, sayılar farklı.
+
+    Aile = blok tipleri, rolleri, mantığı ve pozisyon boyutlandırması. Değişen
+    yalnız sayısal parametreler; enum'lar (yön vb.) adayın değerinde tutulur,
+    çünkü yön değiştirmek aileyi değiştirir.
+
+    Katalogda olmayan bir blok varsa (custom block) ``None`` döner: v1 yalnız
+    yerleşik bloklar için: custom blok ayrı sandbox/kill semantiği taşıyor.
+    """
+    import random
+
+    from composer import BLOCK_CATALOG
+
+    base = spec.to_dict()
+    blocks = base.get("blocks") or []
+    if not blocks:
+        return None
+    for b in blocks:
+        if b.get("type") not in BLOCK_CATALOG:
+            return None
+
+    rng = random.Random(seed)
+    out: list[dict] = []
+    for _ in range(n):
+        sib = copy.deepcopy(base)
+        for blk in sib.get("blocks") or []:
+            schema = BLOCK_CATALOG[blk["type"]]["params"]
+            params = dict(blk.get("params") or {})
+            # slow ÖNCE çekilir, fast onun ALTINDAN — böylece geçerlilik
+            # tek bir sabite (10/40) çökmeden korunur ve örneklem çeşitliliği
+            # kaybolmaz.
+            order = sorted(schema, key=lambda k: 0 if k == "slow" else 1)
+            for pname in order:
+                pspec = schema[pname]
+                ptype = pspec.get("type")
+                if ptype == "int":
+                    lo, hi = int(pspec["min"]), int(pspec["max"])
+                    if pname == "fast" and "slow" in params:
+                        hi = min(hi, max(lo, int(params["slow"]) - 1))
+                    params[pname] = rng.randint(lo, hi)
+                elif ptype == "float":
+                    params[pname] = round(
+                        rng.uniform(float(pspec["min"]), float(pspec["max"])), 2
+                    )
+                # enum: adayın değeri korunur — yön aileyi tanımlar
+            blk["params"] = params
+        out.append(sib)
+    return out
+
+
+def _calmar_of(metrics: dict | None, bars_df) -> float | None:
+    """Calmar = CAGR / |maxDD| — ölçümde kullanılan istatistiğin aynısı."""
+    from app_constants import annualized_return, window_years
+
+    m = metrics or {}
+    if int(m.get("n_trades") or 0) < FAMILY_MIN_TRADES:
+        return None
+    pnl, dd = m.get("pnl_pct"), m.get("max_dd")
+    if pnl is None or dd is None:
+        return None
+    years = window_years(bars_df)
+    if not years:
+        return None
+    cagr = annualized_return(float(pnl), years)
+    if cagr is None:
+        return None
+    return cagr / max(abs(float(dd)), 0.01)
+
+
+def family_median_expectation(
+    spec,
+    bars_df,
+    candidate_metrics: dict | None = None,
+    *,
+    n_siblings: int | None = None,
+    run_many=None,
+    progress_fn: Callable[[str], None] | None = None,
+) -> dict | None:
+    """Adayın kendi sayısının yanına AİLESİNİN medyanını koy — KARAR VERMEZ.
+
+    Dönen sözlük yalnız raporlanır. Kapıya girmez, girmemeli: aile medyanı
+    adayı ayırt etmez (ayırt EDEMEZ — ölçüldü), yalnız adayın kendi sayısındaki
+    seçim yanlılığını söndürür.
+
+    ``rank`` BİLEREK dönmüyor: adayın aile içindeki sırası tam olarak gürültü
+    olduğu ölçülen büyüklük; ekrana yazmak, çürütülen çıkarımı davet ederdi.
+
+    ``None`` döner: custom blok, dev çerçeve, ya da yeterli sayıda ölçülebilir
+    kardeş bulunamaması. Sessizce daralma yok — ``n_valid``/``n_siblings``
+    her zaman raporlanır.
+    """
+    if bars_df is None or not len(bars_df):
+        return None
+    if len(bars_df) > FAMILY_MAX_BARS:
+        return None
+    n = int(n_siblings if n_siblings is not None else FAMILY_SIBLINGS)
+    if n < FAMILY_MIN_VALID:
+        return None
+
+    # zlib.crc32, `hash()` DEĞİL: Python'da str hash'i PYTHONHASHSEED ile süreç
+    # başına rastgeleleşir. Aynı süreçte iki çağrı eşit çıkar (ve testi geçer),
+    # ama iki AYRI koşu farklı kardeşler üretirdi — oturum artefaktları yeniden
+    # üretilemez olurdu. Ölçüldü: aynı dizge, üç süreç, üç farklı tohum.
+    key = str(getattr(spec, "id", "") or spec.to_dict().get("name", ""))
+    seed = zlib.crc32(key.encode("utf-8"))
+    siblings = _family_siblings(spec, n, seed)
+    if not siblings:
+        return None
+
+    payloads: list[dict] = []
+    if run_many is not None:
+        units = [
+            {
+                "key": f"family-{i}",
+                "kind": "slice",
+                # `irange` ŞART: `_run_unit`'in slice dalı bunu ya da
+                # start/end'i bekler, yoksa her kardeş in-band KeyError döner
+                # ve ölçüm 0 geçerli kardeşle sessizce None olur. Ölçüldü.
+                "irange": [0, len(bars_df)],
+                "spec": sib,
+                "iteration_id": 0,
+                "rationale": "family median",
+                "want_equity": False,
+            }
+            for i, sib in enumerate(siblings)
+        ]
+        payloads = list((run_many(units) or {}).values())
+    else:
+        from backtest import run_composed_backtest
+        from composer import ComposedStrategySpec
+
+        for sib in siblings:
+            try:
+                r = run_composed_backtest(
+                    ComposedStrategySpec.from_dict(sib), bars_df, iteration_id=0
+                )
+                payloads.append({"metrics": r.metrics, "error": r.error})
+            except Exception as exc:  # bir kardeşin patlaması ölçümü bitirmez
+                payloads.append({"metrics": None, "error": str(exc)[:200]})
+
+    calmars = [
+        c
+        for c in (_calmar_of(p.get("metrics"), bars_df) for p in payloads)
+        if c is not None
+    ]
+    if len(calmars) < FAMILY_MIN_VALID:
+        # SESSİZ düşme yok. `None` tek başına "bu seride ölçülemedi" ile
+        # "birimleri yanlış kurdum"u ayırt edilemez kılıyor; ikincisi bir kez
+        # gerçekten oldu (eksik `irange` → 20/20 kardeş in-band hata).
+        if progress_fn is not None:
+            n_err = sum(1 for p in payloads if p.get("error"))
+            progress_fn(
+                f"  ⚠ Aile medyanı yazılmadı: {len(calmars)}/{n} kardeş "
+                f"ölçülebildi (asgari {FAMILY_MIN_VALID}"
+                + (f", {n_err} kardeş hata verdi" if n_err else "")
+                + ")"
+            )
+        return None
+
+    # Adayın kendi sayısı BURADA, aynı çerçevede ve aynı kod yolundan
+    # hesaplanıyor. Başka yerde başka pencerede ölçülmüş bir sayıyı içeri
+    # taşımak, medyanla elma-armut kıyası doğururdu — söndürme miktarı da
+    # o farktan gelirdi, seçim yanlılığından değil.
+    if candidate_metrics is None:
+        from backtest import run_composed_backtest
+
+        try:
+            candidate_metrics = run_composed_backtest(
+                spec, bars_df, iteration_id=0
+            ).metrics
+        except Exception:
+            candidate_metrics = None
+    own = _calmar_of(candidate_metrics, bars_df)
+    calmars.sort()
+    return {
+        "own_calmar": own,
+        "median_calmar": float(statistics.median(calmars)),
+        "iqr_calmar": [
+            float(calmars[len(calmars) // 4]),
+            float(calmars[(3 * len(calmars)) // 4]),
+        ],
+        "n_siblings": n,
+        "n_valid": len(calmars),
+    }
+
+
 def multi_symbol_definitive_failure(ms: dict | None) -> bool:
     """True only for an evaluated, explicit symbol-specific rejection."""
 
@@ -870,6 +1082,26 @@ def run_full_robustness(
                 "short_circuit": "multi_symbol",
             }
 
+        # 1.5) Söndürücü ölçüt — adayın sayısının yanına ailesinin medyanı.
+        # KARAR VERMEZ (bkz. family_median_expectation). Hatası paketi
+        # düşürmez: ölçülemezse anahtar hiç yazılmaz.
+        family = None
+        try:
+            family = family_median_expectation(
+                spec, bars_df, run_many=run_many, progress_fn=pf
+            )
+        except Exception as fam_exc:
+            pf(f"  ⚠ Aile medyanı ölçülemedi ({type(fam_exc).__name__})")
+        if family:
+            _own = family.get("own_calmar")
+            _own_txt = f"{_own:+.2f}" if _own is not None else "—"
+            pf(
+                f"👪 Aile medyanı — bu adayın sayısı {_own_txt}, aynı ailenin "
+                f"bu dönemdeki sıradan sayısı {family['median_calmar']:+.2f} "
+                f"Calmar ({family['n_valid']}/{family['n_siblings']} kardeş). "
+                "Adayın kendi sayısı seçim yanlılığı taşır; medyan taşımaz."
+            )
+
         # 2) IS/OOS Split
         pf(
             "📊 IS/OOS Split — 70% of data for training, 30% real OOS test. "
@@ -911,6 +1143,7 @@ def run_full_robustness(
                 "mc": {"error": reason},
                 "multi_symbol": ms,
                 "short_circuit": "is_oos",
+                **({"family": family} if family else {}),
             }
 
         # 3) Walk-Forward
@@ -1008,7 +1241,15 @@ def run_full_robustness(
         else:
             pf("  ⚠ Monte Carlo skipped — no trades were opened in the backtest")
 
-        return {"split": split, "wfo_windows": wfo, "mc": mc, "multi_symbol": ms}
+        return {
+            "split": split,
+            "wfo_windows": wfo,
+            "mc": mc,
+            "multi_symbol": ms,
+            # Söndürücü ölçüt: yalnız rapor. Ölçülemediyse anahtar HİÇ yazılmaz
+            # (boş sözlük yazmak, "ölçüldü ve boş çıktı" gibi okunurdu).
+            **({"family": family} if family else {}),
+        }
     finally:
         if pool is not None:
             pool.shutdown()

@@ -122,6 +122,53 @@ Kapsam bir tercih değil ölçüm sonucu olduğu için teste çivilendi:
 — fonksiyonun gövdesi (docstring'siz, AST ile yeniden üretilmiş) Calmar
 hesaplarsa test kırılır ve okuyucuyu bu ölçüme yönlendirir.
 
+## Uygulandı: `family_median_expectation`
+
+Söndürücü ölçüt `auto/robustness.py` içinde yaşıyor ve robustness paketinin
+1.5. adımı olarak koşuyor (çok-sembol kısa devresinden SONRA, IS/OOS'tan önce).
+
+Ne yapıyor: adayın blok tipleri, rolleri, mantığı ve pozisyon boyutlandırması
+sabit tutulup **yalnız sayısal parametreleri** `BLOCK_CATALOG` şemasının
+aralığından yeniden çekiliyor — enum'lar (yön vb.) adayın değerinde kalıyor,
+çünkü yön değiştirmek aileyi değiştirir. 20 kardeş aynı mühürlü çerçevede
+koşuyor, medyanları adayın kendi sayısının yanına yazılıyor.
+
+Tasarım kararları ve gerekçeleri:
+
+- **Aday SIRASI raporlanmıyor.** "20 kardeş içinde 3." satırı, yukarıda
+  çürütülen çıkarımı davet ederdi. Rapor: medyan + IQR + kaç kardeşin
+  ölçülebildiği. Teste çivili.
+- **Adayın kendi sayısı burada, aynı çerçevede ve aynı kod yolundan**
+  hesaplanıyor. Başka pencerede ölçülmüş bir sayıyı içeri taşımak elma-armut
+  kıyası doğururdu: söndürme miktarı pencere farkından gelirdi, seçim
+  yanlılığından değil.
+- **Geçerlilik çeşitliliği yiyerek sağlanmıyor.** Projede hazır duran
+  `_fix_fast_slow` geçersiz çifti sabit 10/40'a çeviriyor; kardeş üretiminde
+  kullanılsaydı örneklem tek bir çifte çökerdi. Onun yerine `slow` önce, `fast`
+  onun altından çekiliyor.
+- **Sessiz daralma imkânsız**: `n_siblings` ve `n_valid` her zaman birlikte
+  raporlanıyor. 8 ölçülebilir kardeşin altında medyan hiç yazılmıyor.
+- **Maliyet ölçüldü ve sınırlandı**: tek backtest 1-DAY'de 0,27 sn, 1-HOUR'da
+  1,30 sn — yani 20 kardeş 6-26 sn, dakikalar süren paketin yanında ihmal
+  edilebilir. `FAMILY_MAX_BARS = 200.000` üstünde (1-DAKİKA kripto ≈ 1M bar)
+  ölçüm atlanıyor.
+- **v1 yalnız yerleşik bloklar**: custom blok farklı sandbox/kill semantiği
+  taşıyor, `None` dönüyor.
+- **Kapıya girmiyor.** Aile medyanı adayı ayırt etmez — ayırt EDEMEZ, ölçüldü.
+  Yalnız adayın kendi sayısındaki seçim yanlılığını söndürür. Ölçülemezse
+  `family` anahtarı hiç yazılmıyor (boş sözlük "ölçüldü ve boş çıktı" gibi
+  okunurdu).
+
+Gerçek veride söndürme miktarı (mühürlü eğitim çerçevesi, MA 50/100):
+
+| enstrüman | adayın sayısı | aile medyanı | IQR |
+|---|---|---|---|
+| QQQC | +0,28 | **+0,16** | +0,14…+0,23 |
+| SPY | +0,13 | **+0,11** | +0,08…+0,15 |
+| IBM | −0,02 | **−0,04** | −0,06…+0,01 |
+
+Testler: `tests/test_family_median_deflates_the_number.py`.
+
 Genel ders, bu oturumun üçüncü tekrarı: **bir ölçütü tasarlamadan önce ayırt
 edeceği farkın var olup olmadığını ölç.** Üç hipotez (ince zaman dilimi daha çok
 gözlem verir, havuzlanmış alfa yavaş adayları kurtarır, kapı ulaşılamaz) bu
