@@ -12,6 +12,13 @@ KAVRAMI söylerler; hedef zaten `_OBJECTIVE_BLOCK` ile gidiyor.
 
 Yalnız Studio brief'inde (SAUTO) sunulur; `lab.html`/`agent_backtest.html`
 hint alanları serbest metin olarak kalır.
+
+Wiki References
+---------------
+Bkz: [[webapp_module_map]] (bu modülün satırı), [[aile_ici_ayirt_edicilik_2026_08_21]]
+(prompt'ların kalibre edildiği dört AUTO koşusunun bağlamı). `templating.py` globali
+`auto_hint_presets` ile şablona, `fragments/auto_hint_presets.html` seçicisiyle ekrana
+akar; seçim `#mc-hint` textarea'sını DOLDURUR ama kilitlemez.
 """
 
 from __future__ import annotations
