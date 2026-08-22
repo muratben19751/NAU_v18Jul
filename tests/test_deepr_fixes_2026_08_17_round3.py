@@ -180,18 +180,50 @@ def test_the_fallback_branch_is_gone_from_the_source():
 
 
 class _FakeNode:
+    """CANLI bir düğüm: `run_async` durdurulana dek döner, anında bitmez.
+
+    Eski sahte anında bitiyordu ve bu, gerçek bir yarışı 1/15 oranında
+    tetikliyordu (`launch` `_nodes`'ta düğümü bulamayıp sessiz dönüyordu).
+    O yarışın kendisi aşağıda ayrı bir testte, `_InstantExitNode` ile ve
+    deterministik olarak çiviliyor.
+    """
+
     def __init__(self):
         self.disposed = False
         self.ran = False
+        self._stop_evt = None
 
     def dispose(self):
         self.disposed = True
 
     async def run_async(self):
+        import asyncio
+
         self.ran = True
+        self._stop_evt = asyncio.Event()
+        await self._stop_evt.wait()
 
     def stop(self):
-        pass
+        if self._stop_evt is not None:
+            self._stop_evt.set()
+
+
+class _InstantExitNode(_FakeNode):
+    """Kurulur kurulmaz biten düğüm — `run_async` hemen döner."""
+
+    async def run_async(self):
+        self.ran = True
+
+
+def _wait_until(pred, timeout: float = 5.0) -> bool:
+    import time
+
+    t0 = time.monotonic()
+    while time.monotonic() - t0 < timeout:
+        if pred():
+            return True
+        time.sleep(0.01)
+    return pred()
 
 
 ARTIFACT = {
@@ -255,6 +287,65 @@ def test_a_live_node_is_still_stoppable(monkeypatch):
 
     r.launch("dep-2", ARTIFACT)
     assert ("running", None) in statuses, "normal launch 'running' dememiş"
+    # ...ve hâlâ durdurulabilir: stop düğümü kapatır, thread kaydı siler ve
+    # bilinçli durdurma 'failed' olarak BİLDİRİLMEZ (satırı rota yazar).
+    r.stop("dep-2")
+    assert _wait_until(lambda: "dep-2" not in r._nodes), "düğüm durdurulamadı"
+    assert _wait_until(lambda: node.disposed)
+    assert not any(s == "failed" for s, _ in statuses), statuses
+
+
+def test_a_node_that_exits_during_startup_is_reported_not_left_pending(monkeypatch):
+    """Yarışın öbür yüzü (ölçüldü 2026-08-22, 1/15 oranında): düğüm daha
+    satıra 'running' denemeden kendi kendine çıkarsa `finally` kaydı siliyor,
+    `launch` kaydı bulamayınca sessizce dönüyor ve `announced` hiç set
+    edilmediği için `finally` de bir şey demiyordu → HİÇBİR durum yazılmıyor,
+    satır sonsuza dek 'pending'.
+
+    Serve thread'inin kazanması zorlanıyor: `built.wait` bilerek geciktiriliyor
+    ki test, yarışı şansa bırakmadan eski kodu her seferinde yakalasın.
+    """
+    import threading
+    import time
+
+    monkeypatch.setattr(
+        "strategy_studio.runner.build_node_config",
+        lambda *a, **k: object(),
+        raising=False,
+    )
+
+    class _SlowWaitEvent(threading.Event):
+        def wait(self, timeout=None):  # noqa: D401
+            ok = super().wait(timeout)
+            time.sleep(0.15)  # serve thread'inin `finally`'sine yetişmesi için
+            return ok
+
+    monkeypatch.setattr(threading, "Event", _SlowWaitEvent)
+    statuses: list = []
+    r = _runner(lambda cfg: _InstantExitNode(), statuses)
+
+    r.launch("dep-4", ARTIFACT)
+    assert _wait_until(lambda: bool(statuses) and statuses[-1][0] == "failed"), (
+        f"anında çıkan düğüm sessiz kaldı: {statuses}"
+    )
+    assert "dep-4" not in r._nodes
+
+
+def test_a_node_that_exits_right_after_the_announcement_is_still_reported(monkeypatch):
+    """Yarışın `launch`'ın kazandığı yüzü: önce 'running', SONRA 'failed' —
+    sıra kilitle garanti; ters sıra satırı yanlış yeşilde bırakırdı."""
+    monkeypatch.setattr(
+        "strategy_studio.runner.build_node_config",
+        lambda *a, **k: object(),
+        raising=False,
+    )
+    statuses: list = []
+    r = _runner(lambda cfg: _InstantExitNode(), statuses)
+
+    r.launch("dep-5", ARTIFACT)
+    assert _wait_until(lambda: bool(statuses) and statuses[-1][0] == "failed"), statuses
+    kinds = [s for s, _ in statuses]
+    assert kinds in (["failed"], ["running", "failed"]), kinds
 
 
 def test_abandoned_marks_do_not_leak(monkeypatch):

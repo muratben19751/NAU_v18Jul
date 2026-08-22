@@ -199,6 +199,14 @@ def bybit_default_category(symbol: str = "BTCUSDT") -> str:
 
 templates.env.globals["bybit_default_category"] = bybit_default_category
 
+# AUTO brief'in GUIDANCE alanı için hazır prompt'lar (fragments/auto_hint_presets.html).
+# Global olarak veriliyor ki rota bağlamına (web/routes/studio.py) dokunmadan
+# şablon okuyabilsin; fragment `is defined` ile korunur — bu satır olmadan
+# (eski süreç) alan görünmez, sayfa kırılmaz.
+from web.auto_hint_presets import PRESETS as _AUTO_HINT_PRESETS  # noqa: E402
+
+templates.env.globals["auto_hint_presets"] = _AUTO_HINT_PRESETS
+
 
 # ---------------------------------------------------------------------------
 # Süreç-ömürlü piyasa bağlamı (startup'ta doldurulur)

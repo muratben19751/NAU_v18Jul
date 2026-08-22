@@ -468,6 +468,20 @@ def _iv_for(i: int, run_number: int, intervals: list[str]) -> str:
     return intervals[(i + run_number - 1) % len(intervals)]
 
 
+def _effective_category(is_external: bool, category: str) -> str:
+    """Harici (noktalı) enstrümanda Bybit ürün kategorisi UYGULANMAZ → "".
+
+    Ölçüldü 2026-08-22: QQQ.NASDAQ'ta "spot" ve "linear" seçilmiş iki koşu
+    (`04e2dbff`, `e3271b87`) aynı `NASDAQ · CASH` motorunda, aynı yoldan koştu —
+    harici tarif kategori taşımaz, veri `load_external_bars` ile gelir, enstrüman
+    harici katalogdan kurulur. Seçim yalnız ETİKET olarak kayıtlara sızıyordu
+    (session_start, kokpit BRIEF, kazananın robustness_log kaydı) ve aynı
+    enstrümanın iki koşusunu farklı seriymiş gibi gösteriyordu. Boş dizge
+    /reports'un "kategori yok" varsayılanıyla aynı (`bi.get("category", "")`).
+    """
+    return "" if is_external else category
+
+
 def _recipe(
     is_external: bool, instrument_id: str, symbol: str, category: str, iv: str
 ) -> dict:
@@ -5454,6 +5468,7 @@ async def run(
     if source != "external" and "." in symbol:
         source, instrument_id = "external", symbol
     is_external = source == "external"
+    category = _effective_category(is_external, category)
 
     if is_external and not instrument_id:
         return HTMLResponse(

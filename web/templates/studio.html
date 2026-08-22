@@ -95,14 +95,17 @@
       <div class="mc-drawer-body">
         <div class="mc-f">
           <label for="mc-hint">GUIDANCE</label>
-          <input type="text" id="mc-hint" name="hint"
-                 placeholder="e.g. momentum + RSI, EMA cross…">
+          {# Hazır prompt seçici: seçim aşağıdaki alanı doldurur, metin düzenlenebilir
+             kalır; serbest yazım aynen sürer. Liste: web/auto_hint_presets.py. #}
+          {% include "fragments/auto_hint_presets.html" %}
+          <textarea id="mc-hint" name="hint" rows="3"
+                    placeholder="e.g. momentum + RSI, EMA cross… — ya da yukarıdan hazır bir prompt seç ve düzenle"></textarea>
         </div>
 
         <div class="mc-grid2">
           <div class="mc-f">
             <label for="mc-symbol">SYMBOL</label>
-            <select id="mc-symbol" name="symbol" onchange="window.mcSyncRange()">
+            <select id="mc-symbol" name="symbol" onchange="window.mcCategorySync(); window.mcSyncRange()">
               {# Seçili gelen enstrüman mc_default_symbol (rota çözer; istenen id
                  taranan katalogda yoksa BTCUSDT'ye düşer). #}
               <option value="BTCUSDT" {% if mc_default_symbol == 'BTCUSDT' %}selected{% endif %}>BTCUSDT</option>
@@ -198,6 +201,10 @@
               <option value="linear" {% if _mc_cat == 'linear' %}selected{% endif %}>linear</option>
               <option value="spot" {% if _mc_cat == 'spot' %}selected{% endif %}>spot</option>
             </select>
+            {# Noktalı (harici) sembolde Bybit kategorisi uygulanmaz: select pasif,
+               rota da kayda "" yazar (_effective_category). Seçim motoru
+               değiştirmiyordu, yalnız etiket olarak sızıyordu. #}
+            <div class="mc-note" id="mc-category-note" style="display:none;">harici veri — uygulanmaz</div>
           </div>
           <div class="mc-f">
             <label for="mc-strict">ROBUSTNESS</label>
@@ -475,6 +482,17 @@
     var max = document.getElementById('mc-max');
     if (max) max.click();
   };
+  // Noktalı id = harici katalog: CATEGORY (Bybit spot/linear) orada anlamsız.
+  // Pasif select POST edilmez → rota varsayılanı görür ve _effective_category
+  // ile "" yazar; yani ekran ile kayıt aynı şeyi söyler.
+  window.mcCategorySync = function () {
+    var sym = document.getElementById('mc-symbol');
+    var cat = document.getElementById('mc-category');
+    var note = document.getElementById('mc-category-note');
+    var ext = !!(sym && sym.value.indexOf('.') > -1);
+    if (cat) { cat.disabled = ext; cat.title = ext ? 'Harici veri: Bybit kategorisi uygulanmaz' : ''; }
+    if (note) note.style.display = ext ? '' : 'none';
+  };
   window.mcCheck = function (input) {
     input.parentElement.classList.toggle('on', input.checked);
   };
@@ -506,6 +524,7 @@
     if ({{ 'true' if active_run_id else 'false' }}) return;
     var picker = document.getElementById('mc-model');
     if (picker) window.mcModel(picker);
+    window.mcCategorySync();
     var max = document.getElementById('mc-max');
     if (max) max.click();
     window.mcBrief(true);

@@ -196,8 +196,10 @@ Kod tarafı: `auto/robustness.py::exposure_drawdown_evidence`,
 |---|---|---|---|---|---|---|
 | Volatility Breakout | 1-DAY | +0,50 | **+0,47** | +0,44…+0,49 | 16/20 | IS/OOS ✓ 0,75 · robustluk geçti · mühürlü holdout 4 işlem (5 gerekiyordu) → yayınlanmadı |
 | Volume and RSI | 4-HOUR | +0,51 | **+0,41** | +0,24…+0,48 | 18/20 | IS/OOS ✗ 0,19 → elendi |
+| Volume Surge Trend (koşu `4f9fcadd`, 2026-08-22, QQQC) | 1-HOUR | +0,28 | **+0,00** | −0,02…+0,06 | 18/20 | IS/OOS ✓ 2,26 ama **WFO 0/7** → elendi |
+| Volume Reversal (koşu `e3271b87`, 2026-08-22, QQQC) | 1-DAY | +0,25 | **+0,22** | +0,19…+0,25 | 20/20 | IS/OOS ✓ 1,06, WFO 12/39, MC DD −31% → elendi |
 
-Tasarımın öngördüğü iki davranış da görüldü: adayın sayısı ailesinin sıradan
+Üçüncü koşuda en keskin örnek geldi: Volume Surge Trend'in kendi sayısı +0,28, ailesinin sıradan sayısı **+0,00** — yani adayın Calmar'ının tamamı parametre seçimi; walk-forward 0/7 pencereyle aynı şeyi bir adım sonra söyledi. IS/OOS tek başına (2,26, "robust") bunu görememişti. Tasarımın öngördüğü iki davranış da görüldü: adayın sayısı ailesinin sıradan
 sayısına yakınsa (0,50 vs 0,47) yapı sahiden o kadar ediyor; aile medyanının
 belirgin üstündeyse (0,51 vs 0,41, geniş IQR) o fazlalık seçimin payıdır — ve
 aynı aday IS/OOS'ta aşırı-uyum etiketi aldı. Ölçüt kapı DEĞİL, ama kapının
@@ -224,5 +226,6 @@ JSON/kod üretiminde düştü), kazanan yok (`winless_limit`) — bkz.
 ## Referenced by
 
 - [[kapi_ucdan_uca_dogrulandi_2026_08_21]]
+- [[webapp_module_map]]
 - [[yillıklastirma_veriden_okunur_2026_08_21]]
 <!-- BACKLINKS:END -->

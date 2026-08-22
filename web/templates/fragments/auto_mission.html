@@ -22,7 +22,7 @@
       </div>
       <div class="mc-brief">
         <div class="mc-brief-row"><span>symbol</span><span>{{ mv.brief.symbol }}</span></div>
-        <div class="mc-brief-row"><span>category</span><span>{{ mv.brief.category }}</span></div>
+        <div class="mc-brief-row"><span>category</span><span>{{ mv.brief.category or "—" }}</span></div>
         <div class="mc-brief-row"><span>timeframe</span><span class="acc">{{ mv.tf_label }}</span></div>
         {# Boş seçim "default" değil: mission_view gerçek model adını çözer. #}
         <div class="mc-brief-row"><span>model</span><span class="acc" title="{{ mv.model_id }}{% if mv.model_hybrid %} · hibrit: {{ mv.model_hybrid }}{% endif %}">{{ mv.model_label }}{% if mv.model_hybrid %} +hibrit{% endif %}</span></div>

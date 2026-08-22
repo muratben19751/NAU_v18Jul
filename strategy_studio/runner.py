@@ -329,6 +329,12 @@ class PaperRunner:
         # Set once the row has been told the node is up, so the serve thread
         # knows whether an exit still needs reporting.
         announced = threading.Event()
+        # Set by the serve thread when the node exited BEFORE the row was told
+        # it was running (and the exit was not a deliberate stop). Ölçüldü
+        # 2026-08-22: anında biten bir düğümde `finally` kaydı siliyor, `launch`
+        # kaydı bulamayınca sessizce dönüyor, `announced` hiç set edilmediği
+        # için `finally` de bir şey demiyordu → satır sonsuza dek 'pending'.
+        exited_early = threading.Event()
 
         def _serve() -> None:
             loop = asyncio.new_event_loop()
@@ -384,6 +390,11 @@ class PaperRunner:
                     # armed over a dead deployment would read `None` forever
                     # and keep the monitor thread alive for nothing.
                     self._armed.pop(deploy_id, None)
+                    # Aynı kilit altında okunuyor: `launch` 'running'ı bu kilidi
+                    # tutarken yazıyor, yani ya o duyurdu (aşağıda biz 'failed'
+                    # deriz) ya da hiç duyuramayacak (bayrak; o der).
+                    if not announced.is_set() and not stopping:
+                        exited_early.set()
                 # The status goes out BEFORE teardown: dispose() can block, and
                 # a hung teardown must not swallow the news that the node is
                 # gone. A node can die long after launch() returned, so without
@@ -435,12 +446,28 @@ class PaperRunner:
             return
         # Build bitmiş olabilir ama bu arada Stop gelmiş olabilir: `_serve`
         # kaydı iptal ettiyse `_nodes`'ta hiçbir şey yok ve 'running' demek
-        # düpedüz yalan olurdu.
+        # düpedüz yalan olurdu. Duyuru KİLİT ALTINDA: `_serve`'ün `finally`'si
+        # aynı kilidi alıyor, yani "hâlâ kayıtlı" ile "satır running dedi"
+        # arasına düğümün çıkışı giremez — iki thread'den tam biri bildirir ve
+        # 'failed' her zaman 'running'dan SONRA yazılır.
         with self._lock:
-            if deploy_id not in self._nodes:
-                return
-        self.on_status(deploy_id, "running", None)
-        announced.set()
+            registered = deploy_id in self._nodes
+            if registered:
+                announced.set()
+                self.on_status(deploy_id, "running", None)
+        if not registered:
+            if exited_early.is_set():
+                # Düğüm daha duyurulamadan kendi kendine çıktı: bunu kimse
+                # bildirmeyecekti. Sessiz 'pending' yerine satır 'failed' desin.
+                self.on_status(
+                    deploy_id,
+                    "failed",
+                    failure[0]
+                    if failure
+                    else "the node exited during startup, before it could be "
+                    "reported running (see the server log)",
+                )
+            return  # durduruldu: 'stopped'ı rota kendisi yazdı
         # After the row says running, so an inactive-switch warning lands on a
         # row that exists and is not overwritten by the status above.
         self._arm_kill_switch(deploy_id, artifact)

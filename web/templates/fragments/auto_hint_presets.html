@@ -1,0 +1,77 @@
+{# AUTO brief — GUIDANCE alanı için hazır prompt seçici.
+   Seçim #mc-hint textarea'sını DOLDURUR, kilitlemez: metin düzenlenebilir, serbest
+   yazım aynen sürer. "Kaydet" alandaki metni tarayıcıya (localStorage) kendi
+   prompt'un olarak ekler; "Sil" seçili kayıtlıyı kaldırır. Hazır liste
+   web/auto_hint_presets.py'den gelir (templating.py globali); global yoksa
+   (eski süreç) fragment sessizce hiçbir şey basmaz — sayfa kırılmaz. #}
+{% if auto_hint_presets is defined %}
+<div class="mc-presets" id="mc-hint-presets">
+  <select id="mc-hint-preset" aria-label="Hazır prompt seç">
+    <option value="">— hazır prompt seç (sonra düzenleyebilirsin) —</option>
+    <optgroup label="Hazır">
+      {% for p in auto_hint_presets %}
+      <option value="{{ p.key }}">{{ p.label }}</option>
+      {% endfor %}
+    </optgroup>
+    <optgroup label="Kaydettiklerim" id="mc-hint-custom-group"></optgroup>
+  </select>
+  <button type="button" class="mc-preset-btn" id="mc-hint-save"
+          title="Alandaki metni kendi hazır prompt'un olarak kaydet (bu tarayıcıda)">Kaydet</button>
+  <button type="button" class="mc-preset-btn" id="mc-hint-del" disabled
+          title="Seçili kayıtlı prompt'u sil">Sil</button>
+</div>
+<script type="application/json" id="mc-hint-presets-data">{{ auto_hint_presets | tojson }}</script>
+<script>
+(function () {
+  var STORE = 'mcHintPresets';
+  var builtin = JSON.parse(document.getElementById('mc-hint-presets-data').textContent);
+  var sel = document.getElementById('mc-hint-preset');
+  var grp = document.getElementById('mc-hint-custom-group');
+  var btnSave = document.getElementById('mc-hint-save');
+  var btnDel = document.getElementById('mc-hint-del');
+  function ta() { return document.getElementById('mc-hint'); }
+  function loadCustom() {
+    try { return JSON.parse(localStorage.getItem(STORE) || '[]'); } catch (e) { return []; }
+  }
+  function saveCustom(list) {
+    try { localStorage.setItem(STORE, JSON.stringify(list)); } catch (e) {}
+  }
+  function find(key) {
+    var all = builtin.concat(loadCustom());
+    for (var i = 0; i < all.length; i++) if (all[i].key === key) return all[i];
+    return null;
+  }
+  function isCustom(key) { return key.indexOf('u:') === 0; }
+  function rebuild(selectKey) {
+    grp.innerHTML = '';
+    loadCustom().forEach(function (p) {
+      var o = document.createElement('option');
+      o.value = p.key; o.textContent = p.label; grp.appendChild(o);
+    });
+    sel.value = selectKey || '';
+    btnDel.disabled = !isCustom(sel.value);
+  }
+  sel.addEventListener('change', function () {
+    var p = find(sel.value);
+    if (p) { ta().value = p.text; ta().focus(); }
+    btnDel.disabled = !isCustom(sel.value);
+  });
+  btnSave.addEventListener('click', function () {
+    var text = (ta().value || '').trim();
+    if (!text) { ta().focus(); return; }
+    var list = loadCustom();
+    var key = 'u:' + Date.now();
+    var label = text.length > 48 ? text.slice(0, 48).trim() + '…' : text;
+    list.push({ key: key, label: label, text: text });
+    saveCustom(list);
+    rebuild(key);
+  });
+  btnDel.addEventListener('click', function () {
+    if (!isCustom(sel.value)) return;
+    saveCustom(loadCustom().filter(function (p) { return p.key !== sel.value; }));
+    rebuild('');
+  });
+  rebuild('');
+})();
+</script>
+{% endif %}
