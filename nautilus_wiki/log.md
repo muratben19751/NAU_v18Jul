@@ -1954,3 +1954,5 @@ Kalan soru artık teknik değil: aile içinde ayırt eden bir ölçüt gerekiyor
 İki ölçüm hatası kayda geçti: (1) Calmar üstünlüğü "az yatırım"a bağlandı —
 sabit maruziyette Calmar 0,20-0,22'de sabit çıktı; (2) ortalama bar getirisiyle
 ölçüldü — iddia düşüş kaçınması olduğu için yanlış istatistikti.
+
+- 2026-08-21 · aile medyanı ilk canlı ateşleme (koşu 5e132203): iki finalistte çalıştı; kalıcı kayıt/oturum özeti/ilerleme tablosu aileyi taşımıyordu → kapatıldı + mutasyonla doğrulanan test. `/reports` görünümü açık iş. → [[aile_ici_ayirt_edicilik_2026_08_21]]

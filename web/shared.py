@@ -901,6 +901,13 @@ def log_robustness(
                 # Kısmi bozulma işareti: Monte Carlo için koşulan tam backtest
                 # patladıysa bu koşu BAŞARILI bir koşu değildi.
                 "full_error": result.get("full_error") or "",
+                # Söndürücü ölçüt (auto/robustness.py, 👪): adayın kendi Calmar'ı
+                # ile AİLESİNİN medyanı/IQR'ı ve kardeş sayıları. Ölçüldü
+                # 2026-08-21 (koşu 5e132203): canlı satır ve oturum artefaktı
+                # bunu taşıyordu ama bu kalıcı kayıt taşımıyordu — /reports'un
+                # birleştirdiği tek dosya burası. Atlandıysa None; sebebi canlı
+                # akışta (bkz. family_median_expectation _skip).
+                "family": result.get("family") or None,
             }
         )
         with _ROBUSTNESS_LOG_LOCK:

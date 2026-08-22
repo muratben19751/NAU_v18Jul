@@ -187,6 +187,39 @@ oturumda aynı disiplinle çürütüldü.
 Kod tarafı: `auto/robustness.py::exposure_drawdown_evidence`,
 `tests/test_low_frequency_has_its_own_evidence.py`.
 
+## İlk canlı ateşleme: koşu `5e132203` (2026-08-21, QQQ.NASDAQ)
+
+Ölçüt ilk kez gerçek bir AUTO koşusunda, tur 2'nin iki finalistinde çalıştı
+(aday kardeşleriyle AYNI partide, `irange` tam çerçeve):
+
+| finalist | TF | adayın Calmar'ı | aile medyanı | IQR | kardeş | sonra ne oldu |
+|---|---|---|---|---|---|---|
+| Volatility Breakout | 1-DAY | +0,50 | **+0,47** | +0,44…+0,49 | 16/20 | IS/OOS ✓ 0,75 · robustluk geçti · mühürlü holdout 4 işlem (5 gerekiyordu) → yayınlanmadı |
+| Volume and RSI | 4-HOUR | +0,51 | **+0,41** | +0,24…+0,48 | 18/20 | IS/OOS ✗ 0,19 → elendi |
+
+Tasarımın öngördüğü iki davranış da görüldü: adayın sayısı ailesinin sıradan
+sayısına yakınsa (0,50 vs 0,47) yapı sahiden o kadar ediyor; aile medyanının
+belirgin üstündeyse (0,51 vs 0,41, geniş IQR) o fazlalık seçimin payıdır — ve
+aynı aday IS/OOS'ta aşırı-uyum etiketi aldı. Ölçüt kapı DEĞİL, ama kapının
+vereceği kararı bir adım önce söyledi.
+
+**Bulunan boşluk:** 👪 canlı satır, oturum artefaktı (`robustness-r2-c1.json.gz`,
+tam `family` bloğu) ve bellek-içi `rob_scan_log` sayıları taşıyordu; ama
+`/reports`'un birleştirdiği KALICI kayıt `robustness_log.jsonl` ve oturum
+olayının `summary`'si taşımıyordu. Koddaki yorum "sayılar kalıcı kayda
+geçiyor" diyordu — `web.shared.log_robustness` `family`'yi hiç okumuyordu.
+Yorum bir vaatti, onu okuyan test yoktu. Kapatıldı: kalıcı kayıt tam bloğu
+(`own/median/iqr/n_siblings/n_valid`; atlandıysa `null`, eski sürümde anahtar
+yok — ikisi ayrı), oturum özeti `summary.family`, ilerleme tablosu
+"Aile (kendi / medyan)" sütunu. Üç kopya da `tests/test_family_reaches_the_permanent_record.py`
+ile çivili ve üçü de mutasyonla doğrulandı (koruma silinince test düşüyor,
+geri alınca yeşil). `/reports` ekranı henüz okumuyor — veri artık orada, görünüm
+ayrı iş.
+
+Koşunun kendisi: 3 tur, 45 backtest, 30 fallback (`qwen2.5-coder:14b`
+JSON/kod üretiminde düştü), kazanan yok (`winless_limit`) — bkz.
+[[kapi_ucdan_uca_dogrulandi_2026_08_21]] kapı zinciri için.
+
 <!-- BACKLINKS:BEGIN -->
 ## Referenced by
 

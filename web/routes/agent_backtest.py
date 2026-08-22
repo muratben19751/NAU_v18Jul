@@ -1061,6 +1061,10 @@ def _robustness_log_summary(rob: dict) -> dict:
             for k, v in ms.items()
             if k != "results" and not isinstance(v, (list, dict))
         },
+        # 👪 aile medyanı — beş skaler; karar kanıtının parçası, artefakta
+        # gömülü kalmasın (ölçüldü 2026-08-21, koşu 5e132203: yalnız artefaktta
+        # vardı, oturum olayında yoktu).
+        "family": rob.get("family") or None,
     }
 
 
@@ -1501,7 +1505,6 @@ def _budget_breach(state: dict) -> str | None:
     return None
 
 
-
 def _endpoint_is_local() -> bool:
     """`OPENROUTER_BASE_URL` bu makineyi mi gösteriyor?
 
@@ -1556,6 +1559,7 @@ def _cost_is_visible(state: dict, spent: float | None) -> bool:
         token_ledger.cost_usd({"input": 1, "output": 1}, str(name)) is None
         for name in by
     )
+
 
 def _enforce_token_budget(run_id: str) -> None:
     """Stop before another LLM call once the persisted per-run ceiling is hit."""
@@ -2379,7 +2383,12 @@ def _scan_one_candidate(
     # olmadığı tam da ölçülen şey.
     # Satırın kendisi robustness çocuğundan canlı akışa zaten düşüyor
     # (auto/robustness.py, 👪). Burada İKİNCİ kez basmak aynı bilgiyi iki
-    # satıra bölerdi; onun yerine sayılar kalıcı kayda geçiyor.
+    # satıra bölerdi. Sayıların gittiği yerler: (1) bu log_entry →
+    # rob_scan_log → ilerleme tablosu (oturum durumu, kalıcı DEĞİL),
+    # (2) oturum olayı `robustness_result.summary.family`, (3) oturum
+    # artefaktı (tam `rob`), (4) KALICI kayıt robustness_log.jsonl —
+    # web.shared.log_robustness yazar. 2026-08-21'e dek bu yorum (4)'ü
+    # vaat ediyor ama kod tutmuyordu (koşu 5e132203'te ölçüldü).
     family = rob.get("family") or {}
     wfo = rob.get("wfo_windows") or []
     # Naive series — the one _robustness_passed decided on. Bu yorum bir SÖZDÜ
@@ -3556,7 +3565,9 @@ def _ms_score_factor(rob: dict | None) -> float:
     # among-passers selection. Treat insufficient-data as neutral.
     # ('yetersiz' substring is produced by backtest_robustness.py; kept verbatim.)
     ms_label = ms.get("generalization_label", "") or ""
-    insufficient = ("yetersiz" in ms_label) or ms.get("symbols_valid", ms.get("n_valid", 1)) == 0
+    insufficient = ("yetersiz" in ms_label) or ms.get(
+        "symbols_valid", ms.get("n_valid", 1)
+    ) == 0
     try:
         if pr is None or insufficient:
             x = 0.0  # neutral → factor 0.575

@@ -162,7 +162,8 @@
         <thead>
           <tr>
             <th>#</th><th>Strategy</th><th class="num">Score</th>
-            <th>IS/OOS</th><th class="num">MC DD p50</th><th class="num">WFO Pass</th><th>Status</th>
+            <th>IS/OOS</th><th class="num">MC DD p50</th><th class="num">WFO Pass</th>
+            <th class="num" title="Calmar: adayın kendi sayısı / aynı ailenin medyanı. Adayın sayısı seçim yanlılığı taşır; medyan taşımaz.">Aile (kendi / medyan)</th><th>Status</th>
           </tr>
         </thead>
         <tbody>
@@ -184,6 +185,11 @@
               {% if row.mc_dd_p50 is not none %}{{ row.mc_dd_p50 }}%{% else %}—{% endif %}
             </td>
             <td class="num">{{ row.wf_pass }}</td>
+            <td class="num">
+              {% if row.own_calmar is defined and row.own_calmar is not none and row.family_median_calmar is defined and row.family_median_calmar is not none %}
+                {{ "%.2f"|format(row.own_calmar) }} / {{ "%.2f"|format(row.family_median_calmar) }}
+              {% else %}—{% endif %}
+            </td>
             <td>
               {% if row.passed %}
                 <span class="badge running">✓ Passed</span>
